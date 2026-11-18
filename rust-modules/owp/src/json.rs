@@ -107,7 +107,7 @@ fn is_json_number(token: &str) -> bool {
     at == bytes.len()
 }
 
-fn scan(input: &str) -> Scan {
+fn scan(input: &str) -> Result<Scan, serde_json::Error> {
     let bytes = input.as_bytes();
     let mut out = bytes.to_vec();
     let mut marked = BTreeSet::new();
@@ -160,8 +160,8 @@ fn scan(input: &str) -> Scan {
         }
         i += 6;
     }
-    let text = String::from_utf8(out).unwrap_or_default();
-    Scan { text, marked, strings, overflow, numbers, escapes }
+    let text = String::from_utf8(out).map_err(|_| serde_json::Error::custom("the scan broke the UTF-8 of its input"))?;
+    Ok(Scan { text, marked, strings, overflow, numbers, escapes })
 }
 
 #[derive(Clone, Copy)]
@@ -170,23 +170,27 @@ struct Seed<'a> {
     next_string: &'a Cell<usize>,
     overflow: &'a BTreeMap<usize, bool>,
     next_number: &'a Cell<usize>,
+    marks: &'a Cell<usize>,
+    infinities: &'a Cell<usize>,
 }
 
 impl Seed<'_> {
     fn text(self, value: &str) -> Text {
         let ordinal = self.next_string.get();
         self.next_string.set(ordinal + 1);
-        Text { value: value.to_owned(), unpaired: self.marked.contains(&ordinal) }
+        let unpaired = self.marked.contains(&ordinal);
+        if unpaired {
+            self.marks.set(self.marks.get() + 1);
+        }
+        Text { value: value.to_owned(), unpaired }
     }
 
     fn number(self, value: Json) -> Json {
         let ordinal = self.next_number.get();
         self.next_number.set(ordinal + 1);
-        match self.overflow.get(&ordinal) {
-            Some(true) => Json::Float(f64::NEG_INFINITY),
-            Some(false) => Json::Float(f64::INFINITY),
-            None => value,
-        }
+        let Some(&negative) = self.overflow.get(&ordinal) else { return value };
+        self.infinities.set(self.infinities.get() + 1);
+        Json::Float(if negative { f64::NEG_INFINITY } else { f64::INFINITY })
     }
 }
 
@@ -273,14 +277,25 @@ pub struct Read {
 }
 
 pub fn read(input: &str) -> Result<Read, serde_json::Error> {
-    let scan = scan(input);
-    let (next_string, next_number) = (Cell::new(0), Cell::new(0));
-    let seed = Seed { marked: &scan.marked, next_string: &next_string, overflow: &scan.overflow, next_number: &next_number };
+    read_scanned(scan(input)?)
+}
+
+fn read_scanned(scan: Scan) -> Result<Read, serde_json::Error> {
+    let (next_string, next_number, marks, infinities) = (Cell::new(0), Cell::new(0), Cell::new(0), Cell::new(0));
+    let seed = Seed {
+        marked: &scan.marked,
+        next_string: &next_string,
+        overflow: &scan.overflow,
+        next_number: &next_number,
+        marks: &marks,
+        infinities: &infinities,
+    };
     let mut deserializer = serde_json::Deserializer::from_str(&scan.text);
     let value = seed.deserialize(&mut deserializer)?;
     deserializer.end()?;
-    if next_string.get() != scan.strings || next_number.get() != scan.numbers {
-        return Err(serde_json::Error::custom("the reader and the scan saw different tokens"));
+    let seen = [next_string.get(), next_number.get(), marks.get(), infinities.get()];
+    if seen != [scan.strings, scan.numbers, scan.marked.len(), scan.overflow.len()] {
+        return Err(serde_json::Error::custom("the reader and the scan disagree"));
     }
     Ok(Read { value, unpaired_escapes: scan.escapes })
 }
@@ -449,6 +464,52 @@ mod tests {
     #[test]
     fn an_escaped_backslash_then_a_lone_surrogate_is_marked() {
         assert_eq!(marks(r#"{"name":"a\\\uD800","client":"x"}"#), [false, true, false, false]);
+    }
+
+    #[test]
+    fn an_escaped_backslash_before_a_high_surrogate_is_text() {
+        let read = read(r#"["\\ud83d"]"#).unwrap();
+        assert_eq!(read.unpaired_escapes, 0);
+        assert_eq!(read.value, Json::Array(vec![string("\\ud83d", false)]));
+    }
+
+    #[test]
+    fn an_escaped_backslash_before_a_pair_leaves_the_low_half_lone() {
+        let read = read(r#"["\\ud83d\ude00"]"#).unwrap();
+        assert_eq!(read.unpaired_escapes, 1);
+        assert_eq!(read.value, Json::Array(vec![string("\\ud83d\u{fffd}", true)]));
+    }
+
+    #[test]
+    fn an_odd_run_of_backslashes_ends_in_an_escape() {
+        assert_eq!(read(r#"["\\\ud83d"]"#).unwrap().value, Json::Array(vec![string("\\\u{fffd}", true)]));
+        assert_eq!(read(r#"["\\\\ud83d"]"#).unwrap().value, Json::Array(vec![string("\\\\ud83d", false)]));
+    }
+
+    fn forged(text: &str, strings: usize, marked: &[usize], numbers: usize, overflow: &[usize]) -> Scan {
+        Scan {
+            text: text.to_owned(),
+            marked: marked.iter().copied().collect(),
+            strings,
+            overflow: overflow.iter().map(|&ordinal| (ordinal, false)).collect(),
+            numbers,
+            escapes: marked.len(),
+        }
+    }
+
+    #[test]
+    fn a_mark_the_visitor_never_applies_is_an_error() {
+        assert!(read_scanned(forged(r#"["a"]"#, 1, &[3], 0, &[])).is_err());
+    }
+
+    #[test]
+    fn an_infinity_the_visitor_never_returns_is_an_error() {
+        assert!(read_scanned(forged("[1]", 0, &[], 1, &[4])).is_err());
+    }
+
+    #[test]
+    fn a_scan_the_visitor_agrees_with_reads() {
+        assert!(read_scanned(forged(r#"["a",1]"#, 1, &[0], 1, &[0])).is_ok());
     }
 
     #[test]
