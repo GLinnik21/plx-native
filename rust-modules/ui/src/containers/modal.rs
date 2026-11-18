@@ -15,8 +15,9 @@
 //!   A surface's LIFT (the element it was opened from) is drawn by the dispatcher's one lift pass
 //!   (`Z::OPENER`), after every surface, so a panel never covers the element it grows out of. The
 //!   host page's own opener (`Screen::opener`) is drawn in that same pass, by the dispatcher.
-//! - `prune()` clears a Closing surface once its fade settles (a page opening over one retires it
-//!   at once instead: `Navigation::commit`), so Closing surfaces step unconditionally (the
+//! - `prune()` clears a Closing surface once its fade settles, or once its body has handed its
+//!   opener back (`Surface::faded`, `Screen::handed_back`: a morph menu's droplet is gone) (a page
+//!   opening over one retires it at once instead: `Navigation::commit`), so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
 //!   Sheet or PlayerPanel dismisses it; an Alert ignores the miss; an Opaque surface swallows it.
@@ -250,10 +251,19 @@ impl PopoverMotion {
 }
 
 impl<H: Host> Surface<H> {
-    /// A menu (`Compact`) dismissed and faded past [`CLOSING_GONE`]: draws nothing, owes its host
-    /// no dim. Only menus: a sheet's or an opaque surface's close is decided by the spring's rest.
+    /// A surface dismissed and already GONE: draws nothing, owes its host no dim. Two ways:
+    ///
+    /// - a menu (`Compact`) faded past [`CLOSING_GONE`] on the container's appear spring; a sheet's
+    ///   or an opaque surface's close is otherwise decided by the spring's rest;
+    /// - a surface whose body has HANDED BACK its opener ([`Screen::handed_back`](crate::screen::Screen::handed_back)):
+    ///   the morph's droplet is gone, whatever the spring still says. The morph is not faded by the
+    ///   container's appear (it begins and ends as the opener), so that spring's tail is a surface
+    ///   with nothing to draw; waiting for it kept the opener's lift (frozen glass, a lighter body)
+    ///   in the opener's place for about twice as long as the droplet's own close.
     pub fn faded(&self) -> bool {
-        self.phase == Phase::Closing && self.style == Style::Compact && self.motion.gone()
+        self.phase == Phase::Closing
+            && ((self.style == Style::Compact && self.motion.gone())
+                || self.entry.inst.as_ref().is_some_and(|i| i.screen.handed_back()))
     }
 }
 

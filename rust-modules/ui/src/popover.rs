@@ -525,6 +525,20 @@ impl Popover {
         }
         self.morph.frame(self.from, Rect::FULL, 0.0).opener_alpha
     }
+    /// **Has this morphing popover handed its opener back?** Its close is over: it stands no longer
+    /// ([`dismiss`](Self::dismiss) ran) and the droplet has drained into the opener, so the frame IS
+    /// the closed one ([`Morph::closed_for`](crate::popover_morph::Morph::closed_for): no glass, no
+    /// dim, the opener whole), which is also the moment [`update`](Self::update) lets the popover go.
+    /// What a surface owning it answers `Screen::handed_back` with: the container retires the surface
+    /// and the opener lift with it on this frame, instead of on the frame its own appear spring comes
+    /// to rest (a Sheet's, about twice as long as the droplet's close) with the opener held on the
+    /// lift's frozen ground the whole time. `false` for a popover that does not morph, and while it
+    /// is open or its close is still draining.
+    pub fn handed_back(&self) -> bool {
+        self.style == OpenStyle::Morph
+            && !self.open
+            && (!self.closing || self.morph.closed_for(self.from.is_some()))
+    }
     /// **The modal dim a surface owning this popover asks its container for** (`Screen::scrim`), at
     /// the role's peak `weight` (a `theme::underlay::DIM_*` row): the container's appear spring ramps
     /// it for every popover but a [`morphing`](Self::morphing) one, whose dim FOLLOWS the morph

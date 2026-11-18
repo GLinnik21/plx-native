@@ -267,6 +267,98 @@ fn the_chip_is_painted_exactly_once_on_every_frame_of_its_menus_open_and_close()
     assert_eq!(host::invalidations() - retakes, 1, "the chip changed hands back");
 }
 
+/// **A glass menu's surface, and so the opener's lift, ends on the frame its droplet is gone** (owner
+/// film, 2026-11-18: the profile chip, handed back by the account menu's close, stood LIGHTER than its
+/// resting look for ~300 ms and then snapped darker in one frame). The morph's close is over when the
+/// slab has drained into the opener (`Morph::closed`: the frame IS the closed frame, the opener at rest,
+/// no glass, no dim), but the surface was retired only when the CONTAINER's appear spring came to rest:
+/// a Sheet (the account menu) about 31 frames after BACK, the droplet's hand-back about 14. For those
+/// ~17 frames the lift still owned the chip and painted it on the stack's latched field (frozen glass,
+/// a lighter body than the tab strip's live glass, which the chrome pass paints once the lift lets go),
+/// so the one-frame step at the end of the lift was the chip changing material.
+///
+/// The surface answers `Screen::handed_back` and the container retires it then, so the lift and the
+/// chrome pass change hands exactly once, on the frame nothing else of the menu is drawn. The real
+/// path: BACK, `NavOp::Dismiss`, `ScreenEvent::Closing`, `Popover::dismiss`, the morph's close springs
+/// stepped by every `Tick`, the bar opener's rect handed in by the lift pass.
+///
+/// Red on the tree where only the spring's rest retired a Closing Sheet: the surface was still in
+/// the stack with its droplet gone, frame after frame.
+#[test]
+fn a_morph_menus_surface_and_lift_end_on_the_frame_its_droplet_is_gone() {
+    // the account menu is a Sheet; the Library's and the Watchlist's menus are Compact (their own
+    // fade retired them at `CLOSING_GONE`, still after the droplet): one rule for every style
+    for style in [Style::Sheet, Style::Compact] {
+        a_morph_surface_ends_with_its_droplet(style);
+    }
+}
+
+fn a_morph_surface_ends_with_its_droplet(style: Style) {
+    use crate::Rect;
+    let _guard = plx_base::testlock::serial();
+    struct PopoverOff;
+    impl Drop for PopoverOff {
+        fn drop(&mut self) { crate::fixture::modal_owns_popover(false); }
+    }
+    crate::fixture::modal_owns_popover(true);
+    let _off = PopoverOff;
+    let (mut d, mut rig, _) = booted();
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    // the chip is the page's focus when its menu opens, and BACK gives it back (the lift stands down
+    // for a close only once focus has moved off its opener): the fixture page's seat stands for it
+    let home = d.nav.top_page().unwrap().id;
+    let chip = 0;
+    d.set_focus(Some(FocusKey { entry: home, elem: chip }));
+    d.nav.next_style = style;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).bar_opener = Some(chip);
+    for _ in 0..90 { step(&mut d, &mut rig, vec![]); }
+    let panel = Rect::new(60.0, 120.0, 520.0, 400.0);
+    {
+        let pop = modal_of(&d, id).popover.as_ref().expect("the menu's popover");
+        assert!(pop.appear_settled() && pop.opener().is_some(), "premise: the droplet's panel stands over a measured opener");
+        assert_eq!(rig.chrome_lifted.last(), Some(&Some(chip)), "premise: the lift owns the chip while the menu stands");
+    }
+
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().expect("still closing").phase, Phase::Closing);
+    // the slab is gone: the frame IS the closed one, exactly what a morph that never opened draws
+    // (the opener at rest: no glass, no dim, its face whole)
+    let droplet_gone = |d: &Dispatcher<FixtureHost>| {
+        let pop = modal_of(d, id).popover.as_ref().expect("the menu's popover");
+        let f = pop.morph_frame(pop.opener(), panel, 24.0).expect("a morphing popover");
+        Some(f) == crate::popover::Popover::new().morphing().morph_frame(pop.opener(), panel, 24.0)
+    };
+    let mut asked = 0;
+    let mut left_after = None;
+    for n in 1..=120 {
+        let lifts = rig.bar_lifts.len();
+        step(&mut d, &mut rig, vec![]);
+        asked += rig.bar_lifts.len() - lifts;
+        if d.nav.modals.top().is_none() {
+            left_after = Some(n);
+            break;
+        }
+        assert!(!droplet_gone(&d), "{style:?}, frame {n} after BACK: the droplet is gone and the surface still stands (the lift still owns the chip)");
+    }
+    let n = left_after.expect("the surface left");
+    // BACK to the hand-back is the droplet's own close (~233 ms, 14 frames at 60 Hz), not the container's spring's rest (31)
+    assert!(n < 24, "{style:?}: the surface left {n} frames after BACK");
+    assert!(asked > 0, "premise: the lift painted the chip while the droplet drained into it");
+    assert_eq!(rig.chrome_lifted.last(), Some(&None), "from the first frame after the surface the chrome pass paints the chip: the lift lets it go once");
+    let lifts = rig.bar_lifts.len();
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(rig.bar_lifts.len(), lifts, "and the lift is not asked again");
+}
+
 #[test]
 fn a_bar_opener_does_not_draw_over_an_opaque_surface_that_is_arriving() {
     use super::modal::{EntryMotion, PopoverMotion};

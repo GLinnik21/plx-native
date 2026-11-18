@@ -682,7 +682,10 @@ tried first. None of it is reconstructable from the code without repeating the m
   menu's profile chip, lifted above the dim and the panel (`widgets::lift_profile_chip`, called by the
   lift pass through `Rig::lift_bar_member`), is a `glass_frozen`
   capsule (no dim, the host snapshot behind its rim) and requests no backdrop entry or `src` pass.
-  **The lift owns the chip from the frame its menu mounts to the frame it is removed**: the chrome
+  **The lift owns the chip from the frame its menu mounts to the frame it is removed** (for a morphing menu
+  the frame its droplet is gone, `Screen::handed_back` -> `Popover::handed_back`: the container retires the
+  surface then, `Surface::faded`, not when its appear spring comes to rest, so the chip changes hands once
+  on the frame nothing else of the menu draws): the chrome
   pass leaves it out (`Rig::draw_chrome`'s `lifted`) for all of them, so the host snapshot never
   holds a chip the panel's rim would refract, the snapshot is re-taken on the mount and the removal
   and nowhere between, and the lift paints it on every one of those frames. What it stands on is

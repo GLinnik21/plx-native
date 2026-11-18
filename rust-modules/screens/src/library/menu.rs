@@ -911,6 +911,11 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn opener_alpha(&self) -> f32 {
         self.popover.opener_alpha()
     }
+    /// The droplet has drained into the header control: the surface, and the lift that holds the
+    /// control above it, end on this frame (`Screen::handed_back`).
+    fn handed_back(&self) -> bool {
+        self.popover.handed_back()
+    }
     fn name(&self) -> &'static str {
         "library_menu"
     }
