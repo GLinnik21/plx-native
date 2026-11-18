@@ -1,0 +1,10 @@
+{
+  "kind": "movie",
+  "title": "Arrival",
+  "durationMs": 6960000,
+  "ext": {
+    "com.example": {
+      "it\uDBFFem": "4711"
+    }
+  }
+}

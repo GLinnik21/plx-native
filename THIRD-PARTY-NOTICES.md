@@ -636,6 +636,14 @@ package, and therefore carry no obligation discharged here: **libjpeg-turbo**
 **jsmpeg** (a host-side development tool; `tools/stream-screen.py` downloads it at the upstream commit
 `ci/dependencies.json` pins, so no copy of it is in the repository; its licence is `licenses/jsmpeg.txt`). Neither is present in the installed application.
 
+The **Open Watch Party** conformance data in `rust-modules/owp/fixtures/` is not part of it either: test vectors,
+descriptor examples and the public relay list, copied unchanged from
+[edde746/openwatchparty](https://github.com/edde746/openwatchparty) at revision `d8c3c2abc753`
+(Apache-2.0, its text in `rust-modules/owp/fixtures/LICENSE`, the file list and hashes in that
+directory's `README.md`). The `plx_owp` tests read them; the application does not link `plx_owp`, so
+none of it is installed. The relay list `relays.json` is compiled into `plx_owp` and moves to §2 when
+the application links it.
+
 ## Source-only attribution
 
 The historical polyfill entry describes the pre-migration build and does not license it. Every
