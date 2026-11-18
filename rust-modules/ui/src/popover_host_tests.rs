@@ -258,7 +258,7 @@ impl Reset {
         let modal = stack.presentation();
         CACHE_OWNER.set(None);
         let frozen = plx_gfx::gfx::set_page_frozen(false);
-        cache(|c| *c = FrameCache { snapshot: None, off: cache_off, prev: None, ..FrameCache::new() });
+        cache(|c| *c = FrameCache { snapshot: None, off: cache_off, prev: None });
         HELD.set(Held::Nothing);
         CAPTURE_OWED.store(false, Relaxed);
         CAPTURE_POINTLESS.store(false, Relaxed);
@@ -994,76 +994,4 @@ fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     let after = counts().4;
     reflow_frame(&_reset.modal, "r-final", false);
     assert_eq!(counts().4, after, "no old-look quad once it is released");
-}
-
-/// **A field dim is folded into the held page only when every fact the fold rests on holds, and the fact
-/// is gone at the head of the next frame.** The fold cannot be taken back (the dim pass then skips that
-/// dim's pixels), so each way it must not happen is graded: no held page yet (the capturing frame), a
-/// stack whose sync could change the field (a stale latch epoch, a read in flight, a flat source), a
-/// presentation the dispatcher did not clear for it (`fold: None`: the page walk would not reach the dim
-/// pass), a flat or invisible dim, a fade, a video-plane frame, a held ground (it holds the scrim) and a
-/// program that did not link (the mock declines it as a refused driver would).
-#[test]
-fn a_field_dim_is_folded_into_the_held_page_only_when_the_fold_is_safe() {
-    use crate::containers::modal::{FoldGate, Latched};
-    use crate::screen::UnderlaySource;
-    use plx_gfx::gfx::backdrop::Dim;
-    let _serial = plx_base::testlock::serial();
-    let _reset = Reset::new(false);
-    cache(|c| c.fold_linked = true);
-    let field = |a: f32| Dim { tex: 7, tint: [0.35, 0.35, 0.35, a] };
-    let settled = |epoch: u32| FoldGate { source: Some(UnderlaySource::Page), held: Latched::Page(epoch), pending: false };
-    let modal = |dim: Option<Dim>, fold: Option<FoldGate>| {
-        let mut m = _reset.modal.clone();
-        m.dim = dim;
-        m.fold = fold;
-        m
-    };
-    // One frame as the loop runs it: the head clears, the host opens, the page pass draws, and the answer is
-    // whether the page pass laid the dim on the page.
-    let frame = |m: &crate::containers::modal::ModalPresentation| {
-        clear_dims();
-        super::begin_frame(m, 0.0, false, false);
-        {
-            let _page = page_pass(m);
-            ink("page");
-        }
-        cache(|c| c.dim_folded())
-    };
-
-    assert!(!frame(&modal(Some(field(0.3)), Some(settled(0)))), "the capturing frame has no held page to fold into");
-    assert!(held() == Held::Page);
-    let epoch = page_epoch();
-    assert!(frame(&modal(Some(field(0.3)), Some(settled(epoch)))), "a settled latch on this very snapshot folds");
-    assert_eq!(cache(|c| c.folds.clone()), vec![field(0.3)], "the first dim, as the presentation carries it");
-    clear_dims();
-    assert!(!cache(|c| c.dim_folded()), "the head of the next frame forgets it: no stale fold survives onto a frame that has none");
-
-    let no_sync = [
-        ("a latch from an older snapshot", Some(settled(epoch.wrapping_sub(1)))),
-        ("a page read in flight", Some(FoldGate { pending: true, ..settled(epoch) })),
-        ("a flat source", Some(FoldGate { source: Some(UnderlaySource::Flat), ..settled(epoch) })),
-        ("no latch at all", Some(FoldGate { held: Latched::Nothing, ..settled(epoch) })),
-        ("a page walk that does not reach the dim pass", None),
-    ];
-    for (why, gate) in no_sync {
-        assert!(!frame(&modal(Some(field(0.3)), gate)), "no fold for {why}");
-    }
-    assert!(!frame(&modal(Some(Dim { tex: 0, ..field(0.3) }), Some(settled(epoch)))), "a flat dim is undithered and keeps its pass");
-    assert!(!frame(&modal(Some(field(0.0)), Some(settled(epoch)))), "an invisible dim has nothing to fold");
-    assert!(!frame(&modal(None, Some(settled(epoch)))), "no dim, no fold");
-    FADE_ON.store(true, Relaxed);
-    assert!(!frame(&modal(Some(field(0.3)), Some(settled(epoch)))), "the old look fading over the new one is not folded into");
-    FADE_ON.store(false, Relaxed);
-    let was = plx_gfx::gfx::set_video_plane_frame(true);
-    assert!(!frame(&modal(Some(field(0.3)), Some(settled(epoch)))), "a video-plane frame has no opaque page");
-    plx_gfx::gfx::set_video_plane_frame(was);
-    cache(|c| c.fold_linked = false);
-    assert!(!frame(&modal(Some(field(0.3)), Some(settled(epoch)))), "a program the driver refused keeps the separate pass");
-    cache(|c| c.fold_linked = true);
-    HELD.set(Held::Ground(crate::frame::backdrop::Z::surface(0)));
-    assert!(!frame(&modal(Some(field(0.3)), Some(settled(epoch)))), "a held ground already holds the scrim");
-    HELD.set(Held::Page);
-    assert!(frame(&modal(Some(field(0.3)), Some(settled(epoch)))), "and once the gate holds again the fold is back");
-    assert_eq!(cache(|c| c.folds.len()), 2, "exactly the two frames that folded");
 }

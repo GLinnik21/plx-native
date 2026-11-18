@@ -1965,19 +1965,6 @@ impl Painter {
     /// standing menu, then re-filters nothing. `ModalStack::draw_scrims` is the one caller, through
     /// `UnderlayField::draw`'s `Role::Dim`.
     pub fn dim(self, r: Rect, tex: u32, tint: [f32; 4]) {
-        self.dim_pass(r, tex, tint, true);
-    }
-    /// [`dim`](Self::dim) for a dim the host already laid on the framebuffer: it folded the dim into the
-    /// held page it drew (`popover::host::page_pass`, `gfx::FrameCache::draw_folded`). Everything but the
-    /// pixels is `dim`'s own, through the same body, so the declaration (and with it every glass signature
-    /// that records it) is bit-identical whether the host folded or not, and the glass above still takes
-    /// the dim from `popover_glass::note_dim`. A FLAT dim (`tex == 0`) has no folded form and draws.
-    pub fn dim_folded(self, r: Rect, tex: u32, tint: [f32; 4]) {
-        self.dim_pass(r, tex, tint, tex == 0);
-    }
-    /// The one body of [`dim`](Self::dim) and [`dim_folded`](Self::dim_folded): `draw` says whether the
-    /// pixels go down.
-    fn dim_pass(self, r: Rect, tex: u32, tint: [f32; 4], draw: bool) {
         let ink = frame::backdrop::Dim { tex, tint: self.c(tint) };
         if self.declare_as(r, 24, Some(Deferrable::Dim(ink)), |data| {
             use frame::backdrop::Value;
@@ -1989,9 +1976,6 @@ impl Painter {
         // A menu's glass over this dim reads undimmed pictures and applies it at composite.
         if !plx_gfx::gfx::blur_source_pass() {
             crate::popover_glass::note_dim(ink);
-        }
-        if !draw {
-            return;
         }
         if tex != 0 {
             self.field(r, tex, tint);

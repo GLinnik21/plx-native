@@ -25,19 +25,11 @@ pub(super) struct FrameCache {
     pub(super) off: bool,
     /// The retained second slot: the look the crossfade fades away from.
     pub(super) prev: Option<Vec<&'static str>>,
-    /// Is the dim fold's program "linked" (`GLASS_FROST`'s fourth member)? A host test has no GL, so it
-    /// declines by default, as a driver that refused the program would; a test that grades the fold's
-    /// gate stands it.
-    pub(super) fold_linked: bool,
-    /// The dims `draw_folded` folded into a held page, in order, and whether this frame has one
-    /// (`FrameCache::dim_folded`).
-    pub(super) folds: Vec<plx_gfx::gfx::backdrop::Dim>,
-    pub(super) dim_folded: bool,
 }
 
 impl FrameCache {
     pub(super) const fn new() -> Self {
-        Self { snapshot: None, off: false, prev: None, fold_linked: false, folds: Vec::new(), dim_folded: false }
+        Self { snapshot: None, off: false, prev: None }
     }
     pub(super) fn invalidate(&mut self) {
         INVALIDATIONS.with(|c| c.set(c.get() + 1));
@@ -127,22 +119,6 @@ impl FrameCache {
     }
     pub(super) fn draw(&self) -> bool {
         self.draw_alpha(1.0)
-    }
-    /// `gfx::FrameCache::draw_folded`'s protocol, without the pixels: a held page drawn with a FIELD dim folded
-    /// in is recorded; anything else is the plain quad and records nothing.
-    pub(super) fn draw_folded(&mut self, dim: plx_gfx::gfx::backdrop::Dim) -> bool {
-        if !self.fold_linked || dim.tex == 0 || dim.tint[3] <= 0.0 || self.snapshot.is_none() {
-            return self.draw();
-        }
-        self.folds.push(dim);
-        self.dim_folded = true;
-        self.draw()
-    }
-    pub(super) fn dim_folded(&self) -> bool {
-        self.dim_folded
-    }
-    pub(super) fn clear_dim_fold(&mut self) {
-        self.dim_folded = false;
     }
     pub(super) fn draw_alpha(&self, _alpha: f32) -> bool {
         let Some(snapshot) = &self.snapshot else { return false };
