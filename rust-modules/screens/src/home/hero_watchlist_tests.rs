@@ -207,7 +207,7 @@ fn rotating_the_hero_does_not_flip() {
     let mut s = screen(view);
     tick(&mut s, view, 1);
     s.set_watchlist(HEX_A, Membership::On);
-    assert!(s.flip(view, 1));
+    assert!(s.flip(view, 1, &plx_machine::machine::PressRead::default()));
     tick(&mut s, view, 1);
     assert_eq!(s.watchlist_hex(), Some(HEX_B));
     s.set_watchlist(HEX_B, Membership::Off);
@@ -291,7 +291,7 @@ fn a_vanished_disc_returns_focus_to_play() {
     let mixed = plx_data::pms::hubs_snapshot(&state);
     let mview = mixed.view();
     let mut m = screen(mview);
-    assert!(m.flip(mview, 1));
+    assert!(m.flip(mview, 1, &plx_machine::machine::PressRead::default()));
     let want = key(&m, HERO_WATCHLIST_ELEM);
     assert_eq!(Focusable::<TestHost>::reconcile(&m, want, &cx(mview, Some(want))).elem, HERO_PLAY_ELEM);
 }

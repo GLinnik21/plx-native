@@ -8680,6 +8680,81 @@ mod lifecycle_regression_tests {
         });
     }
 
+    /// **A press accepted against one hero is played against it, even in the frame the carousel turns**
+    /// (PR #1442, round 7). A hero control's press commits a dip (about 200 ms) after OK and plays the
+    /// title the billboard shows AT THE COMMIT; the press of the control that already has focus moves
+    /// nothing, so the 8 s countdown ran on, and a countdown that ran out inside the dip turned the page:
+    /// `press home.hero.play --rk X`, accepted against X, played the next page's title. The hardest frame
+    /// is the one the press ARMS in: the dispatcher built that frame's press read before its drain, so
+    /// the frame's own Tick, delivered after the arm, read a press that was not live, and the carousel
+    /// turned there. A dry run finds the frame the page turns on; the press is then delivered in that
+    /// frame's batch.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_hero_press_accepted_in_the_frame_the_carousel_turns_plays_the_title_it_was_accepted_against() {
+        use plx_machine::machine::{InputEvent, InputKind, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        // One run: Home on the hero's Play, then frames until the page has turned (or, with
+        // `press_in`, that many frames and ONE batch carrying the press). Returns the frame the page
+        // turned on (a dry run only), the title the press named, and the titles Home asked to play.
+        let run = |press_in: Option<usize>| -> (Option<usize>, String, Vec<String>) {
+            plx_base::eventlog::with_private_log(|| {
+                let mut app = app();
+                let mut t = 0u32;
+                super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+                app.runtime.bridge(&mut app.bridge).seed_hubs_for_test(3, plx_data::pms::HubState::Ready);
+                settle(&mut app, &mut t);
+                let at = |t: u32| Tick { ms: t + 16, dt_us: 16_000 };
+                let by_id = |press: Option<&str>, t: u32| InputEvent {
+                    at: at(t),
+                    source: Source::RemoteFifo,
+                    kind: InputKind::ById {
+                        id: "home.hero.play".into(),
+                        press: press.map(|_| OkTap { sym: 0x0d, wcode: 0 }),
+                        expect: press.map(std::sync::Arc::<str>::from),
+                    },
+                };
+                let shown = |app: &mut App| {
+                    let snapshot = app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+                    assert_eq!(snapshot.focused.as_deref(), Some("home.hero.play"), "premise: Play is focused");
+                    snapshot.elems.iter().find(|e| e.id == "home.hero.play").and_then(|e| e.subject.clone())
+                        .expect("the hero's Play carries the ratingKey it acts on")
+                };
+                let now = t;
+                step(&mut app, &mut t, vec![by_id(None, now)]);
+                settle(&mut app, &mut t);
+                let named = shown(&mut app);
+                let mut turned = None;
+                // the countdown restarts at the focus move: 8 s is 500 frames, then some
+                for frame in 0..560usize {
+                    if press_in == Some(frame) {
+                        let now = t;
+                        step(&mut app, &mut t, vec![by_id(Some(&named), now)]);
+                        // the dip, the commit and the spring-back
+                        for _ in 0..40 { step(&mut app, &mut t, vec![]); }
+                        break;
+                    }
+                    step(&mut app, &mut t, vec![]);
+                    if press_in.is_none() && shown(&mut app) != named {
+                        turned = Some(frame);
+                        break;
+                    }
+                }
+                let played = app.runtime.bridge(&mut app.bridge).take_observed_home_commands().into_iter()
+                    .filter_map(|(_, request, _)| match request { plx_screens::registry::HomeReq::Play { rk, .. } => Some(rk), _ => None })
+                    .collect();
+                (turned, named, played)
+            })
+        };
+        let (turned, named, _) = run(None);
+        let frame = turned.expect("premise: the countdown turns the page within 560 frames");
+        assert!(frame > 400, "premise: the turn is the 8 s countdown's, frame {frame}");
+        let (_, named_again, played) = run(Some(frame));
+        assert_eq!(named_again, named, "premise: the same hero is shown when the press arrives");
+        assert_eq!(played, vec![named.clone()],
+            "the press named {named} in the frame the page turned on and must play it, not the next page's");
+    }
+
     /// What `hold_bench_tick` put on the input queue in one frame: `(ok_down, ok_up, back, direction)`
     /// counts, plus whether an item menu was up when it ran (so an OK edge can be held against it).
     #[derive(Default, Debug)]

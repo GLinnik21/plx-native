@@ -1462,6 +1462,24 @@ fn a_by_id_press_resolves_against_the_focus_an_earlier_key_of_its_batch_moved() 
     assert_eq!(events_of(&d, 0).matches("\"press_commit\"").count(), 1);
 }
 
+/// **A delivery reads the press as it stands at its position in the frame, as it reads the focus.**
+/// `parts` is built before the drain, and an OK-down arms its press INSIDE it, ahead of the frame's own
+/// Tick: that Tick read a press that was not live yet, so a screen that holds something still while a
+/// press stands on its element (Home's carousel, over a hero control's dip) was one frame late on
+/// exactly the frame the press began, and the frame a countdown ran out on could turn the page under
+/// a press it had just been accepted for (PR #1442, round 7).
+#[test]
+fn a_tick_in_the_frame_a_press_armed_reads_that_press_live_on_the_focused_element() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(660));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let events = events_of(&d, 0);
+    assert!(events.contains("tick_press_idle") && !events.contains("tick_press_on_focus"), "no press yet: {events}");
+    d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![], &mut NoTap);
+    let events = events_of(&d, 0);
+    assert!(events.contains("\"tick_press_on_focus\""),
+        "the arm frame's own Tick must read the press it followed: {events}");
+}
+
 /// **A refused press emits no key, and an `expect` that is not the element's subject presses
 /// nothing**; the subject that is, presses. An unloaded slot can be focused but not pressed.
 #[test]

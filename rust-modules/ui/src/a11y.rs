@@ -287,7 +287,12 @@ pub enum Role {
 /// `SUBJECT_BEARING` in `tools/a11y.py`): they go to the state file,
 /// never to a log line or heartbeat (a press's `@<subject>` guard is kept by a recording, see the
 /// module doc).
-/// `loaded` is false for a placeholder whose item has not arrived. The borrow is of the view the
+/// `loaded` is false for a placeholder whose item has not arrived, and more generally for an element
+/// that is **not pressable yet**: a screen whose OK would not land on its focused element for a few
+/// frames (Home's hero/grid door, while the picture lags the key that crossed it) projects that element
+/// not loaded, and a by-id press of it is refused as `unloaded`. The element's own `a11y` keeps its label
+/// and subject, but the state file lists neither for an element that is not `loaded`
+/// (`dispatch::snapshot::project_into`). The borrow is of the view the
 /// projection was asked of; a view built per query returns [`A11y::into_owned`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A11y<'a> {

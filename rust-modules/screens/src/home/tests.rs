@@ -91,7 +91,20 @@ fn step(
     focus: Option<FocusKey<u32>>,
     event: &ScreenEvent<TestHost>,
 ) -> (Handled, Vec<Stamped<TestHost>>, bool) {
-    let context = cx(view, focus);
+    step_pressed(s, view, focus, PressRead::default(), event)
+}
+
+/// [`step`] with the press machine's read as `press` (the context a delivery runs with while a press
+/// stands somewhere).
+fn step_pressed(
+    s: &mut HomeScreen,
+    view: HubsView<'_>,
+    focus: Option<FocusKey<u32>>,
+    press: PressRead<u32>,
+    event: &ScreenEvent<TestHost>,
+) -> (Handled, Vec<Stamped<TestHost>>, bool) {
+    let mut context = cx(view, focus);
+    context.press = press;
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
     let handled = {
@@ -250,7 +263,7 @@ fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
         Outcome::Edge(EdgeRule::Screen)
     );
     let before = s.carousel.clone();
-    assert!(s.flip(snapshot.view(), 1));
+    assert!(s.flip(snapshot.view(), 1, &PressRead::default()));
     assert_ne!(s.carousel, before);
     assert_eq!(engine.current(owner).unwrap().elem, HERO_INFO_ELEM);
 }
@@ -1949,7 +1962,7 @@ fn a_key_across_the_door_and_a_quick_ok_still_lands_on_what_the_picture_shows() 
 /// nothing to refuse by. So while the focused element's press would land on another element, it is NOT
 /// LOADED, and the dispatcher refuses any by-id press of it as `unloaded` (`ui/src/dispatch/by_id.rs`,
 /// pinned by `input_tests::a_refused_press_emits_no_key_and_a_subject_mismatch_presses_nothing`). Its
-/// projection keeps its own subject.
+/// `a11y` keeps its own subject; the state file lists none for an element that is not loaded.
 #[test]
 fn the_focused_element_is_not_pressable_while_its_press_would_land_elsewhere() {
     let _guard = plx_base::testlock::serial();
@@ -7401,4 +7414,171 @@ fn the_backdrop_has_its_name_back_after_a_trip_to_the_grid() {
     run(&mut s, 900);
     assert_eq!((s.snap.pos, s.snap.vel), (0.0, 0.0), "the dive has parked on the hero, position and velocity");
     assert_eq!(name(&s), Some(parked), "back at the hero the backdrop is the picture it was, with its name");
+}
+
+// ---- A hero control's press plays the title it was armed on, whatever the carousel does in its dip ----
+
+/// What the press machine reads while a press stands on `elem` of `s`'s page: live, dipping, and the
+/// owner is the pressed element (`InputMachine::press_read`).
+fn press_on(s: &HomeScreen, elem: u32) -> PressRead<u32> {
+    PressRead {
+        scale: 0.97, identity: 1, live: true, active: true,
+        owner: Some(FocusKey { entry: s.entry, elem }), ..Default::default()
+    }
+}
+
+/// The read of a press that was CANCELLED (a direction key moved focus off its element, BACK, a
+/// declined hold): `live` is gone at the cancel while the spring-back is still on screen (`active`) and
+/// the owner is retained for it (`press::a_cancelled_press_stops_being_live_while_it_is_still_on_screen`).
+fn press_cancelled_on(s: &HomeScreen, elem: u32) -> PressRead<u32> {
+    PressRead { live: false, ..press_on(s, elem) }
+}
+
+fn hero_tick_16(frame: u32) -> ScreenEvent<TestHost> {
+    ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })
+}
+
+/// Three heroes, Home parked at the hero with the countdown `left` seconds from turning the page.
+fn countdown_at(left: f32) -> (plx_data::pms::HubsSnapshot, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    assert!(snapshot.view().hero_count() > 1, "the auto-advance only arms with more than one hero slot");
+    let mut s = screen(snapshot.view());
+    s.hero_auto = left;
+    (snapshot, s)
+}
+
+fn shown_rk(s: &HomeScreen) -> String {
+    s.carousel.as_ref().map(|(_, rk)| rk.clone()).expect("the carousel shows a hero")
+}
+
+/// **Review finding on PR #1442, round 7: the carousel can turn inside a hero press's dip.** A hero
+/// control is a `Control`: OK arms a press that commits no sooner than `MIN_DIP_MS` later, and the commit
+/// re-reads the title the billboard shows. Pressing the control that already has focus moves no focus,
+/// so nothing restarted the 8 s countdown; if it ran out inside the dip the page turned and a press
+/// accepted against one title (`press home.hero.play --rk X`, or a person's OK a moment before the turn)
+/// played the next page's. The carousel now waits for the press, whichever hero control it stands on.
+#[test]
+fn a_hero_press_plays_the_title_it_was_armed_on_when_the_countdown_runs_out_inside_its_dip() {
+    let _guard = plx_base::testlock::serial();
+    for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM] {
+        // 0.05 s left: three 16.667 ms frames run it out, inside the six frames of the dip
+        let (snapshot, mut s) = countdown_at(0.05);
+        let view = snapshot.view();
+        let armed_on = shown_rk(&s);
+        let focus = FocusKey { entry: s.entry, elem };
+        let press = press_on(&s, elem);
+        for frame in 1..=6 {
+            step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(frame));
+            assert_eq!(shown_rk(&s), armed_on, "frame {frame}: the carousel turned under the press");
+            assert!(s.outgoing.is_none(), "frame {frame}: a page slide began under the press");
+        }
+        assert!(s.hero_auto <= 0.0, "the countdown ran out inside the dip (the premise): {}", s.hero_auto);
+        let (_, out, _) = step_pressed(&mut s, view, Some(focus), press,
+            &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        let acted = if elem == HERO_PLAY_ELEM {
+            has_home(&out, |r| matches!(r, HomeReq::Play { rk, .. } if *rk == armed_on))
+        } else {
+            has_home(&out, |r| matches!(r, HomeReq::Detail { rk, .. } if *rk == armed_on))
+        };
+        assert!(acted, "elem {elem}: the press did not act on the title it was armed on ({armed_on}) among {} effects", out.len());
+        // the press settles (the spring-back is over): the page the countdown owes turns now
+        step(&mut s, view, Some(focus), &hero_tick_16(7));
+        assert_ne!(shown_rk(&s), armed_on, "the turn is deferred, not dropped");
+        assert!(s.outgoing.is_some(), "and it slides");
+    }
+}
+
+/// **The countdown is not stopped by anything else.** No press, a press on another page's element, a
+/// press on a shelf card, and a CANCELLED press (`live` is gone at the cancel while `active` and the
+/// owner stay for the spring-back) each leave the carousel turning on schedule: the hold reads `live`
+/// and the hero owner, not `active`, not the owner alone.
+#[test]
+fn the_carousel_turns_on_schedule_unless_a_press_stands_on_one_of_its_hero_controls() {
+    let _guard = plx_base::testlock::serial();
+    let reads: Vec<(&str, Box<dyn Fn(&HomeScreen) -> PressRead<u32>>)> = vec![
+        ("no press", Box::new(|_| PressRead::default())),
+        ("a cancelled hero press, still springing back", Box::new(|s| press_cancelled_on(s, HERO_PLAY_ELEM))),
+        ("a press on a card of a shelf", Box::new(|s| press_on(s, s.rows[0].elems[0]))),
+        ("a press on another page's hero control", Box::new(|s| PressRead {
+            owner: Some(FocusKey { entry: EntryId(s.entry.0 + 1), elem: HERO_PLAY_ELEM }), ..press_on(s, HERO_PLAY_ELEM)
+        })),
+    ];
+    for (what, read) in reads {
+        let (snapshot, mut s) = countdown_at(0.05);
+        let view = snapshot.view();
+        let before = shown_rk(&s);
+        let focus = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+        let press = read(&s);
+        for frame in 1..=2 {
+            step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(frame));
+            assert_eq!(shown_rk(&s), before, "{what}: turned early, at frame {frame}");
+        }
+        step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(3));
+        assert_ne!(shown_rk(&s), before, "{what}: the countdown ran out and the page did not turn");
+        assert!(s.outgoing.is_some(), "{what}: and it slides");
+    }
+}
+
+/// **A cancelled press releases the countdown.** The press is held through its dip (the page does not
+/// turn, the countdown stays run out), and the frame its read says it was cancelled the page turns.
+#[test]
+fn a_cancelled_hero_press_releases_the_carousel() {
+    let _guard = plx_base::testlock::serial();
+    let (snapshot, mut s) = countdown_at(0.05);
+    let view = snapshot.view();
+    let before = shown_rk(&s);
+    let focus = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let held = press_on(&s, HERO_PLAY_ELEM);
+    for frame in 1..=5 {
+        step_pressed(&mut s, view, Some(focus), held, &hero_tick_16(frame));
+    }
+    assert_eq!(shown_rk(&s), before, "held through the dip");
+    assert!(s.hero_auto <= 0.0, "the premise: the countdown has run out");
+    let cancelled = press_cancelled_on(&s, HERO_PLAY_ELEM);
+    step_pressed(&mut s, view, Some(focus), cancelled, &hero_tick_16(6));
+    assert_ne!(shown_rk(&s), before, "the cancel released the carousel");
+}
+
+/// **The other two turns a person makes are held the same way.** Right at the hero's edge moves no focus
+/// (so it does not abandon the press) and `HomeCmd::Flip` is addressed to the page: both go through the
+/// one turn, so neither can replace the title under a press, and both work as ever with none.
+#[test]
+fn a_manual_turn_waits_for_a_hero_press_too() {
+    let _guard = plx_base::testlock::serial();
+    let (snapshot, mut s) = countdown_at(HERO_AUTO_S);
+    let view = snapshot.view();
+    let before = shown_rk(&s);
+    let focus = FocusKey { entry: s.entry, elem: HERO_INFO_ELEM };
+    let press = press_on(&s, HERO_INFO_ELEM);
+
+    let (handled, _, _) = step_pressed(&mut s, view, Some(focus), press, &hero_edge_right());
+    assert_eq!(handled, Handled::No, "the edge key is not taken while a press stands");
+    let (handled, _, _) = step_pressed(&mut s, view, Some(focus), press,
+        &ScreenEvent::App(AppMsg::Home(HomeCmd::Flip(1))));
+    assert_eq!(handled, Handled::No);
+    assert_eq!(shown_rk(&s), before, "neither turned the page under the press");
+    assert!(s.outgoing.is_none());
+
+    let (handled, _, _) = step(&mut s, view, Some(focus), &hero_edge_right());
+    assert_eq!(handled, Handled::Yes, "with no press the edge key turns the page as ever");
+    assert_ne!(shown_rk(&s), before);
+}
+
+/// The predicate itself, over the three hero slots: Play, Info and the bookmark disc are hero controls
+/// (`Located::Hero`), a shelf card and another page's element are not, and only a LIVE press counts.
+#[test]
+fn a_press_is_armed_on_the_hero_when_it_is_live_and_its_owner_is_one_of_this_pages_hero_controls() {
+    let _guard = plx_base::testlock::serial();
+    let (snapshot, s) = countdown_at(HERO_AUTO_S);
+    let _ = snapshot;
+    for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM, HERO_WATCHLIST_ELEM] {
+        assert!(s.hero_press_armed(&press_on(&s, elem)), "elem {elem}");
+        assert!(!s.hero_press_armed(&press_cancelled_on(&s, elem)), "a cancelled press on {elem}");
+    }
+    assert!(!s.hero_press_armed(&PressRead::default()));
+    assert!(!s.hero_press_armed(&press_on(&s, s.rows[0].elems[0])), "a shelf card");
+    assert!(!s.hero_press_armed(&PressRead { owner: None, ..press_on(&s, HERO_PLAY_ELEM) }), "no owner");
 }

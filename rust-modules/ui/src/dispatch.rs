@@ -3164,6 +3164,14 @@ where
                     let entry_owner = InputOwner::Entry(entry);
                     addressed.owner = if self.owner_entry() == Some(entry) { self.owner() } else { entry_owner };
                     addressed.focus = self.input.engine.read(entry_owner);
+                    // **The press is read where the delivery runs, as the focus is.** `parts` was
+                    // built before this drain, and an OK-down arms its press INSIDE it (`Fx::Press`,
+                    // queued ahead of the next delivery): the frame's own Tick, delivered after the
+                    // arm, would otherwise read a press that is not live yet, and a screen that holds
+                    // something still while a press stands on its element (Home's carousel, while a
+                    // hero control's press dips: `HomeScreen::hero_press_armed`) would be one frame
+                    // late on exactly the frame the press began.
+                    addressed.press = self.input.press_read(parts.tick.ms);
                     addressed.page_image = self.page_image_read().for_owner(entry, id);
                 }
                 // **A page whose first seat is still on its way HOLDS an arrow other than Up** (design

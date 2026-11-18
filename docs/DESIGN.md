@@ -186,7 +186,11 @@ the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
   holds focus (`HomeScreen::row_holds_focus`), and it restarts at its full length when focus returns to the
   hero. A page that rests at the hero while a Continue Watching card is focused (the row scrolls nothing)
   therefore keeps its billboard still and presents nothing once settled, as it always did when focus on a
-  row scrolled the page off the hero (the `home-idle` scene grades it).
+  row scrolled the page off the hero (the `home-idle` scene grades it). A turn that falls due while a press
+  stands on a hero control (its dip, about 200 ms: Play, Info or the bookmark disc) waits for the press
+  (`HomeScreen::hero_press_armed`, read from the press machine), so a press acts on the title it was armed on
+  (unless a landing takes that title out of the hero pool inside the dip: the press then acts on its successor);
+  Left/Right at the hero's edge wait for it too.
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
 driven by `line_reveal_for` and `under_band` (a line shows once the room under its card holds its

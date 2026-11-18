@@ -457,6 +457,15 @@ impl Machine<FixtureHost> for FixtureScreen {
             });
             if cx.focus.current.is_some() { self.state.events.push("has_focus"); }
         }
+        // Page 660 (a `Control` row) says what the press machine reads in each Tick it is delivered:
+        // a press standing on the focused element, or none (`a_tick_in_the_frame_a_press_armed_...`).
+        if self.arg == FixtureArg::Page(660) && matches!(ev, ScreenEvent::Tick(_)) {
+            self.state.events.push(if cx.press.live && cx.press.owner.is_some() && cx.press.owner == cx.focus.current {
+                "tick_press_on_focus"
+            } else {
+                "tick_press_idle"
+            });
+        }
         // Page 800 makes stale interactive delivery observable at BOTH exits: the logical
         // handler and an adapter/store write. The dispatcher must reject it before step.
         if self.arg == FixtureArg::Page(800) && matches!(ev,

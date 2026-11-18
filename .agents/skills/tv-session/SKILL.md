@@ -306,7 +306,12 @@ not the test: only a control whose target the page fixes (`detail.hero.go_to_sho
 panel opener such as `player.control.subtitles`, a seek, `home.hero.action`) is pressed bare. The ids are
 `SUBJECT_BEARING` in `tools/a11y.py`, the one list (`a11y_subject_bearing` in `tools/tv-session.sh` is the same
 list, and a test holds them equal), so a re-sorted row, a moved hero or a menu opened on another card cannot press a
-different title. At Home's hero/grid door a quick OK after a key lands on what the picture shows, not on the focused
+different title: the subject is compared where the press is delivered, and the press commits about 200 ms later, so
+Home's carousel does not turn while a press stands on a hero control (the 8 s countdown, Flip and Left/Right at the
+edge wait for it), which keeps the title the press was accepted against the title it plays (a landing that takes
+that title out of the hero pool inside the 200 ms is the one change nothing holds: the press then acts on its
+successor). At Home's hero/grid door
+a quick OK after a key lands on what the picture shows, not on the focused
 element: while the picture lags (about 8 frames, 130 ms at 60 fps: the dive's midpoint), a by-id press of the focused element, named or bare, is
 refused as `unloaded` (`a11y: refused press <id> unloaded`), and you press again once the screen has settled. On a
 real account the `ratingKey` you name must be one you read from the log (the boot rule: never `ok` a title you have not read). `state` is the

@@ -9,8 +9,8 @@
 //!    position finds it (not as the drain began), through the replay hook
 //!    [`ReplayAuthority::resolve_id`](super::ReplayAuthority::resolve_id);
 //! 2. for a press, refuses an element that is not `loaded` (`unloaded`), then, for a press with a
-//!    subject, compares the element's `subject` (the race between a `state` read and the press is
-//!    closed in this one step);
+//!    subject, compares the element's `subject` as the page stands AT THAT POSITION (the race between
+//!    a `state` read and the press is closed there, and only up to the arm: see "The dip" below);
 //! 3. on success abandons a press armed elsewhere (`abandon_if_off`, the rule a direction key
 //!    uses), sets focus with `By::Script` and notes the d-pad (hover is not live);
 //! 4. pushes to the FRONT of the queue, in order, the `FocusMoved{by: Script}` delivery (when focus
@@ -29,6 +29,16 @@
 //! focus off the element abandons the uncommitted press, so an accepted press acts on the named
 //! element or on nothing, and a screen whose OK lands elsewhere says so by projecting the element
 //! not loaded (above). **All or nothing**: a refusal moves no focus and emits no key.
+//!
+//! **The dip is the screen's.** Step 2 closes the race at the delivery, and the press it queues
+//! commits a dip later (`MIN_DIP_MS` + `COMMIT_MS`, about 200 ms), when the screen re-reads what the
+//! element acts on. What keeps that title from changing inside the dip is the screen holding still
+//! whatever would change it while a press stands on its element, reading the press through its context
+//! (`cx.press`: `live` and `owner`; a delivery reads it as it stands at its position, so the Tick of
+//! the frame that armed the press already sees it). Home's carousel does, for every turn it makes
+//! (`HomeScreen::hero_press_armed`: the 8 s countdown, `HomeCmd::Flip`, Left/Right at the hero's
+//! edge), so a hero press plays the title it was accepted against. A landing that takes the title
+//! OUT of the pool is not held (there is no such title to play): the press acts on its successor.
 //!
 //! A refusal leaves one `Fx::Log` line carrying words and ids only (`a11y: refused <act> <id>
 //! <reason> owner=<ns>`). The label and subject of an element never reach it.

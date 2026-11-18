@@ -32,7 +32,11 @@ where
 {
     /// The owner view as the state file lists it: the route word (the top page's), who owns input,
     /// the focused full id, every group and every element (no cap), each with where it rests, whether
-    /// any of it shows, whether it is focused and whether its item has loaded.
+    /// any of it shows, whether it is focused and whether it is `loaded`: its item has arrived AND a
+    /// press of it would act on it now (`loaded: false` is "not pressable yet": an unpaged slot, or the
+    /// focused element of a screen whose OK would land elsewhere for a few frames, Home's hero/grid
+    /// door lag; the by-id press refuses it as `unloaded`). An unloaded element lists no label and no
+    /// subject.
     ///
     /// A keyboard or an owner-less tree lists no element: nothing is addressable then (the by-id
     /// resolution refuses `NoOwner`).
@@ -86,8 +90,10 @@ where
 ///
 /// `ns` qualifies every element's id that has no namespace yet, except those of the `strip` group,
 /// which take `nav`. An element a view lists but does not project (`a11y` answers `None`) is left
-/// out; the group's `len` still counts it, so a reader sees the gap. An unloaded element carries no
-/// label and no subject.
+/// out; the group's `len` still counts it, so a reader sees the gap. **An element that is not `loaded`
+/// carries no label and no subject in the state file, whatever its `a11y` says**: the file is what
+/// a caller presses from, and "not loaded" there means "not pressable yet" (an item that has not
+/// arrived, or a screen whose OK would not land on the element yet), so it names nothing to press.
 pub(super) fn project_into<H: Host, F: Focusable<H> + ?Sized>(
     snap: &mut A11ySnapshot,
     view: &F,
