@@ -3448,9 +3448,6 @@ fn backfill_episode(d: &mut Detail, rk: String, it: &plx_plex::plex::Metadata) {
     if it.default_part().is_none() { return; }
     parse_streams(it, d);
     let versions = crate::pms::versions_of(it);
-    if let Some(ep) = d.on_deck.as_mut().filter(|e| e.rk == rk) {
-        ep.versions.clone_from(&versions);
-    }
     if d.episodes.position(&rk).and_then(|i| d.episodes.get(i)).is_some_and(|ep| ep.versions != versions) {
         d.episodes.edit(&rk, |ep| ep.versions = versions);
     }
@@ -3917,10 +3914,15 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
             .map(|ep| plx_base::task::beside(s, "detail-hero", move || client.metadata(&ep)));
         if d.is_show {
             load_show_seasons(client, rk, &mut d, prefer);
+            let deck_item = on_deck.and_then(|job| job.finish());
+            if let (Some(ep), Some(it)) = (&mut d.on_deck, &deck_item) {
+                ep.versions = crate::pms::versions_of(it);
+            }
             if let Some(target) = d.play_episode().map(|e| e.rk.clone()) {
-                let streams = match on_deck {
-                    Some(job) if d.on_deck.as_ref().is_some_and(|ep| ep.rk == target) => job.finish(),
-                    _ => client.metadata(&target),
+                let streams = if d.on_deck.as_ref().is_some_and(|ep| ep.rk == target) {
+                    deck_item
+                } else {
+                    client.metadata(&target)
                 };
                 if let Some(it) = streams {
                     backfill_episode(&mut d, target, &it);
