@@ -318,6 +318,10 @@ pub const CLOSING_GONE: f32 = plx_machine::machine::MODAL_CLOSING_GONE;
 pub struct ModalPresentation {
     pub read: plx_machine::machine::ModalRead,
     pub reflow: bool,
+    /// **The frame's lowest modal dim, as a value** ([`ModalStack::first_dim`]): what the host bakes the
+    /// frost's body from at the head of the frame, before `draw_scrims` paints it. `None` unless the
+    /// owner asked for it ([`Dispatcher::modal_presentation_at`](crate::dispatch::Dispatcher)).
+    pub dim: Option<crate::frame::backdrop::Dim>,
     key: ModalCacheKey,
     /// The caching layers whose style kept the host live while open ([`Self::kept_host_live`]); not
     /// part of the cache key, which is identity only.
@@ -689,6 +693,7 @@ impl<H: Host> ModalStack<H> {
                 veil: veil_of(&self.surfaces),
             },
             reflow: false,
+            dim: None,
             key: ModalCacheKey { owner: self.presentation_owner.clone(),
                 layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
                     .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
@@ -1007,6 +1012,16 @@ impl<H: Host> ModalStack<H> {
                 crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
             });
         }
+    }
+
+    /// **The frame's lowest modal dim as a value**: the first of [`scrims`](Self::scrims), resolved through
+    /// the stack's latched field exactly as [`draw_scrims_on`](Self::draw_scrims_on) paints it
+    /// (`underlay::UnderlayField::dim_of`, the one function both read), so the frost body baked from it
+    /// at the head of the frame is the body the glass composites under that paint. `None`: no surface
+    /// dims. Pure: reads the stack and its field, draws and samples nothing.
+    pub fn first_dim(&self, nav_page_alpha: f32) -> Option<crate::frame::backdrop::Dim> {
+        let (_, alpha) = *self.scrims(nav_page_alpha).first()?;
+        Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, alpha))
     }
 
     /// Where the stack's field inherits from: the BOTTOM surface that declares a dim — it is the

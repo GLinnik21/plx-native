@@ -3184,7 +3184,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // is no framebuffer to snapshot. Skip the door instead of tripping the
                         // debug assertion. A popover from this page halts the preview first, so
                         // this frame only skips while the picture is the intended ground.
-                        let modal = pages.modal_presentation();
+                        // Carrying the frame's lowest modal dim, the value `draw_scrims` is handed below: the host bakes
+                        // a glass menu's frost body from it at the head of the frame (`begin_frame`).
+                        let modal = pages.modal_presentation_at(bridge.navigation_presentation(&pages.nav).page_alpha);
                         if !(player.video_plane_bound && plx_media::route::is_preview(&player.session)) {
                             plx_base::diag::spans::span("host", || plx_ui::popover::host::begin_frame(
                                 &modal, fr.dt, fr.underlay_moving, pages.present.page_damaged()));

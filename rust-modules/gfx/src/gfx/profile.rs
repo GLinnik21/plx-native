@@ -108,6 +108,8 @@ mod imp {
         // A menu's glass on frozen ground (`gfx::draw_glass_frozen`): the panel quad alone.
         "glass.frozen",
         "glass.frost",
+        // The frost body's dim-and-ceiling bake (`FrameCache::frost_bake_owed`): one 1/8-resolution pass.
+        "glass.bake",
         "glass.foreground",
         "panel.glass",
         "panel.field",

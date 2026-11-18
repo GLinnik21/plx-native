@@ -91,6 +91,12 @@ impl FrameCache {
     pub(super) fn frost_build_owed(&mut self, _key: u32) -> bool {
         false
     }
+    pub(super) fn frost_bake_owed(&mut self, _dim: Option<plx_gfx::gfx::backdrop::Dim>, _knee: f32, _ceiling: f32) -> bool {
+        false
+    }
+    pub(super) fn frost_body_for(&self, _dim: Option<plx_gfx::gfx::backdrop::Dim>) -> bool {
+        true
+    }
     pub(super) fn release_frost(&mut self) {}
     pub(super) fn has_prev(&self) -> bool {
         self.prev.is_some()

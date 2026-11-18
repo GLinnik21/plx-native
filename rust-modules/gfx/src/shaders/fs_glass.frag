@@ -211,21 +211,17 @@ uniform highp vec4 u_mrg;
 uniform highp vec2 u_mrg_rk;
 uniform vec4 u_mrg_tint;
 uniform float u_clear;
-// THE FROSTED BODY'S CEILING, `#ifdef PLX_FROST` only: the FROST VARIANT of this program
-// (`gfx::FS_GLASS_FROST`, linked beside the plain one, drawn by a glass that has a `gfx::GlassFrost`).
-// The plain program has none of it: no uniform, no code, so a compiler that refuses the cap costs the
-// menus their frost and not every glass surface its program.
-// It applies to what the body shows AFTER the modal dim: `(knee, headroom)`. The blurred page under a
-// thin face can be as bright as the page, which a white poster makes unreadable under light ink; the
-// brightest CHANNEL of the body is held under `knee + headroom` (a ceiling
-// `ui::theme::FROST_BODY_CEILING` derives from the ink floors and the face's thinnest alpha). A body at
-// or below the knee (0.9 of the ceiling) is untouched; above it `knee + headroom * o / (o + headroom)`
-// (`o` the excess over the knee) leaves the knee at slope 1 and approaches the ceiling without reaching
-// it. The whole texel is scaled by the capped/uncapped ratio of that channel, so hue survives, and a
-// grey is the worst case the ceiling was derived for. Headroom 0 = no cap.
-#ifdef PLX_FROST
-uniform vec2 u_frost_cap;
-#endif
+// THE FROSTED BODY, `#ifdef PLX_FROST` only: the FROST VARIANT of this program (`gfx::FS_GLASS_FROST`,
+// linked beside the plain one, drawn by a glass that has a `gfx::GlassFrost`). Its body texture is the
+// BAKED body (`fs_frost_bake.frag`, `gfx::FrameCache::frost_bake_owed`): the menu's retained blur
+// ALREADY dimmed by the modal dim and ALREADY held under its brightness ceiling
+// (`ui::theme::FROST_BODY_CEILING`), at 1/8 resolution, once per change rather than per pixel per
+// frame. So under `PLX_FROST` the body fetch below does no `dimRGB` and carries no ceiling code and no
+// cap uniform: measured on the television, the ceiling cost 0.69M GPU cycles of the settled open
+// (0.31M of it even when switched off) and the body's dim fetch 0.27M. `dimRGB` itself stays for the
+// SHARP source (the rim band, the clear face), which is the undimmed page.
+// The plain program has none of this: a compiler that refuses the variant costs the menus their frost
+// and not every glass surface its program.
 
 // The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
 // `u_tex` texel already read at `uv`, the ink in mode 2.
@@ -267,13 +263,6 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
   }
   c = mix(u_source_ground, c, u_source_alpha);
 #ifdef PLX_FROST
-  c = dimRGB(c, uv, g);
-  if (u_frost_cap.y > 0.0) {
-    float m = max(c.r, max(c.g, c.b));
-    float o = max(m - u_frost_cap.x, 0.0);
-    float y = min(m, u_frost_cap.x) + u_frost_cap.y * (o / (o + u_frost_cap.y));
-    c *= y / max(m, 0.0001);
-  }
   return c;
 #else
   return dimRGB(c, uv, g);

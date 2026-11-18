@@ -144,13 +144,15 @@ pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::Un
 /// The menu's [`plx_gfx::gfx::GlassFrost`]: the host's retained blur `tex` over `rect`, its body held
 /// under [`theme::FROST_BODY_CEILING`] by a knee that starts at [`theme::FROST_BODY_KNEE_AT`] of it.
 fn frost_of(tex: std::ffi::c_uint, rect: [f32; 4], rev: u32) -> plx_gfx::gfx::GlassFrost {
-    plx_gfx::gfx::GlassFrost {
-        tex,
-        rect,
-        knee: theme::FROST_BODY_CEILING * theme::FROST_BODY_KNEE_AT,
-        ceiling: theme::FROST_BODY_CEILING,
-        rev,
-    }
+    let (knee, ceiling) = frost_cap();
+    plx_gfx::gfx::GlassFrost { tex, rect, knee, ceiling, rev }
+}
+
+/// The frosted body's `(knee, ceiling)`: [`theme::FROST_BODY_CEILING`] and the knee that starts at
+/// [`theme::FROST_BODY_KNEE_AT`] of it. The one place both numbers are combined: the glass's descriptor
+/// ([`frost_of`]) and the host's body bake (`popover::host::begin_frame`) read it.
+pub(crate) fn frost_cap() -> (f32, f32) {
+    (theme::FROST_BODY_CEILING * theme::FROST_BODY_KNEE_AT, theme::FROST_BODY_CEILING)
 }
 
 /// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
@@ -189,6 +191,13 @@ pub fn draw_shadowed(
     let sharp = crate::popover::host::page_tex().unwrap_or(0);
     let (read, owed) = crate::popover::host::frost([settled.x, settled.y, settled.w, settled.h]);
     if owed {
+        crate::popover::host::defer_ground(true);
+    }
+    // A body baked for another dim than the one this glass draws under (the field latched after the
+    // frame's head predicted it) is drawn for this one frame; the ground stage waits so it is never
+    // baked into a snapshot, and the next head's bake replaces it.
+    let stale = read.is_some() && !crate::popover::host::frost_body_current(dim);
+    if stale {
         crate::popover::host::defer_ground(true);
     }
     let frost = read.map_or(plx_gfx::gfx::GlassFrost::NONE, |(tex, rect, rev)| frost_of(tex, rect, rev));
@@ -295,6 +304,41 @@ pub(crate) mod tests {
         declared_glass(|| {
             assert!(p.glass_frozen(r, rad, ground, sharp, None, [1.0; 4], GlassRim::Menu, face, morph));
         })
+    }
+
+    /// **The dim the host bakes the frost's body from is the dim the scrim paint notes.**
+    /// `UnderlayField::dim_of` (what `ModalStack::first_dim` resolves through, before the paint) against
+    /// `Painter::dim`'s own `note_dim` (what the glass composites under), for a latched field across
+    /// the ramp's alphas. A drift here is a body baked for a dim nobody draws. (A host test has no GL
+    /// context: the field draw leaves before touching it, and the flat ink's rect would not, so the
+    /// unlatched field is graded against `plan`'s own answer.)
+    #[test]
+    fn the_baked_dim_value_is_what_the_scrim_paint_notes() {
+        let _g = plx_base::testlock::serial();
+        let tex = 9_743;
+        let field = latched(tex);
+        for a in [0.285_f32, 0.2925, 0.30, 0.05] {
+            clear_dims();
+            field.draw(Painter::root(), Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, a);
+            let noted = dims_under_surface().1.expect("the paint noted its dim");
+            assert_eq!(field.dim_of(theme::underlay::TINT, a), noted, "latched field at alpha {a}");
+            assert_eq!(noted.tex, tex, "through the field's texture");
+        }
+        clear_dims();
+        unlatch(tex);
+        let flat = crate::underlay::UnderlayField::new();
+        let d = flat.dim_of(theme::underlay::TINT, 0.3);
+        assert_eq!((d.tex, d.tint), (0, theme::scrim_black(0.3)), "an unlatched field is the flat scrim ink");
+    }
+
+    /// The body's ceiling is one pair of numbers for the glass's descriptor and the host's bake.
+    #[test]
+    fn the_frost_cap_pair_is_the_themes_knee_and_ceiling() {
+        let (knee, ceiling) = frost_cap();
+        assert_eq!(ceiling, theme::FROST_BODY_CEILING);
+        assert_eq!(knee, theme::FROST_BODY_CEILING * theme::FROST_BODY_KNEE_AT);
+        let f = frost_of(1, [0.0; 4], 0);
+        assert_eq!((f.knee, f.ceiling), (knee, ceiling), "the descriptor reads the same pair");
     }
 
     /// The face fades with the panel, through `draw` itself: the declared glass at opacity `a`

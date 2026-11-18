@@ -339,6 +339,24 @@ fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
     assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
 }
 
+/// **The frame's lowest dim as a pure value** (`ModalStack::first_dim`, which the host bakes the frost's
+/// body from at the head of the frame): the first of `scrims` at the same alpha, through the stack's
+/// field. Nothing latched, that is the flat scrim ink at that alpha (`underlay::plan`'s contract); a
+/// surface that dims nothing, or an empty stack, has none.
+#[test]
+fn the_lowest_dim_value_is_the_first_scrim_through_the_stacks_field() {
+    let (mut d, mut rig, _) = booted();
+    assert_eq!(d.nav.modals.first_dim(1.0), None, "no surface, no dim");
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    assert_eq!(d.nav.modals.first_dim(1.0), None, "a surface that declares no dim owes none");
+    modal_mut(&mut d, id).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(0.4);
+    let dim = d.nav.modals.first_dim(1.0).expect("a ramping dim");
+    assert_eq!((dim.tex, dim.tint), (0, crate::theme::scrim_black(d.nav.modals.scrims(1.0)[0].1)), "unlatched: the flat ink");
+    assert!((dim.tint[3] - 0.2).abs() < 1e-6, "at the ramp's alpha, got {}", dim.tint[3]);
+    assert!((d.nav.modals.first_dim(0.5).unwrap().tint[3] - 0.1).abs() < 1e-6, "and the route dip rides it");
+}
+
 // ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
 
 /// A framebuffer that remembers what was painted on it: one grey level, darkened by every dim

@@ -336,6 +336,18 @@ impl UnderlayField {
         acc.map(|v| gfx::enc(v / N as f32))
     }
 
+    /// **The dim [`draw`](Self::draw) paints for `Role::Dim { weight }` at `alpha`, as the value a glass
+    /// composites** (`frame::backdrop::Dim`): [`plan`]'s answer with the root painter's cascade applied,
+    /// which is what `Painter::dim` records for the surface walk. Pure, so a caller that needs the dim
+    /// BEFORE it is painted (the host's frost bake at the head of the frame) reads the very same value.
+    pub fn dim_of(&self, weight: f32, alpha: f32) -> crate::frame::backdrop::Dim {
+        let (tex, tint) = match plan(self.latched && self.tex != 0, weight, alpha) {
+            Draw::Flat(c) => (0, c),
+            Draw::Field(t) => (self.tex, t),
+        };
+        crate::frame::backdrop::Dim { tex, tint: Painter::root().c(tint) }
+    }
+
     /// Paint it over `r`. See [`Role`] for what each variant means and [`plan`] for the dim's
     /// bit-identity contract.
     pub fn draw(&self, p: Painter, r: Rect, role: Role, alpha: f32) {

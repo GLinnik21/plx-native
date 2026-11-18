@@ -1169,6 +1169,12 @@ pub mod host {
         })
     }
 
+    /// Is the frost's baked body the one for `dim`, the dim a menu's glass is drawing under? See
+    /// `FrameCache::frost_body_for`.
+    pub fn frost_body_current(dim: Option<crate::frame::backdrop::Dim>) -> bool {
+        cache(|c| c.frost_body_for(dim))
+    }
+
     /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
     /// field is still being read off the GPU: the ground quad bakes the dim in, so a ground taken
     /// now would keep the dim of the field BEFORE the read lands for as long as the panel stays
@@ -1431,8 +1437,10 @@ pub mod host {
         if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
         let moving = plx_machine::motion::report::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(modal.read.closing_only && moving, Relaxed);
-        // a reflowing page is drawn live: its damage is not a reason to retake the snapshot
+        // a reflowing page is drawn live: its damage is not a reason to retake the snapshot. The frost
+        // it still holds is served stale, and a closing menu's dim still ramps over it.
         if reflow_draws() {
+            bake_frost(modal);
             return;
         }
         if super::host_refresh(modal.read.closing_only, page_dirty, moving) {
@@ -1444,6 +1452,21 @@ pub mod host {
             let epoch = page_epoch();
             cache(|c| c.frost_build_owed(epoch));
         }
+        bake_frost(modal);
+    }
+
+    /// **The frost's body, baked at the head of the frame** (`FrameCache::frost_bake_owed`): the retained
+    /// blur dimmed by this frame's lowest modal dim and held under the body's ceiling, once per change
+    /// (every frame of the dim's own ramp, never at rest). The dim arrives as the pure value the
+    /// presentation carries ([`ModalPresentation::dim`](crate::containers::modal::ModalPresentation)):
+    /// `ModalStack::first_dim` computes it from the same scrim decision and the same field `draw_scrims`
+    /// paints through, so no global carries it and no draw is waited for. It is a PREDICTION of that
+    /// paint (the field can latch after this point, in `draw_scrims_on`'s sync): a glass that finds the
+    /// body baked for another dim draws it for one frame and the next head corrects it
+    /// ([`frost_body_current`]). The precondition is "a frost stands", not "the page is held".
+    fn bake_frost(modal: &crate::containers::modal::ModalPresentation) {
+        let (knee, ceiling) = crate::popover_glass::frost_cap();
+        cache(|c| c.frost_bake_owed(modal.dim, knee, ceiling));
     }
 
     /// One draw of the host page, visible or blur-source. Hold the guard for the length of the
