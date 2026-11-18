@@ -3076,6 +3076,52 @@ fn home_raises_no_damage_coming_back_from_under_a_cover_unless_what_it_draws_cha
     assert!(damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) })));
 }
 
+/// **A focus that did not move damages nothing.** A modal's dismissal re-enters the covered page
+/// (`FocusEngine::enter`), which announces the key it already holds as `FocusMoved { from: Some(k),
+/// to: k, by: Restore }`: the page was only covered, so the focus the snapshot was drawn with is the
+/// focus it comes back to. Home raised `Input` page damage for it, and typed page damage is what
+/// retakes the host snapshot on the close's first frame (the account menu's BACK, with the chip
+/// focused: 14.9M GPU cycles against an 11.2M budget on the TV). A real move, and a restore that
+/// jumps the page to its saved place, still repaint.
+#[test]
+fn home_raises_no_damage_for_a_restore_onto_the_focus_it_already_holds() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let damage = |s: &mut HomeScreen, focus: Option<FocusKey<u32>>, event: ScreenEvent<TestHost>| {
+        let context = cx(view, focus);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(s, &event, &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let card = FocusKey { entry: s.entry, elem: s.rows[0].elems[0] };
+
+    assert!(!damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: Some(hero), to: hero, by: By::Restore }),
+        "a restore onto the focus the page already holds moves nothing");
+    assert!(damage(&mut s, Some(card), ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Dir }),
+        "a key that moves focus still repaints the page");
+    assert!(damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: None, to: hero, by: By::Restore }),
+        "a restore that lands focus where it was not still repaints");
+    // the dispatcher's `RestoreMemory` re-arms the saved-place jump on every dismissal's host page
+    s.restore_reveal = true;
+    assert!(!damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: Some(hero), to: hero, by: By::Restore }),
+        "a jump to the place the page already stands at moves nothing");
+    assert!(!s.restore_reveal, "premise: the jump was taken");
+    s.restore_reveal = true;
+    s.snap.jump(1.0);
+    assert!(damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: Some(hero), to: hero, by: By::Restore }),
+        "a jump that moves the page repaints it");
+}
+
 /// `HomeCmd::PinHero` — the screenshot pipeline's hero pin (`/tmp/plxnative-heropin=<n>`) —
 /// selects that slot and HOLDS it: the auto-advance never fires, however long the page sits
 /// uncovered, so a capture taken at any settled moment shows the same billboard.

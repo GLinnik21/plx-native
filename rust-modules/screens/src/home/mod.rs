@@ -3382,6 +3382,11 @@ impl HomeScreen {
         self.grid.shelves = shelves;
     }
 
+    /// Where the page stands: the billboard/shelves snap, the page's scroll and each shelf's scroll.
+    fn place(&self) -> (f32, f32, Vec<f32>) {
+        (self.snap.pos, self.grid.scroll_y.pos, self.grid.shelves.iter().map(ui_cards::Shelf::scroll).collect())
+    }
+
     fn cancel_row_page<H: HomeLike>(&mut self, row: usize, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let requested = self.grid.shelves.get(row).is_some_and(ui_cards::Shelf::has_page_request);
         if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); shelf.drop_page_flight(); }
@@ -3643,7 +3648,13 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                         None => {}
                     }
                 }
-                if matches!(by, By::Restore) && self.restore_reveal {
+                // The jump to a saved region is what a restore can change that the page draws, beyond
+                // the focus itself. A covered page comes back to the place it was frozen at (the
+                // dispatcher hands every dismissal's host its `RestoreMemory`), so the jump is
+                // usually a no-op: read where the page stands before and after it.
+                let jumped = matches!(by, By::Restore) && self.restore_reveal;
+                let placed = jumped.then(|| self.place());
+                if jumped {
                     // A restored page opens at its saved region, rather than replaying the
                     // hero-to-grid door with an invisible engine cursor during the transition.
                     self.restore_reveal = false;
@@ -3674,7 +3685,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.hero_auto = HERO_AUTO_S;
                 }
-                fx.invalidate(Provenance::Input);
+                // **A focus that did not move repaints nothing.** A modal's dismissal re-enters the
+                // covered page, and `FocusEngine::enter` announces the key it already holds as
+                // `from == to` (the page learns of its own reveal, and was drawn with that focus).
+                // Page damage retakes a frozen host's snapshot on the close's first frame, which is
+                // the cost the account menu's BACK paid with the chip focused.
+                if from.as_ref() != Some(to) || placed.is_some_and(|before| before != self.place()) {
+                    fx.invalidate(Provenance::Input);
+                }
                 Handled::Yes
             }
             ScreenEvent::PressCommit(_) => {
