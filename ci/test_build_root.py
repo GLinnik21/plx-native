@@ -36,6 +36,9 @@ class CheckoutSetup(unittest.TestCase):
             das.mkdir()
             run(sys.executable, SCRIPT, 'install', str(das))
             run(sys.executable, SCRIPT, 'prepare')
+            custom = module / 'cache'
+            run(sys.executable, SCRIPT, 'prepare', custom)
+            self.assertFalse(custom.exists())
             lane = base / 'lane with space'
             run('git', 'worktree', 'add', '-q', '--detach', lane)
             for checkout in (root, lane):
@@ -49,7 +52,12 @@ class CheckoutSetup(unittest.TestCase):
                 self.assertEqual(run('git', 'status', '--porcelain', cwd=checkout).stdout, '')
             self.assertNotEqual((module / 'target').resolve(), (lane / 'rust-modules/target').resolve())
             lane_target = (lane / 'rust-modules/target').resolve()
-            run('git', 'worktree', 'remove', lane)
+            moved = base / 'moved'
+            run('git', 'worktree', 'move', lane, moved)
+            self.assertNotIn(str(lane_target), run(sys.executable, SCRIPT, 'orphans').stdout.splitlines())
+            run(sys.executable, SCRIPT, 'prepare', cwd=moved)
+            self.assertEqual((moved / 'rust-modules/target').resolve(), lane_target)
+            run('git', 'worktree', 'remove', moved)
             orphans = run(sys.executable, SCRIPT, 'orphans').stdout.splitlines()
             self.assertIn(str(lane_target), orphans)
             self.assertNotIn(str((module / 'target').resolve()), orphans)

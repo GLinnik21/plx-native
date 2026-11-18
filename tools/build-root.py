@@ -117,22 +117,40 @@ def location(checkout):
         raise ValueError(f"build volume is unmounted: {root}")
     if checkout.stat().st_dev == root.stat().st_dev and root.parts[1:2] == ("Volumes",):
         return None  # A checkout already on this DAS keeps its native paths.
-    key = hashlib.sha256(os.fsencode(checkout)).hexdigest()
-    return root / key
+    admin = Path(git(checkout, "rev-parse", "--absolute-git-dir"))
+    directory = root / hashlib.sha256(os.fsencode(admin)).hexdigest()
+    # Earlier installs keyed the directory by checkout path. Adopt the existing
+    # directory in place, including after Git has moved its checkout links.
+    legacy = root / hashlib.sha256(os.fsencode(checkout)).hexdigest()
+    link = checkout / "rust-modules/target"
+    if link.is_symlink():
+        dest = Path(os.readlink(link))
+        if dest.name == "target" and dest.parent.parent == root:
+            legacy = dest.parent
+    marker = legacy / ".checkout"
+    if (not legacy.is_symlink() and not marker.is_symlink() and marker.is_file()
+            and hashlib.sha256(marker.read_bytes()).hexdigest() == legacy.name):
+        identity = legacy / ".git-dir"
+        if (identity.is_file() and identity.read_bytes() == os.fsencode(admin)
+                or not identity.exists() and (marker.read_bytes() == os.fsencode(checkout)
+                                              or not os.path.lexists(os.fsdecode(marker.read_bytes())))):
+            directory = legacy
+    return directory, admin
 
 
 def prepare(checkout, tree=None, migrate=False):
     if not CONFIG.exists():
         return
-    directory = location(checkout)
-    if directory is None:
+    destination = location(checkout)
+    if destination is None:
         return
+    directory, admin = destination
     module = checkout / "rust-modules"
     if module.is_symlink() or not (module / "Cargo.toml").is_file():
         return
     names = set(TARGETS)
     if tree is not None:
-        names = {tree.name} if tree.parent == module else set()
+        names = {tree.name} if tree.parent == module and tree.name in TARGETS else set()
         if tree == module / "target":
             names.add("target-storage")
     if migrate and tree is None:
@@ -153,10 +171,16 @@ def prepare(checkout, tree=None, migrate=False):
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         owner = directory / ".checkout"
-        if not owner.exists():
+        identity = directory / ".git-dir"
+        if identity.is_symlink() or owner.is_symlink():
+            raise ValueError(f"unexpected identity link at {directory}")
+        if identity.exists() and identity.read_bytes() != os.fsencode(admin):
+            raise ValueError(f"worktree identity mismatch at {directory}")
+        if not identity.exists():
+            atomic_write(identity, os.fsencode(admin), 0o600)
+        if not owner.exists() or (owner.read_bytes() != os.fsencode(checkout)
+                                  and directory.name == hashlib.sha256(os.fsencode(admin)).hexdigest()):
             atomic_write(owner, os.fsencode(checkout), 0o600)
-        if owner.read_bytes() != os.fsencode(checkout):
-            raise ValueError(f"checkout identity mismatch at {directory}")
         tracked = git(checkout, "ls-files", "--", *[str(src.relative_to(checkout)) for src in sources])
         if tracked:
             raise ValueError("a selected target contains tracked files")
@@ -253,16 +277,27 @@ def inventory(checkout, orphans):
         return
     registered = {line[9:] for line in git(checkout, "worktree", "list", "--porcelain").splitlines()
                   if line.startswith("worktree ")}
+    # Keep pre-upgrade caches referenced by a moved checkout even before its
+    # first prepare call has written the Git worktree identity.
+    linked = set()
+    for path in registered:
+        for link in (Path(path) / "rust-modules").glob("target*"):
+            if link.is_symlink():
+                linked.add(Path(os.readlink(link)).parent)
     for directory in sorted(root.iterdir()):
         marker = directory / ".checkout"
         if (not re.fullmatch(r"[a-f0-9]{64}", directory.name) or directory.is_symlink()
                 or marker.is_symlink() or not marker.is_file()):
             continue
         owner = marker.read_bytes()
-        if hashlib.sha256(owner).hexdigest() != directory.name:
+        identity = directory / ".git-dir"
+        admin = identity.read_bytes() if not identity.is_symlink() and identity.is_file() else None
+        if (hashlib.sha256(owner).hexdigest() != directory.name
+                and (not admin or hashlib.sha256(admin).hexdigest() != directory.name)):
             continue
         path = os.fsdecode(owner)
-        gone = path not in registered and not os.path.lexists(path)
+        gone = (directory not in linked and path not in registered and not os.path.lexists(path)
+                and not (admin and os.path.lexists(os.fsdecode(admin))))
         if orphans:
             if gone:
                 for tree in directory.iterdir():
