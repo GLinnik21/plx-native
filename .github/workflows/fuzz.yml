@@ -1,7 +1,8 @@
 name: Fuzz the HUD parsers
 
 # The `cargo fuzz` package in `fuzz/` (docs/hud-plugins.md, "Fuzzing"): one libFuzzer target over each parser
-# a HUD package or the registry reaches, and one over the WebSocket codec (`plx_net::ws`). It is not part of
+# a HUD package or the registry reaches, one over the WebSocket codec (`plx_net::ws`) and one over the Open
+# Watch Party reader (`plx_owp::json`). It is not part of
 # the rust-modules workspace, so nothing in `ci.yml`
 # compiles it; this workflow is what keeps it from rotting, and the only place it is fuzzed for longer than
 # a smoke test.
@@ -50,6 +51,8 @@ on:
       - 'rust-modules/net/src/ws/**'
       - 'rust-modules/base/src/sha1.rs'
       - 'rust-modules/base/src/b64.rs'
+      - 'rust-modules/owp/src/**'
+      - 'rust-modules/owp/fixtures/**'
       - 'rust-modules/build_support/host_link.rs'
       - 'rust-modules/Cargo.lock'
       - 'site/hud/schema/**'
@@ -59,11 +62,11 @@ on:
   workflow_dispatch:
     inputs:
       secs:
-        description: 'Seconds per target (9 targets run one after another; the step stops at 100 minutes)'
+        description: 'Seconds per target (10 targets run one after another; the step stops at 100 minutes)'
         type: string
         default: '300'
       target:
-        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_verify, catalog_cache, ws_frame); empty runs all'
+        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_verify, catalog_cache, ws_frame, owp_json); empty runs all'
         type: string
         default: ''
 

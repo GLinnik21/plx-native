@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
+pub const DISAGREEMENT: &str = "the reader and the scan disagree";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Json {
@@ -280,6 +281,18 @@ pub fn read(input: &str) -> Result<Read, serde_json::Error> {
     read_scanned(scan(input)?)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scanned {
+    pub length: usize,
+    pub marked: Vec<usize>,
+    pub overflowing: Vec<usize>,
+}
+
+pub fn scanned(input: &str) -> Result<Scanned, serde_json::Error> {
+    let scan = scan(input)?;
+    Ok(Scanned { length: scan.text.len(), marked: scan.marked.into_iter().collect(), overflowing: scan.overflow.into_keys().collect() })
+}
+
 fn read_scanned(scan: Scan) -> Result<Read, serde_json::Error> {
     let (next_string, next_number, marks, infinities) = (Cell::new(0), Cell::new(0), Cell::new(0), Cell::new(0));
     let seed = Seed {
@@ -295,7 +308,7 @@ fn read_scanned(scan: Scan) -> Result<Read, serde_json::Error> {
     deserializer.end()?;
     let seen = [next_string.get(), next_number.get(), marks.get(), infinities.get()];
     if seen != [scan.strings, scan.numbers, scan.marked.len(), scan.overflow.len()] {
-        return Err(serde_json::Error::custom("the reader and the scan disagree"));
+        return Err(serde_json::Error::custom(DISAGREEMENT));
     }
     Ok(Read { value, unpaired_escapes: scan.escapes })
 }
@@ -499,12 +512,18 @@ mod tests {
 
     #[test]
     fn a_mark_the_visitor_never_applies_is_an_error() {
-        assert!(read_scanned(forged(r#"["a"]"#, 1, &[3], 0, &[])).is_err());
+        assert_eq!(read_scanned(forged(r#"["a"]"#, 1, &[3], 0, &[])).err().map(|e| e.to_string()).as_deref(), Some(DISAGREEMENT));
     }
 
     #[test]
     fn an_infinity_the_visitor_never_returns_is_an_error() {
-        assert!(read_scanned(forged("[1]", 0, &[], 1, &[4])).is_err());
+        assert_eq!(read_scanned(forged("[1]", 0, &[], 1, &[4])).err().map(|e| e.to_string()).as_deref(), Some(DISAGREEMENT));
+    }
+
+    #[test]
+    fn the_scan_keeps_the_length_and_names_its_marks_and_infinities() {
+        let input = r#"{"\ud800":[1e400,2,"a","\udc00x",-1e400]}"#;
+        assert_eq!(scanned(input).unwrap(), Scanned { length: input.len(), marked: vec![0, 2], overflowing: vec![0, 2] });
     }
 
     #[test]
