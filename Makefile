@@ -1700,9 +1700,9 @@ check-cargo-lint: lint
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
 UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_uri plx_play_feed plx_media_codecs plx_appkit plx_screens plx_owp
 # The `hostsim` pass runs only the crates that DECLARE a `hostsim` feature (HOSTSIM_SUITE, a subset of
-# UNIT_SUITE in the same order; ci/test_test_crate.py pins both the subset and the recipe). The seven that
-# do not (plx_net, plx_ui, plx_appkit, plx_screens, plx_media_codecs, plx_play_uri, plx_playback_contract)
-# have no `feature = "hostsim"` in their source and the same test names in both passes (14 crates did in
+# UNIT_SUITE in the same order; ci/test_test_crate.py pins both the subset and the recipe). The eight that
+# do not (plx_net, plx_ui, plx_appkit, plx_screens, plx_media_codecs, plx_play_uri, plx_playback_contract,
+# plx_owp) have no `feature = "hostsim"` in their source and the same test names in both passes (14 crates did in
 # CI run 43528579834; the three that differ are `plxnative-modules`, `plx_media` and `plx_play_feed`,
 # all kept). Their own test set is therefore identical in the two passes. The old second run did link
 # their test binaries against hostsim-built `plx_base`, `plx_gfx`, `plx_platform`, `plx_media` and

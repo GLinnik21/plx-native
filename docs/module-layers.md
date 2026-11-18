@@ -182,8 +182,8 @@ Experimental: `media::route::uri_preflight::ProductQualifier` answers `Unknown` 
 Standard would not direct-play (the plan's own `StandardDirectPlay` verdicts for the video, Dolby Vision, audio and
 container, not the server's decision, which the offer precedes), and for a converted PMS output. `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
 
-`owp` is a nineteenth layer, declared the same way. Its crate is `plx_owp` (`rust-modules/owp/`) and it
-names only `base`: the Open Watch Party client protocol, sans-IO. It holds the JSON reader that keeps
+`owp` is a nineteenth layer, declared the same way. Its crate is `plx_owp` (`rust-modules/owp/`); it
+may name only `base`, and names no layer crate today: the Open Watch Party client protocol, sans-IO. It holds the JSON reader that keeps
 unpaired surrogate escapes visible to the checks, the message codec, the checks on names, room codes, the
 relay list, descriptors and room snapshots, the clock sync and the room timeline, each run against the
 vendored conformance vectors in `rust-modules/owp/fixtures/`. The WebSocket under it is `plx_net::ws`; the

@@ -224,7 +224,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp`
   **on the default feature set, and again with `--features hostsim` for the crates that declare it
   (`HOSTSIM_SUITE`: all of `UNIT_SUITE` except `plx_net`, `plx_ui`, `plx_appkit`, `plx_screens`,
-  `plx_media_codecs`, `plx_play_uri` and `plx_playback_contract`, which have no `hostsim` cfg and run the
+  `plx_media_codecs`, `plx_play_uri`, `plx_playback_contract` and `plx_owp`, which have no `hostsim` cfg and run the
   same test names in both passes; `ci/test_test_crate.py` fails if one gains the feature or a cfg)**,
   which is not a duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
@@ -942,7 +942,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   else's checkout. It type-checks the bare `--no-default-features` set, which drops `play-uri` and `play-feed` too (a build with
   no playback backend), so it does not replace `make check-nodef`, which passes the Makefile's `RUST_BACKEND_FEATURES`. It type-checks after
   every edit to a `rust-modules/src/**.rs` or one of the thirteen layer crates it lists (it does not watch `playback-contract`, `media-codecs`,
-  `play-feed` or `play-uri`; `make check-nodef` is the only gate that compiles them in the shipping set); it costs well under a second warm, because cargo keys
+  `play-feed` or `play-uri`, for which `make check-nodef` is the only gate that compiles them in the shipping set, nor `owp`, which the application does not link yet); it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
   swallows a neighbour's attribute — `devtrig::latched_flag!` exists to avoid most of them.
