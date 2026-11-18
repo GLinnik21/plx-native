@@ -3258,7 +3258,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// `hero.action` has none. While the picture still shows the other side of the hero/grid door
     /// after a KEY crossed it, the focused element is not loaded, so a by-id press of it is refused as
     /// `unloaded` (its press would land on the element the picture shows, `activation_elem`) until the
-    /// picture catches up (about 120 ms, the dive's midpoint); its projection keeps its own subject. A listing
+    /// picture catches up (about 8 frames, 130 ms at 60 fps: the dive's midpoint); its projection keeps its own subject. A listing
     /// position the window does not hold is no element.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let own = self.element_a11y(key, cx)?;

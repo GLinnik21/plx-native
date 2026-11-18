@@ -19,7 +19,7 @@
 //! A press on the element focus ALREADY rests on moves nothing (`FocusEngine::set` answers `Nothing`) and
 //! delivers no `FocusMoved`, so a screen cannot tell it from a human's OK. The screen's own answer is
 //! its projection of the FOCUSED element: while its OK would land somewhere else than on that element
-//! (Home's hero/grid door, while the picture lags a Dir key's move: about 120 ms, the dive's midpoint), the screen projects it
+//! (Home's hero/grid door, while the picture lags a Dir key's move: about 8 frames, 130 ms at 60 fps: the dive's midpoint), the screen projects it
 //! `loaded: false`, and step 2 refuses ANY press of it as `unloaded`, subject or not (a linked heading
 //! has none to compare). The caller asks again once the screen has settled; `focus:` asks no `loaded`.
 //!

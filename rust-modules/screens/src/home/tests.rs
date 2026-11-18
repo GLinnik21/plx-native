@@ -1975,6 +1975,30 @@ fn the_focused_element_is_not_pressable_while_its_press_would_land_elsewhere() {
     assert_eq!(d.press(hero), [("play", d.hero_rk.clone())], "once settled the press acts on the hero's item");
 }
 
+/// How long the lag lasts at 60 fps: the frames between a Dir key across the door and the focused element
+/// being pressable again, which is the picture's snap crossing its midpoint (`K_SNAP`, critically
+/// damped: 8 frames, about 130 ms). Measured in both directions so the prose that quotes it has a test behind it.
+#[test]
+fn the_lag_a_key_leaves_lasts_about_eight_frames_at_60_fps_in_both_directions() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    let frames_until_pressable = |d: &mut Door, at: FocusKey<u32>| -> u32 {
+        for frame in 1..=60u32 {
+            let view = d.snapshot.view();
+            step(&mut d.s, view, Some(at), &ScreenEvent::Tick(Tick { ms: frame * 17, dt_us: 16_667 }));
+            if d.projection(at.elem, at).0 { return frame; }
+        }
+        panic!("the picture never caught up");
+    };
+    d.moved(hero, card, By::Dir);
+    let down = frames_until_pressable(&mut d, card);
+    d.on_the_shelves(); // the page at rest there, as a key that comes later finds it
+    d.moved(card, hero, By::Dir);
+    let up = frames_until_pressable(&mut d, hero);
+    assert!((6..=10).contains(&down) && (6..=10).contains(&up), "hero to grid {down} frames, grid to hero {up}");
+}
+
 /// A Scripted arrival names what it presses and clears the remap, so the element it lands on is
 /// pressable at once (the round-5 rule, unchanged by the lag rule above).
 #[test]

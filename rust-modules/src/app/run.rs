@@ -8606,6 +8606,80 @@ mod lifecycle_regression_tests {
         assert_eq!(app.pages.input.press.scale(), 1.0);
     }
 
+    /// **`[Down, press:<card>@<rk>]` across Home's hero/grid door, through the real dispatcher.** The
+    /// Down crosses the door and leaves the picture on the hero for a few frames (a human's quick OK
+    /// there lands on the hero's Play); the by-id press of the card the Down landed on moves no focus
+    /// (it is already there), so nothing clears that remap. Home projects its focused element not
+    /// loaded while the picture lags, and the dispatcher, asking with the focus the Down left (not
+    /// the one its drain began with), refuses the press as `unloaded`: nothing plays and nothing
+    /// opens. Once the picture has settled the same press opens the card's title.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_by_id_press_in_the_batch_of_the_key_that_crossed_homes_door_is_refused_until_the_picture_settles() {
+        use plx_machine::machine::{InputEvent, InputKind, Key, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let mut app = app();
+            let mut t = 0u32;
+            super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+            app.runtime.bridge(&mut app.bridge).seed_hub_grid_for_test(3, 4);
+            settle(&mut app, &mut t);
+            let home = app.pages.nav.top_page().unwrap().id;
+            let at = |t: u32| Tick { ms: t + 16, dt_us: 16_000 };
+            let by_id = |id: &str, press: Option<&str>, t: u32| InputEvent {
+                at: at(t),
+                source: Source::RemoteFifo,
+                kind: InputKind::ById {
+                    id: id.into(),
+                    press: press.map(|_| OkTap { sym: 0x0d, wcode: 0 }),
+                    expect: press.map(std::sync::Arc::<str>::from),
+                },
+            };
+            let snapshot = |app: &mut App| app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+            let refused = || std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+                .lines().filter(|line| line.contains("a11y: refused")).map(str::to_owned).collect::<Vec<_>>();
+            let hero = "home.hero.play";
+
+            // the card a Down from the hero's Play lands on, and its title (a dry run)
+            let tokens = |app: &mut App, t: &mut u32, id: &str| {
+                let now = *t;
+                step(app, t, vec![by_id(id, None, now)]);
+                settle(app, t);
+            };
+            tokens(&mut app, &mut t, hero);
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(hero), "premise: the hero's Play is focused");
+            let now = t;
+            step(&mut app, &mut t, vec![plx_ui::fixture::key(Key::Down, at(now))]);
+            settle(&mut app, &mut t);
+            let after = snapshot(&mut app);
+            let card = after.focused.clone().expect("a Down from the hero lands somewhere");
+            let rk = after.elems.iter().find(|e| e.id == card).and_then(|e| e.subject.clone())
+                .expect("the card carries the ratingKey its press acts on");
+            assert!(card.starts_with("home.") && card != hero, "premise: the Down crossed the door onto a card: {card}");
+
+            // back to the hero, then ONE batch: the Down and the press naming the card it lands on
+            tokens(&mut app, &mut t, hero);
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(hero));
+            assert!(refused().is_empty(), "premise: nothing refused so far: {:?}", refused());
+            let now = t;
+            step(&mut app, &mut t, vec![plx_ui::fixture::key(Key::Down, at(now)), by_id(&card, Some(&rk), now)]);
+            for _ in 0..24 { step(&mut app, &mut t, vec![]); }
+            let lines = refused();
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].ends_with(&format!("a11y: refused press {card} unloaded owner=home")), "{lines:?}");
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(card.as_str()), "the Down moved focus");
+            assert_eq!(app.pages.nav.top_page().unwrap().id, home, "nothing opened");
+            assert!(!plx_media::route::play_pending(), "and nothing played");
+
+            // the picture has caught up: the same press opens the card's title
+            let now = t;
+            step(&mut app, &mut t, vec![by_id(&card, Some(&rk), now)]);
+            for _ in 0..24 { step(&mut app, &mut t, vec![]); }
+            assert_eq!(refused().len(), 1, "no second refusal: {:?}", refused());
+            assert_ne!(app.pages.nav.top_page().unwrap().id, home, "the card's title opened");
+        });
+    }
+
     /// What `hold_bench_tick` put on the input queue in one frame: `(ok_down, ok_up, back, direction)`
     /// counts, plus whether an item menu was up when it ran (so an OK edge can be held against it).
     #[derive(Default, Debug)]
