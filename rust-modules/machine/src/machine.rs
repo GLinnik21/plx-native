@@ -744,16 +744,16 @@ pub enum FocusTarget<K> {
     /// so the arrival is exactly as deliberate as a directional move into the same group would
     /// be; reporting `By::Restore` for it read as "the page is being restored to where it was",
     /// which is false the first time a tab is ever visited, and it silently disabled every
-    /// screen's own "deliberate move" arrival animation (`library::LibraryScreen`'s
-    /// `pop_from_rest`, gated on `By::Dir | By::Pointer`) for that one path only — the reason a
-    /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows
-    /// peer switch (which never leaves the strip's already-focused pill, and never re-enters
-    /// through here at all) animated normally. `stack.rs`'s `SelectTab` "cover-and-mint" arm is
-    /// the one constructor of a MINT. The second sanctioned producer is a page seating its OWN
-    /// arrival through a self-delivered `Enter::Fresh`: the Watchlist's `follow_seat` moves its
-    /// first seat from the Sort & Filter pill to the first tile as the grid lands, and that seat
-    /// must read as a deliberate move for the opening animation to play
-    /// (`watchlist/opening_tests.rs`). Nothing else may produce this variant.
+    /// screen's own "deliberate move" arrival animation (today the shared card grid's `deliberate`
+    /// read in `plx_ui::cards`, gated on `By::Dir | By::Pointer | By::Script`) for that one path
+    /// only — the reason a fresh Home/Search → TV Shows mint SNAPPED to the first tile while a
+    /// Movies → TV Shows peer switch (which never leaves the strip's already-focused pill, and
+    /// never re-enters through here at all) animated normally. `stack.rs`'s `SelectTab`
+    /// "cover-and-mint" arm is the one constructor of a MINT. The second sanctioned producer is
+    /// a page seating its OWN arrival through a self-delivered `Enter::Fresh`: the Watchlist's
+    /// `follow_seat` moves its first seat from the Sort & Filter pill to the first tile as the
+    /// grid lands, and that seat must read as a deliberate move for the opening animation to
+    /// play (`watchlist/opening_tests.rs`). Nothing else may produce this variant.
     FirstInGroupAnimated(GroupId),
 }
 
