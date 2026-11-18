@@ -454,13 +454,17 @@ presentation in a design pass.
    smaller side while small, relaxing to THE CALLER'S panel radius from ~150 ms by a spring that lands
    exactly, so settle does not snap; a close rounds it back), a 0.92 -> 1 fade+scale
    fallback (with its own 0.82 -> 1 rows spring) when the opener has no rect. The glass is laid whole at the
-   morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they are
-   magnified by the lens (their own spring: 0.65 when they first show, ~1.12 at ~167 ms, 1 by ~360 ms),
-   appear at ~75 ms and are opaque by ~150 ms, cut by the lens itself (its rect and radius, through
+   morphing rect and is FROSTED the whole way, never clear (owner, 2026-11-18: the body is the frost
+   under the dark face on every frame of the open and the close, until the close's hand-back; the
+   frost is asked for on the open's first frame, before the field has latched, so it is built at the
+   head of the next one, and a frame it is still owed wears the field under the heavier face), and the
+   rows are laid out IN the glass: they are
+   magnified by the lens (their own spring: ~0.2 when they first show, 0.65 at 67 ms, ~1.12 at ~167 ms, 1 by ~360 ms),
+   appear from the third glass frame (~33 ms) and are opaque by ~120 ms, cut by the lens itself (its rect and radius, through
    the shared painter's ROUNDED clip, `ClipScope::open_rounded_in`: a letter the round edge crosses is cut
    by the arc, not a straight edge). A close bulges ~7% by ~33 ms (width and
    height on their own springs, fitted to the recording's close), then the slab shrinks with its rows
-   and frost leaving over ~50 ms and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
+   leaving over ~50 ms (the frost stays) and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
    morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
    the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
    **The header menus' glass CONSUMES its opener (owner decision 2026-11-17, reversing design
@@ -690,8 +694,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   holds a chip the panel's rim would refract, the snapshot is re-taken on the mount and the removal
   and nowhere between, and the lift paints it on every one of those frames. What it stands on is
   chosen where it paints (`widgets::lift_ground`): the stack's latched field (`ModalStack::lift_field`)
-  once that has latched, the host snapshot drawn CLEAR (`GlassMorph::clear`, the morph's own opening
-  material) before, a flat capsule if neither exists. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
+  once that has latched, the host snapshot drawn CLEAR (`GlassMorph::clear`, which this lift alone uses now:
+  the morph's own glass is never clear) before, a flat capsule if neither exists. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT` over the frost, `MENU_GLASS_FIELD_TOP/BOT` over the fallback field,
   `MENU_SHADOW*`), so editing `FACE_TOP`/`FACE_BOT` restyles only the fallback; the face fades

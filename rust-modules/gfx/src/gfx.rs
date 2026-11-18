@@ -8041,8 +8041,10 @@ pub struct GlassMerge {
 
 /// **What a menu glass does while its morph runs** (`ui::popover_morph::Frame`): optionally JOINED
 /// to a second shape ([`GlassMerge`]) and CLEAR — the sharp page over the whole face instead of the
-/// frosted material. [`GlassMorph::NONE`] (no join, clarity 0) is the glass every settled menu and
-/// every chip wears, bit for bit.
+/// frosted material. A morphing menu is joined but never clear (its body is the frost on every frame,
+/// `ui::popover_morph`); clarity is the opener chip's lift on the host snapshot, before the field
+/// latches (`ui::widgets::LiftGround::Snapshot`). [`GlassMorph::NONE`] (no join, clarity 0) is the glass
+/// every settled menu and every chip wears, bit for bit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlassMorph {
     pub merge: Option<GlassMerge>,

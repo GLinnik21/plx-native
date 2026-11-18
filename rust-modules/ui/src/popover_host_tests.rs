@@ -458,7 +458,7 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
 /// the pill for one frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener:
 /// whenever an OPENING glass stands outside the opener's rect, its alpha AND its shadow are the
 /// morph's one fill ramp, so it is never opaque on the frame it first appears. A CLOSE is the
-/// droplet's (owner, 2026-11-17, measured from iOS 26): the clear slab is whole glass all the way
+/// droplet's (owner, 2026-11-17, measured from iOS 26): the frosted slab is whole glass all the way
 /// into the opener, so the ramp does not apply; what is held instead is that once it has arrived
 /// it hangs only in the drain band under the opener (no wider than the drain, no lower than it) and
 /// that the last frame of glass is a bead a fraction of the drain's size, never a slab.
@@ -668,8 +668,8 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         // The glass rides the fill's one ramp, painter alpha and face together (N-b: no opaque slab
         // past the opener), and is whole once the fill is.
         let a = f.ground_alpha;
-        // ... wearing the droplet's join and clarity (`Frame::glass_morph`): a morph is clear and joined
-        // to the opener's shrinking shape until it has grown, and the declared box is the one around both.
+        // ... wearing the droplet's join (`Frame::glass_morph`, never clear): a morph is joined to the
+        // opener's shrinking shape until it has grown, and the declared box is the one around both.
         let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(None));
         assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
@@ -744,6 +744,95 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
     }
     assert!(closing && drawn > 0, "the glass drew: {drawn}");
     assert_eq!(page_epoch().wrapping_sub(epoch), 1, "one capture for the open, the stay and the close, over {frames} frames");
+    unlatch(tex);
+}
+
+/// **A morphing glass asks for its frost on the open's FIRST frame, before its field has latched, and
+/// wears no clear body on any frame while that frost is still owed** (owner, 2026-11-18: frosted from
+/// the first visible frame). The field's read lands a frame after the capture, so the first frame draws
+/// no glass (`draw_shadowed` finds no ground) but the frost's build, which waits for a later frame's
+/// head than the ask, is owed from that frame and stands when the glass first draws. A frame that still
+/// finds no frost wears the field under the heavier face, the join and the lens of the morph and
+/// nothing clear: it used to be forced CLEAR (`GlassMorph::clear` 1), the transparent flash.
+#[test]
+fn a_morphing_glass_asks_for_its_frost_before_its_field_latches_and_is_never_clear_while_it_is_owed() {
+    use super::mock::{FROST_ASKED, FROST_PENDING};
+    use crate::popover_glass::tests::{declared_glass, expected_morphing, latched, unlatch};
+    let _g = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    FROST_PENDING.with(|p| p.set(true));
+    FROST_ASKED.with(|a| a.set(None));
+    let tex = 9_753;
+    let field = latched(tex);
+    let unlatched = crate::underlay::UnderlayField::new();
+    let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
+    let mut pop = crate::popover::Popover::new().morphing();
+    pop.open_from(Some(pill));
+    let root = crate::Painter::root();
+    let mut judged = 0;
+    for frame in 0..10 {
+        pop.update(1.0 / 60.0);
+        begin_frame(&_reset.modal, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        {
+            let _page = page_pass(&_reset.modal);
+            ink("page");
+            let _scrim = live();
+            ink("scrim");
+        }
+        let sharp = page_tex().expect("the host holds its undimmed page");
+        let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+        if frame == 0 {
+            // the open's first frame: the field has not latched
+            let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&unlatched), crate::widgets::Ground::Menu));
+            assert!(declared.is_empty(), "no latched field, no glass");
+            assert_eq!(FROST_ASKED.with(|a| a.get()), Some([panel.x, panel.y, panel.w, panel.h]), "the frost is asked for before the field has latched");
+            continue;
+        }
+        let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
+        assert_eq!(declared.len(), 1, "frame {frame}: the glass draws on the latched field");
+        // the morph's own join and lens, the field under the heavier face, and NO clarity
+        let a = f.ground_alpha;
+        let want = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, crate::popover_glass::face_at(a), f.glass_morph(None));
+        assert!(declared[0] == want[0], "frame {frame}: a body that is not the field under the face: {f:?}");
+        let clear = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, crate::popover_glass::face_at(a),
+            plx_gfx::gfx::GlassMorph { clear: 1.0, ..f.glass_morph(None) });
+        assert!(declared[0] != clear[0], "frame {frame}: the body is clear while a frost is owed");
+        judged += 1;
+    }
+    assert!(judged >= 8, "frames were judged: {judged}");
+    // ... and the CLOSE of that mid-open menu, frost still owed: no frame that draws the glass draws it
+    // clear (what `Popover::ground` hands the panel is the morph's join and the face, never clarity)
+    pop.dismiss();
+    let mut closing = 0;
+    for frame in 0..60 {
+        pop.update(1.0 / 60.0);
+        if !pop.visible() {
+            break;
+        }
+        begin_frame(&_reset.modal, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        {
+            let _page = page_pass(&_reset.modal);
+            ink("page");
+            let _scrim = live();
+            ink("scrim");
+        }
+        let sharp = page_tex().expect("the host holds its undimmed page");
+        let Some(g) = pop.ground(panel, RAD) else { continue };
+        let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
+        let Some(drawn) = declared.first() else { continue };
+        let want = expected_morphing(root.alpha(g.alpha), g.rect, g.radius, tex, sharp, crate::popover_glass::face_at(g.alpha), g.morph);
+        let clear = expected_morphing(root.alpha(g.alpha), g.rect, g.radius, tex, sharp, crate::popover_glass::face_at(g.alpha),
+            plx_gfx::gfx::GlassMorph { clear: 1.0, ..g.morph });
+        assert!(*drawn == want[0], "close frame {frame}: a body that is not the field under the face");
+        assert!(*drawn != clear[0], "close frame {frame}: the body is clear");
+        closing += 1;
+    }
+    assert!(closing >= 8, "close frames were judged: {closing}");
+    FROST_PENDING.with(|p| p.set(false));
+    FROST_ASKED.with(|a| a.set(None));
+    pop.close();
     unlatch(tex);
 }
 

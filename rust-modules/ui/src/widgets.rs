@@ -190,8 +190,8 @@ pub fn panel_ground(
 }
 
 /// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
-/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join and clarity (`morph`, which only the
-/// glass wears: the field ground casts no shadow and has neither, so it is unchanged).
+/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join (`morph`, which only the glass wears:
+/// the field ground casts no shadow and has no join, so it is unchanged).
 #[allow(clippy::too_many_arguments)]
 pub fn panel_ground_shadowed(
     p: Painter,
@@ -2935,7 +2935,8 @@ fn glass_capsule(
             // the frosted material: the field behind the body, the snapshot behind the rim
             LiftGround::Field(field) =>
                 (field, crate::popover::host::page_tex().unwrap_or(0), plx_gfx::gfx::GlassMorph::NONE),
-            // CLEAR glass (`GlassMorph::clear`, the morphing menu's own): the body shows the sharp
+            // CLEAR glass (`GlassMorph::clear`, which only this lift draws now: a morphing menu's own
+            // glass is frosted on every frame): the body shows the sharp
             // snapshot through `sharp`, whose window is the one flipped the way the snapshot is held;
             // the texture in the `ground` slot is only the program's required non-zero binding, and
             // `u_clear` 1 mixes every texel of it away
@@ -3184,7 +3185,8 @@ pub enum LiftGround {
     /// drawn above the dim), the host snapshot behind its rim.
     Field(u32),
     /// The host snapshot, before the field has latched: the same capsule drawn CLEAR over the
-    /// undimmed page it was taken of, the morphing menu's own opening material. The field is read
+    /// undimmed page it was taken of (the opener's own cap, which is whole on these frames; the menu's
+    /// glass beside it is frosted, never clear). The field is read
     /// back from the GPU a frame or two after the menu mounts; the snapshot is taken in the mount
     /// frame's own page pass, before the lift.
     Snapshot(u32),
