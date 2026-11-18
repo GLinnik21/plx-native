@@ -1041,23 +1041,20 @@ pub mod host {
         let key = modal.cache_key();
         let (changed, began_closing) = CACHE_OWNER.with_borrow(|old| match old {
             None => (true, false),
-            Some(old) => (
-                !old.same_snapshot(&key),
-                old.began_closing(&key).is_some_and(|ids| ids.into_iter().all(|id| modal.kept_host_live(id))),
-            ),
+            Some(old) => (!old.same_snapshot(&key), old.began_closing(&key)),
         });
         if changed {
             // **A layer that only STARTED closing drops a GROUND-stage snapshot and keeps the
-            // page's.** A ground composite is the panel at full strength, which the fade must not be
-            // drawn over; the page under a fading surface has not changed (the scrim and the lift are
-            // drawn live above its snapshot), and real page damage and motion re-take through
-            // [`begin_frame`] below. A full `invalidate()` here made the close's first frame the one
-            // that redraws the page into the snapshot, re-sources the tab bar's blur and re-latches the
-            // dim field: 131% of a 60 Hz frame's GPU budget on the TV, measured on a glass menu's BACK.
-            // **Only for a surface that kept the host LIVE while it was open** (`Style::Compact`): a
-            // Sheet, an Alert or an `Opaque` snapshot surface froze the host, which got no Tick, so
-            // the page snapshot it leaves is as old as the surface (Settings' Under posters change
-            // would show the old captions through the exit fade) and this flip is the one retake.
+            // page's, whatever style it is.** A ground composite is the panel at full strength, which
+            // the fade must not be drawn over; the page under a fading surface is the page it was
+            // (the scrim and the lift are drawn live above its snapshot), and what changed under a
+            // frozen host (it got no Tick) is the PAGE's to report: typed page damage and motion
+            // re-take through [`begin_frame`] below, on this frame as on any other (Settings changing
+            // Under posters under a covered Library is the Library's damage, raised at the head of its
+            // `step`). A full `invalidate()` here made the close's first frame the one that redraws the
+            // page into the snapshot, re-sources the tab bar's blur and re-latches the dim field: 131%
+            // of a 60 Hz frame's GPU budget on the TV on a glass menu's BACK, and 14.9M GPU cycles
+            // against an 11.2M budget on the account menu's (a Sheet).
             // A layer that came or went, another stack, or a snapshot a navigation transition owns is
             // not a dismissal: all of those drop everything.
             if began_closing && !TRANSITION_OWNS.load(Relaxed) {

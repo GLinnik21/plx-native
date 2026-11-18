@@ -212,6 +212,9 @@ pub enum Listing {
 pub struct LibraryScreen {
     /// Derived from retained effective frame inputs, shared by live/target grid geometry.
     caption_policy: plx_ui::caption_policy::CaptionPolicy,
+    /// The Sort value setting the grid last drew its value lines from (`caption_policy` does not
+    /// carry it): what `step` compares to damage a page that Settings changed it under.
+    sort_value: bool,
     /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
     /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
     listing: Listing,
@@ -357,6 +360,7 @@ impl LibraryScreen {
         let layout = Layout::new(false, 0);
         Self {
             caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            sort_value: plx_plex::plex::session::UnderPosters::DEFAULT.sort_value,
             listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
@@ -1278,8 +1282,15 @@ impl LibraryScreen {
 impl<H: LibraryLike> Machine<H> for LibraryScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        let handled = self.step_event(ev, cx, fx);
-        handled
+        // What the grid draws under each poster (the Under posters policy and the sort value line) is
+        // a setting Settings changes while it covers the page: noticed here, on whichever event
+        // comes first, and answered with page damage (a returning page raises none of its own).
+        let inputs = H::screen_inputs(cx);
+        let policy = crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(inputs));
+        if crate::registry::moved(&mut self.sort_value, crate::registry::captions::sort_value_for(inputs)) | policy {
+            fx.invalidate(Provenance::Nav);
+        }
+        self.step_event(ev, cx, fx)
     }
 }
 

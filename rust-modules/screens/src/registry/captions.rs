@@ -72,6 +72,12 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// A setting whose caption policy differs from the default's (the Title switch on): what Settings
+/// leaves behind for a page it covered, for the tests of a page that must notice (`policy_moved`).
+#[cfg(test)]
+pub(crate) const FIXTURE_TITLE_ON: plx_plex::plex::session::UnderPosters =
+    plx_plex::plex::session::UnderPosters { title: true, ..plx_plex::plex::session::UnderPosters::DEFAULT };
+
 /// Pins an explicit test fixture's Under posters input until dropped. Fixture hosts capture this
 /// choice into ScreenInputs; production policy readers never consult it. Existing pins are retained
 /// and restored on drop, including during unwinding; no process-wide cell is written.
@@ -80,6 +86,13 @@ pub(crate) struct PolicyPin(Option<plx_plex::plex::session::UnderPosters>);
 
 #[cfg(test)]
 impl PolicyPin {
+    /// Pins `setting` until dropped: what Settings does to a page it covers.
+    pub(crate) fn set(setting: plx_plex::plex::session::UnderPosters) -> Self {
+        let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+        PolicyPin(before)
+    }
+
     pub(crate) fn default_setting() -> Self {
         let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
         TEST_UNDER_POSTERS.with(|cell| cell.set(Some(before.unwrap_or(plx_plex::plex::session::UnderPosters::DEFAULT))));

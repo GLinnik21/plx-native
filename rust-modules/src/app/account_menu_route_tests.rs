@@ -231,3 +231,56 @@ fn the_morph_begins_and_ends_on_the_chip_as_the_bar_draws_it() {
     assert!(closed_in > 0, "the open began on the chip: {closed_in} closed frames before the glass first drew");
     assert!(closed_out > 0, "the close ended on the chip: {closed_out} closed frames after the droplet was handed back");
 }
+
+/// Walk focus to the profile chip by keys (Up to the bar, Left along it) and open the account menu.
+fn open_account_menu_from_the_chip(w: &mut World) {
+    for _ in 0..14 {
+        if w.elem() == Some(TAB_KEY_CHIP) { break; }
+        w.press(if w.on_nav() { Key::Left } else { Key::Up });
+    }
+    assert_eq!(w.elem(), Some(TAB_KEY_CHIP), "premise: the chip holds focus");
+    w.press(Key::Ok);
+    assert!(crate::app::bridge::account_menu_up(&w.d), "premise: the account menu is up");
+    w.settle(40);
+}
+
+/// Page-scope damage raised from the frame of a BACK on the open account menu through the close,
+/// counted on the owning `Present` (`page_damage_epoch` never resets, so a swap cannot hide it).
+fn page_damage_on_close(w: &mut World) -> u64 {
+    let before = w.d.present.page_damage_epoch();
+    w.tap(Key::Back, 0);
+    w.frames(40);
+    assert!(!crate::app::bridge::account_menu_up(&w.d), "premise: BACK closed the menu");
+    w.d.present.page_damage_epoch() - before
+}
+
+/// **Closing the account menu with BACK raises no page damage.** The menu is a `Style::Sheet`, which
+/// freezes the page under it, and typed page damage is what retakes that snapshot on the close's first
+/// frame: the page redrawn into it, the tab bar's blur re-sourced, the dim re-latched (14.9M GPU
+/// cycles against an 11.2M budget on the TV, a dropped frame on every close). The dismissal re-enters
+/// the covered page, which hears `FocusMoved { from: Some(chip), to: chip, by: Restore }` (a move that
+/// moves nothing) after its `RestoreMemory` re-armed the saved-place jump; Home answered with `Input`
+/// page damage, and the Watchlist's `Uncover`, `Enter` and `FocusMoved` each damaged unconditionally
+/// (`watchlist/page.rs`); both now damage only for what changed. The page damage the close raises is
+/// what this rig can see of the host's snapshot: it runs no GL, so `popover::host`'s retake itself is
+/// read at the host level (`popover_host_tests`), and a close with no typed damage re-takes nothing.
+#[test]
+fn closing_the_account_menu_with_back_raises_no_page_damage() {
+    let worlds: [(&str, fn() -> World); 6] = [
+        ("home", || World::home_grid("route-account-quiet-home", 3, 5)),
+        ("library", || World::movies_library("route-account-quiet-library", false)),
+        ("recommended", || World::recommended("route-account-quiet-recommended")),
+        ("collections", || World::collections("route-account-quiet-collections", false)),
+        ("episodes", || World::episodes_library("route-account-quiet-episodes")),
+        ("watchlist", || World::watchlist("route-account-quiet-watchlist")),
+    ];
+    let mut noisy = Vec::new();
+    for (name, build) in worlds {
+        let mut w = build();
+        w.settle(30);
+        open_account_menu_from_the_chip(&mut w);
+        let damage = page_damage_on_close(&mut w);
+        if damage != 0 { noisy.push((name, damage)); }
+    }
+    assert!(noisy.is_empty(), "BACK on the account menu damaged the page under it: {noisy:?}");
+}
