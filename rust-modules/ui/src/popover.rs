@@ -836,7 +836,8 @@ impl Popover {
     ///   by the rows' lens spring ([`popover_morph::K_LENS`](crate::popover_morph::K_LENS)), which
     ///   overshoots to ~1.12 (the shrinking slab's height ratio on a close);
     /// - they are drawn at [`Frame::content_alpha`](crate::popover_morph::Frame::content_alpha), which
-    ///   is 0 until the glass has replaced the opener's fill. A frame on which they are invisible
+    ///   is 0 until the glass has begun to widen (the third glass frame) and never above the glass's
+    ///   own alpha, so a row is never the surface's only content. A frame on which they are invisible
     ///   does not draw them, except through the text recorder (a held surface's walk), which is
     ///   what makes their text resident before the first frame that shows them.
     ///

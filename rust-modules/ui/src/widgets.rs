@@ -190,8 +190,8 @@ pub fn panel_ground(
 }
 
 /// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
-/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join and clarity (`morph`, which only the
-/// glass wears: the field ground casts no shadow and has neither, so it is unchanged).
+/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join (`morph`, which only the glass wears:
+/// the field ground casts no shadow and has no join, so it is unchanged).
 #[allow(clippy::too_many_arguments)]
 pub fn panel_ground_shadowed(
     p: Painter,
