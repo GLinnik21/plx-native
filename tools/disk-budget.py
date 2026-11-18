@@ -268,6 +268,17 @@ def fast_preflight(argv, env):
 
 
 if __name__ == "__main__" and sys.argv[1:2] == ["preflight"]:
+    if os.path.isfile(os.path.expanduser("~/.config/plxnative/build-root")):
+        # Run before DONE and before measuring free space. Older disposable fixtures may
+        # contain just this tool; only the installed clone opts into routing.
+        import subprocess
+        root = argv_option(sys.argv[2:], "--root") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-root.py")
+        if os.path.isfile(helper):
+            result = subprocess.run([sys.executable, helper, "prepare",
+                                     build_tree_of(argv_option(sys.argv[2:], "--tree"), root)], cwd=root)
+            if result.returncode:
+                sys.exit(result.returncode)
     _fast = fast_preflight(sys.argv[2:], os.environ)
     if _fast is not None:
         sys.exit(_fast)
@@ -1275,8 +1286,8 @@ def log_tail(env, count: int = 5) -> List[str]:
 
 
 def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build_tree: str, need: int,
-           now: float, env) -> str:
-    pl = plan(inv, free, need, th, me, now, build_tree)
+           now: float, env, build_volume: Optional[Tuple[int, int]] = None) -> str:
+    pl = plan(inv, free, 0 if build_volume else need, th, me, now, build_tree)
     actions, kept = ladder(inv, th, me, now, build_tree)
     lines = ["== disk budget (tools/disk-budget.py report: read-only, deletes nothing) =="]
     lines.append("volume        %s free of %s" % (gib(free), gib(total)))
@@ -1288,7 +1299,13 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
     lines.append("lanes judged  against %s" % (inv.base_ref.replace("refs/remotes/", "").replace("refs/heads/", "")
                                                or "(no main ref found: no lane reads as merged)"))
     lines.extend(cold_store_lines(env))
-    if pl.verdict == "ok":
+    if build_volume:
+        available, capacity = build_volume
+        verdict, reason = settle(need, th.reserve, available)
+        lines.append("Cargo volume  %s free of %s" % (gib(available), gib(capacity)))
+        lines.append("verdict       %s: %s" % ("ok" if verdict == "ok" else "WOULD REFUSE", reason))
+        lines.append("checkout volume reclaim: %s" % pl.reason)
+    elif pl.verdict == "ok":
         lines.append("verdict       ok: %s" % pl.reason)
     elif pl.verdict == "reclaim":
         lines.append("verdict       would reclaim: %s" % pl.reason)
@@ -1479,7 +1496,11 @@ def cmd_report(args, env) -> int:
     current = next((t.private_bytes for t in inv.trees if t.path == build_tree), 0)
     need = int(args.need_gib * GIB) if args.need_gib is not None else estimate_need(build_tree, current, env)
     free, total = free_bytes(root, env)
-    print(render(inv, th, free, total, root, build_tree, need, now, env))
+    external = None
+    if device_of(build_tree) != device_of(root):
+        external = free_bytes(nearest_existing(build_tree), env)
+        need = int(upper_need(build_tree, str(args.need_gib) if args.need_gib is not None else None, env) * GIB)
+    print(render(inv, th, free, total, root, build_tree, need, now, env, build_volume=external))
     return 0
 
 
