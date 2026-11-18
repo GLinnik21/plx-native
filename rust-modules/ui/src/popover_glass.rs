@@ -174,7 +174,18 @@ pub(crate) fn frost_cap() -> (f32, f32) {
 /// variant unlinked, a failed build or bake) it is the field ground under [`FACE`], as it always was.
 /// A menu stacked over another surface's dim draws no glass at all (`false`, below), so it wears
 /// neither. While a frost is OWED the ground stage is held back (so a stale or missing frost is
-/// never baked into it) and a clear glass stays clear, so no frame shows the field body as frost.
+/// never baked into it).
+///
+/// **The body is never the sharp page, and a morphing menu's first frames are no exception**
+/// (`ui::popover_morph`: the droplet is frosted from its first visible frame to the close's
+/// hand-back). The frost is asked for ([`crate::popover::host::frost`]) on the FIRST frame the glass
+/// is drawn for, BEFORE the field it stands on has latched (the field's read lands a frame after
+/// the capture), so its build, which waits for a later frame's head than the ask, lands at the head
+/// of the very next frame instead of the one after the first glass frame, and is there when the
+/// glass first draws. A frame on which the frost still does not stand (the first frame's own
+/// fallback below, a build the frame held back) wears the field under [`FACE`], never a clear body:
+/// the heavier face is the one with no shapes under it to read, and the lighter one would show the
+/// field's un-capped brightness (it has no [`theme::FROST_BODY_CEILING`]) as the thin face's body.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_shadowed(
@@ -186,9 +197,6 @@ pub fn draw_shadowed(
     shadow: f32,
     morph: plx_gfx::gfx::GlassMorph,
 ) -> bool {
-    let Some(ground) = field.and_then(crate::underlay::UnderlayField::ground_tex) else {
-        return false;
-    };
     // The host snapshot is the page under the FIRST surface's dim. A menu over another surface
     // stands on that surface too, which neither picture holds: it keeps the field ground. Only the
     // dims at or BELOW this surface count: the whole frame's dims are recorded before any surface
@@ -197,8 +205,17 @@ pub fn draw_shadowed(
     if dims > 1 {
         return false;
     }
-    let sharp = crate::popover::host::page_tex().unwrap_or(0);
+    // The frost is asked for BEFORE the field check: on the first frame of a menu the field has not
+    // latched (its read lands a frame after the capture) and this call draws nothing, yet the frost's
+    // build can already be owed, so that it runs at the head of the next frame, the one the glass
+    // first draws on, and not a frame after it.
     let (read, owed) = crate::popover::host::frost([settled.x, settled.y, settled.w, settled.h]);
+    let Some(ground) = field.and_then(crate::underlay::UnderlayField::ground_tex) else {
+        plx_base::eventlog::log(&format!("TINTDBG noground r=({:.0},{:.0},{:.0},{:.0}) read={} owed={}", r.x, r.y, r.w, r.h, read.is_some(), owed)); // TINTDBG
+        return false;
+    };
+    let sharp = crate::popover::host::page_tex().unwrap_or(0);
+    plx_base::eventlog::log(&format!("TINTDBG glass r=({:.0},{:.0},{:.0},{:.0}) read={} owed={} sharp={} dimn={} merge={}", r.x, r.y, r.w, r.h, read.is_some(), owed, sharp != 0, dims, morph.merge.is_some())); // TINTDBG
     if owed {
         crate::popover::host::defer_ground(true);
     }
@@ -210,11 +227,6 @@ pub fn draw_shadowed(
         crate::popover::host::defer_ground(true);
     }
     let frost = read.map_or(plx_gfx::gfx::GlassFrost::NONE, |(tex, rect, rev)| frost_of(tex, rect, rev));
-    let morph = if owed && frost.tex == 0 && morph.clear > 0.0 {
-        plx_gfx::gfx::GlassMorph { clear: 1.0, ..morph }
-    } else {
-        morph
-    };
     let face = if frost.tex != 0 { frost_face_at(p.opacity()) } else { face_at(p.opacity()) };
     // A JOINED glass takes its shadow first: `shadow_outside` cuts only the PANEL's shape out of
     // the penumbra, so drawn after the glass it would darken the joined shape and the neck; drawn

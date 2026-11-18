@@ -429,7 +429,7 @@ pub(crate) struct MorphGround {
     pub(crate) radius: f32,
     pub(crate) alpha: f32,
     pub(crate) shadow: f32,
-    /// The glass's join and clarity while the morph runs (`GlassMorph::NONE` at rest).
+    /// The glass's join while the morph runs (`GlassMorph::NONE` at rest); its clarity is 0 always.
     pub(crate) morph: plx_gfx::gfx::GlassMorph,
 }
 
@@ -864,7 +864,7 @@ impl Popover {
     /// an opener: the morphing rect and radius, the glass AND its shadow on the fill's
     /// share (one ramp on an open, the opener the host lifts fading as the glass detaches; a close's
     /// slab is whole glass until it has drained into the re-formed opener), joined to the opener's
-    /// shape and clear while the morph says so ([`MorphGround::morph`]). The
+    /// shape while the morph says so ([`MorphGround::morph`]); frosted on every frame, never clear. The
     /// fallback: the glass fades in on the fill's share, its shadow whole.
     pub(crate) fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
@@ -1155,8 +1155,10 @@ pub mod host {
     /// **A glass menu's FROST**: a retained blur of this page snapshot over the region of `panel` (the
     /// settled rect, authored px), as `(texture, region rect, epoch it was built from)`, and whether a
     /// (re)build is OWED. The texture lives in [`CACHE`] (`FrameCache::frost_read`), is built ONCE
-    /// per snapshot at the head of a LATER frame ([`begin_frame`] -> `FrameCache::frost_build_owed`) and
-    /// is given back with the host. A stale one is served until its replacement lands (the
+    /// per snapshot at the head of a LATER frame than the ask ([`begin_frame`] -> `FrameCache::frost_build_owed`;
+    /// the glass asks on the first frame it is drawn for, before its field has latched, so a morphing
+    /// menu's frost is built at the head of the second frame and stands when the glass first draws)
+    /// and is given back with the host. A stale one is served until its replacement lands (the
     /// Watchlist reflow's retake), so the face never changes density between two looks.
     pub fn frost(panel: [f32; 4]) -> (Option<(std::ffi::c_uint, [f32; 4], u32)>, bool) {
         let page = held() == Held::Page;
