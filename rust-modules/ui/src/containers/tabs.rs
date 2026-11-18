@@ -25,10 +25,10 @@
 //! `registry.rs`), so its own directional DOWN press into the grid was always `By::Dir` already.
 //! The fix is in the shared `SelectTab` mint path, not a TV Shows special case: it applies to every
 //! peer pill equally. Today the shared card grid reads a `By::Dir | By::Pointer | By::Script` move
-//! as deliberate (`ui/src/cards/mod.rs`'s `Seen::of`) and adopts any other `By` whole, as a restore
-//! is, unless the grid's owner armed `Grid::arrive` for that seat (`screens/src/library/mod.rs`'s
-//! `seat_arrival` does). See `machine.rs`'s doc on `FocusTarget::FirstInGroupAnimated` and the
-//! regression test `containers::tests::a_fresh_tab_mint_reports_a_deliberate_move_not_a_restore`.
+//! as deliberate (`ui/src/cards/mod.rs`'s `Seen::of`); a seat reported any other way grows from
+//! rest only where the grid's owner asks for it (`Grid::arrive`, `Grid::dormant`). See
+//! `machine.rs`'s doc on `FocusTarget::FirstInGroupAnimated` and the regression test
+//! `containers::tests::a_fresh_tab_mint_reports_a_deliberate_move_not_a_restore`.
 
 use plx_machine::machine::{EntryId, GroupId, Host};
 use super::super::screen::{AxisMask, EdgeRule, ElemKind, GroupKind, GroupSpec, Seat};
