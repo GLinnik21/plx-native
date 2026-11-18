@@ -184,7 +184,7 @@ impl Outgoing {
             Outgoing::Rate { rate } if (MIN_RATE..=MAX_RATE).contains(rate) => vec![("rate", Json::Float(*rate))],
             Outgoing::Rate { .. } => return Err(InvalidMessage("rate")),
             Outgoing::SetMedia { media: descriptor, position_ms } => {
-                if !media::check(descriptor, Direction::Send) {
+                if media::check(descriptor, Direction::Send).is_err() {
                     return Err(InvalidMessage("media"));
                 }
                 let mut members = vec![("media", media::known_members(descriptor))];
@@ -248,7 +248,7 @@ fn is_token(value: &str) -> bool {
 fn joined_media(value: &Json) -> Option<Option<Json>> {
     match value {
         Json::Null => Some(None),
-        descriptor if media::check(descriptor, Direction::Receive) => Some(Some(media::known_members(descriptor))),
+        descriptor if media::check(descriptor, Direction::Receive).is_ok() => Some(Some(media::known_members(descriptor))),
         _ => None,
     }
 }

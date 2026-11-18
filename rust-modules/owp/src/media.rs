@@ -15,6 +15,30 @@ pub enum Direction {
     Receive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaRule {
+    Object,
+    Kind,
+    Title,
+    Year,
+    Ids,
+    Series,
+    SeriesTitle,
+    SeriesYear,
+    SeriesIds,
+    Season,
+    Episode,
+    DurationMs,
+    File,
+    FileSizeBytes,
+    FileOshash,
+    FileName,
+    Ext,
+    RepeatedName,
+    ExtSize,
+    Size,
+}
+
 fn optional(object: &Json, name: &str, rule: impl Fn(&Json) -> bool) -> bool {
     object.get(name).is_none_or(rule)
 }
@@ -54,15 +78,22 @@ fn valid_oshash(value: &Json) -> bool {
     value.as_text().is_some_and(|text| text.value.len() == 16 && text.value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
-fn valid_series(series: &Json) -> bool {
-    series.members().is_some() && series.get("title").is_some_and(titled) && optional(series, "year", any_int) && optional(series, "ids", valid_ids)
+fn require(holds: bool, rule: MediaRule) -> Result<(), MediaRule> {
+    if holds { Ok(()) } else { Err(rule) }
 }
 
-fn valid_file(file: &Json) -> bool {
-    file.members().is_some()
-        && optional(file, "sizeBytes", int_at_least(0))
-        && optional(file, "oshash", valid_oshash)
-        && optional(file, "name", valid_file_name)
+fn check_series(series: &Json) -> Result<(), MediaRule> {
+    require(series.members().is_some(), MediaRule::Series)?;
+    require(series.get("title").is_some_and(titled), MediaRule::SeriesTitle)?;
+    require(optional(series, "year", any_int), MediaRule::SeriesYear)?;
+    require(optional(series, "ids", valid_ids), MediaRule::SeriesIds)
+}
+
+fn check_file(file: &Json) -> Result<(), MediaRule> {
+    require(file.members().is_some(), MediaRule::File)?;
+    require(optional(file, "sizeBytes", int_at_least(0)), MediaRule::FileSizeBytes)?;
+    require(optional(file, "oshash", valid_oshash), MediaRule::FileOshash)?;
+    require(optional(file, "name", valid_file_name), MediaRule::FileName)
 }
 
 fn valid_ext(ext: &Json) -> bool {
@@ -73,20 +104,20 @@ fn kind(media: &Json) -> Option<&str> {
     media.get("kind").and_then(Json::as_text).map(|text| text.value.as_str())
 }
 
-fn valid_shape(media: &Json) -> bool {
+fn check_shape(media: &Json) -> Result<(), MediaRule> {
     let kind = kind(media);
-    media.members().is_some()
-        && matches!(kind, Some("movie" | "episode" | "video"))
-        && media.get("title").is_some_and(titled)
-        && optional(media, "year", any_int)
-        && optional(media, "ids", valid_ids)
-        && (kind != Some("episode") || media.get("series").is_some())
-        && optional(media, "series", valid_series)
-        && optional(media, "season", int_at_least(0))
-        && optional(media, "episode", int_at_least(0))
-        && media.get("durationMs").and_then(Json::as_int).is_some_and(|ms| (1..=MAX_DURATION_MS).contains(&ms))
-        && optional(media, "file", valid_file)
-        && optional(media, "ext", valid_ext)
+    require(media.members().is_some(), MediaRule::Object)?;
+    require(matches!(kind, Some("movie" | "episode" | "video")), MediaRule::Kind)?;
+    require(media.get("title").is_some_and(titled), MediaRule::Title)?;
+    require(optional(media, "year", any_int), MediaRule::Year)?;
+    require(optional(media, "ids", valid_ids), MediaRule::Ids)?;
+    require(kind != Some("episode") || media.get("series").is_some(), MediaRule::Series)?;
+    media.get("series").map_or(Ok(()), check_series)?;
+    require(optional(media, "season", int_at_least(0)), MediaRule::Season)?;
+    require(optional(media, "episode", int_at_least(0)), MediaRule::Episode)?;
+    require(media.get("durationMs").and_then(Json::as_int).is_some_and(|ms| (1..=MAX_DURATION_MS).contains(&ms)), MediaRule::DurationMs)?;
+    media.get("file").map_or(Ok(()), check_file)?;
+    require(optional(media, "ext", valid_ext), MediaRule::Ext)
 }
 
 fn only(value: &Json, names: &[&str]) -> Json {
@@ -111,15 +142,14 @@ pub fn known_members(media: &Json) -> Json {
     only(media, &MEMBERS)
 }
 
-pub fn check(media: &Json, direction: Direction) -> bool {
-    if !valid_shape(media) {
-        return false;
-    }
+pub fn check(media: &Json, direction: Direction) -> Result<(), MediaRule> {
+    check_shape(media)?;
     match direction {
-        Direction::Receive => true,
+        Direction::Receive => Ok(()),
         Direction::Send => {
-            let ext_fits = media.get("ext").is_none_or(|ext| ext.compact().len() <= MAX_EXT_BYTES);
-            !media.repeats_a_member_name() && known_members(media).compact().len() <= MAX_MEDIA_BYTES && ext_fits
+            require(!media.repeats_a_member_name(), MediaRule::RepeatedName)?;
+            require(media.get("ext").is_none_or(|ext| ext.compact().len() <= MAX_EXT_BYTES), MediaRule::ExtSize)?;
+            require(known_members(media).compact().len() <= MAX_MEDIA_BYTES, MediaRule::Size)
         }
     }
 }

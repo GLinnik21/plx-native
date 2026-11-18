@@ -1,7 +1,7 @@
 use crate::clock::{ClockEvent, ClockSync, PongOutcome};
 use crate::code;
 use crate::json::{read, Json, Text, MAX_SAFE_INT};
-use crate::media::{self, Direction};
+use crate::media::{self, Direction, MediaRule, MAX_EXT_BYTES, MAX_MEDIA_BYTES};
 use crate::message::{decode, Incoming, InvalidMessage, Outgoing, PingId, PlayerState, Received, MAX_RELAY_MESSAGE_BYTES};
 use crate::relays::{self, Relay};
 use crate::room::{valid_snapshot, Snapshot, MAX_OFFSET_MS};
@@ -107,7 +107,7 @@ fn media_check(input: &Json) -> Json {
         Some("send") => Direction::Send,
         _ => Direction::Receive,
     };
-    valid(media::check(field(input, "media"), direction))
+    valid(media::check(field(input, "media"), direction).is_ok())
 }
 
 fn same_title(input: &Json) -> Json {
@@ -255,7 +255,7 @@ fn descriptor_examples(dir: &str) -> Vec<(String, Json)> {
 #[test]
 fn every_valid_descriptor_example_passes_the_send_checks() {
     let examples = descriptor_examples("valid");
-    let refused: Vec<_> = examples.iter().filter(|(_, d)| !media::check(d, Direction::Send)).map(|(n, _)| n).collect();
+    let refused: Vec<_> = examples.iter().filter(|(_, d)| media::check(d, Direction::Send).is_err()).map(|(n, _)| n).collect();
     assert_eq!(examples.len(), 13);
     assert!(refused.is_empty(), "{refused:?}");
 }
@@ -263,7 +263,7 @@ fn every_valid_descriptor_example_passes_the_send_checks() {
 #[test]
 fn every_invalid_descriptor_example_fails_the_send_checks() {
     let examples = descriptor_examples("invalid");
-    let accepted: Vec<_> = examples.iter().filter(|(_, d)| media::check(d, Direction::Send)).map(|(n, _)| n).collect();
+    let accepted: Vec<_> = examples.iter().filter(|(_, d)| media::check(d, Direction::Send).is_ok()).map(|(n, _)| n).collect();
     assert_eq!(examples.len(), 31);
     assert!(accepted.is_empty(), "{accepted:?}");
 }
@@ -340,9 +340,76 @@ fn a_message_over_8192_bytes_is_not_sent() {
 fn a_descriptor_that_repeats_a_member_name_is_not_sent() {
     let ext = read(r#"{"kind":"movie","title":"Arrival","durationMs":6960000,"ext":{"com.example":{"server":"1a2b3c","server":"9z8y7x"}}}"#).unwrap().value;
     assert_eq!(Outgoing::SetMedia { media: ext.clone(), position_ms: None }.encode(), Err(InvalidMessage("media")));
-    assert!(media::check(&ext, Direction::Receive));
+    assert_eq!(media::check(&ext, Direction::Receive), Ok(()));
     let ids = read(r#"{"kind":"movie","title":"Heat","durationMs":1,"ids":{"imdb":"tt1","\u0069mdb":"tt2"}}"#).unwrap().value;
-    assert!(!media::check(&ids, Direction::Send));
+    assert_eq!(media::check(&ids, Direction::Send), Err(MediaRule::RepeatedName));
+}
+
+const EPISODE: &str = r#"{"kind":"episode","title":"Pilot","year":2004,"ids":{"tvdb":"127131"},"series":{"title":"Lost","year":2004,"ids":{"tvdb":"73739"}},"season":1,"episode":1,"durationMs":2520000,"file":{"sizeBytes":1,"oshash":"8e245d9679d31e12","name":"Lost.S01E01.mkv"},"ext":{"com.example":{"item":"4711"}}}"#;
+
+fn set(json: &mut Json, path: &[&str], value: Json) {
+    let (Json::Object(members), Some((name, rest))) = (json, path.split_first()) else { panic!("no object at {path:?}") };
+    match (members.iter_mut().find(|(key, _)| key.value == *name), rest.is_empty()) {
+        (Some((_, member)), true) => *member = value,
+        (Some((_, member)), false) => set(member, rest, value),
+        (None, true) => members.push((Text { value: (*name).into(), unpaired: false }, value)),
+        (None, false) => panic!("no member {name}"),
+    }
+}
+
+fn checked(document: &str) -> [Result<(), MediaRule>; 2] {
+    let media = read(document).unwrap().value;
+    [media::check(&media, Direction::Receive), media::check(&media, Direction::Send)]
+}
+
+#[test]
+fn a_descriptor_that_fails_names_the_rule_it_breaks() {
+    let cases: [(&[&str], &str, MediaRule); 16] = [
+        (&["kind"], r#""show""#, MediaRule::Kind),
+        (&["title"], r#""""#, MediaRule::Title),
+        (&["year"], "1.5", MediaRule::Year),
+        (&["ids", "tvdb"], r#""""#, MediaRule::Ids),
+        (&["series"], "null", MediaRule::Series),
+        (&["series", "title"], "7", MediaRule::SeriesTitle),
+        (&["series", "year"], r#""2004""#, MediaRule::SeriesYear),
+        (&["series", "ids"], "[]", MediaRule::SeriesIds),
+        (&["season"], "-1", MediaRule::Season),
+        (&["episode"], "-1", MediaRule::Episode),
+        (&["durationMs"], "0", MediaRule::DurationMs),
+        (&["file"], r#""Lost.mkv""#, MediaRule::File),
+        (&["file", "sizeBytes"], "-1", MediaRule::FileSizeBytes),
+        (&["file", "oshash"], r#""8E245D9679D31E12""#, MediaRule::FileOshash),
+        (&["file", "name"], r#""..""#, MediaRule::FileName),
+        (&["ext", "example"], "1", MediaRule::Ext),
+    ];
+    assert_eq!(checked(EPISODE), [Ok(()), Ok(())]);
+    for (path, value, rule) in cases {
+        let mut media = read(EPISODE).unwrap().value;
+        set(&mut media, path, read(value).unwrap().value);
+        let broken = [media::check(&media, Direction::Receive), media::check(&media, Direction::Send)];
+        assert_eq!(broken, [Err(rule), Err(rule)], "{path:?} = {value}");
+    }
+    assert_eq!(checked("[]"), [Err(MediaRule::Object), Err(MediaRule::Object)]);
+    assert_eq!(checked(r#"{"kind":"episode","title":"Pilot","durationMs":1}"#), [Err(MediaRule::Series), Err(MediaRule::Series)]);
+}
+
+#[test]
+fn a_descriptor_that_breaks_several_rules_names_the_first() {
+    assert_eq!(checked(r#"{"kind":"show","title":"","durationMs":0}"#)[1], Err(MediaRule::Kind));
+    assert_eq!(checked(r#"{"kind":"movie","title":"","durationMs":0}"#)[1], Err(MediaRule::Title));
+    assert_eq!(checked(r#"{"kind":"movie","title":"Heat","durationMs":0,"file":7}"#)[1], Err(MediaRule::DurationMs));
+}
+
+#[test]
+fn the_size_rules_apply_only_to_sending() {
+    let ext = "x".repeat(MAX_EXT_BYTES);
+    let title = "x".repeat(MAX_MEDIA_BYTES);
+    let long_ext = format!(r#"{{"kind":"video","title":"Clip","durationMs":1,"ext":{{"a.b":"{ext}"}}}}"#);
+    let long_title = format!(r#"{{"kind":"video","title":"{title}","durationMs":1}}"#);
+    let both = format!(r#"{{"kind":"video","title":"{title}","durationMs":1,"ext":{{"a.b":"{ext}"}}}}"#);
+    assert_eq!(checked(&long_ext), [Ok(()), Err(MediaRule::ExtSize)]);
+    assert_eq!(checked(&long_title), [Ok(()), Err(MediaRule::Size)]);
+    assert_eq!(checked(&both), [Ok(()), Err(MediaRule::ExtSize)]);
 }
 
 const JOINED: &str = r#"{"type":"joined","code":"D4XN7P","you":{"peerId":"p1","token":"q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"},"room":{"rev":1,"code":"D4XN7P","epoch":0,"phase":"idle","positionMs":0,"atMs":15023,"rate":1,"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Edde","client":"Example/1.31.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}],"action":{"kind":"join","by":"p1"}},"media":null,"serverTime":15023}"#;
