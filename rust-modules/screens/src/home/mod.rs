@@ -3472,13 +3472,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        self.deck_press = H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>();
-        // What the page draws under each poster is the Under posters setting, which Settings
-        // changes while it covers Home and which nothing else tells the page about: this is where
-        // it is noticed, on whichever event comes first, and it is what repaints the page (a
-        // returning Home raises no damage of its own, see `Uncover`).
-        let policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
-        if std::mem::replace(&mut self.caption_policy, policy) != policy {
+        // What the page draws under each poster is the Under posters setting, and what its Continue
+        // Watching deck's tile promises is the Continue Watching setting. Settings changes both
+        // while it covers Home and nothing else tells the page about it: this is where they are
+        // noticed, on whichever event comes first, and it is what repaints the page (a returning
+        // Home raises no damage of its own, see `Uncover`).
+        let inputs = H::screen_inputs(cx);
+        let pressed = crate::registry::moved(&mut self.deck_press, inputs.preference::<plx_plex::plex::session::DeckPressPref>());
+        if crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(inputs)) | pressed {
             fx.invalidate(Provenance::Nav);
         }
         match self.plaintext_alert.step(ev, cx) {

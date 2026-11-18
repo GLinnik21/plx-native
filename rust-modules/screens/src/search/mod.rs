@@ -104,6 +104,9 @@ pub struct SearchScreen {
     /// "did a store notice reach the top screen" probes stay readable now that `Route::Search`
     /// mounts this screen unconditionally.
     notices: u32,
+    /// The Under posters policy the poster rows were last drawn with (`step` compares it: Settings
+    /// changes the setting while it covers the page).
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     /// The page ask last sent for each row (window start, direction, cards held), by
     /// [`layout::ordinal`]. Not part of the state hash. It only records the last ask so a
     /// `PageCancel` can name its window: every ask the shelf emits is forwarded, a repeat
@@ -119,7 +122,8 @@ impl SearchScreen {
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
-            notices: 0, page_sent: [None; 5] }
+            notices: 0, caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            page_sent: [None; 5] }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
@@ -341,6 +345,12 @@ impl SearchScreen {
 impl<H: SearchLike> Machine<H> for SearchScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // The poster rows draw the Under posters policy, which Settings changes while it covers the
+        // page: noticed on whichever event comes first, and answered with page damage (a returning
+        // page raises none of its own).
+        if crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(H::screen_inputs(cx))) {
+            fx.invalidate(Provenance::Nav);
+        }
         let store_changed = matches!(ev, ScreenEvent::StoreChanged(store, _) if *store == StoreId::Search.ord());
         if store_changed { self.notices += 1; }
         let acknowledged = matches!(ev, ScreenEvent::Mount) || store_changed;

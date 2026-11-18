@@ -3076,6 +3076,34 @@ fn home_raises_no_damage_coming_back_from_under_a_cover_unless_what_it_draws_cha
     assert!(damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) })));
 }
 
+/// **Home, covered, notices that Settings changed what its Continue Watching deck promises.** The
+/// deck's tile draws the press's triangle only while a press plays, which is the Continue Watching
+/// setting Settings changes under a cover: a returning page raises no damage of its own, so `step`'s
+/// head compares it and answers with page damage, once.
+#[test]
+fn home_damages_the_page_when_the_continue_watching_setting_moved_under_a_cover() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    let mut uncover_under = |mode: plx_media::route::DeckPress| {
+        let _press = deck_press_is(mode);
+        let context = cx(snapshot.view(), None);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(&mut s, &ScreenEvent::Uncover, &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+    assert!(!uncover_under(plx_media::route::DeckPress::Details), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(plx_media::route::DeckPress::Play), "the press moved from opening to playing");
+    assert!(!uncover_under(plx_media::route::DeckPress::Play), "...once");
+}
+
 /// **A focus that did not move damages nothing.** A modal's dismissal re-enters the covered page
 /// (`FocusEngine::enter`), which announces the key it already holds as `FocusMoved { from: Some(k),
 /// to: k, by: Restore }`: the page was only covered, so the focus the snapshot was drawn with is the
