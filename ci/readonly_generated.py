@@ -13,7 +13,7 @@ import re
 from readonly_dependencies import _local_sha, _sha, _json, _manifest_paths, _configs, _workspace_hashes, WORKSPACE_HASHING
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'platform-generated-enums.json'
-CERTIFICATE_SHA256 = 'dd3aa04a683dbc54794d333d3652daa7d8512c67e02b02b0f5d19a1d5d7d4d55'
+CERTIFICATE_SHA256 = '541c1582de8d0f1a5f575d150fb01e2c103b71916b710738f43490c0d24f3b0b'
 SOURCES = ['platform/Cargo.toml', 'platform/src/lib.rs', 'platform/src/i18n/mod.rs',
            'platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs',
            'machine/src/lib.rs', 'machine/src/machine.rs']
@@ -28,7 +28,7 @@ MACHINE_SOURCES = ['571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726
                    'b2794fd0febbbd98febfb45e12fedadcbb58900b02674af7f665bd15adea458d',
                    'ff378a339f0b4934a4934ab25aa4965a51a27f38d053fe19c1abb382b690ee45',
                    '1fafb56dcc9f423d7c00fd989a3f11bd21022d64d62d8f71f70e3eb97f6b4975',
-                   '1641a9a3b4c62ac89f5603f562bce4d220c53207c54e031d578c7e7d0e16657b']
+                   '8f46da48c81057c28aa19524d80a585e5aa136bcdd841a1a5359a9f576bbf7b5']
 MACHINE_LIB_SOURCES = ['105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188',
                        'c35d39ae620b5607e7035222ab1023799adaf091d6a4f737a847dd70b26c1b36']
 

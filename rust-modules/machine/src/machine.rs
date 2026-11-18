@@ -749,14 +749,12 @@ pub enum FocusTarget<K> {
     /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows peer
     /// switch (which never leaves the strip's already-focused pill, and never re-enters through
     /// here at all) animated normally. Today the shared card grid reads a `By::Dir | By::Pointer |
-    /// By::Script` move as deliberate (`ui/src/cards/mod.rs`'s `Seen::of`); a seat reported any
-    /// other way grows from rest only where the grid's owner asks for it (`Grid::arrive`,
-    /// `Grid::dormant`). `stack.rs`'s `SelectTab` "cover-and-mint" arm is the one constructor of a
-    /// MINT. The second sanctioned producer is a page seating its OWN arrival through a
-    /// self-delivered `Enter::Fresh`: the Watchlist's `follow_seat` moves its first seat from the
-    /// Sort & Filter pill to the first tile as the grid lands, and that seat must read as a
-    /// deliberate move for the opening animation to play (`watchlist/opening_tests.rs`). Nothing
-    /// else may produce this variant.
+    /// By::Script` move as deliberate (`ui/src/cards/mod.rs`'s `Seen::of`). `stack.rs`'s
+    /// `SelectTab` "cover-and-mint" arm is the one constructor of a MINT. The second sanctioned
+    /// producer is a page seating its OWN arrival through a self-delivered `Enter::Fresh`: the
+    /// Watchlist's `follow_seat` moves its first seat from the Sort & Filter pill to the first tile
+    /// as the grid lands, and that seat must read as a deliberate move for the opening animation to
+    /// play (`watchlist/opening_tests.rs`). Nothing else may produce this variant.
     FirstInGroupAnimated(GroupId),
 }
 
