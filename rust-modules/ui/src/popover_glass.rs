@@ -211,11 +211,9 @@ pub fn draw_shadowed(
     // first draws on, and not a frame after it.
     let (read, owed) = crate::popover::host::frost([settled.x, settled.y, settled.w, settled.h]);
     let Some(ground) = field.and_then(crate::underlay::UnderlayField::ground_tex) else {
-        plx_base::eventlog::log(&format!("TINTDBG noground r=({:.0},{:.0},{:.0},{:.0}) read={} owed={}", r.x, r.y, r.w, r.h, read.is_some(), owed)); // TINTDBG
         return false;
     };
     let sharp = crate::popover::host::page_tex().unwrap_or(0);
-    plx_base::eventlog::log(&format!("TINTDBG glass r=({:.0},{:.0},{:.0},{:.0}) read={} owed={} sharp={} dimn={} merge={}", r.x, r.y, r.w, r.h, read.is_some(), owed, sharp != 0, dims, morph.merge.is_some())); // TINTDBG
     if owed {
         crate::popover::host::defer_ground(true);
     }
