@@ -3566,10 +3566,17 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::RestoreMemory(PageMemory::Home(memory)) => {
+                // The dispatcher hands this to the host page of EVERY dismissal, and a covered page
+                // comes back to the place and projection it was frozen at: that is not a change.
+                // A body minted again (a pop, an eviction) lands somewhere else, and is.
+                let before = (self.projected_generation, self.place());
                 self.adopt_shows(memory, H::hubs(cx));
                 self.restore(memory);
                 self.sync_catalog(cx);
                 self.cta_available = self.hero_len(H::hubs(cx)) > 0;
+                if before != (self.projected_generation, self.place()) {
+                    fx.invalidate(Provenance::Nav);
+                }
                 Handled::Yes
             }
             ScreenEvent::Enter(enter) => {

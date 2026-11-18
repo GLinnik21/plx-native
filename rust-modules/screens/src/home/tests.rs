@@ -3122,6 +3122,37 @@ fn home_raises_no_damage_for_a_restore_onto_the_focus_it_already_holds() {
         "a jump that moves the page repaints it");
 }
 
+/// **A dismissal's `RestoreMemory` damages only a page it moves.** The dispatcher hands the host page
+/// its own memory back on every modal's close; a page that was only covered stands where it was
+/// frozen, so it repaints nothing (the account menu's BACK), while a body minted again lands at the
+/// remembered place and does.
+#[test]
+fn home_raises_damage_for_a_restored_memory_only_when_it_moves_the_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let damage = |s: &mut HomeScreen, memory: HomeMemory| {
+        let context = cx(view, None);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(s, &ScreenEvent::RestoreMemory(PageMemory::Home(memory)), &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+    let mut covered = screen(view);
+    covered.grid.scroll_y.jump(120.0);
+    covered.grid.scroll_target = 120.0;
+    let memory = memory_of(&covered);
+    assert!(!damage(&mut covered, memory.clone()), "a covered page handed its own memory stands where it was");
+    let mut remounted = screen(view);
+    assert!(damage(&mut remounted, memory), "a page minted again lands at the remembered place");
+}
+
 /// `HomeCmd::PinHero` — the screenshot pipeline's hero pin (`/tmp/plxnative-heropin=<n>`) —
 /// selects that slot and HOLDS it: the auto-advance never fires, however long the page sits
 /// uncovered, so a capture taken at any settled moment shows the same billboard.
