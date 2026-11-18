@@ -65,9 +65,9 @@ instantiates the same screens a second time for its own inner stack, which is ho
 
 ## A page reports what it draws that changed under a cover
 
-A glass menu or Sheet freezes the page under it, and the host retakes that snapshot only on typed
-page damage (`Present::page_damaged()`, read by `popover::host::begin_frame`), the close's first
-frame included: a page that returns from under a cover (`Uncover`, `Enter(Restored)`, a focus
+A glass menu or Sheet freezes the page under it, and the host retakes that snapshot on typed page
+damage (`Present::page_damaged()`, read by `popover::host::begin_frame`; page motion also does once
+every surface is fading), the close's first frame included: a page that returns from under a cover (`Uncover`, `Enter(Restored)`, a focus
 restored onto the key it already holds) raises none of its own, and one that does it unconditionally
 costs the close a dropped frame. So a page draws from a user setting only if it keeps the value it
 last drew from and compares it at the head of `step`, on whichever event comes first
