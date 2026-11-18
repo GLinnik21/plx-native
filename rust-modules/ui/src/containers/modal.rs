@@ -479,6 +479,15 @@ pub trait DimSink {
     fn in_flight(&mut self, pending: bool);
     /// Paint one surface's dim through `field` at `alpha`.
     fn dim(&mut self, field: &crate::underlay::UnderlayField, alpha: f32);
+    /// **Did the host fold the frame's lowest dim into the held page it drew** (`popover::host::page_pass`:
+    /// `gfx::FrameCache::draw_folded`)? The dim is then already on the framebuffer, and the first dim of
+    /// [`ModalStack::draw_scrims_on`] is declared but not drawn ([`dim_folded`](Self::dim_folded)). Never true
+    /// for a flat dim, a second dim, a held ground or a video-plane frame: the host decides, and it clears
+    /// the fact at the head of every frame.
+    fn folded(&self) -> bool;
+    /// Declare a dim the host folded into the page: everything [`dim`](Self::dim) records for the glass
+    /// above it (its declaration, `popover_glass::note_dim`) and none of its pixels.
+    fn dim_folded(&mut self, field: &crate::underlay::UnderlayField, alpha: f32);
     /// The frame's lowest dim as the field stands once [`ModalUnderlay::sync`] has run, i.e. the dim the
     /// glass is about to composite under. The host baked a glass menu's frost body at the head of the
     /// frame from a PREDICTION of it (`ModalStack::first_dim` before the sync), and a field that
@@ -551,6 +560,12 @@ impl DimSink for GlDims<'_> {
             },
             alpha,
         );
+    }
+    fn folded(&self) -> bool {
+        false
+    }
+    fn dim_folded(&mut self, field: &crate::underlay::UnderlayField, alpha: f32) {
+        self.dim(field, alpha);
     }
 }
 
@@ -655,6 +670,13 @@ impl ModalUnderlay {
         self.field.reset();
         self.held = Latched::Nothing;
         self.pending = None;
+    }
+
+    /// A latched field's texture, for a host test that uploads none (every dim is flat without one): the
+    /// field is given `tex` WITHOUT touching the latch (`held` stays what the frames drew it to be).
+    #[cfg(test)]
+    pub(crate) fn texture_for_test(&mut self, tex: u32) {
+        self.field = crate::underlay::UnderlayField::latched_for_test(tex);
     }
 
     /// The field as a stack that has read its page holds it: latched on texture `tex`, the read
@@ -1026,10 +1048,22 @@ impl<H: Host> ModalStack<H> {
                 sink.dim_settled(Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, a)));
             }
         }
-        for (id, a) in dims {
+        // **The host may have folded the LOWEST dim into the page it drew** (`DimSink::folded`): that dim is
+        // on the framebuffer already, and only it. A flat dim has no folded form (the host folds field dims),
+        // so an unlatched field is drawn whatever the sink says; a stacked second dim is a pass of its own.
+        // The fact is the sink's, and a mismatch of the dim it folded and the one that is due here is left
+        // alone on purpose: a repaint would put a SECOND dim on the first, the worse of the two errors.
+        let folded = sink.folded() && self.underlay.field().ground_tex().is_some();
+        for (n, (id, a)) in dims.into_iter().enumerate() {
             let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);
             plx_base::diag::spans::span("udim", || {
-                crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
+                crate::popover_glass::dim_owner(index, || {
+                    if n == 0 && folded {
+                        sink.dim_folded(self.underlay.field(), a);
+                    } else {
+                        sink.dim(self.underlay.field(), a);
+                    }
+                });
             });
         }
     }

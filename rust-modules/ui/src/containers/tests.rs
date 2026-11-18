@@ -385,6 +385,8 @@ struct FakeFb {
     baked: Option<Option<crate::frame::backdrop::Dim>>,
     /// Frames asked for because a frost body was baked for another dim (`DimSink::dim_settled`).
     wakes: u32,
+    /// Did the host fold the lowest dim into the page this frame (`DimSink::folded`)?
+    fold: bool,
 }
 
 impl FakeFb {
@@ -402,6 +404,7 @@ impl FakeFb {
             captured: false,
             baked: None,
             wakes: 0,
+            fold: false,
         }
     }
     /// The head of a frame: the host bakes the frost's body from the pure prediction of the lowest dim,
@@ -460,6 +463,14 @@ impl super::modal::DimSink for FakeFb {
             self.wakes += 1;
         }
     }
+    fn folded(&self) -> bool {
+        self.fold
+    }
+    fn dim_folded(&mut self, _field: &crate::underlay::UnderlayField, alpha: f32) {
+        // Declared, not drawn: the host's fold already laid this dim on the framebuffer.
+        self.events.push("dim_folded");
+        let _ = alpha;
+    }
 }
 
 fn two_dimming_sheets(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig) -> (EntryId, EntryId) {
@@ -515,6 +526,40 @@ fn the_dims_field_is_latched_from_the_undimmed_page_before_the_first_dim() {
     dims_frame(&mut d, &rig, &mut fb);
     assert_eq!(fb.events, ["dim", "dim"], "no re-read while the host snapshot stands");
     assert!((key_level(&d) - 0.5).abs() < 2e-3);
+}
+
+/// **The host's folded dim is declared and not drawn, and only the FIRST dim, and only when the host
+/// folded it.** `popover::host::page_pass` draws the held page through `fs_dim_fold.frag`, which lays the
+/// lowest dim on it in the same pass; `draw_scrims_on` then skips that one dim's pixels
+/// ([`DimSink::dim_folded`] still declares it for the glass above). A sink that did not fold gets
+/// today's draw, and a stacked second dim keeps its own pass over the first.
+#[test]
+fn only_the_first_dim_the_host_folded_is_declared_instead_of_drawn() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+    // Settle the field: the frame that kicked, the frame that collects, then a frame with nothing to do.
+    dims_frame(&mut d, &rig, &mut fb);
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    fb.frame(0.5);
+    assert!(d.nav.modals.underlay.field().is_latched());
+
+    // A flat dim (the field has no texture to fold) has no folded form: drawn whatever the sink says.
+    fb.fold = true;
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["dim", "dim"], "a flat first dim is drawn even for a sink that says it folded");
+    fb.frame(0.5);
+    fb.fold = false;
+    d.nav.modals.underlay.texture_for_test(7);
+
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["dim", "dim"], "a host that folded nothing gets every dim drawn");
+
+    fb.frame(0.5);
+    fb.fold = true;
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["dim_folded", "dim"], "the folded first dim is declared, the second still drawn over it");
 }
 
 /// **The page read never stalls the frame that asked for it.** A `glReadPixels` of work queued on
