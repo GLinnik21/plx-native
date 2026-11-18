@@ -668,8 +668,8 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         // The glass rides the fill's one ramp, painter alpha and face together (N-b: no opaque slab
         // past the opener), and is whole once the fill is.
         let a = f.ground_alpha;
-        // ... wearing the droplet's join and clarity (`Frame::glass_morph`): a morph is clear and joined
-        // to the opener's shrinking shape until it has grown, and the declared box is the one around both.
+        // ... wearing the droplet's join (`Frame::glass_morph`, never clear): a morph is joined to the
+        // opener's shrinking shape until it has grown, and the declared box is the one around both.
         let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(None));
         assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
