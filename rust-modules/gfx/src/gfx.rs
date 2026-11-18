@@ -4053,7 +4053,7 @@ impl FrameCache {
         if video_plane_refuses("FrameCache::frost_build_owed") || !blur_lazy_init() || !glass_frost_linked() {
             return false;
         }
-        let ok = profile::phase("glass.frost", || unsafe { self.frost_passes(want) });
+        let ok = profile::phase("glass.frost_build", || unsafe { self.frost_passes(want) });
         if ok {
             self.frost_rect = want;
             self.frost_key = key;
