@@ -1591,25 +1591,38 @@ impl HomeScreen {
     /// element the press was armed on, retained after the arm is gone), and the owner is a hero
     /// control when [`Self::locate`] says so.
     ///
-    /// **Why the billboard waits for it.** A hero control's press (Play, Info, the bookmark disc)
+    /// **Why the billboard holds for it.** A hero control's press (Play, Info, the bookmark disc)
     /// commits no sooner than `MIN_DIP_MS` after OK, and its `activate` re-reads the title the
     /// billboard shows AT THE COMMIT ([`Self::selected_hero`]), because the press armed on an
     /// element, not on a title. Pressing the control that already holds focus moves no focus, so
-    /// nothing restarts the 8 s countdown: if it ran out inside the dip, the carousel turned and the
+    /// nothing restarted the 8 s countdown: if it ran out inside the dip, the carousel turned and the
     /// press that was accepted against one title (a person's OK a moment before the flip; a scripted
-    /// `press home.hero.play --rk X`) played the next page's. While this is true [`Self::flip`]
-    /// refuses, the way it does inside [`HERO_FLIP_CD`], and the page turns once the press has settled.
+    /// `press home.hero.play --rk X`) played the next page's. While this is true the countdown
+    /// restarts from its full length every tick ([`Self::restart_hero_countdown`], the reset a focus
+    /// move already makes), so no turn falls due inside the press and none is OWED once it has
+    /// settled: the next one comes a full interval later, not on the first tick after Play or Info
+    /// when the person is coming back to Home. [`Self::flip`] refuses as well, for the writers the
+    /// countdown does not drive.
     fn hero_press_armed(&self, press: &PressRead<u32>) -> bool {
         press.live && matches!(self.focused_loc(press.owner), Some(Located::Hero(_)))
     }
 
+    /// Start the 8 s countdown again from its full length: the ONE reset. A turn (`flip`), an
+    /// uncover, a focus move by a person or a script, a page that is off the hero or has a shelf
+    /// holding focus, and a press standing on a hero control ([`Self::hero_press_armed`]) all end
+    /// here, so "what restarts the carousel's clock" has one spelling.
+    fn restart_hero_countdown(&mut self) {
+        self.hero_auto = HERO_AUTO_S;
+    }
+
     /// Turn the billboard one page (`dir` is +1 or -1). **Every writer of the shown title that a person
     /// or the countdown drives goes through here** (the 8 s auto-advance, `HomeCmd::Flip`, Left/Right at
-    /// the hero's edge), so the one refusal below, [`Self::hero_press_armed`], holds for all three; a
-    /// refused turn changes nothing and the countdown stays expired, so the turn happens as soon as
-    /// the press has settled. The two writers it does not cover are not a person's: `HomeCmd::SelectHero`
-    /// / `PinHero` (the dev scenarios' direct selection) and [`Self::reconcile_carousel`] (the title
-    /// LEFT the pool, which no press can hold).
+    /// the hero's edge), so the one refusal below, [`Self::hero_press_armed`], holds for all three. A
+    /// refused turn changes nothing and is not owed: the countdown has no turn pending for it (it
+    /// restarts while the press stands, in `tick`), and `HomeCmd::Flip` and an edge key are a request
+    /// the caller makes again once the press has settled. The two writers it does not cover are not a
+    /// person's: `HomeCmd::SelectHero` / `PinHero` (the dev scenarios' direct selection) and
+    /// [`Self::reconcile_carousel`] (the title LEFT the pool, which no press can hold).
     fn flip(&mut self, view: HubsView<'_>, dir: i32, press: &PressRead<u32>) -> bool {
         let n = view.hero_count();
         if n <= 1 || self.hero_flip_cd > 0.0 || self.hero_press_armed(press) {
@@ -1629,7 +1642,7 @@ impl HomeScreen {
         self.hero_dir = dir as f32;
         self.hero_slide.jump(0.0);
         self.hero_flip_cd = HERO_FLIP_CD;
-        self.hero_auto = HERO_AUTO_S;
+        self.restart_hero_countdown();
         // One line per page TURN (a key press or the 8 s advance, never a frame): the demo film
         // reads the pages it showed from these (`tools/site_video.py`, `hero_pool.logged`, `hero_pool.turns`).
         if let Some(page) = view.hero(next) {
@@ -2030,17 +2043,25 @@ impl HomeScreen {
             // queue in its `glClear`.
             // `a_settled_hero_counting_down_lets_the_gate_close_and_still_flips` holds both halves.
             //
-            // The flip it ends in is REFUSED while a press stands on a hero control
-            // ([`Self::hero_press_armed`], read through `cx.press`): the countdown is not touched, so
-            // an expiry inside the press's dip turns the page on the first tick after the press has
-            // settled, and a recorded hero press changes `hero_auto` only in that case.
-            self.hero_auto = self.hero_auto - dt;
-            if self.hero_auto <= 0.0 {
-                self.hero_flip_cd = 0.0;
-                self.flip(view, 1, &cx.press);
+            // **A press standing on a hero control restarts the countdown** ([`Self::hero_press_armed`],
+            // read through `cx.press`), every tick of it, the way a focus move restarts it: the press
+            // is a deliberate interaction, and the page it was accepted against must still be the page
+            // it commits on. Nothing is owed afterwards. The next turn comes a full interval after the
+            // press settles, not on the first tick after Play or Info, which is often the person's
+            // return to Home. Only a press that stands on a hero control changes `hero_auto` here; a
+            // cancelled one, a shelf card's and another page's hero are `PressRead`s this page does
+            // not arm on, so the schedule with no press is the decrement below, bit for bit.
+            if self.hero_press_armed(&cx.press) {
+                self.restart_hero_countdown();
+            } else {
+                self.hero_auto = self.hero_auto - dt;
+                if self.hero_auto <= 0.0 {
+                    self.hero_flip_cd = 0.0;
+                    self.flip(view, 1, &cx.press);
+                }
             }
         } else {
-            self.hero_auto = HERO_AUTO_S;
+            self.restart_hero_countdown();
         }
         let snap_to = pinned_snap(self.snap_target, self.rows.len());
         self.snap.step(snap_to, K_SNAP, dt);
@@ -3658,7 +3679,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
             }
             ScreenEvent::Uncover => {
                 self.covered = false;
-                self.hero_auto = HERO_AUTO_S;
+                self.restart_hero_countdown();
                 // **Damage only for what changed under the cover.** Raised unconditionally this
                 // made Home redraw itself on the BACK commit of every glass menu: the page damage
                 // retakes the host snapshot on the close's first frame, which is the frame that
@@ -3754,7 +3775,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     self.strip_chosen = false;
                 }
                 if matches!(by, By::Dir | By::Pointer | By::Script) {
-                    self.hero_auto = HERO_AUTO_S;
+                    self.restart_hero_countdown();
                 }
                 fx.invalidate(Provenance::Input);
                 Handled::Yes

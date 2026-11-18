@@ -7454,17 +7454,32 @@ fn shown_rk(s: &HomeScreen) -> String {
     s.carousel.as_ref().map(|(_, rk)| rk.clone()).expect("the carousel shows a hero")
 }
 
+/// Ticks `s` with no press until the carousel turns (or `limit` frames pass) and says how many it took.
+fn frames_until_the_carousel_turns(
+    s: &mut HomeScreen, view: HubsView<'_>, focus: FocusKey<u32>, from: u32, limit: u32,
+) -> Option<u32> {
+    let before = shown_rk(s);
+    (1..=limit).find(|n| {
+        step(s, view, Some(focus), &hero_tick_16(from + n));
+        shown_rk(s) != before
+    })
+}
+
 /// **Review finding on PR #1442, round 7: the carousel can turn inside a hero press's dip.** A hero
 /// control is a `Control`: OK arms a press that commits no sooner than `MIN_DIP_MS` later, and the commit
 /// re-reads the title the billboard shows. Pressing the control that already has focus moves no focus,
 /// so nothing restarted the 8 s countdown; if it ran out inside the dip the page turned and a press
 /// accepted against one title (`press home.hero.play --rk X`, or a person's OK a moment before the turn)
-/// played the next page's. The carousel now waits for the press, whichever hero control it stands on.
+/// played the next page's. **Round 8:** a press on a hero control restarts the countdown, as a focus move
+/// does, every tick it stands; so the press plays the title it was armed on, and no turn is OWED when it
+/// settles (a turn owed during the dip fired on the first tick after Play or Info, often the person's
+/// return to Home): the next one comes a full interval after the press.
 #[test]
 fn a_hero_press_plays_the_title_it_was_armed_on_when_the_countdown_runs_out_inside_its_dip() {
     let _guard = plx_base::testlock::serial();
     for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM] {
-        // 0.05 s left: three 16.667 ms frames run it out, inside the six frames of the dip
+        // 0.05 s left: three 16.667 ms frames would run it out, inside the six frames of the dip
+        // (`the_carousel_turns_on_schedule_...` pins that this schedule turns the page at frame 3)
         let (snapshot, mut s) = countdown_at(0.05);
         let view = snapshot.view();
         let armed_on = shown_rk(&s);
@@ -7474,8 +7489,8 @@ fn a_hero_press_plays_the_title_it_was_armed_on_when_the_countdown_runs_out_insi
             step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(frame));
             assert_eq!(shown_rk(&s), armed_on, "frame {frame}: the carousel turned under the press");
             assert!(s.outgoing.is_none(), "frame {frame}: a page slide began under the press");
+            assert_eq!(s.hero_auto, HERO_AUTO_S, "frame {frame}: the press did not restart the countdown");
         }
-        assert!(s.hero_auto <= 0.0, "the countdown ran out inside the dip (the premise): {}", s.hero_auto);
         let (_, out, _) = step_pressed(&mut s, view, Some(focus), press,
             &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
         let acted = if elem == HERO_PLAY_ELEM {
@@ -7484,9 +7499,16 @@ fn a_hero_press_plays_the_title_it_was_armed_on_when_the_countdown_runs_out_insi
             has_home(&out, |r| matches!(r, HomeReq::Detail { rk, .. } if *rk == armed_on))
         };
         assert!(acted, "elem {elem}: the press did not act on the title it was armed on ({armed_on}) among {} effects", out.len());
-        // the press settles (the spring-back is over): the page the countdown owes turns now
-        step(&mut s, view, Some(focus), &hero_tick_16(7));
-        assert_ne!(shown_rk(&s), armed_on, "the turn is deferred, not dropped");
+        // The press settles (the spring-back is over: no press is live). Nothing is owed: the page
+        // does not turn on this tick or the next, only after a full interval from here.
+        let turned_after = frames_until_the_carousel_turns(&mut s, view, focus, 6, 600)
+            .expect("the carousel turns again once the press has settled");
+        assert!(turned_after > 400,
+            "elem {elem}: the page turned {turned_after} frames after the press settled; no turn is owed");
+        assert!(
+            (turned_after as f32 * 0.016_667 - HERO_AUTO_S).abs() < 0.05,
+            "elem {elem}: turned {turned_after} frames after the press, not a full {HERO_AUTO_S} s interval later"
+        );
         assert!(s.outgoing.is_some(), "and it slides");
     }
 }
@@ -7522,8 +7544,10 @@ fn the_carousel_turns_on_schedule_unless_a_press_stands_on_one_of_its_hero_contr
     }
 }
 
-/// **A cancelled press releases the countdown.** The press is held through its dip (the page does not
-/// turn, the countdown stays run out), and the frame its read says it was cancelled the page turns.
+/// **A cancelled press releases the hold, and the countdown runs from where the restart left it.** The
+/// press restarts the countdown through its dip (the page does not turn, `hero_auto` rests at its full
+/// length), and the frame its read says it was cancelled the countdown is counting again from that full
+/// length: one tick off it, the page still the one shown, and the turn a full interval after the press.
 #[test]
 fn a_cancelled_hero_press_releases_the_carousel() {
     let _guard = plx_base::testlock::serial();
@@ -7536,10 +7560,22 @@ fn a_cancelled_hero_press_releases_the_carousel() {
         step_pressed(&mut s, view, Some(focus), held, &hero_tick_16(frame));
     }
     assert_eq!(shown_rk(&s), before, "held through the dip");
-    assert!(s.hero_auto <= 0.0, "the premise: the countdown has run out");
+    assert_eq!(s.hero_auto, HERO_AUTO_S, "the premise: the press restarted the countdown");
     let cancelled = press_cancelled_on(&s, HERO_PLAY_ELEM);
     step_pressed(&mut s, view, Some(focus), cancelled, &hero_tick_16(6));
-    assert_ne!(shown_rk(&s), before, "the cancel released the carousel");
+    assert!(
+        (s.hero_auto - (HERO_AUTO_S - 0.016_667)).abs() < 1e-4,
+        "the cancel released the hold: the countdown ran one tick from its full length, got {}",
+        s.hero_auto
+    );
+    assert_eq!(shown_rk(&s), before, "no turn is owed for the dip the press held");
+    assert!(s.outgoing.is_none());
+    let turned_after = frames_until_the_carousel_turns(&mut s, view, focus, 6, 600)
+        .expect("the carousel turns once the countdown has run its length");
+    assert!(
+        ((turned_after + 1) as f32 * 0.016_667 - HERO_AUTO_S).abs() < 0.05,
+        "turned {turned_after} frames after the cancel tick, not a full interval after the press"
+    );
 }
 
 /// **The other two turns a person makes are held the same way.** Right at the hero's edge moves no focus

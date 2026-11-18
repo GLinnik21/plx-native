@@ -32,13 +32,16 @@
 //!
 //! **The dip is the screen's.** Step 2 closes the race at the delivery, and the press it queues
 //! commits a dip later (`MIN_DIP_MS` + `COMMIT_MS`, about 200 ms), when the screen re-reads what the
-//! element acts on. What keeps that title from changing inside the dip is the screen holding still
-//! whatever would change it while a press stands on its element, reading the press through its context
-//! (`cx.press`: `live` and `owner`; a delivery reads it as it stands at its position, so the Tick of
-//! the frame that armed the press already sees it). Home's carousel does, for every turn it makes
-//! (`HomeScreen::hero_press_armed`: the 8 s countdown, `HomeCmd::Flip`, Left/Right at the hero's
-//! edge), so a hero press plays the title it was accepted against. A landing that takes the title
-//! OUT of the pool is not held (there is no such title to play): the press acts on its successor.
+//! element acts on. What keeps that title from changing inside the dip is the screen reading the
+//! press through its context (`cx.press`: `live` and `owner`; a delivery reads it as it stands at its
+//! position, so the Tick of the frame that armed the press already sees it) and letting nothing change
+//! the title while one stands on its element. Home's carousel does (`HomeScreen::hero_press_armed`):
+//! while a press stands on a hero control the 8 s countdown restarts from its full length every tick,
+//! as a focus move restarts it, so no turn falls due inside the press and none is owed after it (the
+//! next one comes a full interval later), and `HomeCmd::Flip` and Left/Right at the hero's edge wait
+//! for the press. A hero press therefore plays the title it was accepted against. A landing that
+//! takes the title OUT of the pool is not held (there is no such title to play): the press acts on
+//! its successor.
 //!
 //! A refusal leaves one `Fx::Log` line carrying words and ids only (`a11y: refused <act> <id>
 //! <reason> owner=<ns>`). The label and subject of an element never reach it.
