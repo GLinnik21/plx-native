@@ -5,7 +5,8 @@
 # the Info card, the Chapters strip and the `…` popover. This boots `plxnative-sim` straight into a
 # real playback — `plxnative-playurl` at a Range-capable `tests/serve_fixtures.py`, plus
 # `plxnative-clocksink` so the seam accepts and discards the access units and a presentation clock
-# advances — drives the transport with the remote FIFO and writes one shot per panel. The same
+# advances — drives the transport with the remote FIFO (each control pressed by its accessibility
+# id, `press:player.control.subtitles`, not walked to) and writes one shot per panel. The same
 # script run against two commits produces two comparable sets.
 #
 #   CLIP=/tmp/plxfix/clip.mp4 tests/player_shots.sh /tmp/shots-mine
@@ -70,24 +71,42 @@ exec 3<> "$D/plxnative-remote"
 send() { for t in "$@"; do printf '%s ' "$t" >&3; sleep "$STEP"; done; }
 shot() { printf 'shot ' >&3; sleep 2; mv "$D"/shot-*.png "$OUT/$1.png" 2>/dev/null || true; }
 
+# A control is pressed BY ID (`press:<id>`, tools/a11y.py), not walked to with direction keys: the
+# player's ids are `player.control.<command>`, `player.tab.info|chapters` and `player.scrub`, and an id
+# names the disc or tab whatever the row holds. A refusal (`a11y: refused press ...` in the event log:
+# the HUD is not up, the id names nothing on this clip) presses nothing, so `press` says so and returns
+# 1: the shot that would follow is of a state the script did not reach. The HUD must be UP to be
+# pressed, and it lingers HUD_LINGER_MS (4.5 s, plx_appkit::player_hud::LINGER_MS) after the input
+# that raised it: the shot-then-press gap here (STEP + 2 s = 2.9 s) fits, so a slower STEP can make
+# the first press refuse.
+refusals() { local n; n=$(grep -c 'a11y: refused' "$LOG" 2>/dev/null || true); echo "${n:-0}"; }
+press() {
+  local before after; before=$(refusals)
+  printf 'press:player.%s ' "$1" >&3; sleep "$STEP"
+  after=$(refusals)
+  [ "$after" -eq "$before" ] && return 0
+  grep 'a11y: refused' "$LOG" | tail -n "$((after - before))" >&2
+  return 1
+}
+must_press() { press "$1" || { echo "player_shots: the app refused press:player.$1 (is the HUD up?)" >&2; exit 1; }; }
+
 # The bare transport, focus at rest on the scrubber. LEFT/RIGHT is a scrub, so a bare `right`
-# raises it without changing what the row holds.
+# raises it without changing what the row holds (a key: the raise is the subject).
 send right
 shot hud
 
 # Row 1 is the control row: the Subtitles / Audio / … discs.
-send up
-send ok; shot menu; send back
-send right ok; shot menu-audio; send back
-send right ok; shot more; send back
+must_press control.subtitles; shot menu; send back
+must_press control.audio; shot menu-audio; send back
+must_press control.more; shot more; send back
 
-# Row 2 is the tab strip under the discs: Info, then Chapters.
-send down down
-send ok; shot info; send back
-send right ok; shot chapters; send back
+# Row 2 is the tab strip under the discs: Info, then Chapters (a clip without chapters draws no
+# Chapters tab: its press is refused and that shot is skipped).
+must_press tab.info; shot info; send back
+if press tab.chapters; then shot chapters; send back; else echo "no Chapters tab on $CLIP: no chapters shot"; fi
 
 # …and a transport key WITH a panel up: the panel must stay and the film must pause (issue 28).
-send left ok
+must_press tab.info
 sleep 1
 printf 'pause ' >&3; sleep 1
 shot info-paused

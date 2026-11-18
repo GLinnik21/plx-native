@@ -36,13 +36,14 @@
 //! `series.md` "Iteration 2"). While it is small the corner radius is half its smaller side, a
 //! capsule, not the panel's radius; at [`SHAPE_AT`] (~150 ms) a spring ([`K_SHAPE`]) relaxes it to the
 //! caller's radius by ~250 ms, landing on it exactly ([`Frame::radius`]; a close rounds it back as it
-//! shrinks). The ROWS have their own underdamped spring, [`K_LENS`]/[`ZETA_LENS`] (0.65 when they first
-//! show, a 12% overshoot at ~167 ms, 1 by ~360, within 0.02 of the table), not the glass's height ratio
-//! ([`Frame::rows_scale`]); on a close they shrink with the slab. The rows are cut by the
+//! shrinks). The ROWS have their own underdamped spring, [`K_LENS`]/[`ZETA_LENS`] (~0.2 when they first
+//! show, on the third glass frame, 0.65 at 67 ms, a 12% overshoot at ~167 ms, 1 by ~360, within 0.02 of
+//! the table), not the glass's height ratio ([`Frame::rows_scale`]); on a close they shrink with the slab. The rows are cut by the
 //! lens itself, its rect and radius, through the shared painter's rounded clip
 //! (`ClipScope::open_rounded_in`: a coverage mask on the rect, text and icon programs), so a letter
-//! the round edge crosses is cut by the arc as on iOS 26; settled, nothing is cut. A stiff spring ([`K_OUT`]) carries the CLOSE's first phase, the content and the frost
-//! leaving. The old rows spring ([`K_ROWS`]) remains for the fade+scale fallback only.
+//! the round edge crosses is cut by the arc as on iOS 26; settled, nothing is cut. A stiff spring
+//! ([`K_OUT`]) carries the CLOSE's first phase, the rows leaving; the glass keeps its frost to the
+//! hand-back. The old rows spring ([`K_ROWS`]) remains for the fade+scale fallback only.
 //!
 //! **One surface, two clocks.** The pill and the panel are ONE surface whose rect, radius and fill
 //! animate. The glass's cross-in is a function of the HEIGHT alone (it leads, so the glass draws from
@@ -56,13 +57,19 @@
 //! - the OPENER fades out over the first [`OPENER_OUT_AT`] ([`Frame::opener_alpha`]) and the glass
 //!   is JOINED to a shrinking copy of the opener's rect ([`Frame::merge`]) until [`MERGE_END_AT`],
 //!   so the glass reads as detaching from the button rather than appearing over it;
-//! - the glass is CLEAR (the sharp page refracted through it) while it is small and FROSTED once it
-//!   is big ([`Frame::clear`], from [`FROST_FROM`] to [`FROST_TO`], complete at the first peak,
-//!   ~150 ms, not after the settle);
-//! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`] (~75 ms, iOS shows them at
-//!   67-100), and are opaque by [`ROWS_OPAQUE_AT`] (~150 ms). They are scaled by the lens spring
-//!   ([`Frame::rows_scale`]) and cut by the surface's round lens (`Popover::morph_rows`), so no
-//!   row ever draws outside the rounded glass;
+//! - the glass is **never clear** (owner decision, 2026-11-18, from the same recording: the droplet
+//!   is not transparent while it moves, the page behind it is blurred and washed from its first
+//!   visible frame): its body is the menu's FROST under the dark face (`popover_glass`) on every
+//!   frame of the open and of the close, until the close's hand-back, and the morph hands the glass
+//!   no clarity at all ([`Frame::glass_morph`]). The rim and its refraction are the settled glass's
+//!   and the shape morph is untouched. Where the frost does not stand yet (the first frame, before the
+//!   field has latched, and any frame the build is held back) `popover_glass` wears the field under
+//!   the heavier face, never the sharp page;
+//! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`], on the third glass frame
+//!   (~33 ms; iOS shows them at 67-100 and the owner asked for them earlier), and are opaque by
+//!   [`ROWS_OPAQUE_AT`] (~120 ms), never more opaque than the glass they stand on. They are scaled by
+//!   the lens spring ([`Frame::rows_scale`]) and cut by the surface's round lens
+//!   (`Popover::morph_rows`), so no row ever draws outside the rounded glass;
 //! - the modal DIM ([`Frame::dim`], [`dim_at`]) follows the progress too (in by ~150 ms), through
 //!   `Popover::dim` and `Scrim::following`, instead of the container's own appear spring.
 //!
@@ -71,11 +78,11 @@
 //! the droplet gone by ~250). The width and the height are separate springs: the width ([`K_CLOSE_W`]) reaches the
 //! opener's width by ~133 ms, the height ([`K_CLOSE_H`]) bulges ~7% of its travel at ~33 ms
 //! ([`BULGE_KICK_H`]) and then drains over ~250 ms (`the_close_follows_the_ios_reference_curve`):
-//! 1. the slab BULGES outward, then shrinks; the rows and the frost leave over about 50 ms
-//!    ([`Frame::content_alpha`] and [`Frame::clear`] ride the `out` spring, [`K_OUT`], gone
-//!    by ~67 ms), shrinking WITH the slab ([`Frame::rows_scale`]), leaving clear glass, while the
-//!    corner rounds back to a capsule ([`K_SHAPE`]);
-//! 2. the clear slab A springs from the panel toward the DRAIN rect ([`drain_rect`]): just BELOW the
+//! 1. the slab BULGES outward, then shrinks; the rows leave over about 50 ms
+//!    ([`Frame::content_alpha`] rides the `out` spring, [`K_OUT`], gone by ~67 ms), shrinking WITH
+//!    the slab ([`Frame::rows_scale`]), leaving the frosted glass, which stays frosted (dark) all the
+//!    way into the opener, while the corner rounds back to a capsule ([`K_SHAPE`]);
+//! 2. the frosted slab A springs from the panel toward the DRAIN rect ([`drain_rect`]): just BELOW the
 //!    opener, centred on it, its height and width ([`DRAIN_WIDTH`]), a capsule, [`DRAIN_GAP`] under
 //!    it (closer than [`MERGE_K`], so the glass can bridge it). The opener re-forms as its OWN blob B,
 //!    growing up from the opener's bottom edge as A closes in ([`BLOB_BORN`] to [`REFORM_FROM`]), the
@@ -92,7 +99,7 @@
 //!    gone the frame IS the closed frame, the opener at rest, exactly; it draws no glass.
 //!
 //! The open is NOT the close either: the opener's rect grows into the panel's (the panel now
-//! COVERS its opener, `popover::cover_opener`), height leading, clear then frosted, the opener's
+//! COVERS its opener, `popover::cover_opener`), height leading, frosted throughout, the opener's
 //! face consumed, ringing past the panel before it rests. Its merge shape is never whitened: frame 0 draws no glass (the face alone), and
 //! the face's fall and the glass's rise run on one progress, a cross-fade with no frame at which
 //! white is swapped for dark.
@@ -198,8 +205,8 @@ pub const TINT_WHOLE_AT: f32 = 0.9;
 /// The slab's scale (1 = the drain rect) at which it is gone: the close is over and the frame is
 /// the closed one. A few pixels of glass, already inside the blob's neck.
 pub const A_GONE_AT: f32 = 0.04;
-/// The stiffness of the `out` spring that carries a close's first phase, the rows and the frost
-/// leaving (0 = content in, 1 = content out). Critically damped, so ≈50 ms to within 10% of rest and
+/// The stiffness of the `out` spring that carries a close's first phase, the rows leaving (0 =
+/// content in, 1 = content out; the glass keeps its frost). Critically damped, so ≈50 ms to within 10% of rest and
 /// ≈67 ms to within 4%: the content leaves over about three frames while the slab shrinks (the
 /// reference's rows are gone by 50-67 ms; the old 9000 had them gone in two frames, over a rect that held).
 pub const K_OUT: f32 = 6000.0;
@@ -219,12 +226,15 @@ pub const ZETA_ROWS: f32 = 0.6;
 pub const ROWS_FROM: f32 = 0.82;
 /// The HEIGHT at which the glass is fully in: the growing shape is all glass before it gets big.
 pub const FILL_AT: f32 = 0.18;
-/// Progress (the slower of the two rect springs) at which the rows begin to appear: ~75 ms after
-/// the first glass frame (the width at 0.55), small inside the small lens ([`K_LENS`]: scale ~0.7);
-/// the recording first shows them at 67-100 ms.
-pub const ROWS_FROM_AT: f32 = 0.55;
-/// Progress at which the rows are fully opaque: ~150 ms, as the glass reaches its size (0.96).
-pub const ROWS_OPAQUE_AT: f32 = 0.96;
+/// Progress (the slower of the two rect springs) at which the rows begin to appear: the width's
+/// first move, on the third glass frame (~33 ms after the first), tiny inside the small lens
+/// ([`K_LENS`]: scale ~0.2 then, ~0.45 a frame later). The recording shows them at 67-100 ms and
+/// the owner asked for the content EARLIER (2026-11-18: the droplet is already a menu while it
+/// moves), so the start follows the width's lag, the first frame the glass is wider than the opener.
+pub const ROWS_FROM_AT: f32 = 0.05;
+/// Progress at which the rows are fully opaque: ~120 ms (the width at 0.8), as the glass nears its
+/// size, rather than at the first peak (0.96, ~150 ms) they were opaque at before the content came earlier.
+pub const ROWS_OPAQUE_AT: f32 = 0.8;
 /// Progress at which the opener's own face is fully gone on an open (and starts to return on a
 /// close): it fades out over `[0, OPENER_OUT_AT]` as the glass detaches from it
 /// ([`Frame::opener_alpha`]; the host's opener lift paints the opener at that alpha).
@@ -236,13 +246,6 @@ pub const MERGE_END_AT: f32 = 0.35;
 /// The smooth-minimum reach of the merge, in px: shapes closer than this are joined by a neck.
 /// The glass is also inflated by up to a quarter of it where the two shapes coincide.
 pub const MERGE_K: f32 = 28.0;
-/// Progress at which the glass starts to frost: below it the glass is fully CLEAR (the sharp page
-/// refracted through it, [`Frame::clear`] = 1).
-pub const FROST_FROM: f32 = 0.25;
-/// Progress at which the glass is fully frosted: the material the settled panel wears
-/// ([`Frame::clear`] = 0). 0.96 is ~150 ms, the first peak: the frost is complete when the glass
-/// first reaches its size, not after the settle.
-pub const FROST_TO: f32 = 0.96;
 /// Fallback when the opener has no measured rect to morph from: a fade+scale of the panel about
 /// its centre, starting at this scale. The board's `menuout` keyframes leave a menu at 0.92, so an
 /// entrance from the same scale is the matching motion.
@@ -261,11 +264,11 @@ pub struct Frame {
     /// The glass's share of the fill (0 = none, 1 = all glass): the alpha of the glass, with an
     /// opener also its shadow's (the one ramp); for the fallback the glass's alpha alone.
     pub ground_alpha: f32,
-    /// Alpha of the panel's rows: 0 until [`ROWS_FROM_AT`], so a row is only ever drawn on a
-    /// surface whose fill is all glass.
+    /// Alpha of the panel's rows: 0 until [`ROWS_FROM_AT`] and never above [`ground_alpha`](Self::ground_alpha),
+    /// so a row is only ever drawn on a surface that is at least as much glass as it is row.
     pub content_alpha: f32,
-    /// Scale of the rows about [`rows_anchor`]: with an opener the LENS spring ([`K_LENS`]: ~0.65 when
-    /// the rows first show, a 12% overshoot at ~167 ms, 1 at rest), shrinking with the slab on a close
+    /// Scale of the rows about [`rows_anchor`]: with an opener the LENS spring ([`K_LENS`]: ~0.2 when
+    /// the rows first show, ~0.65 at 67 ms, a 12% overshoot at ~167 ms, 1 at rest), shrinking with the slab on a close
     /// (the glass's height over the panel's); for the fade+scale fallback its own rows spring (0.82 -> 1).
     pub rows_scale: f32,
     /// How much of the OPENER's own face is left (1 = whole, 0 = consumed): fades out over the
@@ -282,18 +285,15 @@ pub struct Frame {
     /// arrives and by the fold up to 1 as it drains in, wearing more of the opener's fill as it
     /// grows ([`Merge::tint`]).
     pub merge: Option<Merge>,
-    /// How CLEAR the glass is, 0 = the frosted material the settled panel wears, 1 = clear glass
-    /// (the sharp page refracted through the whole face). A close is clear from its first frames
-    /// (the `out` spring), an open frosts from [`FROST_FROM`] to [`FROST_TO`]. 0 for the fallback.
-    pub clear: f32,
     /// How much of the modal dim has come in, 0..1 ([`dim_at`] of the progress): the share of the
     /// surface's peak dim (`Popover::dim` hands it to the container as `Scrim::following`).
     pub dim: f32,
 }
 
 impl Frame {
-    /// What the glass wears at this instant: the join and the clarity, as the gfx layer draws them
-    /// (`Popover::ground` hands it to `popover_glass::draw_shadowed`).
+    /// What the glass wears at this instant: the join, as the gfx layer draws it (`Popover::ground`
+    /// hands it to `popover_glass::draw_shadowed`). The clarity is always 0: the body is the frost on
+    /// every frame of an open and of a close (module doc), so the morph has nothing to say about it.
     ///
     /// `opener_fill` is the colour the opener's own focused face is drawn with (the caller knows
     /// its opener; [`crate::popover::Popover::opener_fill`]): the join whitens toward it by
@@ -307,7 +307,7 @@ impl Frame {
                 k: m.k,
                 tint: opener_fill.map_or([0.0; 4], |c| [c[0], c[1], c[2], m.tint * c[3]]),
             }),
-            clear: self.clear,
+            clear: 0.0,
         }
     }
 }
@@ -362,12 +362,6 @@ pub fn dim_at(t: f32) -> f32 {
 /// The merge shape's scale at progress `t`: `1 - smoothstep(0, MERGE_END_AT, t)`.
 pub fn merge_scale_at(t: f32) -> f32 {
     1.0 - smooth(t, 0.0, MERGE_END_AT)
-}
-
-/// The glass's clarity at progress `t` before a close's `out`: `1 - smoothstep(FROST_FROM,
-/// FROST_TO, t)`.
-pub fn clear_at(t: f32) -> f32 {
-    1.0 - smooth(t, FROST_FROM, FROST_TO)
 }
 
 /// **How much of the opener's focused fill the re-formed blob B wears** on a close, from the
@@ -486,7 +480,7 @@ pub struct Morph {
     /// (`rows_scale = lerp(lens, rect.h / panel.h, out)`: the lens spring on an open, the slab's
     /// height on a close).
     rows: Spring,
-    /// A close's content-and-frost phase: 0 = in, 1 = out ([`K_OUT`]).
+    /// A close's content phase, the rows leaving: 0 = in, 1 = out ([`K_OUT`]); the glass stays frosted.
     out: Spring,
     /// The corner: 0 = the round lens (half the smaller side), 1 = the caller's panel radius
     /// ([`K_SHAPE`], released at [`SHAPE_AT`] on an open, back to 0 on a close).
@@ -533,8 +527,8 @@ impl Morph {
     ///
     /// A close is NOT that reversed: the rect springs are released on the first frame with an
     /// outward [`BULGE_KICK_H`] (a settled panel bulges before it shrinks), `out` rises with them (the
-    /// rows and the frost leave while the slab shrinks), and the fold is released once the slab is
-    /// within [`FOLD_AT`] of the drain rect.
+    /// rows leave while the slab shrinks; the glass stays frosted), and the fold is released once the
+    /// slab is within [`FOLD_AT`] of the drain rect.
     pub fn step(&mut self, open: bool, dt: f32) {
         // Every spring below is put EXACTLY on its target the moment the frame loop's own rest test (the one
         // its integrators report `Motion` by) stops calling it moving at this step's `dt`: the instant the loop
@@ -637,7 +631,10 @@ impl Morph {
         let out = self.out.pos.clamp(0.0, 1.0);
         let fold = self.fold.pos.clamp(0.0, 1.0);
         let progress = pw.min(ph);
-        let content_alpha = ramp(progress, ROWS_FROM_AT, ROWS_OPAQUE_AT) * (1.0 - out);
+        // The rows stand on the glass, so they are never more opaque than it (the rows start while the
+        // glass's own cross-in is still short of whole, and a row must never be the surface's only
+        // content): `ground_alpha` is the glass's alpha, each branch below states its own.
+        let rows = ramp(progress, ROWS_FROM_AT, ROWS_OPAQUE_AT) * (1.0 - out);
         // A close's dim follows the (slower) HEIGHT and is out when the slab is gone
         let dim = dim_at(lerp_f(progress, ph, smooth(out, 0.0, 1.0))) * (1.0 - fold);
         let Some(f) = from else {
@@ -646,11 +643,10 @@ impl Morph {
                 radius: panel_radius,
                 progress,
                 ground_alpha: fill_at(progress),
-                content_alpha,
+                content_alpha: rows.min(fill_at(progress)),
                 rows_scale: self.rows.pos,
                 opener_alpha: 1.0,
                 merge: None,
-                clear: 0.0,
                 dim,
             };
         };
@@ -694,20 +690,20 @@ impl Morph {
         let settle = self.shape.pos.clamp(0.0, 1.0);
         let lens = rect.w.min(rect.h) * 0.5;
         let radius = radius_at(lens, panel_radius, settle);
+        // a close's slab is glass all the way into the opener; an open's is the one fill ramp
+        let ground_alpha = lerp(fill_at(ph), 1.0, c);
         Frame {
             rect,
             radius,
             progress,
-            // a close's slab is glass all the way into the opener; an open's is the one fill ramp
-            ground_alpha: lerp(fill_at(ph), 1.0, c),
-            content_alpha,
+            ground_alpha,
+            content_alpha: rows.min(ground_alpha),
             // the rows are laid out in the glass: they are as big as it is, over the settled panel's
             rows_scale: if panel.h > 0.0 { lerp(self.lens.pos, rect.h / panel.h, c) } else { 1.0 },
             // the open's fade hands over to the close's return by `out`, steeply: the blend's residual
             // while `out` is still closing on 1 must not read as the face flickering back
             opener_alpha: lerp(opener_alpha_at(progress), smooth(fold, OPENER_BACK_FROM, 1.0), smooth(c, 0.0, 0.9)),
             merge,
-            clear: clear_at(progress).max(out),
             dim,
         }
     }
@@ -939,10 +935,12 @@ mod tests {
         assert!((at_rest - RAD).abs() < 0.05, "the close starts on the caller's radius ({at_rest})");
     }
 
-    /// The rows show from ~67-100 ms (iOS) and are opaque by ~150 ms; their SCALE is the lens spring's
-    /// (`the_rows_follow_the_ios_lens_magnification`), not the glass's height ratio, 1 at rest.
+    /// The rows start on the THIRD glass frame (~33 ms, the owner's 2026-11-18 direction: the droplet is
+    /// already a menu while it moves; iOS shows them at 67-100) and are opaque by ~120 ms; their SCALE is
+    /// the lens spring's (`the_rows_follow_the_ios_lens_magnification`), not the glass's height ratio,
+    /// 1 at rest.
     #[test]
-    fn the_rows_show_from_about_75_ms() {
+    fn the_rows_show_from_the_third_glass_frame() {
         let mut m = Morph::new();
         let mut frames = vec![m.frame(Some(PILL), PANEL, RAD)];
         for _ in 0..60 {
@@ -952,26 +950,59 @@ mod tests {
         // `frames[0]` is the unstepped pill: the first glass frame is `frames[1]`, the table's frame 0
         let at = |ms: f32| frames[(ms / (DT * 1000.0)).round() as usize + 1];
         assert!((frames.last().unwrap().rows_scale - 1.0).abs() < 1e-3, "1 at rest");
-        assert_eq!(at(67.0).content_alpha, 0.0, "no rows before ~67 ms");
-        assert!(at(100.0).content_alpha > 0.0 && at(100.0).content_alpha < 0.6, "arriving by ~100 ms: {:?}", at(100.0));
-        assert!(at(133.0).content_alpha > 0.4 && at(133.0).content_alpha < 1.0, "still arriving at 133 ms: {:?}", at(133.0));
-        assert!(at(150.0).content_alpha > 0.95, "opaque by ~150 ms: {:?}", at(150.0));
-        assert!(frames.iter().all(|f| f.progress < ROWS_FROM_AT || f.ground_alpha == 1.0));
+        assert_eq!(at(0.0).content_alpha, 0.0, "none on the first glass frame");
+        let first = frames.iter().position(|f| f.content_alpha > 0.0).expect("the rows show") - 1;
+        assert!(first <= 3, "the rows' first visible frame is at or before glass frame 3 (frame {first}, ~{} ms)", first as f32 * DT * 1000.0);
+        assert_eq!(first, 2, "the rows start on the third glass frame (table frame 2, ~33 ms), as the module doc says");
+        assert!(at(50.0).content_alpha > 0.1 && at(50.0).content_alpha < 0.6, "arriving by ~50 ms: {:?}", at(50.0));
+        assert!(at(83.0).content_alpha > 0.5 && at(83.0).content_alpha < 1.0, "still arriving at 83 ms: {:?}", at(83.0));
+        assert!(at(133.0).content_alpha > 0.99, "opaque by ~133 ms: {:?}", at(133.0));
+        assert!(frames.windows(2).take(12).all(|w| w[1].content_alpha >= w[0].content_alpha - 1e-6), "they only arrive on an open");
+        assert!(frames.iter().all(|f| f.content_alpha <= f.ground_alpha), "never more opaque than the glass they stand on");
     }
 
-    /// The glass is clear while it is small and frosted by the time it first reaches its size
-    /// (iOS: the first peak, ~150 ms), not after the settle.
+    /// **The glass is never clear: no open frame and no close frame asks the glass for the sharp page**
+    /// (owner, 2026-11-18, from the iOS 26 recording: the droplet is frosted from its first visible frame
+    /// until the close hands back to the opener, never a transparent bead). Every frame of an open, a
+    /// close, a close that interrupts an open (at every step of it) and an open that interrupts a close,
+    /// with and without an opener fill to whiten the join toward, and for the fallback.
     #[test]
-    fn the_frost_completes_around_the_first_peak() {
-        let mut m = Morph::new();
-        let mut frames = Vec::new();
-        for _ in 0..30 {
-            m.step(true, DT);
-            frames.push(m.frame(Some(PILL), PANEL, RAD));
+    fn no_open_or_close_frame_draws_a_clear_body() {
+        let fill = Some([0.9, 0.9, 0.9, 0.9]);
+        let check = |what: &str, f: &Frame| {
+            for fill in [None, fill] {
+                assert_eq!(f.glass_morph(fill).clear, 0.0, "{what}: a clear body: {f:?}");
+            }
+        };
+        for from in [Some(PILL), None] {
+            let (open, close) = open_then_close(from);
+            let drawn = open.iter().chain(&close).filter(|f| f.ground_alpha > 0.0).count();
+            assert!(drawn > 30, "the frames that draw glass were checked ({drawn})");
+            open.iter().for_each(|f| check("open", f));
+            close.iter().for_each(|f| check("close", f));
         }
-        assert_eq!(frames[0].clear, 1.0, "clear while small");
-        assert!(frames[5].clear > 0.5, "still mostly clear at 83 ms: {:?}", frames[5]);
-        assert!(frames[10].clear < 0.02, "frosted by ~150 ms: {:?}", frames[10]);
+        // a close that interrupts the open after `n` frames, and the open that interrupts it in turn
+        for n in 0..14 {
+            let mut m = Morph::new();
+            for _ in 0..n {
+                m.step(true, DT);
+            }
+            for _ in 0..40 {
+                m.step(false, DT);
+                check(&format!("close after {n} open frames"), &m.frame(Some(PILL), PANEL, RAD));
+            }
+            let mut m = Morph::new();
+            for _ in 0..90 {
+                m.step(true, DT);
+            }
+            for _ in 0..n {
+                m.step(false, DT);
+            }
+            for _ in 0..40 {
+                m.step(true, DT);
+                check(&format!("re-open after {n} close frames"), &m.frame(Some(PILL), PANEL, RAD));
+            }
+        }
     }
 
     /// An open and the close after it, every frame.
@@ -1005,17 +1036,18 @@ mod tests {
         assert_eq!((last.rect, last.ground_alpha), (PILL, 0.0), "a close lands ON the pill");
     }
 
-    /// Spec (c): no row before the glass has taken over, and none left by the time the rect is back
-    /// near the pill.
+    /// Spec (c): no row on a surface that is less glass than row, none before the glass has begun to
+    /// widen, and none left by the time the rect is back near the pill.
     #[test]
     fn rows_only_draw_on_a_surface_that_is_all_glass() {
         let (open, close) = open_then_close(Some(PILL));
         for fr in open.iter().chain(&close) {
+            assert!(fr.content_alpha <= fr.ground_alpha, "a row more opaque than the glass under it: {fr:?}");
             if fr.content_alpha > 0.0 {
-                assert!(fr.progress > ROWS_FROM_AT && fr.ground_alpha == 1.0, "a row on a part-pill surface: {fr:?}");
+                assert!(fr.progress > ROWS_FROM_AT, "a row before the glass has begun to widen: {fr:?}");
             }
         }
-        assert!(open.iter().take_while(|fr| fr.progress < ROWS_FROM_AT).count() >= 2, "the rows wait for the glass");
+        assert!(open.iter().take_while(|fr| fr.progress <= ROWS_FROM_AT).count() >= 2, "the rows wait for the glass");
         // The rows leave over ~50 ms on a close, shrinking with the slab (their scale is the glass's
         // height over the panel's), and are gone by ~67 ms (four frames).
         assert!(close[3].content_alpha < 0.05, "gone by ~67 ms: {:?}", close[3]);
@@ -1030,8 +1062,9 @@ mod tests {
         let (open, _) = open_then_close(Some(PILL));
         let big = open.iter().find(|fr| fr.rect.w > PILL.w + 0.2 * (PANEL.w - PILL.w)).expect("it grows");
         assert_eq!(big.ground_alpha, 1.0, "all glass by the time it is 20% grown: {big:?}");
-        // the rows still wait for their own threshold, and never draw on a part-glass surface
-        assert!(FILL_AT < ROWS_FROM_AT);
+        // the rows start while the glass is still crossing in (`ROWS_FROM_AT` is under `FILL_AT`), and are
+        // held under its alpha (`content_alpha <= ground_alpha`, `rows_only_draw_on_a_surface_that_is_all_glass`)
+        assert!(ROWS_FROM_AT < FILL_AT);
     }
 
     #[test]
@@ -1045,43 +1078,37 @@ mod tests {
         assert!(open.iter().chain(&close).all(|fr| fr.rect.w <= PANEL.w + 1e-3), "no opener: never past the panel");
         assert_eq!(rect_at(Some(PILL), PANEL, 0.0), PILL);
         assert_eq!(rect_at(Some(PILL), PANEL, 1.0), PANEL);
-        // and with no opener there is nothing to consume, join or clear
+        // and with no opener there is nothing to consume or join
         for fr in open.iter().chain(&close) {
-            assert_eq!((fr.opener_alpha, fr.merge, fr.clear), (1.0, None, 0.0), "the fallback has no droplet: {fr:?}");
+            assert_eq!((fr.opener_alpha, fr.merge), (1.0, None), "the fallback has no droplet: {fr:?}");
         }
     }
 
-    /// A settled open panel draws exactly as it did before the droplet: no merge, frosted, whole.
+    /// A settled open panel draws exactly as it did before the droplet: no merge, whole.
     #[test]
-    fn a_settled_panel_has_no_merge_no_clear_and_a_consumed_opener() {
+    fn a_settled_panel_has_no_merge_and_a_consumed_opener() {
         let (open, _) = open_then_close(Some(PILL));
         let last = open.last().unwrap();
         assert!((last.rect.x - PANEL.x).abs() + (last.rect.y - PANEL.y).abs() < 0.01, "on the panel");
         assert!((last.rect.w - PANEL.w).abs() + (last.rect.h - PANEL.h).abs() < 0.01, "on the panel");
-        assert_eq!((last.merge, last.clear), (None, 0.0));
+        assert_eq!(last.glass_morph(None), plx_gfx::gfx::GlassMorph::NONE, "the settled glass is the plain one");
         assert_eq!((last.ground_alpha, last.content_alpha), (1.0, 1.0));
         assert_eq!(last.opener_alpha, 0.0, "the opener is consumed by the open panel");
     }
 
-    /// OPEN: the glass is clear and joined to the whole opener at the start, and the join and the
-    /// clarity leave on their own thresholds.
+    /// OPEN: the glass is joined to the whole opener at the start, and the join leaves on its own threshold.
+    /// (It is frosted all the way, `no_open_or_close_frame_draws_a_clear_body`.)
     #[test]
-    fn the_open_starts_as_a_clear_droplet_on_the_opener_and_frosts_as_it_grows() {
+    fn the_open_starts_as_a_droplet_joined_to_the_opener_and_leaves_it_as_it_grows() {
         let (open, _) = open_then_close(Some(PILL));
         let first = open[0];
         let m = first.merge.expect("a merge at progress 0");
         assert_eq!((m.rect, m.k), (PILL, MERGE_K));
         assert_eq!(m.radius, PILL.h * 0.5);
-        assert_eq!((first.clear, first.opener_alpha), (1.0, 1.0));
+        assert_eq!(first.opener_alpha, 1.0);
         for fr in &open {
             if fr.progress >= MERGE_END_AT {
                 assert_eq!(fr.merge, None, "no merge once the shape is gone: {fr:?}");
-            }
-            if fr.progress >= FROST_TO {
-                assert_eq!(fr.clear, 0.0, "frosted from {FROST_TO}: {fr:?}");
-            }
-            if fr.progress <= FROST_FROM {
-                assert_eq!(fr.clear, 1.0, "clear to {FROST_FROM}: {fr:?}");
             }
             if let Some(m) = fr.merge {
                 assert!((m.rect.cx() - PILL.cx()).abs() < 1e-3 && (m.rect.cy() - PILL.cy()).abs() < 1e-3, "about its own centre");
@@ -1091,7 +1118,6 @@ mod tests {
         for pair in open.windows(2) {
             let s = |f: &Frame| f.merge.map_or(0.0, |m| m.rect.w);
             assert!(s(&pair[1]) <= s(&pair[0]) + 1e-3, "the merge only shrinks on an open");
-            assert!(pair[1].clear <= pair[0].clear + 1e-3, "the glass only frosts on an open");
             assert!(pair[1].opener_alpha <= pair[0].opener_alpha + 1e-3, "the opener only fades on an open");
         }
         assert!(open.iter().any(|f| f.opener_alpha > 0.0 && f.opener_alpha < 1.0), "the opener fades over frames");
@@ -1099,22 +1125,21 @@ mod tests {
     }
 
     /// CLOSE, phase 1: the slab BULGES outward on the first frame (iOS: the bottom edge +17 px of
-    /// ~750, about 2% of the height) before it shrinks, with the rows and the frost leaving over
-    /// ~50 ms WITH it, not over a rect that holds.
+    /// ~750, about 2% of the height) before it shrinks, with the rows leaving over ~50 ms WITH it, not
+    /// over a rect that holds (the frost stays, `no_open_or_close_frame_draws_a_clear_body`).
     #[test]
-    fn a_close_bulges_first_and_the_rows_and_frost_leave_with_the_slab() {
+    fn a_close_bulges_first_and_the_rows_leave_with_the_slab() {
         let (open, close) = open_then_close(Some(PILL));
         let rest = open.last().unwrap().rect;
         let c1 = close[0];
         assert!(c1.rect.h > rest.h + 0.01 * rest.h && c1.rect.h < rest.h + 0.07 * rest.h, "the first frame bulges (iOS: 2.7% of the travel at 17 ms, ~7% at 33): {c1:?}");
-        assert!(c1.content_alpha > 0.3 && c1.clear < 0.7, "the content and the frost are leaving, not gone: {c1:?}");
+        assert!(c1.content_alpha > 0.3 && c1.content_alpha < 0.95, "the content is leaving, not gone: {c1:?}");
         assert!(close[1].rect.h > rest.h, "the bulge holds to ~33 ms (iOS: 1.07 of the travel there): {:?}", close[1]);
         assert!(close[3].rect.h < rest.h, "and the slab is shrinking by ~67 ms: {:?}", close[3]);
-        assert!(close[3].content_alpha < 0.05 && close[3].clear > 0.95, "rows and frost gone by ~67 ms: {:?}", close[3]);
-        assert!(close.iter().skip(4).all(|f| f.clear >= 0.97), "the slab is clear for the rest of the close");
+        assert!(close[3].content_alpha < 0.05, "rows gone by ~67 ms: {:?}", close[3]);
         assert!(close.iter().skip(5).all(|f| f.content_alpha < 0.02), "no rows on the way back");
         for pair in close.windows(2).take(6) {
-            assert!(pair[1].content_alpha <= pair[0].content_alpha + 1e-4 && pair[1].clear >= pair[0].clear - 1e-4);
+            assert!(pair[1].content_alpha <= pair[0].content_alpha + 1e-4);
         }
     }
 
@@ -1136,7 +1161,7 @@ mod tests {
         out
     }
 
-    /// CLOSE, phase 2: after the content has left, the clear slab A lies BELOW the opener (in the
+    /// CLOSE, phase 2: after the content has left, the frosted slab A lies BELOW the opener (in the
     /// drain band, closer than the neck reach) and is smaller than it: the drain rect is
     /// [`DRAIN_WIDTH`] of the opener's width, its height, a capsule, centred on it.
     #[test]
@@ -1421,11 +1446,10 @@ mod tests {
             for _ in 0..40 {
                 m.step(false, dt);
                 let f = m.frame(Some(PILL), PANEL, RAD);
-                for v in [f.content_alpha, f.clear, f.opener_alpha, f.ground_alpha] {
+                for v in [f.content_alpha, f.opener_alpha, f.ground_alpha] {
                     assert!((0.0..=1.0).contains(&v), "in range at dt {dt}: {f:?}");
                 }
                 assert!(f.content_alpha <= prev.content_alpha + 1e-4, "content only leaves at dt {dt}");
-                assert!(f.clear >= prev.clear - 1e-4, "frost only leaves at dt {dt}");
                 prev = f;
             }
             assert!(m.closed());
@@ -1448,7 +1472,7 @@ mod tests {
         }
         let f = m.frame(Some(PILL), PANEL, RAD);
         assert!(m.settled(), "the re-open settles");
-        assert!(f.content_alpha > 0.999 && f.clear < 0.001 && f.merge.is_none(), "{f:?}");
+        assert!(f.content_alpha > 0.999 && f.merge.is_none() && f.glass_morph(None).clear == 0.0, "{f:?}");
     }
 
     /// The modal dim of a MORPHING menu follows its morph (`Popover::dim`, the shared place every

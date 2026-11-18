@@ -211,6 +211,17 @@ uniform highp vec4 u_mrg;
 uniform highp vec2 u_mrg_rk;
 uniform vec4 u_mrg_tint;
 uniform float u_clear;
+// THE FROSTED BODY, `#ifdef PLX_FROST` only: the FROST VARIANT of this program (`gfx::FS_GLASS_FROST`,
+// linked beside the plain one, drawn by a glass that has a `gfx::GlassFrost`). Its body texture is the
+// BAKED body (`fs_frost_bake.frag`, `gfx::FrameCache::frost_bake_owed`): the menu's retained blur
+// ALREADY dimmed by the modal dim and ALREADY held under its brightness ceiling
+// (`ui::theme::FROST_BODY_CEILING`), at 1/8 resolution, once per change rather than per pixel per
+// frame. So under `PLX_FROST` the body fetch below does no `dimRGB` and carries no ceiling code and no
+// cap uniform: measured on the television, the ceiling cost 0.69M GPU cycles of the settled open
+// (0.31M of it even when switched off) and the body's dim fetch 0.27M. `dimRGB` itself stays for the
+// SHARP source (the rim band, the clear face), which is the undimmed page.
+// The plain program has none of this: a compiler that refuses the variant costs the menus their frost
+// and not every glass surface its program.
 
 // The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
 // `u_tex` texel already read at `uv`, the ink in mode 2.
@@ -251,7 +262,11 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
        * mix(u_wash_w.x, u_wash_w.y, w.y);
   }
   c = mix(u_source_ground, c, u_source_alpha);
+#ifdef PLX_FROST
+  return c;
+#else
   return dimRGB(c, uv, g);
+#endif
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){

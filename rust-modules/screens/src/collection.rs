@@ -964,7 +964,11 @@ impl CollectionScreen {
 impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        self.page.policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        // Under posters is a setting Settings changes while it covers the page: noticed here, on
+        // whichever event comes first, and answered with page damage (a returning page raises none).
+        if crate::registry::moved(&mut self.page.policy, crate::registry::captions::policy_for(H::screen_inputs(cx))) {
+            fx.invalidate(Provenance::Nav);
+        }
         // The content index is current before the stack reads it for this event.
         match ev {
             ScreenEvent::Tick(_) => self.resync(cx),
@@ -1200,6 +1204,33 @@ mod tests {
         Machine::<CollectionHost>::step(screen, &ev, cx, &mut fx);
         drop(fx);
         out
+    }
+
+    /// **A collection page, covered, notices that Settings changed what its members draw under
+    /// the posters** (`step`'s head): a page returning from under a cover raises no damage of its
+    /// own, and typed page damage is what retakes a frozen host's snapshot.
+    #[test]
+    fn the_collection_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+        use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+        use plx_plex::plex::session::UnderPosters;
+        let _guard = plx_base::testlock::serial();
+        let (store, mut screen) = seeded();
+        let mut uncover_under = |setting: UnderPosters| {
+            let _pin = PolicyPin::set(setting);
+            let mut present = plx_machine::present::Present::new();
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(9)), &mut present);
+            Machine::<CollectionHost>::step(&mut screen, &ScreenEvent::Cover, &cx(store.view(), None), &mut fx);
+            drop(fx);
+            present.page_damaged()
+        };
+        // Probed with `Cover`: this page still damages unconditionally on `Uncover`/`Enter` (a
+        // leftover), and the head compare is the same on whichever event comes first.
+        uncover_under(UnderPosters::DEFAULT);
+        assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+        assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+        assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
     }
 
     fn opens_summary(out: &[plx_machine::machine::Stamped<CollectionHost>]) -> bool {

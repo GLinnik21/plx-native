@@ -207,6 +207,8 @@ pub(super) enum Readout {
 /// The Recommended page: a vertical stack of the library's hub rows.
 pub struct RecommendedScreen {
     caption_policy: plx_ui::caption_policy::CaptionPolicy,
+    /// The Continue Watching setting the deck's tiles were last drawn with (`step` compares it).
+    deck_press: plx_plex::plex::session::DeckPress,
     pub(super) entry: EntryId,
     instance: InstanceId,
     kind: SecKind,
@@ -396,6 +398,7 @@ impl RecommendedScreen {
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         Self {
             caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            deck_press: plx_plex::plex::session::DeckPress::Details,
             entry, instance, kind, keys: KeyRegistry::default(), shelves: Vec::new(),
             section: None, epoch: None, query: None, shelf_publication: None,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
@@ -1124,6 +1127,14 @@ impl RecommendedScreen {
 impl<H: LibraryLike> Machine<H> for RecommendedScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // The shelves draw the Under posters policy, and the Continue Watching deck's tile the
+        // Continue Watching setting; Settings changes either while it covers the page, and the
+        // first event after it is where the page learns (a returning page raises no damage).
+        let inputs = H::screen_inputs(cx);
+        let pressed = crate::registry::moved(&mut self.deck_press, inputs.preference::<plx_plex::plex::session::DeckPressPref>());
+        if crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(inputs)) | pressed {
+            fx.invalidate(Provenance::Nav);
+        }
         self.step_event(ev, cx, fx)
     }
 }

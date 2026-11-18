@@ -1987,7 +1987,10 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     /// linked heading `collection.heading` and the About footer's two stops `about.card` and
     /// `about.languages`. An index is a position in the collection its segment names, so a card or an
     /// episode off screen has its id as well. The `subject` of a season, an episode or a card is its
-    /// ratingKey.
+    /// ratingKey, and so is the subject of each hero control that PLAYS or WRITES to a title: the
+    /// ratingKey it acts on ([`hero_control_subject`]), which on a show that has been started is the
+    /// on-deck episode, not the page's. A control whose target the page fixes (it only navigates or opens
+    /// a menu) has none.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let meta = H::metadata(cx);
         let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
@@ -1997,7 +2000,13 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // projection outlives the borrow of the views (a read-side state file only)
         let with_subject = |a: A11y<'static>, rk: &str| if rk.is_empty() { a } else { a.with_subject(rk.to_owned()) };
         Some(match located {
-            Located::Hero(ctl) => A11y::new(named("hero").name(ctl.a11y_name()), A11yRole::Button),
+            Located::Hero(ctl) => {
+                let a = A11y::new(named("hero").name(ctl.a11y_name()), A11yRole::Button);
+                match d.and_then(|d| hero_control_subject(ctl, d, self.selected())) {
+                    Some(rk) => with_subject(a, rk),
+                    None => a,
+                }
+            }
             Located::Season(i) => {
                 let season = d?.seasons.get(i)?;
                 let a = A11y::new(named("season").index(i), A11yRole::Tab).with_label(season.title.clone());
@@ -2157,7 +2166,11 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
         // Related and the collection's members are POSTER shelves: they follow the Under posters
         // setting, so the band each reserves and the caption `cards::label` builds cannot disagree.
         // Extras (landscape stills) and Cast (headshots) are not posters and keep the legacy block.
-        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        // Settings changes the setting while it covers the page, and a returning page raises no
+        // damage of its own: the first event after it is where the page learns, and repaints.
+        if crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(H::screen_inputs(cx))) {
+            fx.invalidate(Provenance::Nav);
+        }
         let policy = Some(self.caption_policy);
         self.related.set_caption_policy(policy);
         self.collection.set_caption_policy(policy);
@@ -4688,7 +4701,7 @@ impl DetailScreen {
                         StoreId::ViewState,
                         StoreCmd::ViewState(ViewStateCmd::Request {
                             sid: d.sid,
-                            rk: hero::hero_episode(d).map_or_else(|| d.rk.clone(), |ep| ep.rk.clone()),
+                            rk: hero_control_subject(ctl, d, None).map_or_else(|| d.rk.clone(), str::to_owned),
                             // The watched action follows the episode displayed by the hero.
                             scope: hero_mark_scope(d),
                             write: if ctl == hero::HeroCtl::MarkWatched {
@@ -4830,6 +4843,42 @@ impl DetailScreen {
         fx.push(Fx::App(AppFx::Content(req)));
     }
 
+}
+
+/// **The ratingKey a hero control acts on**: the accessibility `subject` of each control that plays a
+/// title or writes to one, so the harness's guard can make a press name the title it is about (the rule is
+/// never to press OK on a title whose ratingKey you have not read). It is what the activation itself
+/// reads, not the route's key: Play and Restart play [`Detail::play_episode`] on a show page, the loaded
+/// card (`selected`) or the page's item on any other; the watched toggle writes the on-deck episode of a
+/// show that has been started, else the page's item; the bookmark and the trailer act on the page's item.
+/// `None` for the controls that only navigate or open a menu or a panel (Go to Show, Also available, Play
+/// Version, More): the control itself acts on no title. The panel or menu one of them opens has rows of its
+/// own, each guarded by its own subject: a library item's menu (`itemmenu.*`) carries its title's key, and the
+/// Play Version panel's `versions.row.<n>` (`versions_panel.rs`, OK delivers `AppMsg::PlayVersion`, which plays)
+/// carries [`play_subject`], this function's answer for Play. Exhaustive, so a new control must be placed here.
+pub(crate) fn hero_control_subject<'a>(
+    ctl: hero::HeroCtl,
+    d: &'a Detail,
+    selected: Option<&'a plx_data::pms::PmsMovie>,
+) -> Option<&'a str> {
+    use hero::HeroCtl;
+    match ctl {
+        HeroCtl::Play | HeroCtl::Restart => Some(if d.is_show {
+            d.play_episode().map_or(d.rk.as_str(), |ep| ep.rk.as_str())
+        } else {
+            selected.map_or(d.rk.as_str(), |m| m.rk.as_str())
+        }),
+        HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => Some(hero::hero_episode(d).map_or(d.rk.as_str(), |ep| ep.rk.as_str())),
+        HeroCtl::Watchlist | HeroCtl::Trailer => Some(d.rk.as_str()),
+        HeroCtl::GoToShow | HeroCtl::Alt | HeroCtl::Version | HeroCtl::More => None,
+    }
+}
+
+/// **The ratingKey the hero's Play plays** ([`hero_control_subject`] of Play, with no loaded card to prefer): what the
+/// Play Version panel's rows play too, since a committed row plays the hero's title in that version
+/// (`AppMsg::PlayVersion`, [`DetailScreen::play_hero`]).
+pub(crate) fn play_subject(d: &Detail) -> Option<&str> {
+    hero_control_subject(hero::HeroCtl::Play, d, None)
 }
 
 /// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's
