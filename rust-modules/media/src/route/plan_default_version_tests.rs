@@ -212,6 +212,9 @@ fn played_video_follows_the_first_episode_of_an_unstarted_show() {
         played_video(d, DirectPlayMode::Auto, &Caps::assumed(), DolbyVisionMode::Auto, DvCapability::Unknown)
     }
     assert_eq!(facts(&d).unwrap().resolution, "720");
+    d.stream_episode_rk.clear();
+    assert!(facts(&d).is_none(), "a legacy recording cannot identify its season's stream owner");
+    d.stream_episode_rk = "first".into();
     d.on_deck = Some(Episode { rk: "other".into(), part: "/other".into(), ..Default::default() });
     assert_eq!(facts(&d).unwrap().primary_part, "/first");
     d.on_deck.as_mut().unwrap().resume_ms = 5000;

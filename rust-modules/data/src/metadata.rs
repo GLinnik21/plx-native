@@ -1652,7 +1652,7 @@ pub struct Detail {
     pub stream_episode_rk: String,
     // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
     // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
-    // picker, by `MediaId`). For a SHOW these are borrowed from its first episode, like the
+    // picker, by `MediaId`). For a SHOW these are borrowed from its hero episode, like the
     // About footer's audio/subtitle lists. `bitrate`/`width`/`height` are unused by the UI today
     // and carried for the video-quality ladder ("26.1 Mbps 4K (Original)").
     pub video_resolution: String, // "4k" | "1080" | "720" | "sd" — the hero's media badge
@@ -1775,7 +1775,7 @@ impl Detail {
     /// Older recordings predate the explicit owner and loaded the on-deck episode if present.
     pub fn stream_episode_key(&self) -> Option<&str> {
         if self.stream_episode_rk.is_empty() {
-            self.on_deck.as_ref().or_else(|| self.episodes.first()).map(|e| e.rk.as_str())
+            self.on_deck.as_ref().map(|e| e.rk.as_str())
         } else {
             Some(&self.stream_episode_rk)
         }
@@ -1801,8 +1801,8 @@ impl Detail {
     /// (`screens::tracks_panel`) and the Languages column's press gate on the detail page.
     ///
     /// It is `part` rather than `is_show` on purpose. A SHOW container carries no `Media` of its
-    /// own — `parse_streams` backfills its audio/subtitle lists from episode 1 for the About footer
-    /// — so on a show page a track sheet would print episode 1's path, size and bitrate under the
+    /// own — `parse_streams` backfills its audio/subtitle lists from the hero episode for the About footer
+    /// — so on a show page a track sheet would print that episode's path, size and bitrate under the
     /// show's name. That is not a truncation of the truth, it is a different file, and `part` is
     /// exactly the field that is empty when the item has no file of its own ("Media[0].Part[0].key
     /// for a leaf (movie/episode); empty for a show").
@@ -2356,7 +2356,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
         video_fps: 0.0, // set from the video Stream by parse_streams below
         // likewise set by parse_streams (one assignment point), which for a SHOW runs a second
-        // time over its first episode — the show container carries no Media of its own
+        // time over its hero episode — the show container carries no Media of its own
         stream_episode_rk: String::new(),
         video_resolution: String::new(),
         width: 0,
@@ -2414,7 +2414,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         version_parts: Vec::new(),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
-    // episodes do, so load_detail backfills a show's streams from its first episode).
+    // episodes do, so load_detail backfills a show's streams from its hero episode).
     parse_streams(&it, &mut d);
     Some((d, it.primary_extra_key.clone()))
 }
