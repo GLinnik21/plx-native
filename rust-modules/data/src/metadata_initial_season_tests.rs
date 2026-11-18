@@ -169,6 +169,8 @@ fn the_on_deck_episodes_versions_come_from_its_own_full_read() {
     let server = serve();
     let sid = open(&server);
     let d = fetch_full(client_of(sid), sid, "show-1", None, None).expect("the show page answers");
+    assert_eq!(d.play_episode().map(|e| e.rk.as_str()), Some("s3e1"));
+    assert_eq!(d.stream_episode_key(), None, "the first episode had no metadata response");
     let versions = &d.on_deck.as_ref().expect("the show has an on-deck episode").versions;
     assert_eq!(versions.iter().map(|v| (v.id.0, v.dovi.profile)).collect::<Vec<_>>(), [(31, 5), (32, 0)]);
 }

@@ -10069,90 +10069,23 @@ impl ResolveEnv {
 }
 
 pub fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
+    detail_playback_preview(d).map(|(preview, _)| preview)
+}
+
+/// The route preview and its source facts from the same selection and capability snapshot.
+pub fn detail_playback_preview(d: &plx_data::metadata::Detail) -> Option<(Preview, PlayedVideo<'_>)> {
     playback_preview_with_capability(d, None)
 }
 
-pub fn detail_play_version(d: &plx_data::metadata::Detail) -> Option<&plx_data::pms::MediaVersion> {
+pub fn detail_played_video(d: &plx_data::metadata::Detail) -> Option<PlayedVideo<'_>> {
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
-    detail_version_with(d, direct_play_mode(), &caps, dolby_vision_mode(), plx_platform::devcaps::dv::capability())
-}
-
-fn detail_version_with<'a>(
-    d: &'a plx_data::metadata::Detail,
-    mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
-    dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
-) -> Option<&'a plx_data::pms::MediaVersion> {
-    let versions = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
-        Some(ep) => &ep.versions,
-        None if d.part.is_empty() => return None,
-        None => &d.versions,
-    };
-    version_play_starts(versions, mode, caps, dv_mode, dv_probed)
-}
-
-struct PreviewFile<'a> {
-    part: &'a str,
-    vcodec: &'a str,
-    width: i64,
-    height: i64,
-    kbps: i64,
-    ceiling_kbps: i64,
-    acodec: &'a str,
-    audio: &'a [plx_data::metadata::Stream],
-    subs: &'a [plx_data::metadata::Stream],
-    dovi: plx_data::metadata::Dovi,
-}
-
-fn preview_file<'a>(
-    d: &'a plx_data::metadata::Detail,
-    mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
-    dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
-) -> Option<PreviewFile<'a>> {
-    let own = |part: &'a str, vcodec: &'a str| PreviewFile {
-        part,
-        vcodec,
-        width: d.width,
-        height: d.height,
-        kbps: d.bitrate,
-        ceiling_kbps: source_kbps(d),
-        acodec: &d.acodec,
-        audio: &d.audio,
-        subs: &d.subs,
-        dovi: d.dovi,
-    };
-    // A SHOW's container carries no file of its own, so the page answers for the episode its Play
-    // button would start — the one the hero is already about. Its frame size and audio list are
-    // the show Detail's, which `fetch_item_streams` backfilled from that same episode.
-    let (part, vcodec) = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
-        Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
-        None => (d.part.as_str(), d.vcodec.as_str()),
-    };
-    let Some(v) = detail_version_with(d, mode, caps, dv_mode, dv_probed) else {
-        return Some(own(part, vcodec));
-    };
-    let file = d.version_parts.iter().find(|p| p.id == v.id)?;
-    Some(PreviewFile {
-        part: &file.part,
-        vcodec: &v.vcodec,
-        width: v.width,
-        height: v.height,
-        kbps: v.kbps,
-        ceiling_kbps: ceiling_kbps(v.video_kbps, v.kbps),
-        acodec: &v.acodec,
-        audio: &file.audio,
-        subs: &file.subs,
-        dovi: v.dovi,
-    })
+    played_video(d, direct_play_mode(), &caps, dolby_vision_mode(), plx_platform::devcaps::dv::capability())
 }
 
 fn playback_preview_with_capability(
     d: &plx_data::metadata::Detail,
     capability: Option<plx_platform::devcaps::dv::DvCapability>,
-) -> Option<Preview> {
+) -> Option<(Preview, PlayedVideo<'_>)> {
     let mode = direct_play_mode();
     // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
     // is a start edge of its own: the value a play started this moment would begin on (the boot
@@ -10161,27 +10094,32 @@ fn playback_preview_with_capability(
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
     let dv_mode = dolby_vision_mode();
     let dv_probed = capability.unwrap_or_else(plx_platform::devcaps::dv::capability);
-    let file = preview_file(d, mode, &caps, dv_mode, dv_probed)?;
-    // The page answers for the play a press would start, so it plans from the same gated
-    // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
-    let presentation = frozen_dv_decision(dv_mode, dv_probed, file.dovi, file.vcodec).presentation;
+    let file = played_video(d, mode, &caps, dv_mode, dv_probed)?;
+    let (part, audio, subs) = match file.version {
+        Some(v) => {
+            let streams = d.version_parts.iter().find(|p| p.id == v.id)?;
+            (streams.part.as_str(), &streams.audio, &streams.subs)
+        }
+        None => (file.primary_part, &d.audio, &d.subs),
+    };
+    let presentation = file.dv.presentation;
     if mode == DirectPlayMode::Forced {
-        return (!file.part.is_empty() && part_is_streamable(file.part)
+        return (part_is_streamable(part)
             && video_feed_supported(file.vcodec, presentation, &caps)
-            && file.audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
-            .then_some(Preview::DirectPlay);
+            && audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
+            .then_some((Preview::DirectPlay, file));
     }
     let p = playback_preview_with_audio(
         &caps,
-        file.part,
+        part,
         file.vcodec,
         file.width,
         file.height,
         presentation,
-        file.audio,
+        audio,
         AudioPreviewInputs {
             default_acodec: file.acodec,
-            sub_selected: pick_dp_subtitle(file.subs).is_some(),
+            sub_selected: pick_dp_subtitle(subs).is_some(),
             quality: quality(),
             dv_declared: false, // filled from `presentation` by the preview itself
             local_link: plx_plex::plex::client_for(d.sid)
@@ -10202,12 +10140,13 @@ fn playback_preview_with_capability(
         plx_plex::plex::link_policy(location),
         quality_policy(quality(), true, file.ceiling_kbps, file.width, file.height),
     ));
-    Some(match p {
+    let preview = match p {
         Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,
         Preview::DirectPlay if !policy.direct_play => Preview::Converts,
         Preview::Remux | Preview::OriginalAudioConverted if !policy.remux => Preview::Converts,
         _ => p,
-    })
+    };
+    Some((preview, file))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -10215,7 +10154,7 @@ pub fn playback_preview_with_capability_for_test(
     d: &plx_data::metadata::Detail,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<Preview> {
-    playback_preview_with_capability(d, Some(capability))
+    playback_preview_with_capability(d, Some(capability)).map(|(preview, _)| preview)
 }
 
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);

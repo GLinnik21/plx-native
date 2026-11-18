@@ -161,8 +161,8 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   - Path param is named `ids` and is an **array** (comma-separated) — the app can batch several
     ratingKeys in one call (`/library/metadata/1,2,3`) if ever useful.
   - **D-2** applies to the streams it reads (see below). No request-side divergence.
-- **Second call site** (`fetch_item_streams`, show → first episode) uses the same operation,
-  consuming only the `Stream[]` subset. Same notes.
+- Show pages use the same operation for the episode the hero plays. `backfill_episode` reads its
+  primary stream facts and alternate media versions for the detail page and playback preview.
 
 ### 5. `libraryMetadataGetRelated` — related shelves for an item
 - **Method / canonical path:** `GET /library/metadata/{ids}/related`  ✅ matches app

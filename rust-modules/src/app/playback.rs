@@ -487,12 +487,8 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
 pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore) -> Option<i64> {
     let d = meta.view().current()?.clone();
     if d.kind == "show" || !d.seasons.is_empty() {
-        let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
-            || d.seasons.iter().any(|s| s.viewed_leaf_count > 0);
-        let ep = (if started { d.on_deck.as_ref() } else { None })
-            .or_else(|| d.episodes.first())?
-            .clone();
-        request_episode(ps, meta, &d, &ep, None).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+        let ep = d.play_episode()?;
+        request_episode(ps, meta, &d, ep, None).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
         plx_media::route::request_play(ps, meta, start_caps(), plx_media::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "", None, d.episodes_show_rk())
