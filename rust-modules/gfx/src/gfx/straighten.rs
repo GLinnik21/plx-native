@@ -20,15 +20,14 @@
 //! # The pass
 //!
 //! A last draw before the swap rewrites the frame `rgb' = a > 0 ? rgb / a : 0`, alpha unchanged,
-//! blending off (`fs_straighten.frag`), over the pixels the frame drew into and no others (below). The
+//! blending off (`fs_straighten.frag`), over the regions booked for conversion (below). The
 //! compositor's multiply then returns exactly the colour the frame drew: `(rgb / a) * a + video * (1 - a)
 //! = rgb + video * (1 - a)`, the premultiplied picture the frame was built as. An opaque pixel (`a = 1`)
-//! and a hole (`a = 0`) are fixed points, which is what makes "the pixels the frame drew into" enough:
-//! every other pixel is the transparent clear.
+//! and a black pixel at any alpha are fixed points of the conversion.
 //!
 //! **Where it runs.** From the application loop (`app/run.rs`'s `present_and_swap`), after the frame's
-//! draw and its one framebuffer readback and before anything else touches the surface, and only on a
-//! frame whose surface is over the BOUND video plane (`Player::video_plane_bound`) that DREW something.
+//! draw and its one framebuffer readback and before anything else touches the surface, and only when a
+//! surface over the bound video plane (`Player::video_plane_bound`) has coverage to convert.
 //! The gate presents every frame while the plane is bound, and about 99 % of those frames are a
 //! transparent clear with no draw call at all. Two reads of the frame's own state decide it: the plane
 //! bit (a function argument, not gfx state: [`super::video_plane_frame`] is restored to `false` before
@@ -390,8 +389,7 @@ pub fn init() {
 /// and drew something ([`plan`]); returns whether it ran. Call it LAST, after every draw and every
 /// readback of the frame, before the swap; the surface is `straightened` from then on.
 ///
-/// It draws one quad over each box the frame drew into ([`Ledger`]) and over nothing else: a pixel no
-/// draw touched is the transparent clear, a fixed point, and the boxes are disjoint, so every pixel the
+/// It draws one quad over each box booked for conversion ([`Ledger`]). The boxes are disjoint, so every pixel the
 /// pass visits it visits once. A box is a quad of its own and not a scissor: on this GPU a scissor
 /// bounds what a pass may WRITE and the tiler still walks every tile under the geometry
 /// (`gfx::culled`'s measurement), so only the quad's size removes the work.
