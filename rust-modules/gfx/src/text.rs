@@ -226,7 +226,20 @@ extern "C" {
     fn glUniform4fv(loc: c_int, count: c_int, value: *const f32);
     fn glUniform1i(loc: c_int, x: c_int);
     fn glUniform4f(loc: c_int, x: f32, y: f32, z: f32, w: f32);
-    fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
+    /// The raw import: only [`glDrawArrays`] below calls it.
+    #[link_name = "glDrawArrays"]
+    fn glDrawArrays_raw(mode: c_uint, first: c_int, count: c_int);
+}
+
+/// A draw call, booked in the straighten pass's ledger first with the extent it writes
+/// (`gfx::straighten::note_draw`): the pass draws over the boxes the frame drew into, and a glyph is a
+/// draw like any other. Shadows the raw import so the call sites below keep their spelling and add the
+/// extent ([`crate::gfx::set_rect`]'s answer for the quad's rect uniform); the same wrapper `gfx.rs` has.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int, extent: crate::gfx::straighten::Extent) {
+    crate::gfx::straighten::note_draw(extent);
+    glDrawArrays_raw(mode, first, count)
 }
 
 static mut TPROG: c_uint = 0;
@@ -255,7 +268,7 @@ static mut TLF_LEAD: c_int = 0;
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
 static mut TLF_VBOT: c_int = 0;
-// the ink program (bound only while an [`InkClip`] is set) + its own uniform locations
+// the ink program (bound while an [`InkClip`] is set or the painter's rounded clip is live; its third slot carries the rounded clip) + its own uniform locations
 static mut TPROGI: c_uint = 0;
 static mut TLI_RECT: c_int = 0;
 static mut TLI_SCREEN: c_int = 0;
@@ -264,6 +277,9 @@ static mut TLI_TEX: c_int = 0;
 static mut TLI_A: c_int = 0;
 static mut TLI_B: c_int = 0;
 static mut TLI_P: c_int = 0;
+/// The ink program's third slot: the painter's ROUNDED CLIP ([`crate::gfx::rclip`]), as a rect and (radius, on).
+static mut TLI_C: c_int = 0;
+static mut TLI_Q: c_int = 0;
 
 /// Which side of an [`InkShape`] a draw is kept on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,8 +323,9 @@ pub fn ink_clip() -> Option<InkClip> {
     INK_CLIP.with(|c| c.get())
 }
 
-/// Bind the ink program with `clip`'s shapes as uniforms. `false` when the program did not link
-/// (the caller then draws plain).
+/// Bind the ink program with `clip`'s shapes as uniforms, and the painter's rounded clip
+/// ([`crate::gfx::rclip`]) in the third slot (off when none is live). `false` when the program did
+/// not link (the caller then draws plain).
 unsafe fn bind_ink(clip: &InkClip) -> bool {
     if TPROGI == 0 {
         return false;
@@ -326,6 +343,18 @@ unsafe fn bind_ink(clip: &InkClip) -> bool {
     glUniform4f(TLI_A, a[0], a[1], a[2], a[3]);
     glUniform4f(TLI_B, b[0], b[1], b[2], b[3]);
     glUniform4f(TLI_P, ra, ka, rb, kb);
+    // The rounded clip, always INSIDE: the same fold as an ink shape's (`rad` held to the half extents).
+    match crate::gfx::rclip() {
+        Some(c) => {
+            let rad = c.radius.min((c.x1 - c.x0) * 0.5).min((c.y1 - c.y0) * 0.5).max(0.0);
+            glUniform4f(TLI_C, c.x0, c.y0, c.x1, c.y1);
+            glUniform2f(TLI_Q, rad, 1.0);
+        }
+        None => {
+            glUniform4f(TLI_C, 0.0, 0.0, 0.0, 0.0);
+            glUniform2f(TLI_Q, 0.0, 0.0);
+        }
+    }
     true
 }
 
@@ -341,8 +370,8 @@ pub fn draw_mask_inked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const
         }
         glUniform4fv(TLI_COL, 1, tint);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(TLI_RECT, x, y, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let ext = crate::gfx::set_rect(TLI_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
     true
 }
@@ -1670,6 +1699,9 @@ pub fn init_text() {
             TLI_A = glGetUniformLocation(TPROGI, c"u_ma".as_ptr());
             TLI_B = glGetUniformLocation(TPROGI, c"u_mb".as_ptr());
             TLI_P = glGetUniformLocation(TPROGI, c"u_mp".as_ptr());
+            TLI_C = glGetUniformLocation(TPROGI, c"u_mc".as_ptr());
+            TLI_Q = glGetUniformLocation(TPROGI, c"u_mq".as_ptr());
+            crate::gfx::rclip_masked_program(TPROGI);
         }
         // Constant uniforms, set once per program (per-program state): the fixed 1920x1080
         // screen and sampler unit 0. draw_text/_fade no longer re-send them per string.
@@ -2858,21 +2890,24 @@ pub fn draw_text(
         };
         let (ox, oy) = p.origin(zoom);
         // Inside an ink clip the glyphs take the ink program: each fragment's coverage is cut by
-        // the clip's rounded shapes, so ONE label can wear two inks along a capsule's arc.
-        if let Some(clip) = ink_clip().filter(|_| TPROGI != 0) {
+        // the clip's rounded shapes, so ONE label can wear two inks along a capsule's arc. So do they
+        // inside the painter's rounded clip, whose slot the same program carries (the glass menu's
+        // labels are cut by the lens's arc); with no ink clip then, the ink clip is empty.
+        let inked = ink_clip().or_else(|| crate::gfx::rclip().is_some().then(InkClip::default));
+        if let Some(clip) = inked.filter(|_| TPROGI != 0) {
             if bind_ink(&clip) {
                 glUniform4fv(TLI_COL, 1, col);
                 glBindTexture(GL_TEXTURE_2D, p.tex);
-                glUniform4f(TLI_RECT, ox, oy, p.quad.w, p.quad.h);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                let ext = crate::gfx::set_rect(TLI_RECT, ox, oy, p.quad.w, p.quad.h);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
                 return p.w;
             }
         }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, p.tex);
-        glUniform4f(TL_RECT, ox, oy, p.quad.w, p.quad.h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let ext = crate::gfx::set_rect(TL_RECT, ox, oy, p.quad.w, p.quad.h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         p.w
     }
 }
@@ -3089,8 +3124,8 @@ pub fn draw_text_fade(
         glUniform2f(TLF_VBOT, vb0, vb1);
         glBindTexture(GL_TEXTURE_2D, p.tex);
         let (ox, oy) = p.origin(zoom);
-        glUniform4f(TLF_RECT, ox, oy, p.quad.w, p.quad.h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let ext = crate::gfx::set_rect(TLF_RECT, ox, oy, p.quad.w, p.quad.h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         p.w
     }
 }

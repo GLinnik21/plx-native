@@ -12,6 +12,17 @@
 //! seasons instead); [`DetailParts::kept`] holds a set to what a kind offers and to the maximum, and
 //! is the one place a stored or unpacked value is made valid.
 
+/// Dynamic range for a video quality label shared by listing and playback surfaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynamicRange { Sdr, Hdr, DolbyVision }
+
+impl DynamicRange {
+    /// What the file carries, for listing surfaces without a planned playback route.
+    pub fn carried(hdr: bool, dolby_vision: bool) -> Self {
+        if dolby_vision { Self::DolbyVision } else if hdr { Self::Hdr } else { Self::Sdr }
+    }
+}
+
 /// One fact a details line can carry. The declaration order IS the line's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DetailPart {

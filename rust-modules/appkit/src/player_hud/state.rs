@@ -38,25 +38,26 @@ pub const BTN_MORE: i32 = BTN_N - 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Previous, Next, Subtitles, Audio, More }
 
-/// A frame's episode-button eligibility, availability and restart glyph, sampled once.
+/// A frame's episode-button eligibility and availability, sampled once. **Previous is the previous
+/// episode of the queue and nothing else**: it is enabled exactly when the playing row has a
+/// predecessor (`queue_neighbors`), so on the first episode of a queue it is disabled. Restarting
+/// the current episode is `HudCommand::FromBeginning` (the Info tab's action, and a More-menu row
+/// in a package that folds it), never a second meaning of this button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controls {
     pub previous: bool,
     pub next: bool,
-    pub restart: bool,
 }
 impl Controls {
-    pub const NONE: Self = Self { previous: false, next: false, restart: false };
+    pub const NONE: Self = Self { previous: false, next: false };
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
         if plx_media::route::cur_kind(ps) != "episode" { return Self::NONE; }
         let (previous, next) = plx_media::route::queue_neighbors(ps);
-        if !(previous || next) { return Self::NONE; }
-        let restart = plx_media::route::previous_restarts(plx_media::player::intended_pos_ns(ps));
-        Self::for_item(true, previous, next, restart)
+        Self::for_item(true, previous, next)
     }
-    pub fn for_item(episode: bool, previous: bool, next: bool, restart: bool) -> Self {
+    pub fn for_item(episode: bool, previous: bool, next: bool) -> Self {
         if !episode || !(previous || next) { return Self::NONE; }
-        Self { previous: previous || restart, next, restart }
+        Self { previous, next }
     }
     /// Whether the Previous/Next pair is on the row at all: [`Self::for_item`] only ever builds a
     /// pair with at least one of its two buttons live.
@@ -85,7 +86,7 @@ impl Controls {
     }
     pub fn icon(self, i: i32) -> plx_ui::icons::Icon {
         use plx_ui::icons::Icon;
-        match i { BTN_PREVIOUS if self.restart => Icon::Restart, BTN_PREVIOUS => Icon::Previous,
+        match i { BTN_PREVIOUS => Icon::Previous,
             BTN_NEXT => Icon::Next, BTN_AUDIO => Icon::Audio, BTN_MORE => Icon::More, _ => Icon::Cc }
     }
 }
@@ -137,6 +138,21 @@ impl ControlSlot {
     }
     pub fn enabled(self, idx: i32) -> bool {
         match self { Self::Discs(controls) => controls.enabled(idx), _ => (0..self.items()).contains(&idx) }
+    }
+    /// **The word that names item `idx` of a stand-in's row in an accessibility id**
+    /// (`player.control.skip`): the Skip pill is `skip`, beside the Watch cancel of the automatic
+    /// prompt (`watch`, then `skip`); Up Next's pair is `watch_credits` and `next_episode`. `None`
+    /// for the discs, whose controls are named by their command (`HudCommand::a11y_word`), and for an
+    /// index the row does not have. Static text, a name in the id grammar.
+    pub fn a11y_word(self, idx: i32) -> Option<&'static str> {
+        match (self, idx) {
+            (ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_), 0) => Some("watch_credits"),
+            (ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_), 1) => Some("next_episode"),
+            (ControlSlot::Skip(pr), 0) if pr.automatic => Some("watch"),
+            (ControlSlot::Skip(pr), 1) if pr.automatic => Some("skip"),
+            (ControlSlot::Skip(_), 0) => Some("skip"),
+            _ => None,
+        }
     }
     /// The command a press of item `idx` performs, when the row holds the discs. A stand-in's
     /// items (the Skip pill, the Up Next pair) are app-owned and carry no [`HudCommand`](super::command::HudCommand): what
@@ -312,6 +328,16 @@ pub enum Busy {
     Transport,
 }
 
+/// One immutable presentation publication, shared by input, hashing, stops and drawing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Presentation {
+    pub busy: Busy,
+    pub failure: Option<std::sync::Arc<FailureReadout>>,
+}
+impl Default for Presentation {
+    fn default() -> Self { Self { busy: Busy::None, failure: None } }
+}
+
 /// PURE: which surface owns the busy signal, given the playback state and whether this SESSION has
 /// ever presented a frame (`player::seen_frame` — NOT `frames() > 0`, see [`Busy`]).
 ///
@@ -325,15 +351,15 @@ pub enum Busy {
 /// it is both the cold-start tail AND the 1-3 frame tail of every seek (between prime→Play, where
 /// `engine` clears `seeking`, and the first presented frame). Keyed on the state alone, one of
 /// those two flashes the wrong surface every time.
-pub fn busy_surface(ps: &plx_media::route::PlaybackSession, st: plx_media::player::PlaybackState, seen_frame: bool) -> Busy {
-    busy_surface_with(ps, st, seen_frame, plx_media::player::audio_switching())
+pub fn busy_surface(failure_caption: &'static core::ffi::CStr, st: plx_media::player::PlaybackState, seen_frame: bool) -> Busy {
+    busy_surface_with(failure_caption, st, seen_frame, false)
 }
 
 /// [`busy_surface`] with the audio-switch fact given: while the rebuild loading is the one the
 /// viewer's audio-track pick asked for, the read-out says "Switching audio…" instead of
 /// "Buffering…" (`player::busy_caption_with`). Any other rebuild keeps the plain caption.
 pub fn busy_surface_with(
-    ps: &plx_media::route::PlaybackSession,
+    failure_caption: &'static core::ffi::CStr,
     st: plx_media::player::PlaybackState,
     seen_frame: bool,
     audio_switch: bool,
@@ -342,7 +368,7 @@ pub fn busy_surface_with(
     match st {
         // not `st.caption()`: the Error caption is shaped by WHY (an audio-only stream names the
         // server; see `player::error_shape`), which a method on the bare state cannot know.
-        PlaybackState::Error => Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps)),
+        PlaybackState::Error => Busy::Readout(StatusKind::Failed, failure_caption),
         s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, plx_media::player::busy_caption_with(st, audio_switch)),
         s if s.is_busy() => Busy::Transport,
         _ => Busy::None,
@@ -376,27 +402,13 @@ pub fn readout_owns_frame(busy: Busy) -> bool {
 /// refusal lands with `hud_visible` true and focus parked on the scrubber, and two blind presses
 /// (DOWN, OK) opened the Info card over the read-out from a tab row nothing had painted.
 ///
-/// It resamples [`busy`] rather than taking one, because the event loop runs before the frame's
-/// single resolve exists; both reads are of the same main-thread state within one iteration.
-pub fn transport_hidden(ps: &plx_media::route::PlaybackSession) -> bool {
-    readout_owns_frame(busy(ps))
+/// It reads the same app-owned publication as input, stops, fingerprinting and rendering.
+pub fn transport_hidden(presentation: &Presentation) -> bool {
+    readout_owns_frame(presentation.busy)
 }
 
-/// Sample the live globals ONCE and resolve the owner. Call this once per frame and pass the result
-/// to both [`render::draw`](super::render::draw) and [`draw_readout`] — the same discipline [`slot`] keeps, and for the same
-/// reason: two independent derivations of one three-way choice is how the two indicators drifted
-/// apart in the first place.
-pub fn busy(ps: &plx_media::route::PlaybackSession) -> Busy {
-    // dev: `/tmp/plxnative-failtest` forces the failure read-out — the other half of
-    // `player::failtest_arm`, which shapes WHICH failure. It is forced HERE, on the one impure
-    // sampler, rather than in `player::state()`: the pump acts on that state, and a dev switch
-    // that made the engine believe it had failed would be testing a different thing than the
-    // screen. `busy_surface` stays pure and ungated, so what draws is still the real rule.
-    if plx_base::devtrig::flag("failtest") {
-        return Busy::Readout(StatusKind::Failed, plx_media::player::error_caption(ps));
-    }
-    busy_surface(ps, plx_media::player::state(ps), plx_media::player::reported_frame(ps).unwrap_or(false))
-}
+/// Read the already captured owner. Only the app boundary samples live player/diagnostic state.
+pub fn busy(presentation: &Presentation) -> Busy { presentation.busy }
 
 // ---- the transport STATE READ-OUT (the glyph slot just past the elapsed clock) ---------------
 //
@@ -522,12 +534,27 @@ const PLEX_PASS: &str = "Plex Pass";
 /// Everything the failure read-out draws, resolved once from the live failure. The draw, the
 /// pointer stops and the key ladder all build it the same way, so the row a click lands on is the
 /// row that was drawn.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FailureReadout {
     pub(super) glyph: plx_ui::icons::Icon,
     pub(super) reason: CString,
     pub(super) note: Option<CString>,
     pub(super) actions: Vec<plx_media::player::FailureAction>,
     pub(super) footer: CString,
+}
+
+/// **The word that names a failure read-out's action in an accessibility id**
+/// (`player.failure.try_again`): static text, a name in the id grammar, one per action (a read-out
+/// offers each action at most once, so the word is unique in its row).
+pub fn failure_action_word(a: plx_media::player::FailureAction) -> &'static str {
+    use plx_media::player::FailureAction as A;
+    match a {
+        A::PlayAutomatically => "play_automatically",
+        A::TryAgain => "try_again",
+        A::ChangeQuality => "change_quality",
+        A::Repair => "repair",
+        A::Back => "back",
+    }
 }
 
 /// A control's label. Sentence case, as every `StatusOverlay` row is (the sign-in read-out's *Try
@@ -558,12 +585,12 @@ fn failure_glyph(kind: plx_media::player::FailureKind) -> plx_ui::icons::Icon {
 }
 
 impl FailureReadout {
-    /// The read-out for the failure on screen now (main thread).
-    pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
-        let mut e = plx_media::player::error_now(ps);
+    /// Pure projection of the app's complete failure snapshot, including the repair status.
+    pub fn captured(mut e: plx_media::player::ErrorShape, actions: Vec<plx_media::player::FailureAction>,
+        support: String, repair_status: plx_platform::tv::sandbox::State) -> Self {
         if e.kind == plx_media::player::FailureKind::JailMissingRtkmem {
             use plx_platform::tv::sandbox::State;
-            match ps.repair_status {
+            match repair_status {
                 State::Idle => {}
                 State::Running => {
                     e.readout = plx_platform::i18n::msg::widgets_repair_running();
@@ -579,8 +606,7 @@ impl FailureReadout {
                 }
             }
         }
-        let actions = plx_media::player::failure_actions(e.kind, plx_media::player::failure_context(ps));
-        Self::of(&e, actions, plx_media::player::support_line(e.kind))
+        Self::of(&e, actions, support)
     }
 
     /// PURE: the read-out for one failure shape.
@@ -731,10 +757,9 @@ pub const LINGER_MS: u32 = 4500;
 // is the preview position, the trailer's tap debounce and the HUD's reveal/drag flags.
 // `screens::player::input::Scrub::clamp_target` is a thin call-through to
 // [`scrub_clamp_target`] below so its own many call sites are untouched.
-/// What one fresh press hops: the Skip interval preference (10 s unless Settings changed it),
-/// read per press so a pick takes effect in a film already playing.
-pub fn scrub_step_ns() -> i64 {
-    plx_media::route::skip_interval().ns()
+/// What one fresh press hops, from that press owner's effective captured interval.
+pub fn scrub_step_ns(interval: plx_plex::plex::session::SkipInterval) -> i64 {
+    interval.ns()
 }
 /// Playback-seconds per real-second at the start of a hold, and the speed it doubles from.
 pub const SCRUB_BASE: f32 = 60.0;

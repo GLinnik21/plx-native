@@ -14,16 +14,16 @@ fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
     let _g = fresh();
     let mut owner = Owner::default();
     register(&mut owner, 2);
-    assert_eq!(slots(), vec![0, 1]);
+    assert_eq!(fixture_slots(), vec![0, 1]);
 
     plx_plex::plex::revoke_all();
     assert!(
-        slots().is_empty(),
+        fixture_slots().is_empty(),
         "there is nothing to ask while signed out"
     );
-    assert_eq!(nsrc(), 0);
+    assert_eq!(fixture_nsrc(), 0);
     assert!(
-        live_sources(&owner.state, &slots()).is_empty(),
+        live_sources(&owner.state, &fixture_slots()).is_empty(),
         "and the retired records reach neither the merge nor the verdict"
     );
 
@@ -40,12 +40,12 @@ fn signing_into_a_second_account_searches_its_slots_and_not_the_retired_ones() {
         "the next account gets a fresh slot, above the retired ones"
     );
     assert_eq!(
-        slots(),
+        fixture_slots(),
         vec![2],
         "and the live id follows it rather than starting at 0"
     );
-    assert_eq!(nsrc(), 1);
-    assert_eq!(live_sources(&owner.state, &slots()).len(), 1);
+    assert_eq!(fixture_nsrc(), 1);
+    assert_eq!(live_sources(&owner.state, &fixture_slots()).len(), 1);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
     );
     assert_eq!(restored.raw(), 2);
     assert_eq!(
-        slots(),
+        fixture_slots(),
         vec![0, 2],
         "the inactive middle share is not replaced by a range"
     );
@@ -86,7 +86,7 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
         owner.state.shelves().is_empty(),
         "old-profile tiles disappear before a new source lands"
     );
-    let live = live_sources(&owner.state, &slots());
+    let live = live_sources(&owner.state, &fixture_slots());
     assert_eq!(live.len(), 2);
     assert!(
         live.iter().all(|s| s.status == Status::Pending),
@@ -155,7 +155,7 @@ fn a_server_past_the_old_sixteen_slot_table_is_asked_and_merged() {
     let _g = fresh();
     let mut owner = Owner::default();
     register(&mut owner, 41);
-    assert_eq!(slots().last(), Some(&40), "slot 40 is in the fan-out");
+    assert_eq!(fixture_slots().last(), Some(&40), "slot 40 is in the fan-out");
     hold_off(&mut owner);
     owner.state.query = Some(Arc::from("wallace"));
 
@@ -183,7 +183,7 @@ fn forty_one_servers_are_asked_by_search_and_by_a_person_page() {
     let mut owner = Owner::default();
     register(&mut owner, 41);
     let far = plx_plex::plex::ServerId::from_raw(40);
-    assert!(slots().contains(&40), "search fans out to server 40");
+    assert!(fixture_slots().contains(&40), "search fans out to server 40");
     hold_off(&mut owner);
     owner.state.query = Some(Arc::from("wallace"));
     let mut what: Projection = Default::default();
@@ -197,7 +197,11 @@ fn forty_one_servers_are_asked_by_search_and_by_a_person_page() {
 
     let mut person = crate::person::PersonState::default();
     let adapter = crate::person::PersonAdapter::default();
-    person.open_for_test(&adapter, plx_plex::plex::ServerId::from_raw(0), "161", "5d77682a", "Idina Menzel");
+    let keys = crate::pms::registry_keys_for_test();
+    let input = crate::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
+        controlled: false, profile_refused: false, credits_refused: false, dev_bio: None, dev_credits: None };
+    person.open_for_test(&adapter, plx_plex::plex::ServerId::from_raw(0), "161", "5d77682a", "Idina Menzel", &input);
     assert!(person.asks_server_for_test(far), "the person page asks server 40 as well");
 }
 
@@ -251,7 +255,7 @@ fn a_search_over_forty_servers_asks_them_four_at_a_time() {
     let mut asked = std::collections::BTreeSet::new();
     for _ in 0..2000 {
         owner.pump(0.016);
-        let out: Vec<usize> = slots().into_iter().filter(|&i| owner.adapter.mailbox(i).busy()).collect();
+        let out: Vec<usize> = fixture_slots().into_iter().filter(|&i| owner.adapter.mailbox(i).busy()).collect();
         assert!(out.len() <= crate::stores::fanout::WIDTH, "{} requests out at once", out.len());
         asked.extend(out);
         if asked.len() == 40 { break; }

@@ -84,6 +84,21 @@ impl Default for ClientKeys {
 }
 
 impl ClientKeys {
+    /// A complete value observation supplied by a scripted host. Registered slots without
+    /// eligible keys remain distinct from absent slots, just as in a live refill.
+    pub fn captured(current: ServerId, roster_gen: u32, facts_gen: u32,
+        rows: impl IntoIterator<Item = (ServerId, Option<ClientKey>, ClientFacts)>) -> Self {
+        let mut keys = Self::default();
+        keys.2 = current;
+        keys.3 = roster_gen;
+        keys.4 = facts_gen;
+        for (sid, key, facts) in rows {
+            if let Some(key) = key { keys.0.push((sid, key)); }
+            keys.1.push((sid, facts));
+        }
+        keys
+    }
+
     /// The keys of these clients.
     pub fn of<'a>(clients: impl IntoIterator<Item = (ServerId, &'a Client)>) -> Self {
         Self::from_keys(clients.into_iter().map(|(sid, client)| (sid, ClientKey::of(client))))
@@ -116,6 +131,13 @@ impl ClientKeys {
     }
     pub fn facts(&self, sid: ServerId) -> Option<&ClientFacts> {
         self.1.iter().find(|(slot, _)| *slot == sid).map(|(_, facts)| facts)
+    }
+
+    /// Replace only scripted key values, retaining the separately captured complete roster.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replace_keys_for_test(&mut self, keys: impl IntoIterator<Item = (ServerId, ClientKey)>) {
+        self.0.clear();
+        self.0.extend(keys);
     }
 
     /// Host-only registry capture through explicit readers. Reuses both buffers and machine strings.
@@ -201,6 +223,89 @@ impl ClientKeys {
     }
 }
 
+/// Captured clock reasons and the coherent source identities they describe. The host fills this
+/// from its already captured client roster; screen code never reads keypin or the registry.
+#[derive(Clone, Debug, Default)]
+pub struct ClockFacts {
+    revision: u64,
+    initialized: bool,
+    current: ServerId,
+    empty: Option<plx_net::net::keypin::Blocked>,
+    rows: Vec<ClockRow>,
+}
+
+#[derive(Clone, Debug)]
+struct ClockRow {
+    sid: ServerId,
+    machine: String,
+    blocked: Option<plx_net::net::keypin::Blocked>,
+}
+
+impl ClockFacts {
+    /// Explicit value input for a scripted host; never reads a process-global source.
+    pub fn scripted(revision: u64, current: ServerId, empty: Option<plx_net::net::keypin::Blocked>,
+        rows: impl IntoIterator<Item = (ServerId, String, Option<plx_net::net::keypin::Blocked>)>) -> Self {
+        Self { revision, initialized: true, current, empty,
+            rows: rows.into_iter().map(|(sid, machine, blocked)| ClockRow { sid, machine, blocked }).collect() }
+    }
+
+    pub fn revision(&self) -> u64 { self.revision }
+    pub fn current_machine(&self) -> Option<&str> { self.machine(self.current) }
+    pub fn machine(&self, sid: ServerId) -> Option<&str> {
+        self.rows.iter().find(|row| row.sid == sid).map(|row| row.machine.as_str())
+    }
+    pub fn blocked_for(&self, machine: Option<&str>) -> Option<plx_net::net::keypin::Blocked> {
+        match machine {
+            None | Some("") => self.empty,
+            Some(machine) => self.rows.iter().find(|row| row.machine == machine).and_then(|row| row.blocked),
+        }
+    }
+
+    /// Refresh only when the revision or the coherent source roster changed. The retained vector
+    /// and its strings are reused. `read` is supplied by the host, not by this value.
+    /// The cheap, allocation-free guard before touching a retained publication.
+    pub fn needs_refill(&self, revision: u64, keys: &ClientKeys) -> bool {
+        let sources = || keys.iter().filter_map(|(sid, _)| keys.facts(sid).map(|facts| (sid, facts)));
+        !self.initialized || self.revision != revision || self.current != keys.current()
+            || self.rows.len() != sources().count()
+            || !self.rows.iter().zip(sources()).all(|(row, (sid, facts))|
+                row.sid == sid && row.machine == facts.machine_id)
+    }
+    pub fn refill(&mut self, revision: u64, keys: &ClientKeys,
+        mut read: impl FnMut(&str) -> Option<plx_net::net::keypin::Blocked>) -> bool {
+        if !self.needs_refill(revision, keys) { return false; }
+        let mut changed = self.current != keys.current();
+        let empty = read("");
+        changed |= self.empty != empty;
+        self.empty = empty;
+        let mut count = 0;
+        for (sid, _) in keys.iter() {
+            let Some(facts) = keys.facts(sid) else { continue };
+            if count == self.rows.len() {
+                self.rows.push(ClockRow { sid, machine: String::new(), blocked: None });
+                changed = true;
+            }
+            let row = &mut self.rows[count];
+            changed |= row.sid != sid || row.machine != facts.machine_id;
+            row.sid = sid;
+            if row.machine != facts.machine_id {
+                row.machine.clear();
+                row.machine.push_str(&facts.machine_id);
+            }
+            let blocked = read(&row.machine);
+            changed |= row.blocked != blocked;
+            row.blocked = blocked;
+            count += 1;
+        }
+        changed |= self.rows.len() != count;
+        self.rows.truncate(count);
+        self.current = keys.current();
+        self.revision = revision;
+        self.initialized = true;
+        changed
+    }
+}
+
 /// A key-checked way to a server's client, for a WORKER that holds the snapshot its step decided
 /// under. A step decides from a [`ClientKeys`] taken just before it; the worker runs later, and a
 /// profile switch re-tokens the registry's `Client` objects IN PLACE (`servers::revoke_for_profile_switch`):
@@ -225,6 +330,9 @@ impl<'a> KeyedClients<'a> {
     pub fn new(keys: &'a ClientKeys, lookup: fn(ServerId) -> Option<&'static Client>) -> Self {
         Self { keys, lookup }
     }
+
+    /// Described evidence from the captured roster, never the live registry.
+    pub fn facts(&self, sid: ServerId) -> Option<&ClientFacts> { self.keys.facts(sid) }
 
     /// The client `sid` holds, only while its key matches the snapshot. `None` when the snapshot
     /// holds no key for `sid` (the step never saw that slot), when the registry holds no client
@@ -350,3 +458,49 @@ mod tests {
 #[cfg(test)]
 #[path = "client_keys_roster_tests.rs"]
 mod roster_tests;
+
+#[cfg(test)]
+mod clock_facts_tests {
+    use super::*;
+    use plx_net::net::keypin::Blocked;
+    use std::sync::Arc;
+
+    #[test]
+    fn retained_clock_facts_reuse_arc_buffers_and_machine_strings() {
+        let sid = ServerId::from_raw(907);
+        let client: &'static Client = Box::leak(Box::new(Client::new(sid, "clock-captured-machine",
+            super::super::Origin::http("127.0.0.1", 9), "token", "clock-test")));
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(sid, 1, 1, [sid], |_| Some(client), |_| None, |_| None);
+        let mut facts = Arc::new(ClockFacts::default());
+        assert!(Arc::make_mut(&mut facts).refill(1, &keys, |id|
+            (id == "clock-captured-machine").then_some(Blocked::NoKey)));
+        let published = Arc::clone(&facts);
+        let buffer = facts.rows.as_ptr();
+        let machine = facts.rows[0].machine.as_ptr();
+        let capacities = (facts.rows.capacity(), facts.rows[0].machine.capacity());
+        for _ in 0..20 {
+            assert!(!facts.needs_refill(1, &keys));
+            assert!(Arc::ptr_eq(&published, &facts));
+            assert_eq!(facts.rows.as_ptr(), buffer);
+            assert_eq!(facts.rows[0].machine.as_ptr(), machine);
+        }
+        drop(published);
+        assert!(!Arc::make_mut(&mut facts).refill(2, &keys, |id|
+            (id == "clock-captured-machine").then_some(Blocked::NoKey)));
+        assert_eq!(facts.rows.as_ptr(), buffer);
+        assert_eq!(facts.rows[0].machine.as_ptr(), machine);
+        assert_eq!((facts.rows.capacity(), facts.rows[0].machine.capacity()), capacities);
+        assert_eq!(facts.current_machine(), Some("clock-captured-machine"));
+        assert_eq!(facts.blocked_for(Some("clock-captured-machine")), Some(Blocked::NoKey));
+        assert_eq!(facts.blocked_for(None), None);
+    }
+
+    #[test]
+    fn scripted_empty_id_fact_is_explicit() {
+        let facts = ClockFacts::scripted(3, ServerId::UNSET, Some(Blocked::KeyChanged), []);
+        assert_eq!(facts.blocked_for(None), Some(Blocked::KeyChanged));
+        assert_eq!(facts.blocked_for(Some("")), Some(Blocked::KeyChanged));
+        assert_eq!(facts.blocked_for(Some("other")), None);
+    }
+}

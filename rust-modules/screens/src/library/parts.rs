@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::a11y::{A11y, A11yPath, Seg};
 use plx_ui::caption_policy::CaptionPolicy;
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
@@ -36,6 +37,7 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 }
 
 /// The standard focused caption policy; a grid sorted by a value draws its value line instead.
+#[cfg(test)]
 pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// A grid card's label under `policy`: the focused caption band shows exactly what the Under
@@ -241,7 +243,7 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: crate::registry::captions::policy_for(H::screen_inputs(cx)), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions };
         let _ = self.grid.on(ev, cx, &src, fx);
         if !matches!(ev, ScreenEvent::Tick(_)) { return 0.0; }
         // The re-list's landing started on this tick or has ended: once it is no longer playing
@@ -297,7 +299,7 @@ impl GridPart {
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
         self.grid.set_value_line(layout.value_line());
-        self.grid.set_caption_policy(Some(caption_policy()));
+        // The owner supplies the frame's band policy through set_band_policy below.
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
 
@@ -526,7 +528,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: crate::registry::captions::policy_for(H::screen_inputs(cx)), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -652,6 +654,18 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
+    /// The item's own title, whatever the caption policy shows under the focused card.
+    fn a11y_title(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.view.item(i).map(|item| std::borrow::Cow::Borrowed(item.title.as_str()))
+    }
+    /// A slot whose page has not landed draws a skeleton (`loaded` stays true so the grid paints
+    /// it), and is not loaded: it holds no item.
+    fn a11y_loaded(&self, i: usize) -> bool { self.view.item(i).is_some() }
+    /// The item's ratingKey (a collection's, on the Collections page): what a by-id press names to stay
+    /// on the title it read. A slot whose page has not landed has none.
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.view.item(i).filter(|item| !item.rk.is_empty()).map(|item| std::borrow::Cow::Borrowed(item.rk.as_str()))
+    }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
         if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
@@ -769,10 +783,38 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
         let index = (row * cols + col).min(self.total.saturating_sub(1));
         FocusKey { entry: self.entry, elem: self.elem_at(index).unwrap_or(0) }
     }
+
+    /// **`grid.card.<i>`**, `i` the card's place in the listing (the shared cards' `card.<i>` under the
+    /// grid's name). The title is its label and the ratingKey ([`CardSource::subject`]) its subject; a
+    /// slot whose page has not landed is a card with `loaded` false. Only a slot that holds a key
+    /// (the visible rows, the look-ahead, the focus and the remembered seat: `windows`) has an id, as
+    /// only it can be focused: `GroupSpec::len` is the whole listing.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let i = self.index_of(*key)?;
+        Some(ui_cards::card_a11y::<H, _>(A11yPath::new().name("grid"), &self.source(cx), i))
+    }
+
+    /// Every card that holds a key, in listing order.
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == self.group {
+            out.extend(self.windows.iter().flat_map(|w| w.elems.iter().copied()));
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the slot a path names by its index, when it holds a key.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let i = match (segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("grid")), Some(Seg::Name("card")), Some(Seg::Index(i)), None) => i,
+            _ => return None,
+        };
+        let elem = self.elem_at(i)?;
+        Focusable::<H>::a11y(self, &elem, cx).filter(|a| a.path == *path).map(|_| elem)
+    }
 }
 
 impl<H: LibraryLike> Part<H> for GridPart {
-    fn prepare(&mut self, _budget: &mut Budget, cx: &Cx<'_, H>) { self.prepare_ahead(super::lookahead::rows(), cx); }
+    fn prepare(&mut self, _budget: &mut Budget, cx: &Cx<'_, H>) { self.prepare_ahead(H::screen_inputs(cx).runtime_policy.lookahead_rows, cx); }
 
     fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>, _rect: Rect) {
         // Metadata still pages ahead via LibraryWork::Want. Hidden artwork waits until visible
@@ -785,7 +827,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
             // Under the cards that slide over their cells.
             let view = H::listing(f.cx);
             let sort = self.layout.value_line().then(|| sort_key(&view));
-            let ghosts = GhostSrc { items: self.grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(), policy: caption_policy(), sort, today: H::today(f.cx) };
+            let ghosts = GhostSrc { items: self.grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(), policy: crate::registry::captions::policy_for(H::screen_inputs(f.cx)), sort, today: H::today(f.cx) };
             self.grid.paint_ghosts(f, p, &ghosts);
         }
         let src = self.source(f.cx);

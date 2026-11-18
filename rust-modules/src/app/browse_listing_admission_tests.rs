@@ -40,7 +40,7 @@ fn two_servers() -> (ServerId, ServerId, &'static plx_plex::plex::Client) {
 
 /// One message to a store, as the central dispatcher delivers it.
 fn deliver(bridge: &mut Bridge, msg: AppMsg) {
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::default();
     let mut out = Vec::new();
@@ -57,6 +57,54 @@ fn seeded(bridge: &mut Bridge, own: ServerId, shared: ServerId) -> SectionAddres
     browse.run_for_test(BrowseCmd::SetCur(0));
     let id = browse.hubs_snapshot().view().id().expect("a section is current");
     SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section }
+}
+
+/// Delivery must damage the owning Present only for a visible mutation, not command admission.
+#[test]
+fn browse_delivery_damages_real_calendar_changes_and_results_not_repeated_requests() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset;
+    let (own, shared, client) = two_servers();
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
+    bridge.park_page_reads_for_test();
+    let target = seeded(&mut bridge, own, shared);
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
+        focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+    let mut present = plx_machine::present::Present::default();
+    let mut damage = |bridge: &mut Bridge, msg: AppMsg| {
+        let before = present.damage_epoch();
+        let mut out = Vec::new();
+        let to = MachineId::Store(StoreId::Browse.ord());
+        let mut fx = Effects::new(&mut out, to, &mut present);
+        assert_eq!(bridge.deliver(to, &msg, &parts, &mut fx), Handled::Yes);
+        drop(fx);
+        present.damage_epoch() - before
+    };
+    let command = |work| AppMsg::Store(StoreCmd::Browse(BrowseCmd::Addressed { target, work }));
+    for _ in 0..3 {
+        assert_eq!(damage(&mut bridge, command(LibraryWork::Want { lo: 0, hi: 24, focus: None })), 0);
+        assert_eq!(damage(&mut bridge, command(LibraryWork::Letters { today: None })), 0);
+    }
+    let day = [2026, 10, 31];
+    bridge.stores.browse.borrow_mut().seed_calendar_bands_for_test(day, None);
+    assert_eq!(damage(&mut bridge, command(LibraryWork::Letters { today: Some(day) })), 1,
+        "the owner's cached band rail became visible");
+    assert_eq!(damage(&mut bridge, command(LibraryWork::Letters { today: Some(day) })), 0);
+    assert_eq!(damage(&mut bridge, command(LibraryWork::Letters { today: Some([2026, 11, 1]) })), 0,
+        "a new request keeps the previous day's visible rail");
+    assert_eq!(damage(&mut bridge, command(LibraryWork::Letters { today: None })), 1,
+        "the calendar rail disappeared");
+    assert_eq!(damage(&mut bridge, command(LibraryWork::Letters { today: Some(day) })), 1,
+        "the cached rail reappeared without a worker landing");
+    assert!(bridge.stores.browse.borrow().directory_read_out_for_test(),
+        "quiet delivery still admitted the directory read");
+    bridge.stores.browse.borrow_mut().queue_page_failure_for_test(client);
+    assert_eq!(damage(&mut bridge, AppMsg::StoreWork(StoreWork::Browse)), 1,
+        "a real Loading-to-Failed result still damages Present");
+    assert_eq!(bridge.stores.browse.borrow_mut().listing_snapshot().view().fetch(), plx_data::browse::SecFetch::Failed);
+    assert_eq!(damage(&mut bridge, AppMsg::StoreWork(StoreWork::Browse)), 0,
+        "a consumed result cannot damage again");
 }
 
 /// A discovery landing for source 0 of `bridge`'s table that brings a Movies section, as a recording
@@ -88,7 +136,8 @@ fn outside_a_controlled_run_the_same_table_asks_for_a_directory_and_a_page() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (own, shared, _client) = two_servers();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     bridge.park_page_reads_for_test();
     let target = seeded(&mut bridge, own, shared);
 
@@ -113,7 +162,9 @@ fn a_controlled_runs_browse_commands_emit_no_page_or_directory_read() {
     for replay in [false, true] {
         let (own, shared, client) = two_servers();
         let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-        let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
+        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+        let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut bridge = owner.bridge();
         seeded(&mut bridge, own, shared);
         let mode = if replay { "replay" } else { "record" };
 
@@ -135,7 +186,8 @@ fn the_controlled_encoder_refuses_every_way_to_ask_for_a_page_or_a_directory() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (own, shared, client) = two_servers();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     let target = seeded(&mut bridge, own, shared);
     let encode = |command: StoreCmd| crate::app::bootstrap::effects::app(&AppFx::Store(StoreId::Browse, command));
 

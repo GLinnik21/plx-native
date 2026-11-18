@@ -1149,8 +1149,13 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
 
 /// The live [`FailureContext`] (main thread).
 pub fn failure_context(ps: &crate::route::PlaybackSession) -> FailureContext {
+    failure_context_captured(ps, failtest_forced())
+}
+
+/// App-boundary resolver using the diagnostic policy already sampled for this frame.
+pub fn failure_context_captured(ps: &crate::route::PlaybackSession, diagnostic_forced: bool) -> FailureContext {
     FailureContext {
-        forced: crate::route::forced_direct_play(ps) || failtest_forced(),
+        forced: crate::route::forced_direct_play(ps) || diagnostic_forced,
         can_retry: crate::route::can_retry_current_play(ps),
         repair_idle: ps.repair_status == plx_platform::tv::sandbox::State::Idle,
     }
@@ -1423,7 +1428,12 @@ fn preview_not_direct_shape() -> ErrorShape {
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
 pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
-    if let Some(arm) = failtest_arm(ps) {
+    error_captured(ps, plx_base::devtrig::read("failtest").as_deref())
+}
+
+/// App-boundary resolver: no second diagnostic read can disagree with this frame's force bit.
+pub fn error_captured(ps: &crate::route::PlaybackSession, diagnostic: Option<&str>) -> ErrorShape {
+    if let Some(arm) = failtest_arm(ps, diagnostic) {
         return arm;
     }
     // Ahead of every other cause: on an affected, unfixed set every Load this boot has been (and
@@ -1492,7 +1502,8 @@ pub(crate) fn note_server_stop(playback: &str, wire_session: &str, reason: &str,
         };
         SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
     }
-    plx_machine::idle::invalidate();
+    // The addressed server-stop note is observed by the foreground runner; no UI provenance
+    // is published by this notification worker.
 }
 
 fn with_server_stop<T>(playback: &str, read: impl FnOnce(&ServerStopNote) -> T) -> Option<T> {
@@ -1568,8 +1579,8 @@ const FAILTEST_VERDICT: &str =
 /// the capsule reachable and it applies to EVERY server, so the pairing `docs/agent-reference.md`
 /// documents is unaffected — but note the arm still has to be looked at from the player route,
 /// i.e. after a play, which is when `route::cur_sid` names a server at all.
-fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
-    let arm = plx_base::devtrig::read("failtest")?;
+fn failtest_arm(ps: &crate::route::PlaybackSession, diagnostic: Option<&str>) -> Option<ErrorShape> {
+    let arm = diagnostic?;
     let sub = playing_subscription(&ps);
     Some(match arm.trim() {
         "audio" => error_shape(true, true, sub, None, RuntimeFailure::Unknown),
@@ -1693,8 +1704,9 @@ pub struct Diag {
     pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
-    /// This boot created an ACB handle (either backend's): a URI-only build has the URI engine's with
-    /// Feed's absent, and its diagnostics must not read that as a missing video plane.
+    /// An ACB handle has been created (either backend's; Feed's at the boot, the URI engine's at the
+    /// first Experimental offer or, while a release is in flight, at the Start's gate). A URI-only ACB
+    /// build therefore reads false until then.
     pub acb_ok: bool,
     pub place_rv: i32,
     pub placed_w: i32,
@@ -2280,8 +2292,10 @@ pub fn desired_sub_idx() -> i32 {
 pub fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
     if idx < 0 {
-        // subs Off: free the image-cue store now (the demuxer also stops decoding new
-        // bitmap cues while off — see ff.rs's desired_sub_idx gate)
+        // subs Off: free the image-cue store now. The demuxer also stops decoding new bitmap cues
+        // while off and HOLDS the image packets it reads instead (`SubTracks::on_packet` in
+        // play-feed's `ff_subs.rs`), so a track chosen later decodes the read-ahead window it
+        // would otherwise have lost.
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
@@ -2400,6 +2414,19 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
     ass_source::selected(desired_sub_idx()).map(|source| (source, playhead))
 }
 
+/// **How the subtitle playhead is moving**, for the renderer's pacing of a moving cue's frames
+/// ([`ass::Pace`]): whether the player is presenting, the speed it is applied at (1x with no Feed
+/// Load to say), the source's frame rate (0 for a transcode or an unreported rate, which the pace
+/// reads as film) and the wall-clock time since the caller's previous tick.
+pub fn subtitle_pace(ps: &crate::route::PlaybackSession, tick_ms: i64) -> ass::Pace {
+    ass::Pace::of(
+        is_playing(ps),
+        effective_playback_rate(ps).unwrap_or(RATE_NORMAL),
+        crate::route::stream_fps(ps),
+        tick_ms,
+    )
+}
+
 /// **The file-time position a SIDECAR is asked for at playhead `playhead_ns`.**
 ///
 /// A sidecar's timestamps are the Part's. On a direct play the playhead is file time. Over a remux
@@ -2444,8 +2471,8 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
 /// reads ahead of the playhead, which this floor never prunes. What bounds memory is each store's
 /// budget and eviction order ([`SUB_BITMAP_BUDGET`]), not this floor.
 fn subtitle_floor_ns(retention: plx_playback_contract::subtitle::CaptionRetention) -> i64 {
-    let Some(playhead_ns) = retention.playhead_ns else { return i64::MIN; };
-    subtitle_floor_for(playhead_ns, retention.seek_target_ns.is_some(), retention.seek_target_ns.unwrap_or(-1))
+    let Some(anchor_ns) = retention.anchor_ns() else { return i64::MIN; };
+    subtitle_floor_for(anchor_ns, false, -1)
 }
 
 fn subtitle_floor_for(position_ns: i64, seeking: bool, target_ns: i64) -> i64 {
@@ -2530,8 +2557,7 @@ pub fn set_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
 pub fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: plx_plex::plex::AudioEnhancements) {
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);
-    // the rows' checkmarks move on this — see `route::choose`
-    plx_machine::idle::invalidate();
+    // The input owner repaints the rows; route::preference_values observes confirmed writes.
 }
 
 /// Restore the persisted preference without writing it back (what `route::restore_profile_rows`
@@ -2553,7 +2579,7 @@ pub fn set_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
 /// (`route::persist_subtitle_offset`) — see [`SUBTITLE_OFFSET_MS`].
 pub fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
-    plx_machine::idle::invalidate();
+    // The input owner repaints the subtitle controls; no ambient damage side effect.
 }
 
 /// Carry a retry's offset through [`reset_subtitle`] (`route::reset_track_selection`). The
@@ -2915,7 +2941,7 @@ mod tests {
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         assert!(crate::route::request_play(&mut ps, &mut meta,
             plx_platform::devcaps::caps(), plx_plex::plex::ServerId::from_raw(0),
-            "film", "/library/parts/1/file.mkv", "h264", "aac", "Film", "", None));
+            "film", "/library/parts/1/file.mkv", "h264", "aac", "Film", "", None, ""));
         assert!(crate::route::arm_play_resume(&mut ps, 12_000_000_000));
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, attempt_view::Backend::Uri);

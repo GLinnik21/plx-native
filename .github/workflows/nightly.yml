@@ -13,9 +13,16 @@ name: Nightly
 # nightly's PACKAGE version carries its cut date (`ci/flavor.py`), which is what makes Homebrew
 # Channel offer the next one as an update. `docs/nightly-builds.md` is the user-facing guide.
 #
+# The release itself is published to its own repository, `plxnative/plx-native-nightly`
+# (`ci/nightly.py`'s `RELEASE_REPO`), so watching this repository's releases announces real releases
+# only. The `nightly/v*` TAG is still pushed here, at the commit built: `plan` diffs against the
+# previous one and the notes' compare link spans two. Writing to the other repository needs the
+# `NIGHTLY_RELEASE_TOKEN` secret, a fine-grained token owned by the organization with Contents:
+# read and write on that one repository; `GITHUB_TOKEN` can write only here.
+#
 # `plan` decides the day's version and whether there is anything to build; `build` reuses the same
 # ARM build+verify pipeline release.yml also uses (`build-package.yml`); `publish` is the only job
-# that can write to the repo's releases; `pages` refreshes the site's "latest nightly" pointer the
+# that can write nightly releases; `pages` refreshes the site's "latest nightly" pointer the
 # same day a nightly ships rather than waiting for an unrelated site/docs push; `prune` deletes
 # nightly releases (and their tags) past their 30-day retention, always keeping the newest one even
 # if the schedule went quiet for longer than that.
@@ -208,6 +215,9 @@ jobs:
       # exists to prove the whole pipeline, upload included). The event name, not `plan`'s `dry`
       # output, is the discriminator: `dry` is also true for that dispatch.
       upload-debug-files: ${{ github.event_name != 'pull_request' }}
+      # Any dry run, dispatched ones too: it builds today's name, and would replace the commits of
+      # the nightly already published under it.
+      sentry-release: ${{ needs.plan.outputs.dry != 'true' }}
       # Release deliberately builds uncached for reproducibility; nightly runs once a day rather
       # than on every push, so the cache's turnaround benefit is smaller and not worth the same
       # trade here either.
@@ -242,20 +252,22 @@ jobs:
           fetch-depth: 0
       - name: Refuse to overwrite an immutable nightly
         # `ci/nightly.py plan` already checked the LOCAL tag list at plan time; this re-checks
-        # against the remote right before publishing, belt-and-suspenders because plan and publish
+        # against the remotes right before publishing, belt-and-suspenders because plan and publish
         # run minutes apart and a concurrent run (or a hand-pushed tag) could land in between.
-        # Pointless (and a needless GH_TOKEN use) in a dry run, which never reaches
+        # Pointless (and a needless token use) in a dry run, which never reaches
         # `gh release create` and has no tag to protect.
         if: ${{ needs.plan.outputs.dry != 'true' }}
         env:
           TAG: ${{ needs.plan.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}
         run: |
           set -euo pipefail
+          test -n "$GH_TOKEN" || { echo "::error::NIGHTLY_RELEASE_TOKEN is required to publish to $(python3 ci/nightly.py release-repo)"; exit 1; }
+          release_repo=$(python3 ci/nightly.py release-repo)
           ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null \
             || { echo "::error::$TAG already exists — nightly rebuilds of the same day are refused by design."; exit 1; }
-          ! gh release view "$TAG" >/dev/null 2>&1 \
-            || { echo "::error::release $TAG already exists."; exit 1; }
+          ! gh release view "$TAG" --repo "$release_repo" >/dev/null 2>&1 \
+            || { echo "::error::release $TAG already exists in $release_repo."; exit 1; }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nightly-assets
@@ -313,34 +325,56 @@ jobs:
       - name: Create and verify the nightly prerelease
         if: ${{ needs.plan.outputs.dry != 'true' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}
           TAG: ${{ needs.plan.outputs.tag }}
           LABEL: ${{ needs.plan.outputs.label }}
           SHA: ${{ needs.plan.outputs.sha }}
           IPK: ${{ steps.stage.outputs.ipk }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
+          release_repo=$(python3 ci/nightly.py release-repo)
+          # The tag goes here first, at the commit built, through the checkout's own credentials
+          # (this job's GITHUB_TOKEN). If the release then fails to publish, the tag is taken back
+          # so a re-run is not refused as a same-day rebuild.
+          git tag "$TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+          trap 'git push --delete origin "refs/tags/$TAG" || true' ERR
+          # The release repository has none of this repository's commits, so its own copy of the
+          # tag sits on its `main`; the built commit is the tag above, which the notes link.
+          gh release create "$TAG" --repo "$release_repo" \
             "dist/$IPK" dist/nightly.sha256 dist/com.beb.plxnative.nightly.manifest.json dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/plxnative-source-*.tar.gz* \
-            --target "$SHA" \
+            --target main \
             --title "PlxNative $LABEL" \
             --prerelease \
             --latest=false \
             --notes-file "$RUNNER_TEMP/notes.md"
+          trap - ERR
           # Re-derive every published claim from the live release rather than trusting
-          # `gh release create`'s own exit code: prerelease, target sha, uploader, and the
-          # downloaded bytes hashing to what was staged.
-          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .prerelease)" = true
-          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .target_commitish)" = "$SHA"
+          # `gh release create`'s own exit code: prerelease, the tag here naming the built commit,
+          # and the downloaded bytes hashing to what was staged.
+          test "$(gh api "repos/$release_repo/releases/tags/$TAG" --jq .prerelease)" = true
           test "$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')" = "$SHA"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[0].uploader.login')" = 'github-actions[bot]'
           mkdir -p verify
-          gh release download "$TAG" --pattern "$IPK" --dir verify
+          gh release download "$TAG" --repo "$release_repo" --pattern "$IPK" --dir verify
           test "$(sha256sum "verify/$IPK" | cut -d' ' -f1)" = "$(cut -d' ' -f1 dist/nightly.sha256)"
           # The published manifest must name the published package's hash — the one thing the
           # television checks on install.
-          gh release download "$TAG" --pattern com.beb.plxnative.nightly.manifest.json --dir verify
+          gh release download "$TAG" --repo "$release_repo" --pattern com.beb.plxnative.nightly.manifest.json --dir verify
           test "$(python3 -c "import json;print(json.load(open('verify/com.beb.plxnative.nightly.manifest.json'))['ipkHash']['sha256'])")" = "$(cut -d' ' -f1 dist/nightly.sha256)"
+
+      - name: Mark the Sentry release as shipped
+        if: ${{ needs.plan.outputs.dry != 'true' }}
+        # Finalizes the release build-package.yml created and records its deploy; never fails
+        # the publish, which has already happened (.github/actions/sentry-deploy says why).
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.github/actions/sentry-deploy
+        with:
+          release: ${{ needs.build.outputs.sentry-release }}
+          org: ${{ needs.build.outputs.sentry-org }}
+          project: ${{ needs.build.outputs.sentry-project }}
+          environment: ${{ needs.build.outputs.sentry-environment }}
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   pages:
     name: refresh site latest-nightly pointer
@@ -368,5 +402,8 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - env:
+          # GITHUB_TOKEN deletes this repository's tags (and its pre-move nightly releases);
+          # NIGHTLY_RELEASE_TOKEN deletes releases in the release repository.
           GH_TOKEN: ${{ github.token }}
+          NIGHTLY_RELEASE_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}
         run: python3 ci/nightly.py prune --repo "${{ github.repository }}" --days 30

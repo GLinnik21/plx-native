@@ -17,7 +17,7 @@ fn directory_noop_reuses_arc_and_facts_change_replaces_it_without_mutating_old_r
     let session = Default::default();
     let mut state = BrowseState::default();
     let mut snapshot = DirectorySnapshot::default();
-    let input = BrowseRosterInput { keys: &keys, session: &session, visible_generation: 0, settled: false, profile_key: "p" };
+    let input = BrowseRosterInput { tenure: 0, keys: &keys, session: &session, visible_generation: 0, settled: false, profile_key: "p" };
     state.sync_roster_owned(&input);
     snapshot.capture_from(&mut state, &keys);
     let old = snapshot.clone();
@@ -29,7 +29,7 @@ fn directory_noop_reuses_arc_and_facts_change_replaces_it_without_mutating_old_r
         assert!(snapshot.same_publication(&old));
     }
     keys.refill_roster(sid, 1, 1, [sid], |_| None, |_| Some(second), |_| None);
-    state.sync_roster_owned(&BrowseRosterInput { keys: &keys, session: &session, visible_generation: 0, settled: false, profile_key: "p" });
+    state.sync_roster_owned(&BrowseRosterInput { tenure: 0, keys: &keys, session: &session, visible_generation: 0, settled: false, profile_key: "p" });
     snapshot.capture_from(&mut state, &keys);
     assert_ne!(Arc::as_ptr(&snapshot.data), allocation);
     assert_eq!(old.view().sources()[0].1.name, "Before");
@@ -40,7 +40,7 @@ fn directory_noop_reuses_arc_and_facts_change_replaces_it_without_mutating_old_r
     assert!(!state.sources()[0].owned);
     let changed = snapshot.clone();
     let generation = state.source_list_gen();
-    assert!(!state.sync_roster_owned(&BrowseRosterInput { keys: &keys, session: &session, visible_generation: 0, settled: false, profile_key: "p" }).changed);
+    assert!(!state.sync_roster_owned(&BrowseRosterInput { tenure: 0, keys: &keys, session: &session, visible_generation: 0, settled: false, profile_key: "p" }).changed);
     snapshot.capture_from(&mut state, &keys);
     assert_eq!(state.source_list_gen(), generation);
     assert!(snapshot.same_publication(&changed));

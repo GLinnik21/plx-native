@@ -116,6 +116,45 @@ class TestCodeIsOutOfScope(unittest.TestCase):
         })
         self.assertEqual(tree.keys(), [])
 
+    def test_cfg_fields_do_not_consume_enclosing_scopes_or_live_fields(self):
+        for field in ('None', 'Some({ v.iter().take(2) })', 'v.len() < 2'):
+            for tail in ('', ','):
+                with self.subTest(field=field, tail=tail):
+                    body = ('fn snapshot(v: &[u8]) { let _ = Row { '
+                            '#[cfg(any(test, feature = "test-support"))] hidden: '
+                            + field + tail + ' }; } const MAX_ROWS: usize = 9;')
+                    self.assertEqual(Tree({SCREEN: body}).keys(), [f'{SCREEN}::MAX_ROWS'])
+        body = ('struct Row { #[cfg(test)] pub(crate) hidden: Map<Key, Value>, live: [u8; MAX_ROWS] } '
+                'fn snapshot(v: &[u8]) { let _ = Row { '
+                '#[cfg(test)] hidden: v.len() < 2, live: v.iter().take(3) }; } '
+                'const MAX_OTHER: usize = 9;')
+        self.assertEqual(Tree({SCREEN: body}).keys(),
+                         [f'{SCREEN}::MAX_OTHER', f'{SCREEN}::Row', f'{SCREEN}::snapshot'])
+
+    def test_cfg_match_arms_preserve_live_arms_and_enclosing_function(self):
+        body = ('fn plan_rebase(v: &[u8]) { match owner { '
+                '#[cfg(any(test, feature = "test-support"))] '
+                'RebaseFor::Inline if open() => return Err(Refused), '
+                '_ => { v.iter().take(3); } } '
+                'let _ = match owner { '
+                '#[cfg(test)] RebaseFor::Inline => begin(), '
+                '_ => v.iter().take(4), }; } '
+                'const SIDE_MAX_PART_KBPS: i64 = 30_000;')
+        self.assertEqual(Tree({SCREEN: body}).keys(),
+                         [f'{SCREEN}::SIDE_MAX_PART_KBPS', f'{SCREEN}::plan_rebase'])
+
+    def test_test_support_helpers_are_excluded_but_shared_production_is_not(self):
+        tree = Tree({
+            'screens/src/lib.rs': '#[cfg(any(test, feature = "test-support"))] mod fixture;\n'
+                                  'mod shared;\n'
+                                  '#[cfg(test)] #[path = "shared.rs"] mod shared_test;\n',
+            'screens/src/fixture.rs': 'fn fixture(v: &[u8]) { v.iter().take(3); }',
+            'screens/src/shared.rs': 'fn live(v: &[u8]) { v.iter().take(3); }',
+            SCREEN: '#[cfg(any(test, feature = "test-support"))] '
+                    'fn seed(v: &[u8]) { v.iter().take(2); }',
+        })
+        self.assertEqual(tree.keys(), ['screens/src/shared.rs::live'])
+
     def test_the_app_crate_is_scanned_too(self):
         tree = Tree({'src/app/run.rs': 'fn a(v: &[u8]) { v.iter().take(3); }'})
         self.assertEqual(tree.keys(), ['src/app/run.rs::a'])

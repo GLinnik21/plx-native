@@ -33,6 +33,9 @@ impl Host for SearchHost {
     type Init = Arg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for SearchHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl SearchLike for SearchHost {
     fn search<'a>(cx: &Cx<'a, Self>) -> SearchView<'a> { cx.views }
 }
@@ -73,6 +76,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, SearchHost> {
         Cx { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead { scale: self.press, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
@@ -80,8 +84,9 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<SearchHost>) -> bool {
         let mut present = Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx: Cx<'_, SearchHost> = Cx { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 },
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 measure: &FixtureMeasure, press: PressRead { scale: self.press, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
@@ -101,6 +106,57 @@ impl Harness {
         self.snap = self.store.snapshot();
         self.step(ScreenEvent::StoreChanged(StoreId::Search.ord(), 1));
     }
+}
+
+/// **The page's elements have ids**: the field, and the Movies result row of a real query, project, are
+/// unique, and are found again (`plx_ui::a11y::conformance`). The ids are the stack's own; this page
+/// adds no group of its own beyond the sections it hands the stack.
+#[test]
+fn the_page_answers_accessibility_ids() {
+    assert!(!search_conforms().is_empty());
+}
+
+/// The Search page over a real query's Movies row, run through the id conformance (`AppArg::Search`;
+/// the coverage table calls this, and so does the test above).
+pub(crate) fn search_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new((0..8).map(|i| format!("m{i}")).collect());
+    namespaces.push(conform::<SearchHost, _>(&h.screen, &h.cx()));
+    namespaces
+}
+
+/// **The sections are named for what they ARE, and a hit's id carries its ratingKey**: the field is
+/// `field.0` and a result row is named by its kind (`movies.card.<i>`, `shows.card.<i>`), so a row
+/// is the same name whichever rows stand before it, and a hit's subject is its ratingKey. A page
+/// whose Movies row is gone keeps its Shows row at `shows.card.<i>`, which a position-named section
+/// (`section.<i>`) would have renamed.
+#[test]
+fn the_sections_are_named_and_a_hit_names_its_rating_key() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let mut h = Harness::new((0..2).map(|i| format!("m{i}")).collect());
+    let ids = |h: &Harness| plx_ui::a11y::listing::<SearchHost, _>(&h.screen, &h.cx());
+    let cards = |h: &Harness| -> Vec<(String, Option<String>)> {
+        let all = ids(h);
+        assert!(all.iter().all(|a| !a.path.to_string().starts_with("section.")), "a section left unnamed");
+        assert!(all.iter().any(|a| a.path.to_string() == "field.0"), "the field is named");
+        all.into_iter()
+            .filter(|a| a.role == plx_ui::a11y::Role::Card)
+            .map(|a| (a.path.to_string(), a.subject.map(|s| s.into_owned())))
+            .collect()
+    };
+    let hit = |path: &str, rk: &str| (path.to_owned(), Some(rk.to_owned()));
+    assert_eq!(cards(&h), [hit("movies.card.0", "m0"), hit("movies.card.1", "m1")]);
+
+    h.store.publish_shelves_for_test(vec![Shelf {
+        epoch: 0, window: Default::default(), kind: Kind::Show, items: vec![movie("s0"), movie("s1")],
+    }]);
+    h.snap = h.store.snapshot();
+    h.step(ScreenEvent::StoreChanged(StoreId::Search.ord(), 1));
+    assert_eq!(cards(&h), [hit("shows.card.0", "s0"), hit("shows.card.1", "s1")]);
 }
 
 impl CardHarness for Harness {
@@ -137,14 +193,14 @@ impl CardHarness for Harness {
         let (row, _) = self.at(elem)?;
         let cx = self.cx();
         let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
-        let src = self.screen.row_cards(self.snap.view(), row)?;
+        let src = self.screen.row_cards(self.snap.view(), row, crate::registry::captions::policy())?;
         let root = frame.painter;
         if let Some((at, shelf)) = self.screen.row_frame(&self.cx(), row) { shelf.record_stops(&mut frame, root, &src, at); }
         frame.stops().iter().find(|s| s.key.elem == elem).map(|s| s.rect)
     }
     fn scale(&self, elem: u32) -> Option<f32> {
         let (row, _) = self.at(elem)?;
-        let src = self.screen.row_cards(self.snap.view(), row)?;
+        let src = self.screen.row_cards(self.snap.view(), row, crate::registry::captions::policy())?;
         self.screen.row_frame(&self.cx(), row)?.1.scale_of(&self.cx(), &src, &elem)
     }
     fn focus_scale(&self) -> f32 { layout::style(Kind::Movie).focus_scale }

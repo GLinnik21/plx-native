@@ -43,6 +43,37 @@ half is bypassed and a regression there passes it green. Nor does it reach resum
 timeline reporting, subtitle or audio-track *selection*, or any transcode. **Never ship on the
 default alone.**
 
+## Current renderer replay anchor (host, no television)
+
+`tests/replay_fixtures.py` discovers six recording directories by default (twelve replays) and
+executes each in Targets and Resolve. `make check-replay` and Simulator CI use that same discovery,
+not a private fixture list. Expected outcomes: **SAME=4, REFUSED_EXPECTED=8, unexpected=0**.
+
+- Current, graded in full in each mode (raw exit 0, exactly one SAME, all eight difference counters
+  zero): `v13-owned-input-content`, the V13 Flow 12 producer's typed Filmography -> Detail -> Back ->
+  Back flow, 922 frames; and `13-by-id-filmography`, the same controlled domain driven by the
+  harness's by-id tokens (`focus:`/`press:` -> one typed `ById` input, resolved by the `Id`
+  resolution row), 1209 frames. Both are anchors; their frame counts are pinned by
+  `tests/test_replay_fixtures.py`'s census. Any current refusal, including a historical scheduler
+  reason, fails the gate.
+- Historical, immutable, each REFUSED in both modes (raw exit 1) with the exact early typed reason
+  `incompatible owner-input/presentation state; requires V13 capture`, before any graded frame:
+  `1-boot-home-chip-grid` (Home), `6-settings-family` (Settings: 621 frames),
+  `12-filmography-detail-return` (historical content scheduling) and
+  `12-filmography-detail-return-current` (2287 frames, the V11 Flow 12 producer). This is a typed
+  compatibility outcome, not a supported replay, SAME, quarantine or skip.
+
+The current recordings were independently privacy-checked, then added with the official
+`tools/plxnative-rec import` command, byte-for-byte; no old recording, fingerprint, hash or alphabet
+was rewritten. Manifest preference/language strings pass only the checker's closed exact-path enums;
+all remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
+canonical initial-hash tests include the historical recordings. No production name/path/hash whitelist exists.
+
+Private Xvfb/GLX llvmpipe replay verifies logical renderer-backed behavior, not accepted visuals,
+native/TV/ARM behavior, glyph/video composition, performance, or all-domain UI acceptance.
+The preserved fixture README's earlier three-anchor accounts describe historical captures; the
+current anchors do not make the old Content recording supported.
+
 ## The synthetic PMS and the focus-fingerprint flows (host, no television)
 
 Two more host-side pieces landed with phase 0 of the UI restructure (2026-09-06), and both exist
@@ -1046,7 +1077,7 @@ its production URI backend, bound through ACB, via the debug-only dev route `plx
 harness's own mock PMS is the plan carrier: it starts on the configured `PMS_HOST:PMS_PORT` with the
 `pipe_uri_carrier_720p24.mp4` clip (a 90 s 720p24 progressive twin; one audio stream, no subtitles; built
 by `make fixtures-pipeline`) as ratingKey 990001, the app signs in as the synthetic guest and opens that
-item (`plxnative-play=990001`, with `quality=original`, `audioenh=off` pinned; no `ptype`, since the boot gives the URI engine its own player type 0 handle), and the runner
+item (`plxnative-play=990001`, with `quality=original`, `audioenh=off` pinned; no `ptype`, since the URI engine has its own player type 0 handle, created when its first play is offered), and the runner
 writes `plxnative-uridev` as `acb part=991001 pms=<PMS_HOST>:<PMS_PORT> url=<fixture server>/<fixture>`,
 so the app's qualifier answers with the fixture's URL and the TV fetches the HLS stream from the fixture
 server (shaper and wire counters keep working). `pms=` pins the server by ORIGIN, not by machine

@@ -289,8 +289,8 @@ mod tests {
         assert_eq!(action(&AppArg::Player, true), Action::Nothing);
     }
 
-    fn mounted() -> (plx_ui::dispatch::Dispatcher<bridge::AppHost>, bridge::Bridge, u32) {
-        (plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new(), bridge::Bridge::for_test(|| 0), 0)
+    fn mounted() -> (plx_ui::dispatch::Dispatcher<bridge::AppHost>, crate::app::runtime_owners::Harness, u32) {
+        (plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new(), crate::app::runtime_owners::Harness::new(|| 0), 0)
     }
 
     fn frame(pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge, n: &mut u32) {
@@ -310,7 +310,8 @@ mod tests {
     #[test]
     fn covered_page_read_back_is_spent_only_when_allowed() {
         let _g = plx_base::testlock::serial();
-        let (mut pages, mut rig, mut n) = mounted();
+        let (mut pages, mut harness, mut n) = mounted();
+        let mut rig = harness.bridge();
         let mut r = Reread::default();
         bridge::show_page(&mut pages, AppArg::Search);
         frame(&mut pages, &mut rig, &mut n);
@@ -340,7 +341,8 @@ mod tests {
     #[test]
     fn visible_detail_is_read_back_on_resume_only() {
         let _g = plx_base::testlock::serial();
-        let (mut pages, mut rig, mut n) = mounted();
+        let (mut pages, mut harness, mut n) = mounted();
+        let mut rig = harness.bridge();
         let mut r = Reread::default();
         bridge::show_page(&mut pages, AppArg::Search);
         frame(&mut pages, &mut rig, &mut n);
@@ -361,7 +363,8 @@ mod tests {
     #[test]
     fn notify_pump_without_an_owned_server_owes_nothing() {
         let _g = plx_base::testlock::serial();
-        let (_pages, mut rig, _n) = mounted();
+        let (_pages, mut harness, _n) = mounted();
+        let mut rig = harness.bridge();
         let held = [ContentArg::Detail { sid: ServerId::UNSET, rk: "d".into() }];
         for _ in 0..5 {
             let (resynced, endpoints) = rig.notify_pump(&held, plx_data::stores::notify_map::Shown::ALL);
@@ -375,7 +378,8 @@ mod tests {
     #[test]
     fn covered_detail_gets_deferred_reconcile() {
         let _g = plx_base::testlock::serial();
-        let (mut pages, mut rig, mut n) = mounted();
+        let (mut pages, mut harness, mut n) = mounted();
+        let mut rig = harness.bridge();
         let mut r = Reread::default();
         bridge::show_page(&mut pages, detail("a"));
         frame(&mut pages, &mut rig, &mut n);

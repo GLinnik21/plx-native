@@ -39,7 +39,11 @@ fn person_holds_its_shelves_for_that_person_only() {
     let arg = ContentArg::Person {
         sid: ServerId::UNSET, key: "42".into(), guid: String::new(), name: "N".into(), thumb: String::new() };
     assert!(store.held_keys(&arg).is_empty(), "no person mounted");
-    store.run(PersonCmd::Open { sid: ServerId::UNSET, key: "42".into(), guid: String::new(), name: "N".into(), thumb: String::new() });
+    let keys = plx_plex::plex::ClientKeys::default();
+    let input = crate::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
+        controlled: false, profile_refused: false, credits_refused: false, dev_bio: None, dev_credits: None };
+    store.run_with_input(PersonCmd::Open { sid: ServerId::UNSET, key: "42".into(), guid: String::new(), name: "N".into(), thumb: String::new() }, &input);
     store.install_for_test(vec![movie("a"), movie("b")], vec![movie("c")]);
     assert_eq!(rks(&store.held_keys(&arg)), ["a", "b", "c"]);
     let other = ContentArg::Person {

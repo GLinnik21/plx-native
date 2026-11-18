@@ -92,7 +92,8 @@ fn the_wrong_pin_flash_blinks_at_least_four_times() {
 #[test]
 fn a_flash_flip_invalidates_the_present_gate() {
     let mut present = Present::new();
-    present.take(0); // drain the fresh gate's own always-dirty first frame
+    assert!(present.take(0)); // admit the fresh gate's always-dirty first frame
+    present.acknowledge(0); // simulate its actual swap
     let mut pad = Pad {
         open: true,
         error_s: PIN_ERR_S,
@@ -110,6 +111,7 @@ fn a_flash_flip_invalidates_the_present_gate() {
         }
         let now = pin_flash(pad.error_s);
         let asked = present.take(0);
+        if asked { present.acknowledge(0); } // simulate only admitted swaps
         if now != was {
             assert!(
                 asked,
@@ -170,6 +172,27 @@ fn back_closes_the_pad_and_clears_the_verdict() {
         )),
         "closing returns focus to the PROTECTED profile the pad was opened on (index 2), \
          not wherever the roster's default seat lands"
+    );
+}
+
+/// The PUBLISHED state, not just the field: `retire_pad` used to sync before clearing
+/// `pin_denied`, so the receiver saw `pad_open = false, pin_denied = true` until the next Tick.
+#[test]
+fn back_on_a_denied_pad_publishes_a_closed_pad_with_no_verdict() {
+    let mut s = bare(Pad {
+        open: true,
+        target: 2,
+        error_s: PIN_ERR_S,
+        ..Pad::new()
+    });
+    s.pin_denied = true;
+    s.sync_pin_state();
+    assert!(s.state.pad_open && s.state.pin_denied, "precondition");
+    step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
+    assert!(!s.state.pad_open, "the published state shows the pad closed");
+    assert!(
+        !s.state.pin_denied,
+        "…and must not carry a verdict about a pad that is gone"
     );
 }
 

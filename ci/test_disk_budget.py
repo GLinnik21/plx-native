@@ -988,6 +988,14 @@ class OtherVolume(Repo):
         row = next(line for line in text.splitlines() if "target" in line and "das-lane" in line)
         self.assertIn("other volume (not sized)", row)
 
+    def test_external_build_verdict_uses_space_on_the_target_volume(self):
+        inv = self.collect(self.foreign(self.lane("external")))
+        for external_free, answer in ((100, "ok"), (1, "WOULD REFUSE")):
+            report = db.render(inv, TH, 2 * GIB, 100 * GIB, self.main, "/external/target", 4 * GIB,
+                               NOW_REAL, self.env, build_volume=(external_free * GIB, 200 * GIB))
+            self.assertIn("verdict       " + answer, report)
+            self.assertIn("checkout volume reclaim:", report)
+
 
 class Report(Repo):
     def run_report(self, free_kib, extra=(), lsof_body="#!/bin/sh\nprintf 'p1\\ncsh\\nfcwd\\nn/\\n'\nexit 1\n", **env):

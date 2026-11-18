@@ -92,6 +92,7 @@ use std::ffi::CString;
 use std::sync::Arc;
 
 use plx_session::auth::{self, Phase};
+use plx_ui::a11y::{A11y, A11yPath, Role, Seg};
 use plx_ui::cards::AvatarRow;
 use plx_ui::frame::Budget;
 use plx_ui::geom;
@@ -265,6 +266,31 @@ fn pad_rc(elem: u32) -> Option<(usize, usize)> {
 }
 fn pad_elem(r: usize, c: usize) -> u32 {
     PAD_BASE + (r * PAD_COLS + c) as u32
+}
+
+/// **The pad key `(r, c)`'s id**, relative to the screen: `pad.digit.<n>` for a digit key (the
+/// index is the digit it types) and `pad.delete` for the delete key. The hole has none.
+fn pad_a11y_path(r: usize, c: usize) -> Option<A11yPath> {
+    let pad = A11yPath::new().name("pad");
+    match KEYS[r][c]? {
+        b'D' => Some(pad.name("delete")),
+        digit => Some(pad.name("digit").index(usize::from(digit - b'0'))),
+    }
+}
+
+/// The inverse of [`pad_a11y_path`]: the cell's element for a pad key's path, `None` for any
+/// other path (a digit past 9, an extra segment, a name the pad does not have).
+fn pad_a11y_find(path: &A11yPath) -> Option<u32> {
+    let mut segs = path.segs();
+    let want = match (segs.next(), segs.next(), segs.next(), segs.next()) {
+        (Some(Seg::Name("pad")), Some(Seg::Name("delete")), None, _) => b'D',
+        (Some(Seg::Name("pad")), Some(Seg::Name("digit")), Some(Seg::Index(d)), None) if d <= 9 => b'0' + d as u8,
+        _ => return None,
+    };
+    (0..PAD_ROWS)
+        .flat_map(|r| (0..PAD_COLS).map(move |c| (r, c)))
+        .find(|&(r, c)| KEYS[r][c] == Some(want))
+        .map(|(r, c)| pad_elem(r, c))
 }
 
 /// The PIN keypad overlay state (open for a protected profile) — a field of the screen, not a
@@ -796,9 +822,9 @@ impl ProfilesScreen {
         self.users.iter().position(|u| !self.seated.is_empty() && *u.uuid == *self.seated)
     }
 
-    fn avatar_art(u: &auth::UserTile) -> Art<'_> {
+    fn avatar_art(u: &auth::UserTile, sid: plx_plex::plex::ServerId) -> Art<'_> {
         Art::Thumb {
-            sid: plx_plex::plex::current_server().raw(),
+            sid: sid.raw(),
             key: &u.thumb,
             res: (300, 300),
         }
@@ -842,7 +868,7 @@ impl ProfilesScreen {
     /// Advance the wrong-PIN flash by one frame, and invalidate on the phase FLIPS alone — the two
     /// halves `ui/CLAUDE.md` demands of anything that animates from a CLOCK rather than a spring
     /// (`Xfade::tick`/`Spinner::draw`'s own standing hazard). Ported from `ui/profiles.rs`'s
-    /// `step_pin_flash`, `plx_machine::idle::invalidate()` replaced by `Effects::invalidate` — this screen
+    /// `step_pin_flash`, `plx_machine::motion::report::invalidate()` replaced by `Effects::invalidate` — this screen
     /// has no `plx_machine::idle` gate to report to; the dispatcher's own `Present` is fed exclusively
     /// through `Effects`/`fx.note`.
     fn step_pin_flash<H: AppLike>(pad: &mut Pad, dt: f32, fx: &mut Effects<'_, H>) {
@@ -1065,8 +1091,10 @@ impl ProfilesScreen {
         let target = self.pad.target as u32;
         self.pad = Pad::new();
         self.pending_selection = None;
-        self.sync_pin_state();
+        // Clear the verdict BEFORE publishing: a closed pad must never be published beside a
+        // standing `pin_denied`.
         self.pin_denied = false;
+        self.sync_pin_state();
         if dismiss_pin_error {
             fx.push(Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError)));
         }
@@ -1546,6 +1574,72 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         let n = self.n;
         Focusable::<H>::seat(&self.shelf(n), g, from, cx)
     }
+    /// **The ids** (relative; the host qualifies them with `profiles`), by the group the view
+    /// answers for now: the roster is `roster.<the shelf's id>` (the shared `geom::Shelf` names
+    /// each tile; the screen only prefixes the collection and labels the tile with its profile's
+    /// name), the footer and the read-out's *Sign out* are `sign_out`, the read-out's *Back* is
+    /// `back`, and the keypad is `pad.digit.<n>` / `pad.delete`. A key whose group the view is not
+    /// answering for (the roster under the pad, a pad key with the pad shut) has no id.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let group = Focusable::<H>::group_of(self, key, cx)?;
+        if group == PAD_GROUP {
+            let (r, c) = pad_rc(*key)?;
+            return Some(A11y::new(pad_a11y_path(r, c)?, Role::Button));
+        }
+        if group == READOUT_GROUP || group == FOOTER_GROUP {
+            let (name, label) = if *key == READOUT_BACK {
+                ("back", plx_platform::i18n::msg::settings_back_c())
+            } else {
+                ("sign_out", plx_platform::i18n::msg::settings_account_sign_out_c())
+            };
+            let a = A11y::new(A11yPath::new().name(name), Role::Button);
+            return Some(match label.to_str() {
+                Ok(text) => a.with_label(text),
+                Err(_) => a,
+            });
+        }
+        let n = self.n;
+        let A11y { path, role, label, subject, loaded } =
+            Focusable::<H>::a11y(&self.shelf(n), key, cx)?.into_owned();
+        let name = self.users.get(*key as usize).map(|u| Cow::Borrowed(u.title.as_str()));
+        let label: Option<Cow<'_, str>> = name.or(label);
+        Some(A11y { path: A11yPath::new().name("roster").join(&path), role, label, subject, loaded })
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        // The same three cases `groups` answers: the pad alone, the read-out alone, or the roster
+        // (when there is one) over the footer.
+        if self.pad.open {
+            if g == PAD_GROUP {
+                for r in 0..PAD_ROWS {
+                    for c in 0..PAD_COLS {
+                        if KEYS[r][c].is_some() {
+                            out.push(pad_elem(r, c));
+                        }
+                    }
+                }
+            }
+        } else if self.roster_readout() {
+            if g == READOUT_GROUP {
+                out.extend_from_slice(readout_elems(self.back_resumes));
+            }
+        } else if g == FOOTER_GROUP {
+            out.push(FOOTER);
+        } else if g == ROSTER_GROUP && self.n > 0 {
+            Focusable::<H>::a11y_elems(&self.shelf(self.n), g, cx, out);
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let elem = match path.segs().next()? {
+            Seg::Name("pad") => pad_a11y_find(path)?,
+            Seg::Name("sign_out") if path.len() == 1 => FOOTER,
+            Seg::Name("back") if path.len() == 1 => READOUT_BACK,
+            Seg::Name("roster") => Focusable::<H>::a11y_find(&self.shelf(self.n), &path.tail(1), cx)?,
+            _ => return None,
+        };
+        // The element must be one the view answers for now (the pad shut, no read-out, or the
+        // roster hidden under the pad, has no such id).
+        Focusable::<H>::group_of(self, &elem, cx).map(|_| elem)
+    }
 }
 
 impl<H: AppLike> Focusable<H> for ProfilesScreen {
@@ -1580,6 +1674,17 @@ impl<H: AppLike> Focusable<H> for ProfilesScreen {
         cx: &Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
         Focusable::<H>::seat(&self.focus_view(), group, from, cx)
+    }
+    // The view is a temporary built for this query, so the projection is handed back owning its
+    // text (the shape `focusable_via_view!` gives).
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        Focusable::<H>::a11y(&self.focus_view(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        Focusable::<H>::a11y_elems(&self.focus_view(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        Focusable::<H>::a11y_find(&self.focus_view(), path, cx)
     }
 }
 
@@ -1771,7 +1876,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
                 focused_i = Some(i);
                 continue; // draw the focused tile last (ring over neighbours)
             }
-            let rect = self.row.draw(p, i, base, Self::avatar_art(u), false, f.measure);
+            let rect = self.row.draw(p, i, base, Self::avatar_art(u, H::screen_inputs(f.cx).current_server), false, f.measure, &f.press, &plx_machine::machine::FocusKey { entry: self.entry, elem: i as u32 });
             Self::draw_name(p, u, cx_, false, f.measure);
             f.stop(
                 p,
@@ -1799,7 +1904,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             );
             Self::draw_name(p, u, cx_, true, f.measure);
             // the click dip folds into the focused avatar's pop (1.0 when idle)
-            let rect = self.row.draw(p, i, base, Self::avatar_art(u), true, f.measure);
+            let rect = self.row.draw(p, i, base, Self::avatar_art(u, H::screen_inputs(f.cx).current_server), true, f.measure, &f.press, &plx_machine::machine::FocusKey { entry: self.entry, elem: i as u32 });
             f.stop(
                 p,
                 Stop {
@@ -1838,7 +1943,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             // controls on its own row: *Back* (what the BACK key does, focused) and *Sign out*
             // beside it, or *Sign out* alone when BACK would leave the app (`readout_back`).
             let reason = CString::new(self.error.as_ref()).unwrap_or_default();
-            let press = f.press.scale;
+            let press = f.press;
             let overlay = readout_overlay(&reason, self.back_resumes)
                 .focus(cur.and_then(|e| self.readout_slot(e)))
                 .scales([0, 1].map(|i| self.footer_pop.scale_with(i, press)));
@@ -1855,7 +1960,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             let footer_r = footer_rect(f.measure);
             Button::new(plx_platform::i18n::msg::settings_account_sign_out_c().as_ptr(), theme::size::BODY, footer_r)
                 .focused(footer_focused)
-                .scale(self.footer_pop.scale(0))
+                .scale(self.footer_pop.scale(0, f.press))
                 .palette(self.ground.palette())
                 .draw(&Env::inert(), p);
             stop(f, FOOTER, footer_r);
@@ -1924,7 +2029,7 @@ mod test_support;
 
 #[cfg(test)]
 #[path = "profiles_selection_tests.rs"]
-mod selection_tests;
+pub(crate) mod selection_tests;
 
 #[cfg(test)]
 #[path = "profiles_session_tests.rs"]
@@ -1937,3 +2042,21 @@ mod pin_tests;
 #[cfg(test)]
 #[path = "profiles_pad_geometry_tests.rs"]
 mod pad_geometry_tests;
+
+#[cfg(test)]
+mod retained_input_tests {
+    use super::*;
+    #[test]
+    fn avatars_use_the_supplied_server_even_without_a_client() {
+        let user = auth::UserTile { thumb: "avatar".into(), ..Default::default() };
+        let server = plx_plex::plex::ServerId::from_raw(71);
+        match ProfilesScreen::avatar_art(&user, server) {
+            Art::Thumb { sid, key, res } => {
+                assert_eq!(sid, server.raw());
+                assert_eq!(key, "avatar");
+                assert_eq!(res, (300, 300));
+            }
+            _ => panic!("a profile avatar uses its retained server"),
+        }
+    }
+}

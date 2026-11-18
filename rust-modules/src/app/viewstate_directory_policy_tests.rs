@@ -13,9 +13,10 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
     let sid = plx_plex::plex::register_for_test(
         "bridge-viewstate-directory", "127.0.0.1", 9, "synthetic", "fixture");
     let _cleanup = DirectoryPolicyCleanup;
-    let mut rig = Bridge::for_test(|| 0);
-    rig.directory = directory_policy_fixture(sid, sid);
-    let directory_view = rig.directory.view();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
+    rig.retained.directory = directory_policy_fixture(sid, sid);
+    let directory_view = rig.retained.directory.view();
     rig.stores.hubs.seed_two_library_home_for_test(sid, directory_view);
     rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
     let _ = rig.stores.take_notices();
@@ -43,8 +44,10 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
 #[test]
 fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
     let _guard = plx_base::testlock::serial();
-    let first = Bridge::for_test(|| 0);
-    let mut second = Bridge::for_test(|| 0);
+    let mut first_owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let first = first_owner.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut second = harness.bridge();
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
     let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
@@ -69,7 +72,8 @@ fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
 #[test]
 fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
     let _guard = plx_base::testlock::serial();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
     let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
@@ -107,7 +111,7 @@ fn person_item(sid: plx_plex::plex::ServerId, rk: &str, watched: bool) -> plx_da
 }
 
 fn deliver_person(rig: &mut Bridge, command: plx_data::stores::person::PersonCmd) {
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
@@ -119,8 +123,10 @@ fn deliver_person(rig: &mut Bridge, command: plx_data::stores::person::PersonCmd
 #[test]
 fn separate_bridges_do_not_share_any_person_owner_state_or_notice() {
     let _guard = plx_base::testlock::serial();
-    let mut first = Bridge::for_test(|| 0);
-    let mut second = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut first = harness.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut second = harness.bridge();
     let sid = plx_plex::plex::ServerId::from_raw(0);
 
     first.person_run(person_open(sid, "first-owner"));
@@ -149,7 +155,8 @@ fn separate_bridges_do_not_share_any_person_owner_state_or_notice() {
 #[test]
 fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     let _guard = plx_base::testlock::serial();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let sid = plx_plex::plex::ServerId::from_raw(0);
     bridge.person_run(person_open(sid, "old-person"));
     let old_adapter = bridge.stores.person.adapter_for_test();
@@ -171,7 +178,8 @@ fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
 #[test]
 fn person_store_notifies_only_when_a_command_actually_changed_state() {
     let _guard = plx_base::testlock::serial();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let sid = plx_plex::plex::ServerId::from_raw(0);
     bridge.person_run(person_open(sid, "reader"));
     bridge.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
@@ -193,7 +201,8 @@ fn person_store_notifies_only_when_a_command_actually_changed_state() {
 #[test]
 fn person_reset_on_an_empty_store_still_notifies() {
     let _guard = plx_base::testlock::serial();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let _ = bridge.stores.person.take_notice();
 
     bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
@@ -205,8 +214,10 @@ fn person_reset_on_an_empty_store_still_notifies() {
 #[test]
 fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
     let _guard = plx_base::testlock::serial();
-    let mut first = Bridge::for_test(|| 0);
-    let mut second = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut first = harness.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut second = harness.bridge();
     let sid = plx_plex::plex::ServerId::from_raw(0);
     first.person_run(person_open(sid, "first-reader"));
     second.person_run(person_open(sid, "second-reader"));
@@ -231,7 +242,8 @@ fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
 #[test]
 fn profile_activation_clears_the_same_bridge_person_before_a_new_mount() {
     let _guard = plx_base::testlock::serial();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let sid = plx_plex::plex::ServerId::from_raw(0);
     bridge.person_run(person_open(sid, "outgoing-profile"));
     assert!(bridge.person_view().current().is_some());
@@ -248,8 +260,10 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test(
         "bridge-person-viewstate", "127.0.0.1", 9, "synthetic", "fixture");
-    let mut first = Bridge::for_test(|| 0);
-    let mut second = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut first = harness.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut second = harness.bridge();
     for bridge in [&mut first, &mut second] {
         bridge.person_run(person_open(sid, "shared-subject"));
         bridge.stores.person.install_for_test(
@@ -319,7 +333,8 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
     let _cleanup = DirectoryPolicyCleanup;
     let route = AppArg::Content(ContentArg::Detail { sid, rk: "movie".into() });
     let mut dispatcher = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     dispatcher.request(MachineId::Nav, NavOp::Root(route));
     dispatcher.frame_with(&mut rig, tick(0), Vec::new(), Vec::new(), &mut NoTap, false);
 
@@ -366,15 +381,16 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     let hidden = plx_plex::plex::register_for_test(
         "bridge-hubs-hidden", "127.0.0.1", 10, "synthetic", "fixture");
     let _cleanup = DirectoryPolicyCleanup;
-    let mut rig = Bridge::for_test(|| 0);
-    rig.directory = directory_policy_fixture(own, hidden);
-    let directory = rig.directory.clone();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
+    rig.retained.directory = directory_policy_fixture(own, hidden);
+    let directory = rig.retained.directory.clone();
 
     let keys = plx_data::pms::registry_keys_for_test();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         let _ = rig.stores.hubs.run_with_directory(
             plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
-        let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+        let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
         let mut present = Present::new();
         let mut effects = Vec::new();
@@ -446,22 +462,23 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let hidden = plx_plex::plex::register_for_test(
         "bridge-search-hidden", "127.0.0.1", 10, "synthetic", "fixture");
     let _cleanup = DirectoryPolicyCleanup;
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::Reset);
 
     let mut pages = Dispatcher::<AppHost>::new();
     rig.capture_views(&mut pages);
-    assert!(rig.directory.view().sections().is_empty(),
+    assert!(rig.retained.directory.view().sections().is_empty(),
         "a fresh Bridge owner starts empty");
-    assert!(rig.search.view().scope().sources().iter().all(|source| source.libraries.is_empty()),
+    assert!(rig.retained.search.view().scope().sources().iter().all(|source| source.libraries.is_empty()),
         "Search capture must describe the same retained directory as the rest of the frame");
 
     let directory = directory_policy_fixture(own, hidden);
-    rig.directory = directory.clone();
+    rig.retained.directory = directory.clone();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("same frame".into()));
     let query_generation = rig.stores.search.query_gen();
     let _ = rig.stores.take_notices();
-    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
     let mut present = Present::new();
     let mut effects = Vec::new();
@@ -494,8 +511,10 @@ fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
     let server = plx_plex::plex::register_for_test(
         "bridge-search-landing", "127.0.0.1", 11, "synthetic", "landing");
     let _cleanup = DirectoryPolicyCleanup;
-    let mut first = Bridge::for_test(|| 0);
-    let mut second = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut first = harness.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut second = harness.bridge();
     // Settle each owner's roster-generation baseline BEFORE landing anything: a store's first pump
     // ever sees the registry as "changed" from its fresh `visible = 0`, and that path supersedes —
     // wiping the very mailbox this test is about to fill.
@@ -563,7 +582,8 @@ fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     let server = plx_plex::plex::register_for_test(
         "bridge-search-late-worker", "127.0.0.1", 12, "synthetic", "late-worker");
     let _cleanup = DirectoryPolicyCleanup;
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let old_adapter = bridge.stores.search.adapter_for_test();
 
     bridge.search_run(plx_data::stores::search::SearchCmd::Reset);
@@ -607,7 +627,8 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     let sid = plx_plex::plex::register_for_test(
         "bridge-metadata-late-worker", "127.0.0.1", 15, "synthetic", "late-worker");
     let _cleanup = DirectoryPolicyCleanup;
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
 
     // Seed the pre-reset profile's full owned state.
     plx_data::metadata::set_current_for_test(bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
@@ -621,7 +642,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     }))));
     assert!(bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
         sid, rk: "old-rk".into(), show_rk: String::new(), kind: String::new(), duration_ms: None, audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
-        width: 0, height: 0, bitrate: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(), hdr: false,
+        width: 0, height: 0, bitrate: 0, video_kbps: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(), hdr: false,
     }))));
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid, rk: "old-rk".into(),
@@ -679,8 +700,10 @@ fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
         }
     }
     let _restore = Restore(plx_plex::plex::session::current_snapshot());
-    let mut a = Bridge::for_test(|| 0);
-    let mut b = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut a = harness.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut b = harness.bridge();
     a.seed_chrome_for_test("Owner A", "A", &["Home", "Movies", ""]);
     b.seed_chrome_for_test("Owner B", "B", &["Home", "TV Shows", ""]);
     plx_plex::plex::session::publish_profile_for_test(Some(plx_plex::plex::session::UserRef {
@@ -689,8 +712,8 @@ fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
     }), 41);
 
     // the lift (`Rig::lift_bar_member`) reads exactly this: the bridge's own captured chrome
-    let ar = a.chrome.read(0.0);
-    let br = b.chrome.read(0.0);
+    let ar = a.retained.chrome.read(0.0);
+    let br = b.retained.chrome.read(0.0);
     assert_eq!(ar.profile.name.to_bytes(), b"Owner A");
     assert_eq!(ar.profile.initial.to_bytes(), b"A");
     assert_eq!(ar.labels.faces, [plx_ui::widgets::TabFace::Label("Home".into()), plx_ui::widgets::TabFace::Label("Movies".into()), plx_ui::widgets::TabFace::Icon(plx_ui::icons::Icon::Search)]);

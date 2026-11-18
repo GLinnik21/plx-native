@@ -38,6 +38,18 @@ pub(super) fn execute(command: PreferenceCmd) {
     match command {
         // These commands need the Bridge's admitted, profile-scoped feature publication.
         PreferenceCmd::EnsureMarkerAccess => {}
+        PreferenceCmd::HoldHint { taught, live, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                use std::sync::atomic::Ordering;
+                let saved = plx_plex::plex::session::update_guarded_with_outcome(|current| {
+                    // A durable no-op is also success: never retry a lesson already stored.
+                    Some(current.with_hold_hint_taught(taught))
+                }, || live.load(Ordering::Acquire))
+                    .is_some_and(|write| write.outcome.persisted());
+                let _ = reply.send(saved);
+                plx_machine::present::wake_from_worker();
+            });
+        }
         PreferenceCmd::ChooseMarker { reply, .. } => { let _ = reply.send(false); }
         PreferenceCmd::Choose(Choice::IntroSkip(_) | Choice::CreditsSkip(_), reply) => { let _ = reply.send(false); }
         PreferenceCmd::Load { reply } => {
@@ -45,7 +57,7 @@ pub(super) fn execute(command: PreferenceCmd) {
                 let _ = reply.send(AccountPreferenceReply {
                     request: None, outcome: Err(PreferenceError::Unavailable),
                 });
-                plx_machine::idle::invalidate();
+
                 return;
             };
             // A refused spawn drops the reply sender. The screen reports its disconnected
@@ -53,28 +65,40 @@ pub(super) fn execute(command: PreferenceCmd) {
             plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.load();
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         PreferenceCmd::Save { request, base, update, reply } => {
             plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.save(&base, update);
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         // Every live setting saves through the one write door, in `choose_setting`.
         PreferenceCmd::Choose(choice, reply) => choose_setting(choice, reply),
+        PreferenceCmd::AutoSignIn { on, reply } => {
+            let expected = plx_plex::plex::session::peek();
+            let tenure = plx_plex::plex::session::tenure();
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let saved = plx_plex::plex::session::update_guarded_with_outcome(|current| {
+                    if current.client_id != expected.client_id || current.account_token != expected.account_token { return None; }
+                    (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))
+                }, || plx_plex::plex::session::tenure() == tenure).is_some_and(|write| write.outcome.persisted());
+                let _ = reply.send(saved);
+                plx_machine::present::wake_from_worker();
+            });
+        }
         PreferenceCmd::UiResolution { mode, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_ui_resolution(mode));
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_language(language));
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
     }
@@ -87,5 +111,167 @@ pub(super) fn execute_marker(command: PreferenceCmd, view: plx_appkit::skip_poli
         }
         choose_setting(match kind { plx_data::metadata::MarkerKind::Intro => Choice::IntroSkip(mode),
             plx_data::metadata::MarkerKind::Credits => Choice::CreditsSkip(mode) }, reply);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plx_plex::plex::session::{self, Session};
+    use std::sync::mpsc::{self, Sender, TryRecvError};
+
+    struct FullStorageQueue(Option<Sender<()>>);
+    impl FullStorageQueue {
+        fn new() -> Self {
+            plx_base::storage_worker::drain_for_test();
+            let (release, held) = mpsc::channel();
+            let (started, entered) = mpsc::channel();
+            let guard = Self(Some(release));
+            let _ = plx_base::storage_worker::submit(move || {
+                started.send(()).unwrap();
+                let _ = held.recv();
+            }).unwrap();
+            entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            for _ in 0..plx_base::storage_worker::CAPACITY {
+                let _ = plx_base::storage_worker::submit(|| ()).unwrap();
+            }
+            assert!(matches!(plx_base::storage_worker::submit(|| ()),
+                Err(plx_base::storage_worker::SubmitError::Full)));
+            guard
+        }
+    }
+    impl Drop for FullStorageQueue {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() { let _ = release.send(()); }
+            plx_base::storage_worker::drain_for_test();
+        }
+    }
+
+    fn account() -> Session {
+        Session { client_id: "preference-client".into(), account_token: "synthetic-account".into(),
+            ..Default::default() }.with_auto_sign_in(false)
+    }
+
+    #[test]
+    fn hold_hint_durable_receipt_and_cancelled_retained_write_are_lifetime_fenced() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("app-hold-hint-lifetime");
+        session::save(&account());
+        let queue = FullStorageQueue::new();
+        let live = Arc::new(AtomicBool::new(true));
+        let (reply, answer) = mpsc::channel();
+        execute(PreferenceCmd::HoldHint { taught: session::HoldHintTaught { card: true, pill: false },
+            live: live.clone(), reply });
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Empty));
+        live.store(false, Ordering::Release);
+        drop(queue);
+        assert_eq!(answer.recv_timeout(std::time::Duration::from_secs(5)), Ok(false));
+        assert_eq!(session::peek().hold_hint_taught(), session::HoldHintTaught::NONE);
+        let (reply, answer) = mpsc::channel();
+        execute(PreferenceCmd::HoldHint { taught: session::HoldHintTaught { card: true, pill: false },
+            live: Arc::new(AtomicBool::new(true)), reply });
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(answer.try_recv(), Ok(true));
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Disconnected));
+        session::invalidate_for_test();
+        assert!(session::load().hold_hint_taught().card, "receipt means durable, not merely queued");
+    }
+
+    #[test]
+    fn auto_sign_in_retains_a_full_worker_queue_edit() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("app-auto-sign-in-full");
+        session::save(&account());
+        let queue = FullStorageQueue::new();
+        let (reply, answer) = mpsc::channel();
+        execute(PreferenceCmd::AutoSignIn { on: true, reply });
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Empty), "backpressure is not a terminal refusal");
+        assert!(!session::peek().auto_sign_in());
+        drop(queue);
+        assert_eq!(answer.try_recv(), Ok(true));
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Disconnected), "exactly one terminal reply");
+        session::invalidate_for_test();
+        assert!(session::load().auto_sign_in(), "the actual preference command persisted its edit");
+    }
+
+    #[test]
+    fn auto_sign_in_retained_edit_cannot_write_after_an_account_change() {
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("app-auto-sign-in-stale");
+        session::save(&account());
+        let queue = FullStorageQueue::new();
+        let (reply, answer) = mpsc::channel();
+        execute(PreferenceCmd::AutoSignIn { on: true, reply });
+        let mut replacement = account();
+        replacement.account_token = "replacement-account".into();
+        session::save(&replacement);
+        let before = std::fs::read(_session.path()).unwrap();
+        drop(queue);
+        assert_eq!(answer.try_recv(), Ok(false));
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Disconnected));
+        assert_eq!(std::fs::read(_session.path()).unwrap(), before, "stale work writes nothing");
+        assert!(!session::peek().auto_sign_in());
+    }
+
+    #[test]
+    fn browse_preferences_retains_a_full_worker_queue_edit() {
+        use plx_data::stores::browse::{BrowseCmd, BrowseStore, SecKind};
+        use plx_data::stores::StoreJob;
+        use plx_machine::job::Port;
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("app-browse-preferences-full");
+        session::save(&account());
+        let mut store = BrowseStore::default();
+        store.seed_pins_for_test(&[false]);
+        assert!(store.run_for_test(BrowseCmd::ApplyPins(vec![(0, true)])));
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1);
+        let StoreJob::BrowsePreferences(job, port) = jobs.remove(0) else { panic!("preference job") };
+        let addr = job.addr;
+        let observer = port.clone();
+        let queue = FullStorageQueue::new();
+        crate::app::adapters::stores::StoreRunner::live().start(StoreJob::BrowsePreferences(job, port));
+        assert!(session::peek().pins_for("").is_none());
+        drop(queue);
+        session::invalidate_for_test();
+        let mut persisted = session::load();
+        let pins = persisted.pins_for("").expect("the live runner persisted the retained edit");
+        assert!(pins.asked);
+        assert_eq!(pins.on.len(), 1);
+        assert_eq!(pins.on[0].machine_id, "mach-test");
+        assert_eq!(pins.on[0].key, 1);
+        // A terminal receipt cannot be overwritten by a later addressed refusal.
+        observer.refused(addr);
+        observer.done(addr, plx_data::browse::preferences_job::WriteOutcome::Finished(false));
+        store.observe_pin_write();
+        let mut newer = pins.clone();
+        newer.off = std::mem::take(&mut newer.on);
+        persisted.set_pins_for("", newer);
+        session::save(&persisted);
+        store.append_section_for_test(0, 2, "Other", SecKind::Movie);
+        assert!(!store.pinned_for_test(0), "one successful terminal releases the optimistic pin overlay");
+        assert!(store.take_jobs().is_empty(), "no duplicate preference job");
+    }
+
+    #[test]
+    fn browse_preferences_retained_edit_cannot_write_after_an_account_change() {
+        use plx_data::stores::browse::{BrowseCmd, BrowseStore};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("app-browse-preferences-stale");
+        session::save(&account());
+        let mut store = BrowseStore::default();
+        store.seed_pins_for_test(&[false]);
+        assert!(store.run_for_test(BrowseCmd::ApplyPins(vec![(0, true)])));
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1);
+        let queue = FullStorageQueue::new();
+        crate::app::adapters::stores::StoreRunner::live().start(jobs.remove(0));
+        let mut replacement = account();
+        replacement.account_token = "replacement-account".into();
+        session::save(&replacement);
+        let before = std::fs::read(_session.path()).unwrap();
+        drop(queue);
+        assert_eq!(std::fs::read(_session.path()).unwrap(), before, "stale work writes nothing");
+        assert!(session::peek().pins_for("").is_none());
     }
 }

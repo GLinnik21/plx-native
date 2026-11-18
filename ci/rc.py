@@ -33,12 +33,11 @@ import re
 import subprocess
 import sys
 
+import version_rule
+
 #: Every candidate tag carries this prefix — the filter `plan` lists existing candidates with, and
 #: the reason a candidate is never mistaken for a release (`v…`) or a nightly (`nightly/v…`).
 TAG_PREFIX = "rc/v"
-
-_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
-_LINE = re.compile(r"release/v(\d+)\.(\d+)")
 
 
 def rc_label(version: str, n: int) -> str:
@@ -49,26 +48,18 @@ def rc_tag(label: str) -> str:
     return f"{TAG_PREFIX}{label}"
 
 
-def line_rule_error(version: str, line: str) -> "str | None":
-    """The version/line rule release.yml's `prepare` enforces, asked BEFORE a candidate is cut so a
-    candidate can never be one the release would refuse: trunk (`main`) cuts `X.Y.0`; a maintenance
-    line `release/vX.Y` cuts `X.Y.N` with `N >= 1`. `None` when the pair is one release.yml accepts.
-    """
-    v = _VERSION.fullmatch(version)
-    if not v:
-        return f"{version!r} is not X.Y.Z"
-    major, minor, patch = (int(x) for x in v.groups())
-    if line == "main":
-        return None if patch == 0 else (
-            f"refusing a candidate for {version} from main — trunk releases end in .0; a patch "
-            "belongs to its own release/vX.Y line")
-    m = _LINE.fullmatch(line)
-    if not m:
-        return f"line {line!r} is neither main nor release/vX.Y"
-    if (int(m.group(1)), int(m.group(2))) != (major, minor) or patch < 1:
-        return (f"refusing a candidate for {version} from {line} — a maintenance line publishes "
-                f"{m.group(1)}.{m.group(2)}.N with N>=1")
-    return None
+def line_rule_error(version: str, line: str, marker_content: "str | None") -> "str | None":
+    """The rule release.yml's `prepare` enforces (`ci/version_rule.py::line_release_error`), asked
+    BEFORE a candidate is cut so a candidate can never be one the release would refuse: every
+    release comes from a release line, a fresh one (no `RELEASE_LINE` yet) cuts `X.Y.0` and a
+    released one `X.Y.N` with `N >= 1`. `marker_content` is the line's marker before this bump."""
+    return version_rule.line_release_error(version, line, marker_content)
+
+
+def _head_marker() -> "str | None":
+    """`RELEASE_LINE` as COMMITTED at HEAD, i.e. before this run's own bump wrote one."""
+    r = subprocess.run(["git", "show", "HEAD:RELEASE_LINE"], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
 
 
 def next_rc(version: str, existing_tags: "list[str]") -> "tuple[int, str | None]":
@@ -83,10 +74,13 @@ def next_rc(version: str, existing_tags: "list[str]") -> "tuple[int, str | None]
     return numbers[-1] + 1, rc_tag(rc_label(version, numbers[-1]))
 
 
-def last_release(release_tags: "list[str]") -> "str | None":
-    """The highest plain `vX.Y.Z` tag — the release a candidate's changes are listed against."""
-    parsed = [(tuple(int(x) for x in m.groups()), t)
-              for t in release_tags if (m := re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", t))]
+def last_release(release_tags: "list[str]", below: "str | None" = None) -> "str | None":
+    """The highest plain `vX.Y.Z` tag — the release a candidate's changes are listed against —
+    below `below` when given: a patch of an older line follows that line's last release, not a newer
+    line's `X.Y.0`."""
+    limit = tuple(int(x) for x in below.split(".")) if below else None
+    parsed = [(v, t) for t in release_tags if (m := re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", t))
+              if (v := tuple(int(x) for x in m.groups())) and (limit is None or v < limit)]
     return max(parsed)[1] if parsed else None
 
 
@@ -95,7 +89,7 @@ def _git(args: "list[str]") -> str:
 
 
 def cmd_plan(version: str, line: str, dry: bool) -> int:
-    err = line_rule_error(version, line)
+    err = line_rule_error(version, line, _head_marker())
     if err and not dry:
         print(f"::error::{err}", file=sys.stderr)
         return 1
@@ -111,7 +105,7 @@ def cmd_plan(version: str, line: str, dry: bool) -> int:
     print(f"label={label}")
     print(f"tag={rc_tag(label)}")
     print(f"prev_tag={prev or ''}")
-    print(f"base_tag={last_release(tags) or ''}")
+    print(f"base_tag={last_release(tags, below=version) or ''}")
     return 0
 
 
@@ -185,13 +179,18 @@ def _selftest() -> int:
 
     check(rc_tag(rc_label("0.8.0", 2)) == "rc/v0.8.0-rc.2", "label and tag shape")
 
-    check(line_rule_error("0.8.0", "main") is None, "main cuts X.Y.0")
-    check(line_rule_error("0.8.1", "main") is not None, "main refuses a patch")
-    check(line_rule_error("0.6.2", "release/v0.6") is None, "a line cuts its own X.Y.N, N>=1")
-    check(line_rule_error("0.6.0", "release/v0.6") is not None, "a line refuses .0")
-    check(line_rule_error("0.7.1", "release/v0.6") is not None, "a line refuses another minor")
-    check(line_rule_error("0.8", "main") is not None, "two components is not a version")
-    check(line_rule_error("0.8.0", "release/0.8") is not None, "a malformed line name")
+    check(line_rule_error("0.8.0", "main", None) is not None, "main cuts no release at all")
+    check(line_rule_error("0.8.0", "release/v0.8", None) is None, "a fresh line cuts X.Y.0")
+    check(line_rule_error("0.8.1", "release/v0.8", None) is not None,
+          "a fresh line cuts nothing but X.Y.0")
+    check(line_rule_error("0.6.2", "release/v0.6", "0.6\n") is None,
+          "a released line cuts its own X.Y.N, N>=1")
+    check(line_rule_error("0.6.0", "release/v0.6", "0.6\n") is not None, "a released line refuses .0")
+    check(line_rule_error("0.7.1", "release/v0.6", "0.6\n") is not None, "a line refuses another minor")
+    check(line_rule_error("0.6.1", "release/v0.6", "0.5\n") is not None,
+          "a marker naming another line is refused")
+    check(line_rule_error("0.8", "release/v0.8", None) is not None, "two components is not a version")
+    check(line_rule_error("0.8.0", "release/0.8", None) is not None, "a malformed line name")
 
     check(next_rc("0.8.0", []) == (1, None), "the first candidate is rc.1")
     tags = ["v0.7.0", "rc/v0.8.0-rc.1", "rc/v0.8.0-rc.2", "rc/v0.7.0-rc.5",
@@ -206,10 +205,12 @@ def _selftest() -> int:
     check(last_release(["v0.6.1", "v0.10.0", "v0.9.3", "rc/v0.11.0-rc.1", "nightly/v1.0.0-x"]) == "v0.10.0",
           "the last release is the highest plain vX.Y.Z, compared numerically")
     check(last_release(["rc/v0.1.0-rc.1"]) is None, "no release yet")
+    check(last_release(["v0.11.0", "v0.12.0", "v0.11.1"], below="0.11.2") == "v0.11.1",
+          "a patch of an older line is listed against that line's last release, not a newer line's")
 
     body = render_notes(label="0.8.0-rc.2", sha="abc1234def" + "0" * 30, base_tag="v0.7.0",
                         prev_tag="rc/v0.8.0-rc.1", ipk="plxnative-v0.8.0-rc.2.ipk",
-                        sha256="deadbeef" * 8, repo="GLinnik21/plx-native",
+                        sha256="deadbeef" * 8, repo="plxnative/plx-native",
                         changes=["- Home: something (#471)"])
     check("replaces the regular PlxNative" in body, "notes say it replaces the stable install")
     check("will not offer the final 0.8.0" in body, "notes warn the final is not offered over it")

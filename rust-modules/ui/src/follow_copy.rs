@@ -85,10 +85,12 @@ impl FollowCopy {
         self.arrive.pos.clamp(0.0, 1.0)
     }
 
-    /// Draw the sentence(s) in `frame` at `size`: the leaving one at the opacity the arrival has
-    /// taken from it, the shown one at the opacity it has gained. The same view the plain copy is
-    /// drawn with (`size`, a leading of `size + XS`, the reading ink), capped at [`FOLLOW_LINES`].
-    pub fn draw(&self, p: Painter, frame: Rect, size: std::os::raw::c_int) {
+    /// Draw the sentence(s) in `frame`: the leaving one at the opacity the arrival has taken from
+    /// it, the shown one at the opacity it has gained. The same view the plain copy is drawn with
+    /// (the route's [`COPY_SIZE`](crate::route_screen::COPY_SIZE), a leading of `size + XS`, the
+    /// reading ink), capped at [`FOLLOW_LINES`].
+    pub fn draw(&self, p: Painter, frame: Rect) {
+        let size = crate::route_screen::COPY_SIZE;
         let a = self.arrival();
         if !self.left.is_empty() && a < 1.0 {
             TextView::new(&self.left, size, theme::TEXT_READING)
@@ -290,9 +292,9 @@ mod tests {
     /// One frame of a fade, judged the way the present gate judges it: `frame_begin` forgets the
     /// last frame's motion, `update` steps the springs, and the springs report their own motion.
     fn step_frame(c: &mut FollowCopy) -> bool {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         c.update(1.0 / 60.0);
-        plx_machine::idle::page_moving()
+        plx_machine::motion::report::page_moving()
     }
 
     /// A fade that is running reports motion every frame (the gate is spring-instrumented, so it
@@ -357,11 +359,11 @@ mod tests {
         assert_eq!(dims.opacity(), [1.0, DIM], "opened settled");
         assert!(!dims.is_dimmed(0) && dims.is_dimmed(1));
         dims.set([true, false]);
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         dims.update(1.0 / 60.0);
         let mid = dims.opacity();
         assert!(mid[0] < 1.0 && mid[0] > DIM && mid[1] < 1.0 && mid[1] > DIM, "mid-motion: {mid:?}");
-        assert!(plx_machine::idle::page_moving(), "a dim reports its own motion");
+        assert!(plx_machine::motion::report::page_moving(), "a dim reports its own motion");
         for _ in 0..600 {
             dims.update(1.0 / 60.0);
         }
@@ -386,7 +388,7 @@ mod tests {
     #[test]
     fn a_landscape_picture_is_sixteen_by_nine_at_the_slots_width() {
         use crate::route_screen::RouteLayout;
-        let slot = RouteLayout::settings_page().picture_slot();
+        let slot = RouteLayout::screen().picture_slot();
         let r = LandscapePicture::rect(slot);
         assert_eq!((r.x, r.y, r.w), (slot.x, slot.y, slot.w));
         assert!((r.w - 660.0).abs() < 0.5, "the board's width: {r:?}");

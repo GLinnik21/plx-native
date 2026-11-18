@@ -8,6 +8,7 @@ use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, MachineId, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
@@ -487,7 +488,8 @@ impl LibraryMenu {
             selected_library: None,
             pages: PageStack::new(),
             motion: PanelMotion::new().spring_all_edges(),
-            popover: Popover::new().morphing(),
+            // a header pill opens it: the close's blob whitens toward the pill's own focused fill
+            popover: Popover::new().morphing().opener_fill(plx_ui::page_header::OPENER_FILL),
             #[cfg(test)] draft_rebuilds: 0,
         }
     }
@@ -498,16 +500,16 @@ impl LibraryMenu {
         plx_ui::widgets::focus_pill(Rect::new(x, y, w, h))
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
-    /// rows, never narrower than the control's focused pill), hung off the opener's near edge
-    /// ([`plx_ui::popover::hang_x`]) and held inside the safe frame. ONE placement for every kind: the
-    /// "+N" list opens under its "+N" pill exactly as Sort & Filter does; it differs only in its
+    /// rows, never narrower than the control's focused pill), laid OVER the opener by the shared
+    /// rule ([`plx_ui::popover::cover_opener`]: top edges flush, the near edge hung off the
+    /// opener's outer edge) and held inside the safe frame. ONE placement for every kind: the
+    /// "+N" list opens over its "+N" pill exactly as Sort & Filter does; it differs only in its
     /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
     /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || self.measure_frame(measure))
     }
     fn measure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        let [_, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
         let pill = self.pill();
         let width = if self.kind == LibraryMenuKind::Sources {
@@ -515,13 +517,8 @@ impl LibraryMenu {
         } else {
             self.form.table.menu_panel_width_from(measure, pill)
         };
-        Rect::new(
-            // The shared rule: the panel's near edge is the opener's outer edge (NV1).
-            plx_ui::popover::hang_x(pill, width, plx_ui::consts::SAFE),
-            (y + h + 16.0).clamp(96.0, 984.0 - height),
-            width,
-            height,
-        )
+        // The shared rule: the panel covers its opener, top edges flush, near edges flush (NV1).
+        plx_ui::popover::cover_opener(pill, (width, height), plx_ui::consts::SAFE)
     }
     /// The panel as it reads: each section's heading and its rows' `(label, value)`, for a route
     /// test that compares the Library's words with the Watchlist's.
@@ -848,6 +845,54 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
             elem: self.form.selected_key().map_or(0, |key| key.0),
         }
     }
+    /// **The ids** (relative to the menu, `library_menu.<path>`), through the shared popover
+    /// projection ([`page_stack::popover_a11y`]): a row is [`row_path`] of its identity, and the
+    /// role its [`RowKind`] says. The menu has the one `Column` group, so the default walk is the
+    /// inverse.
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        page_stack::popover_a11y(&self.form, key, |id| row_path(&self.form, id))
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        page_stack::popover_a11y_elems(&self.form, g, GroupId(0), out);
+    }
+}
+
+/// **A row's name in the menu's accessibility ids**, from the identity focus follows (never from the
+/// row's words): the rows that are one of a kind are their word (`recheck`, `favourites`,
+/// `unwatched`, and the Filter page's `genre` drill-in); a row of a list is `<list>.<n>`, `n` its
+/// place among the rows of that list on the page now: `library.<n>` for the Sources list, `sort.<n>`,
+/// `type.<n>`, and `genre.<n>` on the Genre page, whose *All genres* row is `genre.all`. The
+/// identities of those lists carry a server's text (a sort key, a genre id, a library's address), which
+/// an id never holds, so their place is their name. An identity this does not know is `row.<n>`.
+fn row_path(form: &MenuTable, id: &String) -> A11yPath {
+    let here = form.index_of(id).unwrap_or(0);
+    let unknown = || A11yPath::new().name("row").index(here);
+    let word = |word: &'static str| A11yPath::new().name(word);
+    let Some((list, rest)) = id.split_once(':') else {
+        return match id.as_str() {
+            "recheck" => word("recheck"),
+            "favourites" => word("favourites"),
+            "unwatched" => word("unwatched"),
+            "genre" => word("genre"),
+            _ => unknown(),
+        };
+    };
+    if (list, rest) == ("genre", "all") {
+        return word("genre").name("all");
+    }
+    let (name, ours) = match list {
+        "section" => ("library", "section:"),
+        "sort" => ("sort", "sort:"),
+        "type" => ("type", "type:"),
+        "genre" => ("genre", "genre:"),
+        _ => return unknown(),
+    };
+    // the rows of this list above this one (the Genre page's *All genres* row is named, not counted)
+    let before = (0..here)
+        .filter_map(|i| form.id_at(i))
+        .filter(|other| other.starts_with(ours) && other.as_str() != "genre:all")
+        .count();
+    word(name).index(before)
 }
 impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn pointer_held(&self) -> bool {
@@ -856,10 +901,15 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
 
     /// The header control the panel grew out of, for every kind of menu ("+N" included): the page
     /// leaves it out of its pass (`DrawFrame::lifted`) and the opener lift draws it focused above
-    /// the scrim (`LibraryScreen::draw_header_opener`), so the control the panel is about stays
-    /// lit while it is open (design review S12).
+    /// the scrim and the panel (`LibraryScreen::draw_header_opener`) at the morph's `opener_alpha`:
+    /// gone while the menu stands, back as the droplet drains into it.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         self.arg.opener.map(|(entry, control)| (entry, Some(FocusKey { entry, elem: control })))
+    }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.popover.opener_alpha()
     }
     fn name(&self) -> &'static str {
         "library_menu"
@@ -876,7 +926,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     /// chip-shaped control on a live page opening a list beside it. The page recedes (inheriting
     /// its own light through the container's field) and stays readable.
     fn scrim(&self) -> plx_ui::screen::Scrim {
-        plx_ui::screen::Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.popover.dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
@@ -888,7 +938,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         // container's appear: the panel begins and ends as the control it grows from.
         let field = f.underlay;
         let frame = self.frame(measure);
-        let m = self.popover.content_painter_on(f.painter, 0.0);
+        let m = self.popover.content_painter_on(f.painter.alpha(f.nav_page_alpha), 0.0);
         plx_ui::profile::phase("lb.menu", || {
             let shown = self.motion.shown(frame);
             self.popover.panel(m, shown, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);
@@ -959,7 +1009,7 @@ impl LogicalState for LibraryMenu {
 mod review_actions_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_data::browse::{SecKind, SourceState};
     use plx_plex::plex::ServerId;
@@ -1027,7 +1077,14 @@ mod tests {
         type Init = Arg;
         type Memory = crate::registry::PageMemory;
     }
-    impl LibraryLike for HostFixture {
+    impl crate::registry::ScreenInputsLike for HostFixture {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
+impl LibraryLike for HostFixture {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
         fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
             cx.views.listing
         }
@@ -1058,8 +1115,97 @@ mod tests {
             measure: &measure,
             focus: FocusRead { current: None , ..Default::default() },
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(7)),
         })
+    }
+
+    /// The ids of every listed element of a menu, in listing order, with each one's role.
+    fn listed(menu: &LibraryMenu, cx: &Cx<'_, HostFixture>) -> Vec<(String, plx_ui::a11y::Role)> {
+        let mut elems = Vec::new();
+        <LibraryMenu as Focusable<HostFixture>>::a11y_elems(menu, GroupId(0), cx, &mut elems);
+        elems.iter()
+            .map(|elem| {
+                let a = <LibraryMenu as Focusable<HostFixture>>::a11y(menu, elem, cx).expect("a listed row projects");
+                (a.path.to_string(), a.role)
+            })
+            .collect()
+    }
+
+    /// The Library menu's three pages (Sources, Sort & filter, Genre) mounted and run through the id
+    /// conformance, with the ids each names (`AppArg::LibraryMenu`; the coverage table calls this):
+    /// a row of a list is `<list>.<n>` by its place, and a row that is one of a kind is its word.
+    pub(crate) fn library_menu_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
+        use plx_ui::a11y::Role;
+        let _guard = plx_base::testlock::serial();
+        let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let mut namespaces = Vec::new();
+        let mut page = |kind, draft: MenuDraft, want: &[(&str, Role)]| {
+            let mut menu = LibraryMenu::new(EntryId(7), menu_arg(kind, [0; 4]));
+            menu.apply_draft(draft);
+            with_cx(|cx| {
+                namespaces.push(conform::<HostFixture, _>(&menu, cx));
+                let want: Vec<_> = want.iter().map(|(id, role)| (id.to_string(), *role)).collect();
+                assert_eq!(listed(&menu, cx), want, "{kind:?}");
+                // the table counts the rows a key can land on, and every one of them is listed
+                let mut groups = Vec::new();
+                <LibraryMenu as Focusable<HostFixture>>::groups(&menu, cx, &mut groups);
+                assert_eq!(groups[0].len, want.len(), "{kind:?}: the group's length is the listing's");
+            });
+        };
+
+        let (groups, sections) = source_sections();
+        page(
+            LibraryMenuKind::Sources,
+            source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false),
+            &[("library.0", Role::Row), ("library.1", Role::Row), ("recheck", Role::Row), ("favourites", Role::Row)],
+        );
+        let sorts: Vec<_> = (0..3)
+            .map(|i| SortEntry { key: format!("sort{i}"), desc_key: String::new(), title: format!("Sort {i}"), default_desc: false })
+            .collect();
+        page(
+            LibraryMenuKind::SortFilter,
+            sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, DirectoryView::empty_for_test()),
+            &[
+                ("type.0", Role::Row),
+                ("type.1", Role::Row),
+                ("type.2", Role::Row),
+                ("sort.0", Role::Row),
+                ("sort.1", Role::Row),
+                ("sort.2", Role::Row),
+                ("unwatched", Role::Toggle),
+                ("genre", Role::Row),
+            ],
+        );
+        let genres: Vec<_> = ["28", "35"].map(|id| GenreEntry { id: id.into(), title: format!("Genre {id}") }).into();
+        page(
+            LibraryMenuKind::SortFilter,
+            genre_draft(&genres, None),
+            &[("genre.all", Role::Row), ("genre.0", Role::Row), ("genre.1", Role::Row)],
+        );
+        namespaces
+    }
+
+    /// **The ids come from a row's identity, never from the server's text**: a sort key, a genre id
+    /// and a library address are all positions, so two menus offering different server data name
+    /// their rows alike, and the menu's id for a row that is one of a kind is its word.
+    #[test]
+    fn the_library_menu_names_its_rows_by_place_and_word_and_never_by_server_text() {
+        assert!(!library_menu_conforms().is_empty());
+        let _guard = plx_base::testlock::serial();
+        let ids = |sorts: &[&str]| {
+            let sorts: Vec<_> = sorts
+                .iter()
+                .map(|key| SortEntry { key: (*key).into(), desc_key: String::new(), title: (*key).into(), default_desc: false })
+                .collect();
+            let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::SortFilter, [0; 4]));
+            menu.apply_draft(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false,
+                DirectoryView::empty_for_test()));
+            with_cx(|cx| listed(&menu, cx).into_iter().map(|(id, _)| id).collect::<Vec<_>>())
+        };
+        assert_eq!(ids(&["titleSort", "year"]), ids(&["addedAt", "rating"]), "the server's keys are not in the ids");
+        assert!(ids(&["titleSort"]).iter().all(|id| !id.contains("titleSort")));
     }
 
     #[test]

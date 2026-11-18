@@ -194,6 +194,95 @@ mod qualified_uri_offer_tests {
             audio_track: audio, subtitle_track: TrackChoice::Unspecified }
     }
 
+    /// #1394: the driver is asked whether it can take a Start when the source is offered. One that
+    /// cannot (the ACB handle was not made) declines the offer with its reason, keeps no
+    /// authorization and leaves Feed as the offer; it is asked again for the next offer.
+    #[test]
+    fn an_offer_the_driver_is_not_ready_for_is_declined_with_its_reason() {
+        let _serial = plx_base::testlock::serial();
+        let mut session = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&session);
+        crate::route::set_url(&mut session, "https://example.invalid/original.mkv");
+        let ticket = crate::route::begin_route_start().expect("route transaction");
+        assert!(session.qualify_resolved_feed_offer(
+            crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
+        let (driver, handle) = FakeUriDriver::new(Capabilities { progressive_uri: true,
+            hls_uri: false, packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false });
+        assert!(adapter.install_uri_driver(Box::new(driver)).is_ok());
+        let selection = session.uri_selection();
+        let initial = InitialPlayback { position: None, paused: false };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let offer = || QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, selection,
+            UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
+            requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
+
+        handle.set_not_ready(Some(plx_playback_contract::uri::UriNotReady::AcbHandle));
+        let (declined, log) = plx_base::eventlog::with_private_log(|| {
+            let declined = adapter.offer_qualified_uri(&mut session, offer());
+            (declined, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+        });
+        assert!(matches!(declined, Err(Failure::Unavailable)));
+        assert!(log.contains("uri: original declined (the ACB handle for the URI engine could not be created)\n"),
+            "{log}");
+        assert!(adapter.qualified_uri.is_none(), "a declined offer keeps no authorization");
+        assert!(matches!(session.backend_offer(),
+            crate::route::backend_policy::Selection::Open(offer) if offer.backend == BackendKind::Feed),
+            "Feed stays the offer");
+        assert_eq!(handle.ready_asked(), 1);
+
+        handle.set_not_ready(None);
+        assert!(adapter.offer_qualified_uri(&mut session, offer()).is_ok());
+        assert_eq!(handle.ready_asked(), 2, "each offer asks the driver");
+    }
+
+    /// The previous Feed object may still be inside its off-frame `Unload` when an offer lands, and no
+    /// create may run against the display then. While a release is in flight the driver is not asked to
+    /// set anything up: the offer is taken, and the Start's gate makes the handle once the release is
+    /// done. After it, the next offer asks again.
+    #[test]
+    fn an_offer_while_a_release_is_in_flight_is_taken_without_asking_the_driver() {
+        use crate::player::release::ReleaseEvent;
+        let _serial = plx_base::testlock::serial();
+        let mut session = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&session);
+        crate::route::set_url(&mut session, "https://example.invalid/original.mkv");
+        let ticket = crate::route::begin_route_start().expect("route transaction");
+        assert!(session.qualify_resolved_feed_offer(
+            crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
+        let (driver, handle) = FakeUriDriver::new(Capabilities { progressive_uri: true,
+            hls_uri: false, packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false });
+        assert!(adapter.install_uri_driver(Box::new(driver)).is_ok());
+        let selection = session.uri_selection();
+        let initial = InitialPlayback { position: None, paused: false };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let offer = || QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, selection,
+            UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
+            requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
+
+        // A driver that would decline if it were asked.
+        handle.set_not_ready(Some(plx_playback_contract::uri::UriNotReady::AcbHandle));
+        let mut fx = Vec::new();
+        adapter.release.step(&ReleaseEvent::UnloadHandedOff { epoch: 1, at: std::time::Instant::now() }, &mut fx);
+        assert!(adapter.release_busy());
+        assert!(adapter.offer_qualified_uri(&mut session, offer()).is_ok(), "the offer is taken");
+        assert_eq!(handle.ready_asked(), 0, "nothing is created while Feed's Unload runs");
+
+        adapter.release.step(&ReleaseEvent::UnloadReturned { epoch: 1 }, &mut fx);
+        assert!(!adapter.release_busy());
+        assert!(matches!(adapter.offer_qualified_uri(&mut session, offer()), Err(Failure::Unavailable)));
+        assert_eq!(handle.ready_asked(), 1, "once the release is done the offer asks again");
+    }
+
     #[test]
     fn qualified_source_is_bound_to_resolved_selection_and_never_inferred_from_feed() {
         let _serial = plx_base::testlock::serial();
@@ -1073,6 +1162,20 @@ impl PlayerAdapter {
         }
         if !uri_offer_executable(ps, &offer) { return Err(Failure::Unsupported); }
         if !ps.ensure_backend_offers() { return Err(Failure::Stale); }
+        // Last, because it may do the driver's one-time setup (the ACB handle): every cheaper
+        // refusal above has already declined. A driver that cannot take the Start declines the
+        // offer, and the caller hands the same play to Feed. Not while a release is in flight: the
+        // previous Feed object may still be inside its off-frame `Unload`, and no create may run
+        // against the display then (Feed's own sink fence refuses it, and a Start waits for the
+        // `Unload` for the same reason). The offer is taken and the Start's gate makes the handle once
+        // the release is done; a create that fails THEN refuses that Start.
+        let mt = &self.mt;
+        let busy = self.release.is_busy();
+        if let Some(why) = self.physical.uri_mut().filter(|_| !busy)
+            .and_then(|driver| driver.ready_to_start(mt).err()) {
+            plx_base::eventlog::log(&format!("uri: original declined ({})", why.log_name()));
+            return Err(Failure::Unavailable);
+        }
         let offer_id = offer.offer_id;
         if let Some(previous) = self.qualified_uri.replace(offer) {
             ps.qualify_backend_offer(BackendKind::Uri, previous.offer_id,
@@ -1925,14 +2028,14 @@ impl PlayerAdapter {
                 super::no_audio_armed()))
     }
 
-    pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
+    pub(super) fn tick_feed_presentation(&mut self, route: plx_playback_contract::feed::HoldRoute,
         immersive: bool) -> plx_playback_contract::feed::PresentationTick {
         let mt = &self.mt;
         self.physical.feed().map_or(
             plx_playback_contract::feed::PresentationTick {
                 stage: plx_playback_contract::feed::Stage::Loading, eos_pushed: false,
             },
-            |feed| feed.tick_presentation(mt, segmented_hls, immersive))
+            |feed| feed.tick_presentation(mt, route, immersive))
     }
 
     /// Is a session live? Answered from the bound attempt, which the one start that installs the

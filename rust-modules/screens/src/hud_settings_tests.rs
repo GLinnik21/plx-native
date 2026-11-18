@@ -1,6 +1,7 @@
 //! The Player HUD page: its rows from a published list, the prompt before an unreviewed install, the
 //! commands each row sends, and that every row fits its column in every shipped language.
 use super::*;
+use plx_ui::theme;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::hudpacks::{Meta, Source};
 use plx_machine::machine::{FocusRead, PressId, PressRead, Stamped, Tick};
@@ -11,10 +12,11 @@ use plx_ui::fixture::FixtureMeasure;
 fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
-        views: plx_data::stores::browse::DirectoryView::empty_for_test().into(),
+        views: crate::registry::InnerViews::new(plx_data::stores::browse::DirectoryView::empty_for_test(), crate::registry::publication_fixture()),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: FocusRead { current: Some(FocusKey { entry: EntryId(0), elem: focus }), ..Default::default() },
         owner: InputOwner::Entry(EntryId(0)),
     }
@@ -402,11 +404,9 @@ fn every_row_fits_its_column_in_every_language() {
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
         every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
         every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
-        let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-        form.table.compact = false;
-        form.table.board_metrics(true); // as `hud_settings.rs` draws it
+        let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
         form.set(hud_form(&every, None, false).0, None);
-        for e in form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()) {
+        for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
         }
         // The address row in each state it has: waiting, with a long address typed (the author's text, and the
@@ -414,12 +414,10 @@ fn every_row_fits_its_column_in_every_language() {
         for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud")), (true, None)] {
             let mut busy = list();
             busy.fetching = fetching;
-            let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-            form.table.compact = false;
-            form.table.board_metrics(true);
+            let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
             form.set(hud_form(&busy, draft.as_ref(), false).0, None);
-            out.extend(form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()));
+            out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
     plx_ui::table::assert_no_fit_failures(&out);
@@ -432,7 +430,7 @@ fn every_row_fits_its_column_in_every_language() {
 fn the_line_under_the_title_fits_the_column_in_every_language() {
     use plx_platform::i18n::msg;
     const MAX_COPY_LINES: usize = 5;
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -619,6 +617,66 @@ fn an_offer_opens_the_prompt_with_cancel_focused_and_each_answer_names_the_offer
         drive(&mut page, tick(), 0);
         assert!(!page.prompt.is_open(), "an answered offer is not asked again");
     }
+}
+
+/// **A drop file's row takes no OK while the store is busy**, as the removal rows and the address row already do. The
+/// store installs a drop file only when it is idle (`HudStore`: "`InstallDrop` | idle") and says nothing when it
+/// refuses. The row used to open its question all the same: a fetch in flight then landed its offer over that
+/// question, and whatever the viewer answered, the file they had picked was not installed.
+#[test]
+fn a_drop_file_waits_for_a_free_store() {
+    for busy in ["fetching", "package_busy"] {
+        let mut l = list();
+        match busy {
+            "fetching" => l.fetching = true,
+            _ => l.package_busy = true,
+        }
+        let (mut page, tx) = page_with(l);
+        let id = HudId::Drop(Sha::of(&[9]));
+        assert!(row_of(&page, &id).disabled, "{busy}: the row shows it cannot be used now");
+        let key = key_of(&page, &id);
+        let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+        assert!(huds(&emitted).is_empty() && !page.prompt.is_open() && page.asking.is_none(), "{busy}: OK asks nothing");
+
+        tx.send(list()).unwrap();
+        drive(&mut page, tick(), key);
+        assert!(!row_of(&page, &id).disabled, "{busy}: free again");
+        drive(&mut page, ScreenEvent::Activate(key), key);
+        assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))), "{busy}: and the row asks");
+    }
+}
+
+/// **An offer never takes over the viewer's own question.** The drop rows wait for a free store (above), so a question
+/// is not opened across a fetch. The page reads a published listing, though, which can be a tick behind the store, so
+/// an offer can still land with a drop question open. It used to replace that question (same title, focus back on
+/// Cancel) and the viewer's answer installed or declined the fetched package. The question stays the viewer's, and the
+/// offer is asked after it. Whether the store then takes the install is the store's own rule, and not graded here.
+#[test]
+fn an_offer_landing_over_an_open_drop_question_waits_for_the_answer() {
+    let (mut page, tx) = page_with(list());
+    let key = key_of(&page, &HudId::Drop(Sha::of(&[9])));
+    drive(&mut page, ScreenEvent::Activate(key), key);
+    assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))));
+    let asked = page.prompt.body_for_test().to_vec();
+
+    let mut l = list();
+    l.offer = Some(offered());
+    tx.send(l).unwrap();
+    drive(&mut page, tick(), ALERT + 1);
+    assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))), "the question on screen is still the viewer's own");
+    assert_eq!(page.prompt.body_for_test(), asked, "and it still says what it said");
+    assert!(page.prompt.is_open() && page.state.confirming);
+
+    let emitted = drive(&mut page, ScreenEvent::PressCommit(PressId(0)), ALERT + 1);
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::InstallDrop(sha)] if *sha == Sha::of(&[9])), "yes names the file that was asked about");
+    assert!(!page.prompt.is_open() && page.asking.is_none());
+
+    // The offer was never asked, so it is asked now, as its own question, and its answer names it.
+    drive(&mut page, tick(), 0);
+    assert_eq!(page.asking, Some(Asking::Offer(Sha::of(&[7]))));
+    assert!(page.prompt.is_open() && page.state.confirming && !page.prompt.choice(), "Cancel is the answer focused");
+    let emitted = drive(&mut page, ScreenEvent::PressCommit(PressId(0)), ALERT);
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::DeclineOffer(sha)] if *sha == Sha::of(&[7])));
 }
 
 /// The prompt names the package, where it came from, that a plain-http source is a development one, and that it is unreviewed.
@@ -868,7 +926,7 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
         let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[1].sha();
         for dest in [SettingsPage::PlayerHud,SettingsPage::HudGallery,SettingsPage::HudDetail(sha),SettingsPage::HudAbout(sha)] {
             let page=gallery_page(dest);
-            failures.extend(page.form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w,language.tag()));
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
         }
         // a delisted package and one already installed: their disabled Install rows' values fit the column
         let mut delisted=gallery_page(SettingsPage::HudDetail(sha));
@@ -880,7 +938,7 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
         installed.meta.as_mut().unwrap().version=package.version.clone();
         same.list.entries.push(installed);same.rebuild(None);
         for page in [&delisted,&same] {
-            failures.extend(page.form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w,language.tag()));
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
         }
         let page=gallery_page(SettingsPage::HudPreview(sha));
         let controls=plx_ui::preview_controls::PreviewControls::new(page.scenes().iter().map(|(label,_)|(*label).into()),&ShippedMeasure);
@@ -1312,7 +1370,7 @@ fn an_offline_gallery_says_the_saved_catalog_with_its_date_and_keeps_the_picture
 /// (empty, loading, offline with the date), the notices. The language name is the longest native one.
 #[test]
 fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -1382,4 +1440,74 @@ fn the_pill_under_a_withdrawn_hud_is_the_ghost_and_under_the_built_in_the_solid(
     focus_on(&mut page, &HudId::Pack("com.example.a".into()));
     for _ in 0..240 { page.form.table.update(1.0 / 60.0, 600.0); }
     assert_eq!(solid_on(&page), 1.0);
+}
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// The gallery's first package's page for `page` (its sha is the page's argument), ticked once and run
+/// through the id conformance.
+fn gallery_package_page_conforms(page: impl FnOnce(plx_data::hudpacks::Sha) -> SettingsPage) -> plx_ui::a11y::Namespaces {
+    let list = gallery_list();
+    let sha = list.catalog.index.as_ref().unwrap().entries[0].sha();
+    let mut page = gallery_page(page(sha));
+    drive(&mut page, tick(), 1);
+    vec![plx_ui::a11y::conform::<InnerHost, _>(&page, &context(1))]
+}
+
+/// A HUD package's detail page (`SettingsPage::HudDetail`; the coverage table calls this).
+pub(crate) fn hud_detail_conforms() -> plx_ui::a11y::Namespaces {
+    gallery_package_page_conforms(SettingsPage::HudDetail)
+}
+
+/// A HUD package's About page (`SettingsPage::HudAbout`; the coverage table calls this).
+pub(crate) fn hud_about_conforms() -> plx_ui::a11y::Namespaces {
+    gallery_package_page_conforms(SettingsPage::HudAbout)
+}
+
+/// **The full-screen preview answers its controls**: `back` first, then one `scene.<i>` tab per scene
+/// (the elements are the controls' own keys, 0 for Back and `i + 1` for scene `i`), and the page conforms.
+#[test]
+fn the_preview_answers_back_and_one_tab_per_scene() {
+    assert!(!hud_preview_conforms().is_empty());
+}
+
+/// The full-screen HUD preview over the Reference package (`SettingsPage::HudPreview`; the coverage
+/// table calls this, and so does the test above).
+pub(crate) fn hud_preview_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries.iter().find(|p| p.name == "Reference").unwrap();
+    let mut page = gallery_page(SettingsPage::HudPreview(package.sha()));
+    drive(&mut page, tick(), 1);
+    let cx = context(1);
+    namespaces.push(conform::<InnerHost, _>(&page, &cx));
+    let mut keys = Vec::new();
+    Focusable::<InnerHost>::a11y_elems(&page, GroupId(0), &cx, &mut keys);
+    assert_eq!(keys, [0, 1, 2, 3]);
+    for (key, id, role) in [(0, "back", Role::Button), (1, "scene.0", Role::Tab), (3, "scene.2", Role::Tab)] {
+        let a = Focusable::<InnerHost>::a11y(&page, &key, &cx).expect("a control projects");
+        let want = A11yPath::parse_relative(id).unwrap();
+        assert_eq!((a.path.clone(), a.role), (want.clone(), role));
+        assert_eq!(Focusable::<InnerHost>::a11y_find(&page, &want, &cx), Some(key));
+    }
+    let past = A11yPath::parse_relative("scene.3").unwrap();
+    assert_eq!(Focusable::<InnerHost>::a11y_find(&page, &past, &cx), None, "a scene the page lacks has no control");
+    namespaces
+}
+
+/// **A pointer's or a script's (by-id, `By::Script`) arrival on a row is as deliberate as a key's**: it
+/// ends the provisional focus the page opened on, as a key (`By::Dir`) does; a restore or a reconcile
+/// does not.
+#[test]
+fn a_scripted_or_pointer_arrival_ends_the_provisional_focus_as_a_key_does() {
+    use plx_machine::machine::By;
+    let mut page = gallery_page(SettingsPage::PlayerHud);
+    let to = FocusKey { entry: EntryId(0), elem: 0 };
+    for (by, ends) in [(By::Dir, true), (By::Pointer, true), (By::Script, true), (By::Restore, false), (By::Reconcile, false)] {
+        page.state.provisional = true;
+        drive(&mut page, ScreenEvent::FocusMoved { from: None, to, by }, 0);
+        assert_eq!(!page.state.provisional, ends, "{by:?}");
+    }
 }

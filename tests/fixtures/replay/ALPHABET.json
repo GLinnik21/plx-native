@@ -1,6 +1,9 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
+    "by_id_refusal": "ui/src/dispatch/by_id.rs by_id_refusal_line: a refused focus:/press: token logs `a11y: refused <act> <id> <reason> owner=<ns>`, which Fx::Log records as {\"log\":...} (app/bootstrap/effects.rs). tests/fixtures/replay/13-by-id-filmography seeds focus:nav.watchlist on the Filmography page, which has no tab strip: the line is listed literally, as that one recorded refusal, never as a pattern over every act, id and reason.",
+    "store_close": "app/bootstrap/effects.rs encodes PersonCmd::Close and CollectionCmd::Close as the string \"close\" ({\"person\":\"close\"}, {\"collection\":\"close\"}): the store command the app sends when a Person or Collection page is popped. tests/fixtures/replay/13-by-id-filmography unwinds Flow 12's stack to Home, so its recording holds the Person close.",
+    "accessibility_ids": "ui/src/a11y.rs grammar (an id is <ns>.<path>, the path one to MAX_ID_SEGS segments, each [a-z][a-z0-9_]* or a canonical decimal index). The first segment is a CLOSED alternation, never [a-z]+: a household hostname such as nas.local would otherwise pass. It lists every namespace a screen answers (Screen::a11y_ns, the namespaces plx_screens' registry a11y_coverage_tests reports for every arm of the table, which the test the_replay_alphabet_names_exactly_the_namespaces_the_table_reports holds equal to this list, and holds the repeat bound equal to plx_ui::a11y::MAX_ID_SEGS) plus nav, the shared tab strip's (ui/src/dispatch.rs strip_path). app/bootstrap/effects.rs encodes InputKind::ById as {\"by_id\":{\"id\",\"press\",\"expect\"}} and By::Script as the FocusMoved word \"script\"; app/recorder.rs ResolutionWire::Id rows are kind \"Id\".",
     "hero_proposal": "screens/src/home/mod.rs and detail/hero.rs format Movie/TV Show identity with locales/en/browse.json browse.kind.movie and browse.kind.tv_show; appkit/src/hero_layout.rs formats, remaining minutes through browse.detail.minutes_left, and episode dates through ui/src/fmt.rs hero_date and LocaleContext::date_medium (controlled en-US, tests/mock_pms.py synthetic dates).",
     "playback_diagnostics": "locales/en/settings.json settings.trace.* labels and uppercase section; app/bootstrap/effects.rs deterministic playback_trace status/off codec.",
     "quiet_refetch": "app/bootstrap/effects.rs encodes HubsCmd::RefetchSourceQuiet as {\"hubs\":{\"refetch_source_quiet\":<server>}}: the quiet Home refetch of app/reread.rs.",
@@ -14,7 +17,7 @@
     "commands": "rust-modules/src/app/events.rs: ck/pat/txt dispatch; ui/testpat.rs: set finite pattern names and numeric argument structure; txt replaces plus with spaces, so only synthetic words are allowed (not hexadecimal credentials). Numeric patterns intentionally accept a subset of float syntax.",
     "mock_shapes": "tests/mock_pms.py: sname/swords, metadata thumb/art, part file paths, dates, summary length, media codecs/content ratings (the audio-enhancement items add aac and hevc) and hub identifiers; plex/hub_title.rs localized_hub_title replaces home.movies.recent/home.television.recent titles with locales/en/browse.json Recently Added Movies/Recently Added TV",
     "record_vocabulary": "rust-modules/ui/src/rec.rs: Writer record tags; ui/src/fixture.rs and rust-modules/machine/src/machine.rs (ScreenEvent::name): input/lifecycle names; app/recorder.rs: feature names and probes",
-    "focus_resolution_metrics": "rust-modules/ui/src/rec.rs: Writer::focus and Writer::resolution emit fo/rs; MetricKey's serde tag names the Width/Cap/Line variants. app/recorder.rs emits the closed product-resolution payload kinds Focus/Hit. Width query literals come from the fixed UI copy in screens/settings.rs, screens/legal.rs, screens/home, screens/detail and screens/person; the bounded synthetic-name, role/count, character and resume-label patterns come from tests/mock_pms.py plus those screens' format strings. TextView's finite ellipsis outputs for the fixed crash-ID sentence are listed literally, not admitted by a general prose pattern.",
+    "focus_resolution_metrics": "rust-modules/ui/src/rec.rs: Writer::focus and Writer::resolution emit fo/rs; MetricKey's serde tag names the Width/Cap/Line variants. app/recorder.rs emits the closed product-resolution payload kinds Focus, Hit and Id (`ResolutionWire`). Width query literals come from the fixed UI copy in screens/settings.rs, screens/legal.rs, screens/home, screens/detail and screens/person; the bounded synthetic-name, role/count, character and resume-label patterns come from tests/mock_pms.py plus those screens' format strings. TextView's finite ellipsis outputs for the fixed crash-ID sentence are listed literally, not admitted by a general prose pattern.",
     "controlled_home": "app/bootstrap.rs: Initial::synthetic_home fixes loopback, emits the complete Seeded contract and a fixed probe; app/bootstrap/effects.rs explicitly encodes input Source/Key/Edge, lifecycle By, Home commands and store request names. auth/owner.rs declares ActivateDevBootstrap and ReadyInstall::AlreadyInstalled; auth.rs Phase::Idle and Picker::Boot, plex/probe.rs Location's lowercase local wire. No general UUID, hostname, token or capitalized-word pattern is permitted.",
     "subtitle_preferences": "rust-modules/plex/src/plex/session.rs: SubtitleTone::White serializes as white and is the captured default in every synthetic session.",
     "session_persistence": "rust-modules/plex/src/plex/session.rs: SaveAuthority::Routine (also PublicOnly, FreshReauthentication — already covered/unused in controlled recordings); rust-modules/plex/src/plex/session/async_persistence.rs: PersistencePurpose::Background; rust-modules/src/auth/owner.rs: CommitAdmission::RegistryOnly. These serialize into every controlled session commit/plan once a store owns its own persistence (cleanup/ownership), so a synthetic recording now always carries them.",
@@ -68,9 +71,12 @@
     "pat:(checker|lines|hbars|hue|rainbow)(:[0-9]+(\\.[0-9]+)?)?",
     "pat:solid:[0-9]+(\\.[0-9]+)?(:[0-9]+(\\.[0-9]+)?)?",
     "txt:s[0-9a-f]{8}(\\+s[0-9a-f]{8})*",
-    "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
+    "press phase=(idle|down|up) live=[01] active=[01] long=[01]",
+    "(about|account|alt|audio|bio|catalog|collection|consent|contribute|detail|diagnostics|filmography|home|hud-about|hud-detail|hud-gallery|hud-preview|itemmenu|language|legal|legal-document|library|library_menu|login|menu|more|nav|onboard|person|picker|playback|player|player-hud|privacy|privacy-preview|profiles|recommended|search|settings|settings-about|timing|tracks|under-posters|under-posters-movie|under-posters-show|versions|watchlist|watchlist_menu)(\\.([a-z][a-z0-9_]*|0|[1-9][0-9]*)){1,6}"
   ],
   "literals": [
+    "a11y: refused focus nav.watchlist unknown owner=filmography",
+    "close",
     "32m",
     "47m",
     "S2 · E2",
@@ -146,7 +152,7 @@
     "ActivateDevBootstrap", "AlreadyInstalled", "Request", "discovery", "reset", "refetch", "refetch_source_quiet", "retry",
     "Routine", "Background", "RegistryOnly",
     "owned", "Sdl", "RemoteFifo", "Script", "Replay", "Up", "Down", "Left", "Right", "Ok", "Back", "Repeat", "activate",
-    "input", "focus_moved", "store_changed", "restored", "for_good", "deeper", "dir", "restore", "reconcile",
+    "input", "focus_moved", "store_changed", "restored", "for_good", "deeper", "dir", "restore", "reconcile", "script", "by_id",
     "fold", "hero", "movies", "shows", "movie", "show",
     "PG-13",
     "TV-14",
@@ -168,7 +174,7 @@
     "land",
     "life",
     "timer",
-    "metrics", "fo", "rs", "Focus", "Hit", "Width", "Cap", "Line",
+    "metrics", "fo", "rs", "Focus", "Hit", "Id", "Width", "Cap", "Line",
     "st",
     "stopped",
     "cap",

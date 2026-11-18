@@ -47,6 +47,7 @@
 //! admitted Loads, under the ratio rather than on it. Do not quote 14 as a television result.
 
 use plx_plex::plex::ServerId;
+use plx_telemetry::telemetry::classes::PreviewRefusal;
 
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
 pub const CYCLE_BUDGET: u32 = 14;
@@ -435,6 +436,37 @@ impl Machine {
 /// link (policy denies direct play) is refused without a second check.
 pub fn accepts_direct_play(direct_play: bool, part_nonempty: bool, adaptive: bool) -> bool {
     direct_play && part_nonempty && !adaptive
+}
+
+/// **Which condition refused a preview** (Sentry PLX-NATIVE-23), or `None` when
+/// [`accepts_direct_play`] accepts it. The first failing condition, in this fixed order:
+///
+/// 1. no part: [`PreviewRefusal::NoPart`];
+/// 2. `direct_play_offered` was false: [`PreviewRefusal::NotDirect`];
+/// 3. a direct play WAS on offer and `adaptive` (Auto chose HLS) is what refused it:
+///    [`PreviewRefusal::Adaptive`];
+/// 4. anything else, a late demotion such as an enhancement's remux: [`PreviewRefusal::NotDirect`].
+///
+/// `direct_play_offered` is the route's direct-play answer BEFORE Auto's override, not the
+/// `direct_play` the gate sees: Auto sets that false whenever it picks HLS, so reading the reason
+/// off the gate's own inputs would call every Auto-quality refusal `adaptive`, including a preview
+/// the server would have transcoded anyway.
+pub fn refusal(
+    direct_play: bool,
+    direct_play_offered: bool,
+    part_nonempty: bool,
+    adaptive: bool,
+) -> Option<PreviewRefusal> {
+    if accepts_direct_play(direct_play, part_nonempty, adaptive) {
+        return None;
+    }
+    Some(if !part_nonempty {
+        PreviewRefusal::NoPart
+    } else if direct_play_offered && adaptive {
+        PreviewRefusal::Adaptive
+    } else {
+        PreviewRefusal::NotDirect
+    })
 }
 
 plx_base::devtrig::latched_flag!(
@@ -1177,6 +1209,38 @@ mod tests {
         assert!(accepts_direct_play(true, true, false));
         assert!(!accepts_direct_play(true, true, true));
         assert!(!accepts_direct_play(true, false, false));
+    }
+
+    /// Every input combination: the reason exists exactly when the gate refuses, and names the
+    /// first failing condition in the documented order. `adaptive` implies a false `direct_play`
+    /// (Auto's override), which is why only the reachable rows are enumerated for `adaptive`.
+    #[test]
+    fn the_refusal_reason_is_the_first_failing_condition_in_a_fixed_order() {
+        use PreviewRefusal::{Adaptive, NoPart, NotDirect};
+        for direct_play in [false, true] {
+            for offered in [false, true] {
+                for part in [false, true] {
+                    for adaptive in [false, true] {
+                        let got = refusal(direct_play, offered, part, adaptive);
+                        assert_eq!(got.is_none(), accepts_direct_play(direct_play, part, adaptive),
+                            "gate and reason disagree: dp={direct_play} offered={offered} part={part} adaptive={adaptive}");
+                    }
+                }
+            }
+        }
+        // 1. A missing part outranks everything, including Auto's HLS and a refused direct play.
+        assert_eq!(refusal(true, true, false, false), Some(NoPart));
+        assert_eq!(refusal(false, true, false, true), Some(NoPart));
+        assert_eq!(refusal(false, false, false, true), Some(NoPart));
+        // 2. No direct play on offer before Auto chose: `not_direct`, even if Auto also went HLS.
+        assert_eq!(refusal(false, false, true, false), Some(NotDirect));
+        assert_eq!(refusal(false, false, true, true), Some(NotDirect));
+        // 3. A direct play was on offer and Auto's bandwidth decision refused it.
+        assert_eq!(refusal(false, true, true, true), Some(Adaptive));
+        // 4. On offer, Auto kept the original, and a later demotion (an enhancement remux) refused it.
+        assert_eq!(refusal(false, true, true, false), Some(NotDirect));
+        // None: the plain direct play a preview takes.
+        assert_eq!(refusal(true, true, true, false), None);
     }
 
     #[test]

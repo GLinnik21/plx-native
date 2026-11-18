@@ -147,21 +147,31 @@ but the bare `X.Y.Z` means `RELEASE=1` did not take. Both the
 `ALLOW_DEV_ON_STABLE=1` reproduction build below and any `make deploy` of the debug flavour print
 the suffixed form.
 
-Semver as this project means it, and **the first question is which LINE you are on, not what
-changed**. Development is trunk-based: `main` cuts **minor** releases — for fixes, diagnostics and
-new capability alike — and **major** when that is the deliberate call. A **patch** belongs to an
-existing minor's own maintenance line and is not cut from trunk, which is why the workflow refuses
-one on `main` — trunk releases end in `.0`. **Cutting one from its own line is a dispatch input
-away**: pass `line: release/vX.Y` (e.g. `release/v0.6`) to the workflow's `workflow_dispatch`, and
-`prepare` checks that branch out, bumps and tags it instead of main, enforcing `X.Y.N` with `N>=1`
-against that same branch rather than the `.0` rule. Leave `line` empty for an ordinary trunk cut. A
-release that changes only docs or CI does not need a version at all.
+**Every release is cut from a release line, `release/vX.Y`, never from `main`.** `main` keeps
+taking pull requests from everyone while a release stabilizes, so nobody holds a PR back for one.
 
-The level also decides what a working tree calls itself, since `rust-modules/build.rs` reports the
-next minor: with `0.5.0` published, every developer build says `0.6.0-dev`, which is a true
-pre-release of the version trunk is actually heading for. A checkout of a maintenance line reports
-the next PATCH instead, via a tracked `RELEASE_LINE` marker file (`X.Y`) at the repo root — absent
-on `main`, present on the branch a patch is being prepared from.
+1. **Cut the line**: Actions -> *Cut a release line* (`gh workflow run cut-line.yml`, `-f
+   bump=major` for a major). It branches `release/vX.Y` off `main`'s head, creates the
+   `backport release/vX.Y` label, and opens the pull request that writes `X.Y.0` into `main`'s
+   version files. Merge that PR: from then on `main`'s dev builds and nightlies report `X.(Y+1)`,
+   never the version the line is shipping.
+2. **Stabilize on the line.** A fix lands on `main` first, as an ordinary PR, with the `backport
+   release/vX.Y` label; when it merges, `backport.yml` cherry-picks it onto the line and opens the
+   PR into the line (or comments on the original PR with the commands when it conflicts). The
+   release note and the audit's authored half (step 2) go the same way. Only a change that makes
+   sense on the line alone (a revert of something the line should not ship) goes to the line
+   directly, as a PR into `release/vX.Y`.
+3. **Release from the line**, candidates first if you want them (step 4). A **fresh** line, with no
+   `RELEASE_LINE` marker yet, publishes `X.Y.0` and nothing else, and that release's bump commit
+   adds the marker; after it, every release of the line is a **patch**, `X.Y.N`. `ci/bump-version.py
+   --line` enforces both (`ci/version_rule.py::line_release_error`), as do `rc.py` and both
+   workflows, which refuse an empty `line` outright. A release that changes only docs or CI does
+   not need a version at all.
+
+What a working tree calls itself follows the same files. `rust-modules/build.rs` reports the next
+minor where there is no marker: `main` at `0.11.0` (the last line cut) says `0.12.0-dev`, and a fresh
+`release/v0.11`, whose files still say `0.10.0`, says `0.11.0-dev`. Where the marker exists it
+reports the next PATCH instead, `0.11.1-dev` on `release/v0.11` once `0.11.0` has shipped.
 
 ### 2. Write BOTH documents before building
 
@@ -250,7 +260,7 @@ stable package, published as a prerelease whose binary reports `X.Y.Z-rc.N` (tag
 `rc/vX.Y.Z-rc.N`, never `latest`, never in the Homebrew Channel; `docs/distribution.md` §7c):
 
 ```sh
-gh workflow run rc.yml -f version=X.Y.Z            # rc.1; run it again after a fix for rc.2
+gh workflow run rc.yml --ref release/vX.Y -f line=release/vX.Y -f version=X.Y.Z   # rc.1; again for rc.2
 ```
 
 Both documents must already be on the line, as for the release. Once a candidate has been tried,
@@ -258,17 +268,17 @@ promote it — the release then refuses unless its bump produces the candidate's
 commit that landed on the line since means cutting another candidate, not shipping untested code:
 
 ```sh
-gh workflow run release.yml -f version=X.Y.Z -f candidate=rc/vX.Y.Z-rc.N
+gh workflow run release.yml --ref release/vX.Y -f line=release/vX.Y -f version=X.Y.Z -f candidate=rc/vX.Y.Z-rc.N
 ```
 
 ```sh
-gh workflow run release.yml -f version=X.Y.Z     # or -f bump=minor (trunk cuts minors)
+gh workflow run release.yml --ref release/vX.Y -f line=release/vX.Y -f version=X.Y.Z
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
 ```
 
-**A patch is dispatched from its maintenance line, and the dispatch has to name that line TWICE.**
-`-f line=release/vX.Y` tells `prepare` which branch to bump, tag and push; `--ref release/vX.Y`
-tells GitHub which copy of `release.yml` to validate the inputs against. Without the second,
+**Every dispatch names the line TWICE.** `-f line=release/vX.Y` tells `prepare` which branch to
+bump, tag and push; `--ref release/vX.Y` tells GitHub which copy of `release.yml` to validate the
+inputs against. Without the second,
 GitHub reads the workflow file on the DEFAULT branch, and if `main` does not yet carry an input
 the line added, the dispatch is refused with `Unexpected inputs provided: ["line"]` before
 anything runs — which is how v0.6.1's first dispatch died on 2026-09-10, with the `line` input
@@ -278,17 +288,15 @@ still unpushed on `main`. The spelling that works from either state of `main`:
 gh workflow run release.yml --ref release/vX.Y -f version=X.Y.Z -f line=release/vX.Y
 ```
 
-**This procedure has no step that merges a patch back into `main`, and that gap has already cost a
-device session.** `release/v0.6` accumulated 37 commits across v0.6.1 through v0.6.6 — real fixes
-among them, not just version bumps — that never reached `main` or any branch cut from it. One of
-those fixes (issue #74, `ac305265`) closed a crash that then got independently re-investigated and
+**Fixes travel `main` -> line, never the other way, because the other way has already cost a device
+session.** `release/v0.6` accumulated 37 commits across v0.6.1 through v0.6.6 — real fixes among
+them, not just version bumps — that never reached `main` or any branch cut from it. One of those
+fixes (issue #74, `ac305265`) closed a crash that then got independently re-investigated and
 misdiagnosed as an LG firmware defect on 2026-09-14, entirely because nobody had checked whether
-`main` was behind its own maintenance line. See `docs/known-issues.md` for the full account.
-**After a patch lands on a `release/vX.Y` line, cherry-pick or merge its real fixes back onto
-`main`** (skip the version-bump and release-audit commits — they don't apply to trunk) before
-considering the patch done. There is no tooling for this yet; do it by hand and note in
-`docs/known-issues.md` if a fix's port needs anything nontrivial, so the next person doesn't
-re-derive it.
+`main` was behind its own maintenance line. See `docs/known-issues.md` for the full account. Landing
+on `main` first with the `backport release/vX.Y` label means `main` has every fix by construction.
+What the line still produces on its own goes back by itself: the release's completed audit is
+forwarded to `main` as a pull request by the release run ("Forward the completed audit to main").
 
 **There is no flavour input here, and you do not want one.** `release.yml`'s `build` job pins
 `flavor: stable` in the `with:` block it hands to the shared `build-package.yml` workflow, which is
@@ -310,7 +318,7 @@ gh run view <id> --json jobs --jq '.jobs[] | "\(.name): \(.conclusion)"'
 be `github-actions[bot]`, never a person:
 
 ```sh
-gh api repos/GLinnik21/plx-native/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.uploader.login)"'
+gh api repos/plxnative/plx-native/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.uploader.login)"'
 ```
 
 ### 5. Verify what the public can actually download
@@ -333,7 +341,7 @@ Two things are worth reading rather than assuming:
 
 ```sh
 git -C . fetch origin main && git show origin/main:docs/release-audits/vX.Y.Z.md | head -40
-gh api repos/GLinnik21/plx-native/releases/tags/vX.Y.Z --jq '.assets[]|"\(.name) \(.uploader.login)"'
+gh api repos/plxnative/plx-native/releases/tags/vX.Y.Z --jq '.assets[]|"\(.name) \(.uploader.login)"'
 ```
 
 An audit whose generated block is still the template's placeholder means the release did not go

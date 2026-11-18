@@ -9,6 +9,164 @@ use super::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, Fixt
 use plx_machine::machine::{Edge, FocusKey, InputEvent, InputKind, Key, MachineId, NavOp, Source, StoreOrd, Tick};
 use super::Rect;
 
+#[test]
+fn press_read_is_taken_from_each_input_owner() {
+    use super::input::InputMachine;
+    use plx_machine::machine::{EntryId, PressArm, PressFrom};
+
+    let mut first = InputMachine::<u32>::new();
+    let mut second = InputMachine::<u32>::new();
+    let key = FocusKey { entry: EntryId(1), elem: 7 };
+    first.arm(PressArm { key, from: PressFrom::Key, holdable: true }, MachineId::Nav, 10);
+    first.tick(30, 0.02);
+    let before = first.press_read(30);
+    second.arm(PressArm { key: FocusKey { entry: EntryId(2), elem: 8 }, from: PressFrom::Pointer, holdable: false }, MachineId::Nav, 20);
+    second.tick(30, 0.01);
+    let after = first.press_read(30);
+    assert_eq!(after.owner, Some(key));
+    assert_eq!(after.held_ms, Some(20));
+    assert_eq!(after.scale, before.scale);
+    assert_eq!(after.identity, before.identity, "another input cannot change this arm identity");
+    assert!(after.live && after.active);
+    assert_ne!(after.owner, second.press_read(30).owner);
+    first.cancel_press();
+    let cancelled = first.press_read(30);
+    assert_eq!(cancelled.owner, Some(key), "the dip survives cancellation");
+    assert_eq!(cancelled.identity, before.identity);
+    assert!(!cancelled.live && cancelled.active, "cancellation leaves only the visible spring");
+    let next_key = FocusKey { entry: EntryId(1), elem: 9 };
+    first.arm(PressArm { key: next_key, from: PressFrom::Key, holdable: false }, MachineId::Nav, 40);
+    let rearmed = first.press_read(40);
+    assert_ne!(rearmed.identity, cancelled.identity, "rearming during spring-back is a new press");
+    assert_eq!(rearmed.owner, Some(next_key));
+    assert_eq!(rearmed.dip_of(&key), 1.0, "the previous owner must not take the new dip");
+}
+
+#[test]
+fn lift_receipts_are_canonical_and_retire_on_gesture_owner_or_target_change() {
+    use super::input::{InputMachine, LiftReceipt, PressEvent};
+    use plx_machine::machine::{Canon, EntryId, InstanceId, PressArm, PressFrom};
+    let key = FocusKey { entry: EntryId(1), elem: 7u32 };
+    let owner = InstanceId(4);
+    let mut input = InputMachine::new();
+    let id = input.arm(PressArm { key, from: PressFrom::Key, holdable: true }, MachineId::Instance(owner), 0);
+    input.tick(600, 0.016);
+    input.cancel_press();
+    let receipt = LiftReceipt { press: id, key, owner };
+    let hash = |input: &InputMachine<u32>| {
+        let mut c = Canon::new();
+        input.write_with(&mut c, &|k, c| { c.u32(*k); });
+        c.finish()
+    };
+    let before = hash(&input);
+    input.accept_lift(receipt);
+    assert_ne!(before, hash(&input), "retained policy is graded, not a hidden render cache");
+    input.validate_lift(Some((key, owner)));
+    assert_eq!(input.lift_receipt, Some(receipt), "cancelled spring retains matching gesture evidence");
+    assert!(!input.tick(616, 0.016).contains(&PressEvent::PageDamage));
+    input.validate_lift(Some((key, InstanceId(5))));
+    assert!(input.lift_receipt.is_none(), "a replaced instance cannot inherit a receipt");
+    assert!(input.tick(632, 0.016).contains(&PressEvent::PageDamage));
+    input.accept_lift(receipt);
+    input.validate_lift(Some((FocusKey { elem: 8, ..key }, owner)));
+    assert!(input.lift_receipt.is_none(), "a changed target retires evidence");
+    input.accept_lift(receipt);
+    input.validate_lift(None);
+    assert!(input.lift_receipt.is_none(), "a retired surface retires evidence before tick");
+    input.accept_lift(receipt);
+    input.arm(PressArm { key, from: PressFrom::Key, holdable: true }, MachineId::Instance(owner), 640);
+    assert!(input.lift_receipt.is_none(), "even rearming the same card is a new gesture");
+    input.accept_lift(receipt);
+    assert!(input.lift_receipt.is_none(), "late evidence from the abandoned press is refused");
+}
+
+#[test]
+fn recording_discovery_and_source_walks_never_publish_lift_policy() {
+    use crate::fixture::{FixtureView, FixtureViews, FixtureMeasure};
+    use plx_machine::machine::EntryId;
+    let _serial = plx_base::testlock::serial();
+    let (d, _, owner) = booted();
+    let parts = d.parts(tick(0));
+    let view = FixtureView::default();
+    let cx = parts.cx::<FixtureHost>(FixtureViews { store: &view }, &FixtureMeasure);
+    let key = FocusKey { entry: EntryId(1), elem: 7 };
+    let draw = |painter| {
+        let mut f = crate::screen::DrawFrame::new(&cx, painter);
+        f.lifted = Some(key);
+        f.lift_owner = Some(owner);
+        assert!(f.leaves_out(key.entry, key.elem));
+        f
+    };
+    let visible = draw(crate::Painter::root());
+    assert_eq!(visible.visible_lift_receipt().unwrap().owner, owner);
+    let recording = draw(crate::Painter::recording());
+    assert!(recording.lift_receipt().is_some(), "text may discover the omission locally");
+    assert!(recording.visible_lift_receipt().is_none(), "but recording is not publication");
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+    {
+        let _walk = crate::frame::backdrop::enter(sources.clone(), crate::frame::backdrop::Z::OPENER);
+        assert!(draw(crate::Painter::root()).visible_lift_receipt().is_none());
+    }
+    {
+        let _walk = crate::frame::backdrop::discover(sources);
+        assert!(draw(crate::Painter::root()).visible_lift_receipt().is_none());
+    }
+    assert!(d.input.lift_receipt.is_none(), "all local draw receipts leave the owner untouched");
+    assert!(visible.visible_lift_receipt().is_some(), "source scopes restore the visible pass");
+}
+
+#[test]
+fn long_hold_page_damage_is_an_addressed_input_result() {
+    use super::input::{InputMachine, PressEvent};
+    use plx_machine::machine::{EntryId, PressArm, PressFrom};
+    use plx_machine::present::{Present, PresentEvent, Provenance, Scope};
+    let _serial = plx_base::testlock::serial();
+    // No lift receipt was admitted by this input owner.
+    let mut input = InputMachine::<u32>::new();
+    let key = FocusKey { entry: EntryId(1), elem: 7 };
+    input.arm(PressArm { key, from: PressFrom::Key, holdable: true }, MachineId::Nav, 10);
+    for frame in 1..45 { input.tick(10 + frame * 16, 0.016); }
+    input.cancel_press();
+    let mut a = Present::new();
+    let mut b = Present::new();
+    a.take(0); a.acknowledge(0);
+    b.take(0); b.acknowledge(0);
+    let mut effects = 0;
+    for frame in 45..90 {
+        for event in input.tick(10 + frame * 16, 0.016) {
+            if event == PressEvent::PageDamage {
+                a.note_in_scope(Scope::Page, PresentEvent::Damage(Provenance::Input));
+                effects += 1;
+            }
+        }
+    }
+    assert!(effects > 5, "the taken hold still moves a card painted into the page");
+    assert!(a.page_damaged());
+    assert_eq!(a.why(), Some(Provenance::Input));
+    assert!(!b.changed(), "another present owner cannot receive the hold's page effect");
+}
+
+#[test]
+fn presentation_input_scope_follows_the_owned_tree_not_a_closing_surface_image() {
+    use plx_machine::present::Scope;
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    assert_eq!(d.input_scope(), Scope::Page);
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert_eq!(d.input_scope(), Scope::Surface);
+    let surface = d.nav.modals.surfaces.last().unwrap().entry.id;
+    for ms in (32..=1600).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(d.input_scope(), Scope::Surface);
+    d.request(MachineId::Nav, NavOp::Dismiss(surface));
+    d.frame(&mut rig, tick(1616), vec![], vec![], &mut NoTap);
+    assert!(d.nav.modals.surfaces.iter().any(|s| s.entry.id == surface), "the fading image is still mounted");
+    assert_eq!(d.input_scope(), Scope::Page, "input is already back on the actual page owner");
+}
+
 fn interactive_event(kind: u8, at: Tick) -> super::screen::ScreenEvent<FixtureHost> {
     use plx_machine::machine::PressId;
     use super::screen::ScreenEvent;
@@ -930,8 +1088,8 @@ fn whole_text_commits_and_keyboard_edges_round_trip_in_order() {
     let mut d = Dispatcher::<FixtureHost>::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Page(801)));
-    d.frame(&mut rig, tick(0), vec![], vec![], &mut tap);
-    d.frame(&mut rig, tick(16), inputs, vec![], &mut tap);
+    super::fixture::frame_and_swap(&mut d, &mut rig, tick(0), vec![], vec![], &mut tap);
+    super::fixture::frame_and_swap(&mut d, &mut rig, tick(16), inputs, vec![], &mut tap);
     assert_eq!(events_of(&d, 0).matches("\"system_owner\"").count(), edits.len() + 1);
     tap.w.finish().unwrap();
     let manifest = json!({"schema": super::rec::SCHEMA, "state_fp": fixture_state_fp(),
@@ -1037,10 +1195,10 @@ fn resolve_mode_reports_every_mismatch_and_continues_from_the_recording() {
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
-    d.frame(&mut rig, tick(0), vec![], vec![], &mut tap);
-    d.frame(&mut rig, tick(16), vec![key(Key::Right, tick(16))], vec![], &mut tap);
-    d.frame(&mut rig, tick(32), vec![key(Key::Right, tick(32))], vec![], &mut tap);
-    d.frame(&mut rig, tick(48), vec![], vec![], &mut tap);
+    super::fixture::frame_and_swap(&mut d, &mut rig, tick(0), vec![], vec![], &mut tap);
+    super::fixture::frame_and_swap(&mut d, &mut rig, tick(16), vec![key(Key::Right, tick(16))], vec![], &mut tap);
+    super::fixture::frame_and_swap(&mut d, &mut rig, tick(32), vec![key(Key::Right, tick(32))], vec![], &mut tap);
+    super::fixture::frame_and_swap(&mut d, &mut rig, tick(48), vec![], vec![], &mut tap);
     assert_eq!(elem(&d), Some(2));
     tap.w.finish().unwrap();
     let manifest = serde_json::to_string(&json!({
@@ -1118,4 +1276,263 @@ fn a_direction_key_that_moves_focus_abandons_a_held_card_press() {
         assert_eq!(d.input.dip_owner, None, "page {page}: the owner is released with the spring");
         assert_eq!(d.parts(tick(ms)).press.owner, None, "page {page}: parts() publishes no owner once the spring settled");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// `focus:<id>` / `press:<id>` (`InputKind::ById`): the dispatcher resolves an accessibility id at
+// the input's ORDERED delivery position, moves focus with `By::Script`, and for a press delivers
+// the OK key's Down and Up (a11y-ids D5).
+// ---------------------------------------------------------------------------------------------
+
+fn by_id(id: &str, press: bool, expect: Option<&str>, at: Tick) -> InputEvent<u32> {
+    ev(
+        InputKind::ById {
+            id: id.into(),
+            press: press.then_some(plx_machine::machine::OkTap { sym: 0x0d, wcode: 0 }),
+            expect: expect.map(std::sync::Arc::<str>::from),
+        },
+        at,
+    )
+}
+
+fn refusals(rig: &FixtureRig) -> Vec<&str> {
+    rig.log.iter().map(String::as_str).filter(|line| line.starts_with("a11y: refused")).collect()
+}
+
+/// Run frames of nothing from `from` to `to` ms, so a press's dip settles and its commit is delivered.
+fn settle(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, from: u32, to: u32) {
+    for ms in (from..=to).step_by(16) {
+        d.frame(rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+}
+
+fn fixture_screen(d: &mut Dispatcher<FixtureHost>) -> &mut super::fixture::FixtureScreen {
+    d.nav.tabs.stack.top_mut().and_then(|entry| entry.inst.as_mut()).expect("the booted page")
+        .screen.as_any_mut().and_then(|any| any.downcast_mut::<super::fixture::FixtureScreen>())
+        .expect("fixture screen")
+}
+
+/// **`focus:` moves the engine with `By::Script` and remembers the group**, and it delivers the
+/// move to the owner as one ordinary `FocusMoved` — no key reaches the screen.
+#[test]
+fn focus_by_id_moves_the_engine_with_by_script_and_remembers_the_group() {
+    use plx_machine::machine::{GroupId, InputOwner};
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    assert_ne!(elem(&d), Some(2), "the test needs a real move");
+    let inputs_before = events_of(&d, 0).matches("\"input\"").count();
+    let r = d.frame(&mut rig, tick(16), vec![by_id("detail.row.2", false, None, tick(16))], vec![], &mut NoTap);
+    assert_eq!(r.dropped_deliveries, 0);
+    assert_eq!(elem(&d), Some(2));
+    let owner = InputOwner::Entry(d.focus().unwrap().entry);
+    assert_eq!(d.input.engine.current_group(owner), Some(GroupId(1)), "the group cursor follows the jump");
+    let events = events_of(&d, 0);
+    assert!(events.contains("\"focus_moved\", \"by_script\""), "{events}");
+    assert_eq!(events.matches("\"input\"").count(), inputs_before, "the by-id input steps no screen: {events}");
+    assert!(!events.contains("\"press_commit\"") && !events.contains("\"activate\""), "{events}");
+    assert!(refusals(&rig).is_empty(), "{:?}", rig.log);
+    // the same id again is not a move
+    d.frame(&mut rig, tick(32), vec![by_id("detail.row.2", false, None, tick(32))], vec![], &mut NoTap);
+    assert_eq!(events_of(&d, 0).matches("\"focus_moved\"").count(), events.matches("\"focus_moved\"").count());
+}
+
+/// **An id of the page under a modal is refused, and focus does not move**: the modal is the input
+/// owner, so only its own namespace names anything. The modal's own id still resolves.
+#[test]
+fn an_id_under_a_modal_is_refused_and_focus_does_not_move() {
+    use super::containers::modal::Phase;
+    let (mut d, mut rig) = boot(FixtureArg::Home);
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 1600);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Open);
+    d.draw(&mut rig, true);
+    let modal = d.nav.modals.top().unwrap().entry.id;
+    let focus = d.focus();
+    assert_eq!(focus.map(|k| k.entry), Some(modal));
+    let page_inputs = events_of(&d, 0).matches("\"input\"").count();
+
+    d.frame(&mut rig, tick(1616), vec![by_id("home.row.1", false, None, tick(1616))], vec![], &mut NoTap);
+    assert_eq!(d.focus(), focus, "a refusal moves no focus");
+    assert_eq!(refusals(&rig), vec!["a11y: refused focus home.row.1 unknown owner=settings"], "{:?}", rig.log);
+    assert_eq!(events_of(&d, 0).matches("\"input\"").count(), page_inputs, "nothing reached the page beneath");
+
+    d.frame(&mut rig, tick(1632), vec![by_id("settings.close", false, None, tick(1632))], vec![], &mut NoTap);
+    assert_eq!(refusals(&rig).len(), 1, "the modal's own id resolves: {:?}", rig.log);
+}
+
+/// **A by-id input whose owner changed before its delivery is refused by the owner guard**, not run
+/// against the page it was addressed to. The batch is `[an input that opens a surface, MAX_STEPS_PRE
+/// no-op deliveries, focus:<page id>]`: the pre-commit drain's budget runs out before the by-id
+/// delivery, so it is CARRIED across the nav commit that raised the surface. It was addressed to
+/// the page at ingest, but when it is delivered the new surface owns input. It leaves the one
+/// `no_owner` refusal line, moves no focus on the page, and emits no key.
+#[test]
+fn a_by_id_input_carried_past_a_commit_that_changed_the_owner_is_refused_not_run_against_the_page() {
+    use plx_machine::machine::InputOwner;
+    // A card's OK opens a page, a request presents a modal: each is parked and commits after the drain.
+    for opener in ["a card's OK opens a page", "a presented modal"] {
+        let (mut d, mut rig) = boot(FixtureArg::Home);
+        d.nav.next_style = Style::Compact;
+        let page = d.nav.top_page().unwrap().id;
+        let page_focus = d.input.engine.read(InputOwner::Entry(page)).current;
+        assert!(page_focus.is_some_and(|k| k.elem != 1), "the test needs a real move on the page");
+        let page_inputs = events_of(&d, 0).matches("\"input\"").count();
+        let page_moves = events_of(&d, 0).matches("\"focus_moved\"").count();
+
+        let mut batch = Vec::new();
+        if opener == "a presented modal" {
+            d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+        } else {
+            batch.push(key(Key::Ok, tick(16)));
+        }
+        // a Left RELEASE with nothing armed moves nothing: it only spends one delivery each
+        batch.extend((0..super::dispatch::MAX_STEPS_PRE).map(|_| key_up(Key::Left, tick(16))));
+        batch.push(by_id("home.row.1", false, None, tick(16)));
+        let r = d.frame(&mut rig, tick(16), batch, vec![], &mut NoTap);
+
+        let owner = d.focus().map(|k| k.entry);
+        assert_ne!(owner, Some(page), "{opener}: the commit moved input off the page");
+        let ns = d.nav.entry(owner.unwrap()).and_then(|e| e.inst.as_ref()).unwrap().screen.a11y_ns();
+        assert_eq!(refusals(&rig), vec![format!("a11y: refused focus home.row.1 no_owner owner={ns}")],
+            "{opener}: {:?}", rig.log);
+        assert!(r.dropped_deliveries >= 1, "{opener}: the owner guard dropped it");
+        assert_eq!(d.input.engine.read(InputOwner::Entry(page)).current, page_focus,
+            "{opener}: the page's focus did not move");
+        let events = events_of(&d, 0);
+        assert!(!events.contains("by_script"), "{opener}: {events}");
+        assert_eq!(events.matches("\"focus_moved\"").count(), page_moves, "{opener}: no focus move reached the page: {events}");
+        assert!(events.matches("\"input\"").count() >= page_inputs + super::dispatch::MAX_STEPS_PRE as usize / 2,
+            "{opener}: the batch's earlier inputs ran against the page");
+    }
+}
+
+/// **`press:` makes the screen receive OK Down and Up**: the engine's press commits on a card, and a
+/// bare element activates on the down edge.
+#[test]
+fn press_by_id_delivers_ok_down_and_up_so_a_card_commits_and_a_bare_element_activates() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    d.frame(&mut rig, tick(16), vec![by_id("detail.row.1", true, None, tick(16))], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 800);
+    let events = events_of(&d, 0);
+    assert_eq!(elem(&d), Some(1), "{events}");
+    assert_eq!(events.matches("\"input\"").count(), 2, "exactly the OK key's two edges: {events}");
+    assert_eq!(events.matches("\"press_commit\"").count(), 1, "{events}");
+    assert!(events.contains("\"focus_moved\", \"by_script\""), "{events}");
+    assert!(refusals(&rig).is_empty(), "{:?}", rig.log);
+
+    let (mut d, mut rig) = boot(FixtureArg::Page(500));
+    d.frame(&mut rig, tick(16), vec![by_id("detail.row.2", true, None, tick(16))], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 160);
+    let events = events_of(&d, 0);
+    assert_eq!(elem(&d), Some(2), "{events}");
+    assert_eq!(events.matches("\"activate\"").count(), 1, "a Bare element activates on the down edge: {events}");
+    assert!(!events.contains("\"press_commit\""), "{events}");
+}
+
+/// **A refused press emits no key, and an `expect` that is not the element's subject presses
+/// nothing**; the subject that is, presses. An unloaded slot can be focused but not pressed.
+#[test]
+fn a_refused_press_emits_no_key_and_a_subject_mismatch_presses_nothing() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    let before = elem(&d);
+    let inputs = |d: &Dispatcher<FixtureHost>| events_of(d, 0).matches("\"input\"").count();
+    let base = inputs(&d);
+
+    // no such element
+    d.frame(&mut rig, tick(16), vec![by_id("detail.row.99", true, None, tick(16))], vec![], &mut NoTap);
+    // an id of a namespace this owner does not answer
+    d.frame(&mut rig, tick(32), vec![by_id("library.row.1", true, None, tick(32))], vec![], &mut NoTap);
+    // the right element, the wrong subject
+    d.frame(&mut rig, tick(48), vec![by_id("detail.row.1", true, Some("rk9"), tick(48))], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 64, 800);
+    assert_eq!(elem(&d), before, "no refusal moved focus");
+    assert_eq!(inputs(&d), base, "no refusal emitted a key");
+    assert!(!events_of(&d, 0).contains("\"press_commit\""));
+    assert_eq!(refusals(&rig), vec![
+        "a11y: refused press detail.row.99 unknown owner=detail",
+        "a11y: refused press library.row.1 unknown owner=detail",
+        "a11y: refused press detail.row.1 subject_mismatch owner=detail",
+    ], "{:?}", rig.log);
+
+    // the subject that IS the element's presses it
+    d.frame(&mut rig, tick(816), vec![by_id("detail.row.1", true, Some("rk1"), tick(816))], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 832, 1600);
+    assert_eq!(elem(&d), Some(1));
+    assert_eq!(events_of(&d, 0).matches("\"press_commit\"").count(), 1);
+    assert_eq!(refusals(&rig).len(), 3);
+
+    // an unloaded slot: focusable, never pressable
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    fixture_screen(&mut d).set_unloaded_from(1);
+    d.frame(&mut rig, tick(16), vec![by_id("detail.row.2", true, None, tick(16))], vec![], &mut NoTap);
+    assert_ne!(elem(&d), Some(2));
+    assert_eq!(refusals(&rig), vec!["a11y: refused press detail.row.2 unloaded owner=detail"], "{:?}", rig.log);
+    d.frame(&mut rig, tick(32), vec![by_id("detail.row.2", false, None, tick(32))], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(2), "an unloaded slot can be focused");
+    assert_eq!(refusals(&rig).len(), 1);
+
+    // the television keyboard owns input: nothing resolves
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    let before = elem(&d);
+    d.frame(&mut rig, tick(16), vec![
+        ev(InputKind::SystemKeyboard(true), tick(16)),
+        by_id("detail.row.1", false, None, tick(16)),
+    ], vec![], &mut NoTap);
+    assert_eq!(elem(&d), before);
+    assert_eq!(refusals(&rig), vec!["a11y: refused focus detail.row.1 no_owner owner=keyboard"], "{:?}", rig.log);
+}
+
+/// **Batch ordering.** The by-id input acts where it is delivered, after every earlier input of its
+/// batch and before every later one: `[Right, press:X]` arms on X; `[press:X, focus:Y]` ends with X
+/// pressed or nothing pressed, never Y or X's neighbour; `[focus:X, ok]` presses X.
+#[test]
+fn a_by_id_input_acts_at_its_place_in_the_batch() {
+    let commits = |d: &Dispatcher<FixtureHost>| events_of(d, 0).matches("\"press_commit\"").count();
+
+    // [Right, press:X]: the Right has moved focus before the press is resolved, the press arms on X.
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    assert_ne!(elem(&d), Some(2));
+    d.frame(&mut rig, tick(16), vec![key(Key::Right, tick(16)), by_id("detail.row.2", true, None, tick(16))],
+        vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 800);
+    assert_eq!(elem(&d), Some(2));
+    assert_eq!(commits(&d), 1, "{}", events_of(&d, 0));
+
+    // [press:X, focus:Y]: the focus move abandons the uncommitted press, so nothing is pressed.
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    d.frame(&mut rig, tick(16), vec![by_id("detail.row.1", true, None, tick(16)), by_id("detail.row.2", false, None, tick(16))],
+        vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 800);
+    assert_eq!(elem(&d), Some(2), "the later input acted after the press");
+    assert_eq!(commits(&d), 0, "X's press was abandoned, and Y was never pressed: {}", events_of(&d, 0));
+    assert!(d.input.arm.is_none());
+
+    // [focus:X, ok]: the OK that follows presses the element the by-id input focused.
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    d.frame(&mut rig, tick(16), vec![
+        by_id("detail.row.2", false, None, tick(16)),
+        key(Key::Ok, tick(16)),
+        key_up(Key::Ok, tick(16)),
+    ], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 800);
+    assert_eq!(elem(&d), Some(2));
+    assert_eq!(commits(&d), 1, "{}", events_of(&d, 0));
+}
+
+/// **An element past the canvas edge resolves**: resolution asks the owner's view, never the hit map
+/// of what was drawn. (The reveal scroll that brings a real shelf's card into view is the shared
+/// card components' own, graded where they are.)
+#[test]
+fn an_element_past_the_canvas_edge_resolves_without_the_hit_map() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    fixture_screen(&mut d).set_row_len(12);
+    // the row's twelfth element sits at x = 2200, past a 1920 px canvas
+    d.frame(&mut rig, tick(16), vec![by_id("detail.row.11", false, None, tick(16))], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(11));
+    assert!(refusals(&rig).is_empty(), "{:?}", rig.log);
+    // one past the end is not an element
+    d.frame(&mut rig, tick(32), vec![by_id("detail.row.12", false, None, tick(32))], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(11));
+    assert_eq!(refusals(&rig), vec!["a11y: refused focus detail.row.12 unknown owner=detail"], "{:?}", rig.log);
 }

@@ -46,6 +46,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 use plx_plex::plex::ServerId;
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole};
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
 use plx_ui::hero_shade::{HeroShade, Role};
 use plx_ui::hstack::{Align, HStack, Item};
@@ -331,19 +332,17 @@ impl CatalogScreen {
     /// The app hands the page its store snapshot: on the first frames, and again whenever the
     /// record, the membership or a server match moved. Only what is drawn from it changes; a
     /// match landing while the page is open re-derives the status line and nothing else.
-    pub fn input(&mut self, vm: CatalogViewModel) {
-        if self.vm != vm {
-            self.vm = vm;
-            plx_machine::idle::invalidate();
-        }
+    pub fn input(&mut self, vm: CatalogViewModel) -> bool {
+        if self.vm == vm { return false; }
+        self.vm = vm;
+        true // the runner applies the changed snapshot to its owned Present
     }
 
     /// The reachable server that proxies the art (`None`: neutral ground).
-    pub fn set_art_server(&mut self, server: Option<ServerId>) {
-        if self.art_server != server {
-            self.art_server = server;
-            plx_machine::idle::invalidate();
-        }
+    pub fn set_art_server(&mut self, server: Option<ServerId>) -> bool {
+        if self.art_server == server { return false; }
+        self.art_server = server;
+        true // resource attribution belongs to the runner, not this retained snapshot
     }
 
     pub fn view_model(&self) -> &CatalogViewModel {
@@ -356,6 +355,11 @@ impl CatalogScreen {
 
     fn loaded(&self) -> bool {
         matches!(self.vm.load, Load::Loaded { .. })
+    }
+
+    /// The record's hex id as lowercase text: the pill's `A11y::subject` (read-side only).
+    fn hex_text(&self) -> String {
+        self.hex.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// The rows' placement, for a loaded record.
@@ -523,7 +527,7 @@ impl CatalogScreen {
             .icon(face.icon)
             .focused(focused)
             .ground(ControlGround::Keyed)
-            .scale(self.pop.scale(0))
+            .scale(self.pop.scale_with(0, f.press))
             .draw(&Env::inert(), p);
         f.stop(
             p,
@@ -648,6 +652,24 @@ impl<H: ContentLike> Focusable<H> for CatalogScreen {
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         self.key()
     }
+    /// `catalog.primary`: the one pill (Add to / On Watchlist), present only for a loaded record
+    /// (its group's `len`). The subject is the record's hex id, so a press can name the title it
+    /// means (`CatalogScreen::hex_text`).
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if *key != PILL_ELEM || !self.loaded() {
+            return None;
+        }
+        let a = A11y::new(A11yPath::new().name("primary"), A11yRole::Button).with_subject(self.hex_text());
+        Some(match pill_label(self.vm.membership).to_str() {
+            Ok(label) => a.with_label(label),
+            Err(_) => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GROUP && self.loaded() {
+            out.push(PILL_ELEM);
+        }
+    }
 }
 
 impl<H: ContentLike> Screen<H> for CatalogScreen {
@@ -696,4 +718,4 @@ impl<H: ContentLike> Screen<H> for CatalogScreen {
 
 #[cfg(test)]
 #[path = "catalog_tests.rs"]
-mod tests;
+pub(crate) mod tests;

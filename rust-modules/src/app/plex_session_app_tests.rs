@@ -29,23 +29,27 @@ fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
     let _session = session::TempSession::new("bridge-session-landing");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
     let _idle = ResetIdle;
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let mut pages = plx_ui::dispatch::Dispatcher::new();
     session::save(&signed_in());
-    plx_machine::idle::reset_for_test();
+    plx_machine::motion::report::reset_for_test();
     let _frame = plx_base::task::FrameScope::enter();
+    let before = pages.present.damage_epoch();
     bridge.land_session_cache(&mut pages);
-    assert_eq!(plx_machine::idle::take_local_damage(), 1, "a changed session lands on the frame step");
+    assert_eq!(pages.present.damage_epoch() - before, 1, "a changed session lands on the frame step");
+    let before = pages.present.damage_epoch();
     bridge.land_session_cache(&mut pages);
-    assert_eq!(plx_machine::idle::take_local_damage(), 0, "one invalidation per landing");
+    assert_eq!(pages.present.damage_epoch() - before, 0, "one invalidation per landing");
     drop(_frame);
     session::save(&signed_in());
     let _frame = plx_base::task::FrameScope::enter();
+    let before = pages.present.damage_epoch();
     bridge.land_session_cache(&mut pages);
-    assert_eq!(plx_machine::idle::take_local_damage(), 0, "a save that serves the same content lands nothing");
+    assert_eq!(pages.present.damage_epoch() - before, 0, "a save that serves the same content lands nothing");
 }
 
 /// This thread holds the session's IO lock for the whole run, so a frame that took it — or made any
@@ -66,7 +70,8 @@ fn login_frames_never_wait_for_the_session_io_lock() {
     session::reset_reads_for_test();
     session::with_io_for_test(|| {
         let _frame = plx_base::task::FrameScope::enter();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         let mut pages = plx_ui::dispatch::Dispatcher::new();
         crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
         for ms in 0..30 {
@@ -137,12 +142,13 @@ fn an_unloaded_cache_is_refilled_by_the_owner_within_a_few_frames() {
     let _session = session::TempSession::new("bridge-cache-refill");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
     let _idle = ResetIdle;
     session::save(&signed_in());
     session::invalidate_for_test();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let mut pages = plx_ui::dispatch::Dispatcher::new();
     crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
     assert!(session::peek_settled().is_none(), "the cache starts unloaded");
@@ -168,7 +174,8 @@ fn a_replaced_adapter_cannot_strand_an_in_flight_refresh() {
     let _session = session::TempSession::new("bridge-cache-adapter-replaced");
     session::save(&signed_in());
     session::invalidate_for_test();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let mut pages = plx_ui::dispatch::Dispatcher::new();
     crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
     let mut ms = 0;
@@ -176,7 +183,7 @@ fn a_replaced_adapter_cannot_strand_an_in_flight_refresh() {
     ms += 16;
     assert!(bridge.session.cache_refresh_in_flight().is_some(), "the first frame asked for a refresh");
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    bridge.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+    *bridge.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
     assert!(session::refresh_need().is_some(), "the dropped adapter's parked job never ran: the need still stands");
     frames(&mut pages, &mut bridge, &mut ms, 1);
     assert_eq!(bridge.session.cache_refresh_in_flight(), None, "the reconcile answered the lost job");
@@ -202,12 +209,13 @@ fn a_refresh_effect_still_queued_is_not_reconciled_as_lost() {
     let _session = session::TempSession::new("bridge-cache-effect-queued");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
     let _idle = ResetIdle;
     session::save(&signed_in());
     session::invalidate_for_test();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let mut pages = plx_ui::dispatch::Dispatcher::new();
     crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
     let need = session::refresh_need().expect("an unloaded cache needs a read");
@@ -249,10 +257,11 @@ fn a_refresh_effect_still_queued_is_not_reconciled_as_lost() {
 fn a_controlled_run_refuses_a_cache_refresh_loudly() {
     use plx_machine::machine::{Effects, MachineId};
     let _serial = plx_base::testlock::serial();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
-    bridge.home_io = Some(crate::app::bootstrap::HomeIo { replay: false, preferences: Default::default(),
+    bridge.retained.home_io = Some(crate::app::bootstrap::HomeIo { replay: false, preferences: Default::default(),
         requests: Vec::new(), admissions: Default::default(), failure: None, profile: publisher.snapshot() });
     assert_eq!(bridge.controlled_failure(), None);
     let mut present = plx_machine::present::Present::new();

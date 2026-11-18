@@ -362,6 +362,7 @@ impl Stores {
         directory: browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
     ) -> Spent {
+        let _step = plx_base::step::StepScope::enter();
         self.notify_map.frame += 1;
         for (sid, _epoch) in &out.resynced {
             self.notify_map.forget_server(*sid);

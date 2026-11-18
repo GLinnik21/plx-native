@@ -46,7 +46,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::registry::{self, AppFx, AppMsg};
+use crate::registry::{self, AppMsg};
 use plx_ui::containers::modal::{Phase, Style};
 use plx_ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use plx_ui::fixture::{key, tick, FixtureMeasure};
@@ -92,6 +92,7 @@ pub struct SurfaceRig {
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
     pub(super) preference_commands: Vec<registry::PreferenceCmd>,
+    pub(super) preferences: Option<plx_plex::plex::session::ProfilePrefs>,
     /// The television keyboard raises (`true`) and lowers (`false`) that reached the platform, in order.
     keyboard: Vec<bool>,
 }
@@ -104,7 +105,7 @@ impl SurfaceRig {
             stores: plx_data::stores::Stores::default(),
             directory: Default::default(),
             roots: 0,
-            preference_commands: Vec::new(),
+            preference_commands: Vec::new(), preferences: None,
             keyboard: Vec::new(),
         }
     }
@@ -116,9 +117,11 @@ impl Rig<InnerHost> for SurfaceRig {
     }
     fn split(&mut self) -> Split<'_, InnerHost> {
         self.stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
+        let mut inputs = crate::registry::capture_fixture();
+        if let Some(preferences) = &self.preferences { inputs.preferences = Some(preferences.clone()); }
         Split {
             mounter: &mut self.mounter,
-            views: self.directory.view().into(),
+            views: crate::registry::InnerViews::new(self.directory.view(), Box::leak(Box::new(inputs))),
             measure: &self.measure,
         }
     }
@@ -142,11 +145,30 @@ impl Rig<InnerHost> for SurfaceRig {
     fn app_fx(
         &mut self,
         _from: MachineId,
-        effect: AppFx,
+        effect: crate::registry::InlineAppFx,
         _parts: &CxParts<u32>,
         _out: &mut Effects<'_, InnerHost>,
     ) {
-        if let AppFx::Preferences(command) = effect { self.preference_commands.push(command); }
+        match effect {
+            crate::registry::InlineAppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }) => {
+                let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
+                plx_plex::plex::grant::record(&account, &machine_id, choice).expect("fixture grant answer");
+            }
+            _ => {}
+        }
+    }
+    fn run_yielded_app_command(&mut self, d: &mut Dispatcher<InnerHost>,
+        report: &mut plx_ui::dispatch::FrameReport, tap: &mut dyn plx_ui::dispatch::Tap<InnerHost>) -> Option<u32> {
+        let command = d.take_app_command()?;
+        let outcome = match &command.effect {
+            Ok(_) => plx_machine::machine::AppCommandOutcome::Completed,
+            Err(outcome) => *outcome,
+        };
+        if let Ok(crate::registry::ExternalAppFx::Preferences(command)) = command.effect {
+            self.preference_commands.push(command);
+        }
+        Some(d.resume_app_command(self, command.id, outcome,
+            vec![], report, tap).unwrap())
     }
     fn log(&mut self, _line: &str) {}
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
@@ -555,6 +577,7 @@ fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
     plx_media::route::restore_direct_play_mode(plx_media::route::DirectPlayMode::Auto);
     for back in [Key::Back, Key::Left] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::Playback);
+        rig.preferences = Some(plx_plex::plex::session::ProfilePrefs { playback_quality: Some(plx_media::route::Quality::P480), direct_play_mode: Some(plx_media::route::DirectPlayMode::Auto), ..Default::default() });
         // A real DOWN/UP gives the engine an explicit parent cursor at Default quality.
         frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
         frame(&mut d, &mut rig, 48, vec![key(Key::Up, tick(48))]);

@@ -7,6 +7,12 @@
 // stroke in its own pass - same fold as fs_img.frag, for the skeleton/chip tiles that have no
 // texture. Disabled by u_rimcol.a == 0 (the default from draw_rect/draw_rrect).
 //
+// ROUNDED CLIP. Linked a second time behind `#define PLX_RCLIP` (`gfx::FS_SRC_RC`, with `rclip.glsl` in front
+// of it), every `gl_FragColor` write becomes `rclip_out(..)`: the same fill with its alpha multiplied by the
+// coverage of the live rounded clip. Bound only while `gfx::rclip_set` holds one; every other draw runs the
+// plain program below with none of it (`dither.glsl` cost rule 1: a program per variant, never a branch).
+// The flat paths are masked too, because under a clip `gfx::rect_fill` sends flat and ramp rects here.
+//
 // PRECISION (this file, fs_shadow.frag, fs_img.frag - and the texture UVs in fs_text*.frag): the
 // varying + every op that carries pixel COORDINATES must be `highp`. Midgard interpolates mediump
 // varyings in fp16, whose error grows with quad size - on card-sized quads it wobbles the SDF
@@ -109,7 +115,11 @@ void main(){
     // shared dither's uniform branch alone was measured at +4M shader words a frame across the
     // hero paging scene (`docs/backdrop-blur-profiling.md`, 2026-09-04). The slow fields that band
     // — the ambient wash, the glass blur, the underlay field — carry `dither.glsl`; a rect does not.
+#ifdef PLX_RCLIP
+    gl_FragColor = rclip_out(mix(u_colTop, u_colBot, vy));
+#else
     gl_FragColor = mix(u_colTop, u_colBot, vy);
+#endif
     return;
   }
   highp vec2 p = (v_uv - 0.5) * u_size;
@@ -132,7 +142,11 @@ void main(){
   highp vec2 inner = hsz - vec2(radm + u_rimw + 2.0);
   if (abs(p.x) < inner.x && abs(p.y) < inner.y) {
     // The interior of a rounded panel — most of its fragments, and the ones a viewer stares at.
+#ifdef PLX_RCLIP
+    gl_FragColor = rclip_out(mix(u_colTop, u_colBot, vy));
+#else
     gl_FragColor = mix(u_colTop, u_colBot, vy);
+#endif
     return;
   }
   highp float rad = (p.x > 0.0) ? u_radR : u_radius;
@@ -191,5 +205,9 @@ void main(){
     rgb += (vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow) * u_rgb_cap;
     a = max(a, max(ring, glow));
   }
+#ifdef PLX_RCLIP
+  gl_FragColor = rclip_out(vec4(min(rgb, vec3(u_rgb_cap)), a));
+#else
   gl_FragColor = vec4(min(rgb, vec3(u_rgb_cap)), a);
+#endif
 }

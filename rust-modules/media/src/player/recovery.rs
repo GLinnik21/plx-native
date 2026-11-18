@@ -1,9 +1,11 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The failed-open recovery ladder: what a play request does when the pipeline (or the source)
 //! fails it BEFORE the first picture.
 //!
 //! `OpenRecovery` is a tested `State + RecoveryEvent -> Effects` machine in the shape of
 //! [`super::lifecycle::ForegroundLifecycle`]: its state is private and its one writer is
-//! [`step`](OpenRecovery::step). It reads no global and performs no IO. The facts a decision needs
+//! `transition`, reached through [`step`](OpenRecovery::step). It reads no global and performs no IO.
+//! The facts a decision needs
 //! (an HLS->Original trial holding a live encoder, a cold Auto Original, Forced Direct Play, no
 //! decoded frame yet, the audio and the video the pipeline was fed, the natively fed audio a refusal names) arrive
 //! as a value on the event ([`OpenFacts`]), and so do the verdicts PMS gave a landed flight
@@ -383,6 +385,16 @@ enum State {
     Failed,
 }
 
+/// A rung's minimal decision data; the event reducer alone applies its entry obligations.
+enum RecoveryDecision {
+    Rollback { audio: Option<Facet> },
+    Facet(Facet),
+    AutoHls { audio: Option<Facet>, video: Option<Facet> },
+    Decode(Facet),
+    Encode { audio: Option<Facet>, video: Option<Facet> },
+    Error { codec: Option<String> },
+}
+
 /// The ladder for one play request. See the module doc.
 #[derive(Clone, Debug)]
 pub struct OpenRecovery {
@@ -428,12 +440,7 @@ struct Excluded {
 }
 
 impl Excluded {
-    fn take(&mut self, facet: Facet) {
-        match facet {
-            Facet::Audio { .. } => self.audio = Some(facet),
-            Facet::Video { .. } => self.video = Some(facet),
-        }
-    }
+
 
     fn iter(&self) -> impl Iterator<Item = &Facet> {
         self.audio.iter().chain(self.video.iter())
@@ -466,16 +473,158 @@ impl OpenRecovery {
         }
     }
 
+    /// Apply the event and all state-entry, state-exit and bookkeeping obligations in place.
+    fn transition(&mut self, ev: &RecoveryEvent, fx: &mut Vec<RecoveryEffect>) -> Handled {
+        // Only a refused flight needs to transfer its state-owned facts out of the old variant.
+        let failed_flight;
+        let (refusal, facts, decision, remember) = match ev {
+            RecoveryEvent::Refused { refusal, facts } => {
+                if !matches!(self.state, State::Opening | State::Proving { .. } | State::Playing) {
+                    return Handled::No;
+                }
+                if let Some(facet) = &facts.native_audio {
+                    fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Named });
+                }
+                (*refusal, facts, self.decide(*refusal, facts), true)
+            }
+            RecoveryEvent::FlightRefused => {
+                if !matches!(self.state, State::Flight { .. }) {
+                    return Handled::No;
+                }
+                failed_flight = std::mem::replace(&mut self.state, State::Opening);
+                let State::Flight { rung, cause, facts } = &failed_flight else { unreachable!() };
+                let decision = match rung {
+                    Rung::Facet => self.decide(*cause, facts),
+                    Rung::Both | Rung::Encode => self.app_decode_or_error(*cause, facts),
+                    Rung::Rollback => RecoveryDecision::Error { codec: None },
+                };
+                (*cause, facts, decision, *rung == Rung::Facet)
+            }
+            RecoveryEvent::FlightLanded { lanes } => {
+                let State::Flight { rung, .. } = &self.state else {
+                    return Handled::No;
+                };
+                let proven = (*rung == Rung::Facet && !self.pictured && !self.unprovable)
+                    .then(|| self.excluded.iter().find(|f| proves(f, lanes.as_ref())))
+                    .flatten();
+                self.state = match proven {
+                    Some(facet) => State::Proving { facet: facet.clone(), loaded: false },
+                    None => State::Opening,
+                };
+                return Handled::Yes;
+            }
+            RecoveryEvent::FirstPicture => {
+                match &self.state {
+                    State::Opening => {}
+                    State::Proving { facet, .. } => {
+                        fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Proof });
+                    }
+                    State::Flight { .. } | State::Playing | State::Failed => return Handled::No,
+                }
+                self.pictured = true;
+                self.state = State::Playing;
+                let rung = self.rescue.take();
+                if !self.reported {
+                    if let (Some(rung), Some((refusal, facet))) = (rung, &self.refused) {
+                        self.reported = true;
+                        fx.push(RecoveryEffect::ReportRecovered(Recovered { rung, refusal: *refusal, facet: facet.clone() }));
+                    }
+                }
+                return Handled::Yes;
+            }
+            RecoveryEvent::LoadStarted => {
+                match &mut self.state {
+                    // The landing's own reload keeps its proof, without copying the payload.
+                    State::Proving { loaded: loaded @ false, .. } => *loaded = true,
+                    State::Proving { .. } => self.state = State::Opening,
+                    State::Flight { .. } | State::Failed => {
+                        self.rescue = None;
+                        self.state = State::Opening;
+                    }
+                    State::Opening | State::Playing => return Handled::No,
+                }
+                return Handled::Yes;
+            }
+        };
+        if remember && self.refused.is_none() && refusal.reports() {
+            // A timeout names no stream; later rescue failures never replace this first refusal.
+            let facet = refusal.names_pipeline().then(|| {
+                let video = facts.video.as_ref().filter(|_| matches!(refusal, LoadRefusal::Refused { .. }));
+                facts.native_audio.clone().or_else(|| suspect(facts.audio.as_ref(), video))
+            });
+            self.refused = Some((refusal, facet.flatten()));
+        }
+        let hls = matches!(&decision, RecoveryDecision::AutoHls { .. });
+        match decision {
+            RecoveryDecision::Rollback { audio } => {
+                if let Some(audio) = audio {
+                    self.excluded.audio = Some(audio);
+                    self.attempt = Arc::new(attempt_for(&self.start, &self.excluded, self.in_app.as_deref()));
+                }
+                fx.push(RecoveryEffect::Rollback);
+                self.state = State::Flight { rung: Rung::Rollback, cause: refusal, facts: facts.clone() };
+                self.rescue = Some(Rung::Rollback);
+            }
+            RecoveryDecision::Facet(facet) => {
+                self.unprovable |= facts.audio.as_ref().is_some_and(|a| a.app_decoded_lossy);
+                match &facet {
+                    Facet::Audio { .. } => self.excluded.audio = Some(facet.clone()),
+                    Facet::Video { .. } => self.excluded.video = Some(facet.clone()),
+                }
+                self.attempt = Arc::new(attempt_for(&self.start, &self.excluded, self.in_app.as_deref()));
+                self.flights += 1;
+                fx.push(RecoveryEffect::ConvertFacet { facet, flight: self.flights });
+                self.state = State::Flight { rung: Rung::Facet, cause: refusal, facts: facts.clone() };
+                self.rescue = Some(Rung::Facet);
+            }
+            RecoveryDecision::AutoHls { audio, video } | RecoveryDecision::Encode { audio, video } => {
+                for facet in audio.into_iter().chain(video) {
+                    match facet {
+                        Facet::Audio { .. } => self.excluded.audio = Some(facet),
+                        Facet::Video { .. } => self.excluded.video = Some(facet),
+                    }
+                }
+                self.attempt = Arc::new(attempt_for(&self.start, &self.excluded, self.in_app.as_deref()));
+                self.flights += 1;
+                let rung = if hls {
+                    fx.push(RecoveryEffect::StartAutoHls);
+                    Rung::Both
+                } else {
+                    fx.push(RecoveryEffect::ConvertBoth { flight: self.flights });
+                    Rung::Encode
+                };
+                self.state = State::Flight { rung, cause: refusal, facts: facts.clone() };
+                self.rescue = Some(rung);
+            }
+            RecoveryDecision::Decode(audio) => {
+                if let Facet::Audio { codec, .. } = &audio {
+                    self.in_app = Some(codec.clone());
+                }
+                self.excluded.video = None;
+                self.attempt = Arc::new(attempt_for(&self.start, &self.excluded, self.in_app.as_deref()));
+                self.state = State::Opening;
+                self.rescue = None;
+                fx.push(RecoveryEffect::DecodeInApp { audio, refusal });
+            }
+            RecoveryDecision::Error { codec } => {
+                if let Some(codec) = codec {
+                    fx.push(RecoveryEffect::NameRefusedAudio { codec });
+                }
+                fx.push(RecoveryEffect::ShowError { refusal });
+                self.state = State::Failed;
+                self.rescue = None;
+            }
+        }
+        Handled::Yes
+    }
+
     /// The capability value this request plans and profiles from: `start` less the facets the rungs
     /// took out. A cheap `Arc` clone, so a worker or a flight can own it.
     pub fn attempt(&self) -> Arc<Caps> {
         self.attempt.clone()
     }
 
-    /// Re-derive the attempt from `start` and `excluded`; a rung's entry is the only caller.
-    fn narrow(&mut self) {
-        self.attempt = Arc::new(attempt_for(&self.start, &self.excluded, self.in_app.as_deref()));
-    }
+
 
     /// The codec the app-decode rung would put in force for this failure, when the rung is available:
     /// a pipeline refusal of a direct play that has shown no picture, whose audio the pipeline itself
@@ -496,35 +645,16 @@ impl OpenRecovery {
         .then(|| Facet::Audio { codec: id.into_owned(), channels: audio.channels })
     }
 
-    /// Fire the app-decode rung when it is available, else the failure read-out. Forced's ladder and a
+    /// Choose the app-decode rung when available, else the failure read-out. Forced's ladder and a
     /// refused both-facets flight end here.
-    fn app_decode_or_error(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
-        if self.try_app_decode(refusal, facts, fx) {
-            return;
+    fn app_decode_or_error(&self, refusal: LoadRefusal, facts: &OpenFacts) -> RecoveryDecision {
+        match self.app_decode_for(refusal, facts) {
+            Some(audio) => RecoveryDecision::Decode(audio),
+            None => RecoveryDecision::Error { codec: None },
         }
-        fx.push(RecoveryEffect::ShowError { refusal });
-        self.state = State::Failed;
-        self.rescue = None;
     }
 
-    /// Fire the app-decode rung when it is available and say so. The one place the rung's entry is
-    /// written: `in_app` set, the video facet cleared (the reload feeds the same source video, and a
-    /// lowered raster ceiling would shrink the Load's video envelope for nothing), the attempt
-    /// re-narrowed, no rescue to report (no flight flew), then the effect.
-    fn try_app_decode(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) -> bool {
-        let Some(audio) = self.app_decode_for(refusal, facts) else {
-            return false;
-        };
-        if let Facet::Audio { codec, .. } = &audio {
-            self.in_app = Some(codec.clone());
-        }
-        self.excluded.video = None;
-        self.narrow();
-        self.state = State::Opening;
-        self.rescue = None;
-        fx.push(RecoveryEffect::DecodeInApp { audio, refusal });
-        true
-    }
+
 
     /// The manual both-facets rung, when it is earned: one encode with no video copy, the audio the
     /// attempt lacks converted with it. It fires from the facts alone, at most once: every both flight
@@ -532,9 +662,9 @@ impl OpenRecovery {
     /// facet's identical encode set `excluded.video`. It still fires for a refusal with no raster to
     /// lower (a 1080p frame rate): the video is fed at a known raster and nothing was excluded. Not for
     /// a cold Auto Original (its HLS rung is the video re-encode) or an Engine that showed a picture.
-    fn try_convert_both(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) -> bool {
+    fn try_convert_both(&self, refusal: LoadRefusal, facts: &OpenFacts) -> Option<RecoveryDecision> {
         if facts.auto_original || !facts.no_frames || !refusal.names_pipeline() || self.flights >= MAX_RECOVERY_FLIGHTS {
-            return false;
+            return None;
         }
         let audio = suspect_audio(facts.audio.as_ref()).filter(|f| self.attempt.without(f) != *self.attempt);
         let video = matches!(refusal, LoadRefusal::Refused { .. })
@@ -543,17 +673,9 @@ impl OpenRecovery {
             .filter(|f| self.attempt.without(f) != *self.attempt);
         let new_video = suspect_video(facts.video.as_ref()).is_some() && self.excluded.video.is_none();
         if !new_video && audio.is_none() {
-            return false;
+            return None;
         }
-        for facet in audio.into_iter().chain(video) {
-            self.excluded.take(facet);
-        }
-        self.narrow();
-        self.flights += 1;
-        fx.push(RecoveryEffect::ConvertBoth { flight: self.flights });
-        self.state = State::Flight { rung: Rung::Encode, cause: refusal, facts: facts.clone() };
-        self.rescue = Some(Rung::Encode);
-        true
+        Some(RecoveryDecision::Encode { audio, video })
     }
 
     /// The codec Force Direct Play's read-out may name for `refusal`, or `None` when the refusal is not
@@ -590,119 +712,53 @@ impl OpenRecovery {
     /// app mixes a surround source down only as the last rung), the read-out. The facet
     /// rung is for an Engine that has shown no picture (`facts.no_frames`: the picture is per
     /// Engine, so a reload after the request's first picture owes its own open the same rung).
-    fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
-        let flight = |rung| State::Flight { rung, cause: refusal, facts: facts.clone() };
-        self.note_refusal(refusal, facts);
+    fn decide(&self, refusal: LoadRefusal, facts: &OpenFacts) -> RecoveryDecision {
         if facts.pending_original {
-            // A refusal of native audio (the learner's write was queued earlier in this step)
-            // narrows the rollback's profile too: the restored HLS route must not offer it natively
-            // again.
-            if let Some(facet) = facts.native_audio.as_ref().filter(|f| self.start.without(f) != *self.start) {
-                self.excluded.audio = Some(facet.clone());
-                self.narrow();
-            }
-            fx.push(RecoveryEffect::Rollback);
-            self.state = flight(Rung::Rollback);
-            self.rescue = Some(Rung::Rollback);
-            return;
+            let audio = facts.native_audio.as_ref()
+                .filter(|f| self.start.without(f) != *self.start).cloned();
+            return RecoveryDecision::Rollback { audio };
         }
         if facts.forced {
-            // A forced play is never converted, but the app can decode a stereo track the set refused (a
-            // surround track is not mixed down for it: `app_decode_for` declines, and the read-out follows).
-            if self.try_app_decode(refusal, facts, fx) {
-                return;
+            if let Some(audio) = self.app_decode_for(refusal, facts) {
+                return RecoveryDecision::Decode(audio);
             }
-            if let Some(codec) = self.refusal_attributable_to_audio(refusal, facts) {
-                fx.push(RecoveryEffect::NameRefusedAudio { codec });
-            }
-            fx.push(RecoveryEffect::ShowError { refusal });
-            self.state = State::Failed;
-            self.rescue = None;
-            return;
+            return RecoveryDecision::Error { codec: self.refusal_attributable_to_audio(refusal, facts) };
         }
         if refusal.names_pipeline() && facts.no_frames && self.flights == 0 {
-            // The video facet rung runs only where no HLS contingency is retained: a cold Auto
-            // Original's HLS rung is already the video re-encode (ABR-managed), and only a refusal
-            // that gave a number can name a decode (`Stalled` is native audio's).
+            // A cold Auto Original already retains its video re-encode as the HLS rung.
             let video = facts.video.as_ref().filter(|_| !facts.auto_original && matches!(refusal, LoadRefusal::Refused { .. }));
             if let Some(facet) = suspect(facts.audio.as_ref(), video).filter(|f| self.start.without(f) != *self.start) {
-                // A flight after an app decode never proves a facet (`unprovable`).
-                self.unprovable |= facts.audio.as_ref().is_some_and(|a| a.app_decoded_lossy);
-                self.excluded.take(facet.clone());
-                self.narrow();
-                self.flights += 1;
-                fx.push(RecoveryEffect::ConvertFacet { facet, flight: self.flights });
-                self.state = flight(Rung::Facet);
-                self.rescue = Some(Rung::Facet);
-                return;
+                return RecoveryDecision::Facet(facet);
             }
         }
         if facts.auto_original && facts.no_frames && self.flights < MAX_RECOVERY_FLIGHTS {
-            // The HLS attempt lacks every stream the refusal named that narrows `start`: the refused
-            // video raster (a numbered refusal) and native audio (any pipeline refusal). A timeout or
-            // a source failure names none, so main's attempt flies.
-            let audio = refusal.names_pipeline().then(|| suspect_audio(facts.audio.as_ref())).flatten();
-            let video = matches!(refusal, LoadRefusal::Refused { .. }).then(|| suspect_video(facts.video.as_ref())).flatten();
-            for facet in audio.into_iter().chain(video).filter(|f| self.start.without(f) != *self.start) {
-                self.excluded.take(facet);
-            }
-            self.narrow();
-            self.flights += 1;
-            fx.push(RecoveryEffect::StartAutoHls);
-            self.state = flight(Rung::Both);
-            self.rescue = Some(Rung::Both);
-            return;
+            let audio = refusal.names_pipeline().then(|| suspect_audio(facts.audio.as_ref())).flatten()
+                .filter(|f| self.start.without(f) != *self.start);
+            let video = matches!(refusal, LoadRefusal::Refused { .. }).then(|| suspect_video(facts.video.as_ref())).flatten()
+                .filter(|f| self.start.without(f) != *self.start);
+            return RecoveryDecision::AutoHls { audio, video };
         }
-        // The app decodes to stereo. For a source of at most two channels that loses nothing and keeps
-        // the direct play and asks the server nothing, so it comes before the manual encode (a refused
-        // conversion of the audio is decoded in the app, not converted twice). A surround source would
-        // lose its channels, so there (owner decision 2026-10-28) the encode, which keeps them, comes
-        // first and the app decode is the very last rung.
+        // Keep stereo direct play before encoding; preserve surround until the last rung.
         let mixes_down = facts.audio.as_ref().is_some_and(|a| plx_platform::devcaps::app_decode_mixes_down(i64::from(a.channels)));
-        if !mixes_down && self.try_app_decode(refusal, facts, fx) {
-            return;
+        if !mixes_down {
+            if let Some(audio) = self.app_decode_for(refusal, facts) {
+                return RecoveryDecision::Decode(audio);
+            }
         }
-        if self.try_convert_both(refusal, facts, fx) {
-            return;
+        if let Some(decision) = self.try_convert_both(refusal, facts) {
+            return decision;
         }
-        if mixes_down && self.try_app_decode(refusal, facts, fx) {
-            return;
+        if mixes_down {
+            if let Some(audio) = self.app_decode_for(refusal, facts) {
+                return RecoveryDecision::Decode(audio);
+            }
         }
-        fx.push(RecoveryEffect::ShowError { refusal });
-        self.state = State::Failed;
-        self.rescue = None;
+        RecoveryDecision::Error { codec: None }
     }
 
-    /// Keep the request's first refusal the report can name ([`LoadRefusal::reports`]) and the
-    /// stream it put under suspicion: for a refusal that names the pipeline, the natively fed audio
-    /// it named, else [`suspect`] (the video only for a numbered refusal, which is what can name a
-    /// decode); none for a Load timeout. Later refusals, which are the failures of rescue
-    /// attempts, never replace it.
-    fn note_refusal(&mut self, refusal: LoadRefusal, facts: &OpenFacts) {
-        if self.refused.is_some() || !refusal.reports() {
-            return;
-        }
-        // Only a refusal that names the pipeline puts a stream under suspicion: a Load timeout says
-        // nothing about the audio fed, and the ladder itself ignores it for one.
-        let facet = refusal.names_pipeline().then(|| {
-            let video = facts.video.as_ref().filter(|_| matches!(refusal, LoadRefusal::Refused { .. }));
-            facts.native_audio.clone().or_else(|| suspect(facts.audio.as_ref(), video))
-        });
-        self.refused = Some((refusal, facet.flatten()));
-    }
 
-    /// The first picture of an open that rests on a rung's route: a rescued refusal, reported once
-    /// per request.
-    fn report_rescue(&mut self, fx: &mut Vec<RecoveryEffect>) {
-        let rung = self.rescue.take();
-        if self.reported {
-            return;
-        }
-        if let (Some(rung), Some((refusal, facet))) = (rung, &self.refused) {
-            self.reported = true;
-            fx.push(RecoveryEffect::ReportRecovered(Recovered { rung, refusal: *refusal, facet: facet.clone() }));
-        }
-    }
+
+
 
     /// The one writer. The table (a pair not listed answers [`Handled::No`] and changes nothing):
     ///
@@ -756,93 +812,7 @@ impl OpenRecovery {
     /// `Proving` (kept, with the pending proof). The driver treats an unhandled `Refused` as the
     /// Engine failing for good, never as silence.
     pub fn step(&mut self, ev: &RecoveryEvent, fx: &mut Vec<RecoveryEffect>) -> Handled {
-        match ev {
-            RecoveryEvent::Refused { refusal, facts } => {
-                if !matches!(self.state, State::Opening | State::Proving { .. } | State::Playing) {
-                    return Handled::No;
-                }
-                if let Some(facet) = &facts.native_audio {
-                    fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Named });
-                }
-                self.decide(*refusal, facts, fx);
-                Handled::Yes
-            }
-            RecoveryEvent::FlightLanded { lanes } => {
-                let State::Flight { rung, .. } = &self.state else {
-                    return Handled::No;
-                };
-                let proven = (*rung == Rung::Facet && !self.pictured && !self.unprovable)
-                    .then(|| self.excluded.iter().find(|f| proves(f, lanes.as_ref())))
-                    .flatten();
-                self.state = match proven {
-                    Some(facet) => State::Proving { facet: facet.clone(), loaded: false },
-                    None => State::Opening,
-                };
-                Handled::Yes
-            }
-            RecoveryEvent::FlightRefused => {
-                let State::Flight { rung, cause, facts } = &self.state else {
-                    return Handled::No;
-                };
-                let (rung, cause, facts) = (*rung, *cause, facts.clone());
-                match rung {
-                    Rung::Facet => self.decide(cause, &facts, fx),
-                    // The HLS contingency or the manual encode came back refused: the app decode is what is
-                    // left (for a surround source, where it was held back for last, the very last rung;
-                    // an encode is not a direct play, so its own refusal otherwise reads out).
-                    Rung::Both | Rung::Encode => self.app_decode_or_error(cause, &facts, fx),
-                    // A refused rollback stays terminal.
-                    Rung::Rollback => {
-                        fx.push(RecoveryEffect::ShowError { refusal: cause });
-                        self.state = State::Failed;
-                        self.rescue = None;
-                    }
-                }
-                Handled::Yes
-            }
-            RecoveryEvent::FirstPicture => match &self.state {
-                State::Opening => {
-                    self.pictured = true;
-                    self.state = State::Playing;
-                    self.report_rescue(fx);
-                    Handled::Yes
-                }
-                State::Proving { facet, .. } => {
-                    fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Proof });
-                    self.pictured = true;
-                    self.state = State::Playing;
-                    self.report_rescue(fx);
-                    Handled::Yes
-                }
-                _ => Handled::No,
-            },
-            RecoveryEvent::LoadStarted => match &mut self.state {
-                // The landing's own reload: `FlightLanded` moved the machine before the driver
-                // reloaded, so the first Load here is the one the landing asked for.
-                State::Proving { loaded: loaded @ false, .. } => {
-                    *loaded = true;
-                    Handled::Yes
-                }
-                // A second Load before the picture (a track switch, a restore after Home, a seek
-                // reload) is a route whose lanes were never read: the proof is dropped, and the new
-                // open is ruled on by the same ladder as below.
-                State::Proving { .. } | State::Flight { .. } | State::Failed => {
-                    // The flight (if any) is gone with the Engine that waited on it, and the
-                    // read-out belongs to the Engine that failed: the new Load is a new open, ruled
-                    // on by the same ladder with what this request has already spent (`flights`,
-                    // `excluded`). A flight that never landed or a read-out leaves the new open on
-                    // no rung's route, so a picture from it is no rescue; a `Proving` state's route
-                    // HAS landed (a track pick or a restore reloads that same installed route), so
-                    // it keeps its rung, and only its proof is dropped.
-                    if !matches!(self.state, State::Proving { .. }) {
-                        self.rescue = None;
-                    }
-                    self.state = State::Opening;
-                    Handled::Yes
-                }
-                State::Opening | State::Playing => Handled::No,
-            },
-        }
+        self.transition(ev, fx)
     }
 
     /// Read-only view of the machine for tests; every write goes through [`step`](Self::step).
@@ -872,6 +842,29 @@ pub enum Phase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignored_events_keep_all_bookkeeping_and_proof_precedes_the_rescue_report() {
+        let mut m = OpenRecovery::new(opus_start());
+        assert_eq!(run(&mut m, refused(NATIVE, names_opus(facts(false, false, true)))),
+            (Handled::Yes, vec![named(opus6()), RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }]));
+        let before = format!("{m:?}");
+        for ev in [refused(SHUT, on_dts(facts(true, true, true))), RecoveryEvent::FirstPicture] {
+            assert_eq!(run(&mut m, ev), (Handled::No, vec![]));
+            assert_eq!(format!("{m:?}"), before);
+        }
+        assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::Yes, vec![]));
+        assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::Yes, vec![]));
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![
+            proof(opus6()),
+            RecoveryEffect::ReportRecovered(Recovered { rung: Rung::Facet, refusal: NATIVE, facet: Some(opus6()) }),
+        ]));
+        let before = format!("{m:?}");
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::No, vec![]));
+        assert_eq!(format!("{m:?}"), before);
+        assert_eq!(m.flights, 1);
+        assert!(m.reported && m.pictured && m.rescue.is_none());
+    }
 
     fn dts6() -> Facet {
         Facet::Audio { codec: "dts".into(), channels: 6 }

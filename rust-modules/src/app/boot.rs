@@ -1879,24 +1879,7 @@ pub(crate) unsafe fn construct(
     // television. Armed after the projection above, whose sign-out arm only clears bound hosts.
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::clock_fact::arm_at_boot();
-    // dev: /tmp/plxnative-hintoff — the hold hint taught for this run, on every screen, read
-    // once here on the frame thread (the hint's latches are thread-local). The site demo film is
-    // shot with it: the capsule is a one-time teaching overlay, and a film has no viewer to teach.
-    #[cfg(feature = "devtriggers")]
-    if plx_base::devtrig::flag("hintoff") {
-        plx_ui::hold_hint::teach_all_for_dev();
-    }
-    // dev: /tmp/plxnative-hintfresh — this run starts with the hold hint untaught, though the install
-    // was taught: the seed below is skipped, so the hint can be looked at again. Nothing on disk is
-    // un-written; a read showing then writes taught again (an idempotent write).
-    // The hold hint offers itself once per INSTALL: seed what an earlier run taught, before frame one.
-    #[cfg(feature = "devtriggers")]
-    let hint_fresh = plx_base::devtrig::flag("hintfresh");
-    #[cfg(not(feature = "devtriggers"))]
-    let hint_fresh = false;
-    if !hint_fresh {
-        super::hint_taught::seed(session.hold_hint_taught());
-    }
+
     #[cfg(not(test))]
     plx_platform::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
@@ -1914,17 +1897,36 @@ pub(crate) unsafe fn construct(
         None => captured_session_for_boot(session.clone(), dev_primary,
             captured_dev_sources(&dev_servers.unwrap_or_default())),
     };
-    let mut bridge = if controlled {
-        super::bridge::Bridge::controlled_home(plx_base::diag::heartbeat::now_us,
+    let (mut runtime, mut retained) = if controlled {
+        super::bridge::BridgeRetained::controlled_home(plx_base::diag::heartbeat::now_us,
             initial.as_ref().expect("controlled initialization"), &mt, preflight.replay())
     } else {
-        super::bridge::Bridge::new(plx_base::diag::heartbeat::now_us, session_init,
+        super::bridge::BridgeRetained::new(plx_base::diag::heartbeat::now_us, session_init,
             plx_telemetry::telemetry::consent::current().unwrap_or_default(), &mt)
     };
+    let mut bridge = runtime.bridge(&mut retained);
     // Construct the one dispatcher before bootstrap commands; move this same queue into App.
     let mut pages = plx_ui::dispatch::Dispatcher::with_transition(Box::new(
         plx_ui::containers::transition::PageDip::new(),
     ));
+    // Controlled replay uses only its explicit captured install fact. The Session's frozen
+    // canonical projection does not bind this preference, and ambient cells are not authority.
+    pages.input.hold_hint = match &initial {
+        Some(initial) => initial.install_hold_hint.expect("preflight requires install hold-hint fact").input(),
+        None => {
+            let taught = session.hold_hint_taught();
+            plx_machine::machine::HoldHintRead { learned: false, card: taught.card, pill: taught.pill, context: 0 }
+        }
+    };
+    #[cfg(feature = "devtriggers")]
+    if !controlled {
+        if plx_base::devtrig::flag("hintfresh") {
+            pages.input.hold_hint = Default::default();
+        }
+        if plx_base::devtrig::flag("hintoff") {
+            pages.input.hold_hint.apply(plx_machine::machine::HoldHintEvent::Learned);
+        }
+    }
     restore_player_preferences(&session, controlled);
     // dev: /tmp/plxnative-audioenh=off|boost|loudness — force the enhancement preference right after
     // the restore. Nobody is seated yet, so this sets the live cell alone (the door refuses to save
@@ -2064,7 +2066,7 @@ pub(crate) unsafe fn construct(
     let mut glass = plx_ui::frame::glass::GlassPlan::new();
     if !controlled {
         crate::dev::scenarios::arm_glassload(&mut glass);
-        crate::dev::scenarios::arm_navblur(&mut glass);
+        bridge.retained.blur_dissolve = crate::dev::scenarios::arm_navblur(&mut glass);
     }
     // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
     // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
@@ -2097,8 +2099,8 @@ pub(crate) unsafe fn construct(
         plx_media::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        plx_machine::idle::set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
-    } else { crate::dev::scenarios::arm_noidle(); }
+        pages.present.set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
+    } else { crate::dev::scenarios::arm_noidle(&mut pages.present); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
     let detail_osc = !controlled && crate::dev::scenarios::detailosc_armed();
@@ -2322,10 +2324,7 @@ pub(crate) unsafe fn construct(
         (player, adapters)
     };
     let repause_at = 0i64;
-    // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
-    // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
-    // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
-    let ok_armed = false;
+
     // Which route name was last REPORTED as an event. Not `route` itself: several `Route`
     // values share one name (every `Route::Player` is "player"), and an overlay
     // opening is not a screen change.
@@ -2470,6 +2469,8 @@ pub(crate) unsafe fn construct(
     // **The HUD compiles here, at boot, outside any frame**, and the mounter is seeded with it (`run::boot_hud`;
     // a controlled run defers it to the first player frame).
     let hud = super::run::boot_hud(&mut bridge, controlled);
+    // End the bootstrap capability before moving its physical owners into App.
+    drop(bridge);
     let mut app = App {
         last_input,
         loop_t,
@@ -2489,12 +2490,13 @@ pub(crate) unsafe fn construct(
         down_sym,
         modal_repeat,
         diagnostics: crate::app::diagnostics::Diagnostics::default(),
+        lab_toast: Default::default(),
         player,
         adapters,
         repause_at,
         decoder_parked: false,
         foreground_retry: None,
-        ok_armed,
+
         last_route_reported,
         ptr,
         menu_play_await: None,
@@ -2512,18 +2514,21 @@ pub(crate) unsafe fn construct(
         t0,
         instr,
         measure_fault_logged: false,
-        input: plx_ui::input::Input::new(),
+
         rec: super::recorder::Recplay::Off,
         boot_initial: initial,
         telemetry_guard: None,
-        present: plx_machine::present::Present::new(),
+
         glass,
         // **The application's page stack runs the route DIP** (§6.2). It ran `Immediate` until
         // phase 12 while `ui::nav` held a second fader and the loop applied its own route change
         // at THAT floor; `PageDip` is the same schedule in the container that owns the op.
         pages,
         inputs: Vec::new(),
-        bridge,
+        #[cfg(feature = "devtriggers")]
+        a11y_pending: Default::default(),
+        runtime,
+        bridge: retained,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
         scenarios: crate::dev::scenarios::Scenarios {
             #[cfg(feature = "devtriggers")]
@@ -2638,10 +2643,11 @@ pub(crate) unsafe fn construct(
         let replay = preflight.replay();
         app.rec = super::recorder::Recplay::controlled(preflight, &initial)
             .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
-        app.rec.arm_landgate(app.bridge.landgate());
+        let mut bridge = app.runtime.bridge(&mut app.bridge);
+        app.rec.arm_landgate(bridge.landgate());
         log("bootstrap: captured pre-effect initial state");
         if let Some(deferred) = deferred {
-            apply_deferred_capture(&mut app.rec, app.bridge.landgate(), deferred)
+            apply_deferred_capture(&mut app.rec, bridge.landgate(), deferred)
                 .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
             log("bootstrap: captured session persistence applied");
         }
@@ -2650,18 +2656,18 @@ pub(crate) unsafe fn construct(
         }
         if !replay { super::adapters::poster::init(); }
         app.rec.tick(initial.clock_start, 0.0);
-        app.rec.prepare_resources(&mut app.bridge);
-        if !matches!(activate_session(&mut app.bridge, &mut app.pages, &mut app.rec), BootTo::Home) {
+        app.rec.prepare_resources(&mut bridge);
+        if !matches!(activate_session(&mut bridge, &mut app.pages, &mut app.rec), BootTo::Home) {
             log("bootstrap: controlled Home activation refused");
             return Err(1);
         }
         let tree = app.pages.state_hash();
-        app.rec.resource_requests(app.bridge.take_resource_requests());
-        if let Some(reason) = app.rec.failure().or_else(|| app.bridge.controlled_failure()) {
+        app.rec.resource_requests(bridge.take_resource_requests());
+        if let Some(reason) = app.rec.failure().or_else(|| bridge.controlled_failure()) {
             log(&format!("bootstrap: REFUSED — {reason}"));
             return Err(1);
         }
-        super::run::recorder_end_frame(&mut app.rec, &app.bridge, &app.input.press,
+        super::run::recorder_end_frame(&mut app.rec, &bridge,
             "home", "", "bootstrap", tree);
         if let Some(ms) = app.rec.clock_start() {
             super::clock::set_replay(ms);
@@ -2695,7 +2701,7 @@ pub(crate) unsafe fn construct(
                 return Err(1);
             }
         } else {
-            maybe_ask_consent(&mut app.pages);
+            maybe_ask_consent(&mut app.pages, &mut app.runtime.consent.machine.ask);
         }
     }
     Ok(app)

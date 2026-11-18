@@ -29,6 +29,8 @@
 //! **Shape.** Pure, like `acb_bind`: no clock, no global, no IO. An event goes in, [`Fx`] come out;
 //! the backend feeds the events and turns the effect into the observation and its log line.
 
+#![deny(clippy::wildcard_enum_match_arm)]
+
 /// What the backend observed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -92,8 +94,11 @@ impl PictureGate {
     }
 
     pub fn step(&mut self, event: Event, fx: &mut Vec<Fx>) {
+        self.transition(event, fx);
+    }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) {
         match event {
-            Event::Reset => *self = Self::new(),
+            Event::Reset => { self.stage = Stage::Neither; self.last_ms = None; },
             Event::Seeked => self.last_ms = None,
             Event::PlaneFailed => {
                 if self.stage != Stage::Presented {
@@ -104,14 +109,14 @@ impl PictureGate {
                 self.stage = match self.stage {
                     Stage::Neither => Stage::ServiceOnly,
                     Stage::PlaneOnly => Stage::Armed,
-                    other => other,
+                    other @ (Stage::ServiceOnly | Stage::Armed | Stage::Presented | Stage::Refused) => other,
                 };
             }
             Event::PlaneShown => {
                 self.stage = match self.stage {
                     Stage::Neither => Stage::PlaneOnly,
                     Stage::ServiceOnly => Stage::Armed,
-                    other => other,
+                    other @ (Stage::PlaneOnly | Stage::Armed | Stage::Presented | Stage::Refused) => other,
                 };
             }
             Event::Clock(ms) => {

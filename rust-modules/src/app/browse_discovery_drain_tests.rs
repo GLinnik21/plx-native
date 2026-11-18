@@ -34,7 +34,7 @@ fn one_server() -> ServerId {
 
 /// One `StoreWork::BrowseDiscovery` message, as the central dispatcher delivers it.
 fn deliver_discovery_work(bridge: &mut Bridge) {
-    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::default();
     let mut out = Vec::new();
@@ -59,7 +59,8 @@ fn browse_discover_pump_starts_the_read_its_step_emitted_in_the_same_call() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     one_server();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         let _ = bridge.browse_discover_pump();
     });
@@ -72,7 +73,8 @@ fn the_live_discovery_arm_starts_the_read_its_step_emitted_in_the_same_call() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     one_server();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         deliver_discovery_work(&mut bridge);
     });
@@ -88,7 +90,8 @@ fn a_frame_on_a_screen_that_asks_for_no_discovery_starts_the_read_its_ingest_emi
     let _reset = Reset;
     one_server();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         frame(&mut d, &mut bridge, AppArg::Login, tick(0), vec![]);
     });
@@ -109,7 +112,8 @@ fn an_onboard_frame_starts_the_read_its_step_emitted_in_the_same_call() {
     let _reset = Reset;
     one_server();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         frame(&mut d, &mut bridge, AppArg::Onboard, tick(0), vec![]);
     });
@@ -125,7 +129,9 @@ fn the_controlled_discovery_arm_records_a_refused_launch_as_not_admitted() {
     one_server();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, false);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, false);
+    let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = owner.bridge();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         deliver_discovery_work(&mut bridge);
     });

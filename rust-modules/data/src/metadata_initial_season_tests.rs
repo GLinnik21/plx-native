@@ -70,6 +70,16 @@ fn route(path: &str) -> String {
             )
             .to_string()
         }
+        "/library/metadata/s3e14" => {
+            return concat!(
+                r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"s3e14","type":"episode","index":14,"parentIndex":3,"Media":["#,
+                r#"{"id":31,"videoResolution":"4k","width":3840,"height":2160,"videoCodec":"hevc","Part":[{"key":"/library/parts/31/1/p5.mkv","Stream":["#,
+                r#"{"id":311,"streamType":1,"codec":"hevc","DOVIPresent":true,"DOVIProfile":5,"DOVIBLCompatID":0}]}]},"#,
+                r#"{"id":32,"videoResolution":"4k","width":3840,"height":2160,"videoCodec":"hevc","Part":[{"key":"/library/parts/32/1/hdr10.mkv","Stream":["#,
+                r#"{"id":321,"streamType":1,"codec":"hevc","colorTrc":"smpte2084"}]}]}]}]}}"#
+            )
+            .to_string()
+        }
         "/library/metadata/show-1/children" => (1..=4)
             .map(|n| format!(r#"{{"ratingKey":"sk{n}","type":"season","index":{n},"title":"Season {n}"}}"#))
             .collect::<Vec<_>>(),
@@ -151,6 +161,18 @@ fn read_show(sid: plx_plex::plex::ServerId) {
         finish_detail_fetch(&port, job.addr, (sid, rk.clone()), Some(client_of(sid)), |client| fetch_full(client, sid, &rk, prefer, None));
     }
     assert!(pump_detail(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false), "the read landed");
+}
+
+#[test]
+fn the_on_deck_episodes_versions_come_from_its_own_full_read() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve();
+    let sid = open(&server);
+    let d = fetch_full(client_of(sid), sid, "show-1", None, None).expect("the show page answers");
+    assert_eq!(d.play_episode().map(|e| e.rk.as_str()), Some("s3e1"));
+    assert_eq!(d.stream_episode_key(), None, "the first episode had no metadata response");
+    let versions = &d.on_deck.as_ref().expect("the show has an on-deck episode").versions;
+    assert_eq!(versions.iter().map(|v| (v.id.0, v.dovi.profile)).collect::<Vec<_>>(), [(31, 5), (32, 0)]);
 }
 
 #[test]

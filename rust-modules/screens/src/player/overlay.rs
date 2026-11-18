@@ -305,17 +305,31 @@ impl PlayerOverlayScreen {
         anchor: Option<Rect>,
         folded: Vec<plx_appkit::more_menu::FoldedRow>,
     ) -> Self {
+        Self::new_captured(ps, meta, entry, kind, offer_search, anchor, folded, &crate::registry::ScreenInputs::default())
+    }
+
+    pub fn new_captured(
+        ps: &plx_media::route::PlaybackSession,
+        meta: plx_data::metadata::MetadataView<'_>,
+        entry: EntryId,
+        kind: OverlayKind,
+        offer_search: bool,
+        anchor: Option<Rect>,
+        folded: Vec<plx_appkit::more_menu::FoldedRow>,
+        inputs: &crate::registry::ScreenInputs,
+    ) -> Self {
         let anchor = anchor.unwrap_or_else(menu_anchor);
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
-                plx_appkit::track_menu::TrackMenuState::new_with(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search)
+                plx_appkit::track_menu::TrackMenuState::new_with_preferences(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search,
+                                    inputs.preference::<plx_plex::plex::session::SubtitleSizePref>(), inputs.preference::<plx_plex::plex::session::SubtitlePositionPref>())
                     .with_anchor(anchor)
             })),
             // A quality entry is the ordinary menu under Force Direct Play, which offers no
             // Quality section so there is no rung to land on, and so is a Speed entry when the
             // playback takes one speed only: `MoreMenuState::new_on` falls back to the root.
             OverlayKind::More { page } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new_folded(ps, page, folded).with_anchor(anchor))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new_folded_with_quality(ps, page, folded, inputs.preference::<plx_plex::plex::session::QualityPref>()).with_anchor(anchor))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
@@ -730,6 +744,28 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
         // machine's decisions here and asks for a change through an effect, never by writing them.
         let ps = H::session(cx);
         match ev {
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayTrackRow(row)) => {
+                if !self.seat_track_row(*row) { plx_base::eventlog::log("submenuosc: requested row is absent"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayQuality) => {
+                if !self.seat_more_quality() { plx_base::eventlog::log("moreosc: no Quality row"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayPick(target)) => {
+                let commit = if let Some(i) = self.resolve_menupick_track(target) {
+                    self.pick_sub_track(H::metadata(cx), i)
+                } else if let Some(row) = self.resolve_menupick_row(target) {
+                    self.pick_track_row(H::metadata(cx), row)
+                } else { None };
+                if let Some(commit) = commit { Self::ask(fx, PlayerReq::CommitTrack(commit)); }
+                else { plx_base::eventlog::log("menupick: target absent or already active — no commit"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayRetarget(kind)) => {
+                self.retarget(ps, H::metadata(cx), *kind);
+                Handled::Yes
+            }
             ScreenEvent::Input(input) => {
                 // The dispatcher's `machine::Key` is the four directions plus OK/BACK; the
                 // transport alphabet this ladder turns on lives in `consts::Key`. Preserve the
@@ -848,7 +884,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                         }
                         p.update(dt, cx.measure, ps, H::metadata(cx))
                     }
-                    Panel::More(p) => p.update(dt, cx.measure, ps),
+                    Panel::More(p) => p.update_with_quality(dt, cx.measure, ps, H::screen_inputs(cx).preference::<plx_plex::plex::session::QualityPref>()),
                     Panel::Timing(p) => p.update(dt),
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
@@ -942,6 +978,28 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
         }
     }
+    /// **The ids are the active panel's own** (`TrackMenuPart`, `MoreMenuPart`), which answer for
+    /// their rows; the host qualifies them with this screen's namespace, which is the default
+    /// `Screen::a11y_ns` (there is no override): `name()`, the active panel's `OverlayKind::word()`
+    /// — `menu` for the track menu, `more` for the More panel, `timing` for Timing. A `tracks.…`
+    /// selector therefore finds nothing here; `tracks` is the standalone tracks panel's namespace
+    /// (`tracks_panel.rs`). The part is built fresh for the query, so the projection is
+    /// handed back owning its text. Timing declares no group and so names nothing; `a11y_find`
+    /// stays the default walk over these two, which cannot disagree with them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<plx_ui::a11y::A11y<'_>> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y(key, cx).map(plx_ui::a11y::A11y::into_owned),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y(key, cx).map(plx_ui::a11y::A11y::into_owned),
+            Panel::Timing(_) => None,
+        }
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y_elems(g, cx, out),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y_elems(g, cx, out),
+            Panel::Timing(_) => {}
+        }
+    }
 }
 
 impl LogicalState for PlayerOverlayScreen {
@@ -973,7 +1031,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
         None
     }
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
-        self.suppressed = plx_appkit::player_hud::transport_hidden(H::session(cx))
+        self.suppressed = plx_appkit::player_hud::transport_hidden(&H::screen_inputs(cx).player_presentation)
             && !self.kind.survives_failure();
         // The first `update` is a frame behind the mount, so the root page's strings are queued
         // here for the open frame's drain instead (`TrackMenuState::warm_open`).
@@ -1004,11 +1062,11 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
-        let ps = H::session(f.cx);
+
         // Stale content panels are gone with the transport when a playback has FAILED; the `…`
         // popover is the deliberate exception, because the read-out opened it as its own recovery
         // path (`OverlayKind::survives_failure`).
-        if plx_appkit::player_hud::transport_hidden(ps) && !self.kind.survives_failure() {
+        if plx_appkit::player_hud::transport_hidden(&H::screen_inputs(f.cx).player_presentation) && !self.kind.survives_failure() {
             return;
         }
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`

@@ -107,8 +107,8 @@ install_worktree_cargo_policy() {
 #
 # Cargo merges config upward from the working directory, so this file applies to every linked
 # worktree under `.claude/worktrees/` and to NOTHING else: the main checkout lives above this
-# directory and keeps its incremental cache and full DWARF, which is the policy the Makefile
-# states beside `RUST_FEATFLAGS`. The Makefile can only enforce it for its own cargo invocations;
+# directory and keeps its incremental cache and full DWARF in `dev` builds, which is the policy the
+# Makefile states beside `RUST_FEATFLAGS`. The Makefile can only enforce it for its own cargo invocations;
 # an agent running `cargo test` or `cargo check` by hand bypassed it, and 12.9 GB of lane
 # incremental caches is what that cost.
 #
@@ -137,17 +137,25 @@ incremental = false
 # 11% cut to the whole tree and a 26% cut to the object files directly, from ONE crate's `--lib`
 # closure. The saving is modest, plainly: most of the object-file bulk is code, not DWARF.
 #
-# `CARGO_PROFILE_DEV_DEBUG=2` in the environment still overrides this, the same escape hatch as
-# `CARGO_INCREMENTAL=1` above: an env var outranks a config file, so a lane genuinely attaching
-# `lldb`/`rust-lldb` to a host test can buy full DWARF back for itself without touching this file.
+# `CARGO_PROFILE_DEV_DEBUG=2` in the environment still overrides this for a `dev` build (the
+# simulator, clippy, `cargo check`), the same escape hatch as `CARGO_INCREMENTAL=1` above: an env
+# var outranks a config file. A host TEST is another profile (since 2026-11-14): `cargo test` builds
+# every unit, third-party crates included, with `[profile.test]`, and rust-modules/Cargo.toml sets
+# that one to line tables itself, which a `[profile.dev]` setting (this file's or the
+# environment's) no longer reaches. A lane genuinely attaching `lldb`/`rust-lldb` to a host test
+# buys full DWARF back for itself with `CARGO_PROFILE_TEST_DEBUG=2`; third-party crates keep the
+# `debug = false` below either way.
 #
-# Checked before landing that nothing else in the nearer config chain already sets this and would
-# make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml` (only
-# `[profile.release]`) nor `rust-modules/.cargo/config.toml` (only `[target...]` rustflags and
-# formerly `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
-# against a config `[profile]` by letting config win, and the nearest config wins over a farther
-# one — both rules favour this file over anything upstream, which is the reason it is safe to add
-# here rather than in the crate manifest.
+# Checked before landing, for `dev` builds, that nothing else in the nearer config chain already
+# sets this and would make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml`
+# (its profiles are `release`, `tvdev` and, since 2026-11-14, `test`; none is `dev`) nor
+# `rust-modules/.cargo/config.toml` (only `[target...]` rustflags and formerly `[unstable]
+# build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]` against a
+# config `[profile]` by letting config win, and the nearest config wins over a farther one — both
+# rules favour this file over anything upstream, which is the reason it is safe to add here rather
+# than in the crate manifest. A `cargo test` build takes its debug level from `[profile.test]`
+# instead (the paragraph above), so for it the `debug` line below is redundant; the
+# `debug = false` for third-party crates is what this file still adds there.
 [profile.dev]
 debug = "line-tables-only"
 [profile.dev.package."*"]
@@ -754,7 +762,7 @@ checkout_kb() {
 lane_trees() {
   for d in "$1"/rust-modules/target*; do
     case "$d" in *'*'*) continue ;; esac
-    if [ -d "$d" ]; then echo "$d"; fi
+    if [ ! -L "$d" ] && [ -d "$d" ]; then echo "$d"; fi
   done
   vendor_trees "$1"
 }
@@ -773,7 +781,7 @@ vendor_trees() {
 incremental_trees() {
   for d in "$1"/rust-modules/target*/debug/incremental; do
     case "$d" in *'*'*) continue ;; esac
-    if [ -d "$d" ]; then echo "$d"; fi
+    if [ ! -L "${d%/debug/incremental}" ] && [ -d "$d" ]; then echo "$d"; fi
   done
 }
 
@@ -859,7 +867,7 @@ stale_deps_dirs() {
 target_roots() {
   for d in "$1"/rust-modules/target*; do
     case "$d" in *'*'*) continue ;; esac
-    if [ -d "$d" ]; then echo "$d"; fi
+    if [ ! -L "$d" ] && [ -d "$d" ]; then echo "$d"; fi
   done
 }
 external_target_roots() {
@@ -1360,7 +1368,7 @@ derived_output() {
     pkg/.flavor|pkg/PlxNative.app|pkg/PlxNative-*|pkg/*.link.*|pkg/link-evidence) ;;
     ipkroot/*.tar.gz|ipkroot/debian-binary|ipkroot/data/usr|stub/*.so|*.o) ;;
     tools/node_modules|__pycache__|*/__pycache__|*.pyc|.DS_Store|*/.DS_Store) ;;
-    fuzz/Cargo.lock|fuzz/.lock-base|fuzz/seeds|fuzz/corpus|fuzz/coverage) ;;   # `make fuzz-hud`: a copied lock, generated seeds, a corpus that regrows. NOT fuzz/artifacts: a crash input is a finding
+    fuzz/target|fuzz/Cargo.lock|fuzz/.lock-base|fuzz/seeds|fuzz/corpus|fuzz/coverage) ;;   # `make fuzz-hud`: a copied lock, generated seeds, a corpus that regrows. NOT fuzz/artifacts: a crash input is a finding
     .tv-*.pid|.tv-*.log) ;;                                     # a session's scratch, not its address or password
     tests/fixtures/out|tests/fixtures/*.mkv|tests/fixtures/*.mp4|tests/fixtures/*.sup|tests/fixtures/fixtures.json) ;;
     *) return 1 ;;
@@ -1840,6 +1848,9 @@ report)
   done
   echo "  (a checkout nested inside another is subtracted from that one's TOTAL, not counted twice)"
 
+  if [ -f "$HOME/.config/plxnative/build-root" ] && [ -f "$ROOT/tools/build-root.py" ]; then
+    python3 "$ROOT/tools/build-root.py" inventory
+  fi
   ext=$(external_trees | sort -u)
   if [ -n "$ext" ]; then
     echo
@@ -2174,6 +2185,15 @@ esac
 case "$MODE" in
 orphans)
   echo "== external lane target dirs whose worktree is gone =="
+  if [ -f "$HOME/.config/plxnative/build-root" ] && [ -f "$ROOT/tools/build-root.py" ]; then
+    python3 "$ROOT/tools/build-root.py" orphans | while IFS= read -r tree; do
+      # External ownership is recorded by the setup hook. Recheck open handles
+      # and Cargo locks just before passing a derived directory to the executor.
+      if python3 "$ROOT/tools/disk-budget.py" probe --tree "$tree" --class fleet >&2; then
+        printf '%s\n' "$tree"
+      fi
+    done | skip_live | drop
+  fi
   external_trees | sort -u | while IFS= read -r d; do
     if external_is_orphan "$d"; then echo "$d"; fi
   done | skip_live | drop

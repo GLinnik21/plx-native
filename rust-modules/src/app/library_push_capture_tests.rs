@@ -21,7 +21,7 @@ fn push_trace(case: Case) -> Vec<Row> {
     struct Cleanup;
     impl Drop for Cleanup { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
     let _cleanup = Cleanup;
-    let _held = ImageHeld;
+
     let session = plx_plex::plex::session::TempSession::new("library-push-capture");
     session.watching("u-library-push-capture");
     plx_plex::plex::reset_servers_for_test();
@@ -29,7 +29,8 @@ fn push_trace(case: Case) -> Vec<Row> {
     let shared = plx_plex::plex::register_for_test("push-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(plx_ui::containers::transition::PageDip::new()));
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     // WARM: the section table, the listing and its shelves are all in the store before the press.
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
@@ -50,7 +51,7 @@ fn push_trace(case: Case) -> Vec<Row> {
     let mut ms = 0u32;
     let mut step = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rows: Option<&mut Vec<Row>>| {
         ms += 16;
-        plx_machine::idle::frame_begin(0.016);
+        plx_machine::motion::report::frame_begin(0.016);
         super::frame(d, rig, Tick { ms, dt_us: 16_000 }, vec![]);
         use plx_ui::containers::transition::PagePaint;
         let Some(paint) = dip.plan(d, ms) else { return };
@@ -119,15 +120,57 @@ fn aimed(current: usize, kind: plx_data::browse::SecKind) -> i64 {
     let sid = plx_plex::plex::register_for_test("aim-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared = plx_plex::plex::register_for_test("aim-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(current));
     rig.refresh_browse_directory();
     rig.aim_library(kind);
     rig.refresh_browse_directory();
-    let directory = rig.directory.view();
+    let directory = rig.retained.directory.view();
     directory.sections()[directory.current().expect("the store points at a library")].key
+}
+
+/// A real dispatcher Library tick, chrome step, discovery draw and Present acknowledgement must
+/// settle to keepalives; accepted per-tick browse requests are not new content.
+#[test]
+fn oracle_library_present_50s() {
+    use plx_machine::motion::report;
+    use plx_ui::frame::backdrop;
+    let mut w = World::new("oracle-library-present");
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(48);
+    super::show_page(&mut w.d, AppArg::Home);
+    w.frames(90);
+    w.present_bar();
+    let rect = w.d.last_stops().iter().find(|s| s.key.elem == plx_ui::widgets::TAB_KEY_MOVIES)
+        .expect("Movies stop").rect;
+    w.click(rect.cx(), rect.cy());
+    assert!(w.on(&AppArg::Library), "mount library");
+    let mut glass = plx_ui::frame::glass::GlassPlan::new();
+    let mut admitted = 0;
+    let mut late = 0;
+    for i in 0..3300u32 {
+        w.step(vec![]);
+        w.bridge.bridge().update_home_chrome(&mut w.d, &mut glass, 0.016);
+        let now = w.frame * 16;
+        report::collect_into(&mut w.d.present, now);
+        if w.d.present.take(now) {
+            admitted += 1;
+            if i >= 3000 { late += 1; }
+            let sources = glass.sources.clone();
+            sources.borrow_mut().begin(w.d.backdrop_layers(1.0));
+            {
+                let _guard = backdrop::discover(sources.clone());
+                w.d.draw_with_glass_below(&mut w.bridge.bridge(), &mut glass, true, backdrop::Z::ALL);
+            }
+            sources.borrow_mut().resolve();
+            backdrop::commit(&sources);
+            w.d.present.acknowledge(now);
+        }
+    }
+    println!("admitted={admitted}/3300 late={late}/300");
+    assert!(late <= 4, "late gate should admit only keepalives");
 }
 
 /// A press aims the store at a library of the pressed kind when it points at the other kind, and

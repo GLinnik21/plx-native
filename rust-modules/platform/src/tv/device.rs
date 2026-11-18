@@ -10,7 +10,8 @@ pub struct Info {
     /// e.g. "4.10.2" — empty when unknown
     pub release: String,
     /// The exact firmware build, e.g. "6.5.3-47" (nyx's `core_os_release`: the release and the
-    /// build id); falls back to `release` when the file has no such key, empty when unknown. A
+    /// build id); falls back to `release` when the file has no such key, empty when unknown (and
+    /// when the release came from `/usr/lib/os-release`, which names no build). A
     /// patch within one release changes this and not `release`.
     pub build: String,
     /// e.g. "goldilocks2-grampians" — webosbrew buckets firmware by this
@@ -33,8 +34,10 @@ static NO_INFO: Info = Info {
     major: 0,
 };
 
-/// What the set reported. All-empty with `major == 0` when the file could not be read — which is
-/// the honest answer and is what the panel prints. A plain `get()` (never `get_or_init`), so a read
+/// What the set reported. All-empty with `major == 0` when neither `os_info.json` nor
+/// `/usr/lib/os-release` could be read — which is the honest answer and is what the panel prints.
+/// A release that only `/usr/lib/os-release` named leaves the codename, API version, name and
+/// build empty. A plain `get()` (never `get_or_init`), so a read
 /// that races ahead of the boot probe sees the empty answer for itself and leaves the cell open for
 /// [`publish_info`].
 pub fn info() -> &'static Info {
@@ -146,7 +149,9 @@ impl NyxFile {
 }
 
 /// What the boot probe found in each of nyx's two files: `os_info.json` (the webOS release, which
-/// fills [`Info`]) and `device_info.json` (the set, which fills [`Hardware`]).
+/// fills [`Info`]) and `device_info.json` (the set, which fills [`Hardware`]). The verdict is on the
+/// FILE: an unreadable `os_info.json` reads `unreadable` even when `/usr/lib/os-release` supplied
+/// the release.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Probe {
     pub os_info: NyxFile,

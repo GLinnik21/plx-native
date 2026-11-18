@@ -29,7 +29,7 @@ import subprocess
 import sys
 from datetime import datetime
 
-DEFAULT_REPO = "GLinnik21/plx-native"
+DEFAULT_REPO = "plxnative/plx-native"
 # workflow display name -> workflow file (the API addresses a workflow by either)
 WORKFLOWS = {"CI": "ci.yml", "Simulator CI": "simulators.yml"}
 GROWTH_RATIO = 0.20     # recent median more than 20% above the earlier median ...

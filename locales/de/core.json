@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "versuchte Übertragungsart",
   "core.preview_domain_source_video": "Videocodec der Quelle (nur Ablehnungsberichte)",
   "core.preview_domain_source_audio": "Audiocodec der Quelle (nur Ablehnungsberichte)",
+  "core.preview_domain_preview_refusal": "Grund der Ablehnung eines automatischen Trailers (nur Berichte über abgelehnte Trailer)",
   "core.preview_domain_quality": "Qualität",
   "core.preview_domain_observed_rate": "gemessene Bitrate",
   "core.preview_domain_raster": "Bildgröße",

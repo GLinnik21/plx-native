@@ -17,6 +17,7 @@ use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
 use super::layout::{band_pill_pad, band_track_w, rail_geom, rail_pitch, rail_scroll_target, BandRows, BAND_PILL_H, RAIL_TRACK_W};
 use super::rail_bands;
 use crate::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::consts::K_SCROLL;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId};
@@ -387,6 +388,33 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
         let index = self.skip_empty(self.letter_for_item(from.index.unwrap_or(0) as usize));
         FocusKey { entry: self.entry, elem: self.elems.get(index).copied().unwrap_or(0) }
     }
+
+    /// **`rail.<i>`**: the i-th letter (or band) of the rail, with the letter as its label. It exists
+    /// where the group does (`group_of`: while focus is in the grid or the rail), and a letter no
+    /// title starts with is `loaded` false: there is nothing behind it to press.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if !self.in_region(cx) { return None; }
+        let i = self.elems.iter().position(|elem| elem == key)?;
+        let a = A11y::new(A11yPath::new().name("rail").index(i), A11yRole::Row).with_loaded(!self.letter_empty(i));
+        Some(match self.labels.get(i).and_then(|label| label.to_str().ok()).filter(|label| !label.is_empty()) {
+            Some(label) => a.with_label(label),
+            None => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == self.group && self.in_region(cx) {
+            out.extend(self.elems.iter().copied());
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let i = match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("rail")), Some(Seg::Index(i)), None) => i,
+            _ => return None,
+        };
+        let elem = *self.elems.get(i)?;
+        Focusable::<H>::a11y(self, &elem, cx).map(|_| elem)
+    }
 }
 impl<H: LibraryLike> Part<H> for RailPart {
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
@@ -410,7 +438,7 @@ mod tests {
     fn rail_scroll_and_presence_animate_then_settle_outside_the_grid_region() {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(39), true, 0.016));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| rail.step_motion(Some(39), true, 0.016));
         assert!(moving, "entering the region reports its scroll and fade motion");
         assert!(rail.scroll.pos > 0.0 && rail.scroll.pos < rail.scroll_target);
         assert!(rail.alpha.pos > 0.0 && rail.alpha.pos < 1.0);
@@ -419,7 +447,7 @@ mod tests {
         assert!((rail.alpha.pos - 1.0).abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
         for _ in 0..400 { rail.step_motion(None, false, 0.016); }
         assert!(rail.alpha.pos.abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(None, false, 0.016));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| rail.step_motion(None, false, 0.016));
         assert!(!moving, "a resting hidden rail requests no further animated presents");
     }
 
@@ -463,7 +491,14 @@ mod tests {
         type Init = plx_ui::fixture::FixtureArg;
         type Memory = PageMemory;
     }
-    impl LibraryLike for RailHost {
+    impl crate::registry::ScreenInputsLike for RailHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
+impl LibraryLike for RailHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
         fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
         fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
         fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
@@ -479,6 +514,7 @@ mod tests {
         let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
         let (listing, hubs) = (plx_data::stores::browse::ListingSnapshot::empty_for_test(), plx_data::stores::browse::HubsSnapshot::empty_for_test());
         let cx = Cx::<RailHost> {
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             views: NoViews { listing: listing.view(), directory, hubs: hubs.view() },
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
             focus: FocusRead::default(), owner: InputOwner::Entry(rail.entry),
@@ -584,6 +620,7 @@ mod tests {
         let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
         let (listing, hubs) = (plx_data::stores::browse::ListingSnapshot::empty_for_test(), plx_data::stores::browse::HubsSnapshot::empty_for_test());
         let cx = Cx::<RailHost> {
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             views: NoViews { listing: listing.view(), directory, hubs: hubs.view() },
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
             focus: FocusRead::default(), owner: InputOwner::Entry(rail.entry),
@@ -625,7 +662,7 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
         for _ in 0..400 { rail.step_motion(Some(0), RailHint::default().wants_rail(false), 0.016); }
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(0), false, 0.016));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| rail.step_motion(Some(0), false, 0.016));
         assert!(!moving);
         assert!(rail.alpha.pos.abs() < 0.001);
     }
@@ -673,6 +710,7 @@ mod tests {
 
         fn cx<'a>(&'a self, entry: EntryId, focus: Option<FocusKey<u32>>) -> Cx<'a, RailHost> {
             Cx::<RailHost> {
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 views: NoViews { listing: self.listing.view(), directory: plx_data::stores::browse::DirectoryView::empty_for_test(), hubs: self.hubs.view() },
                 tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
                 focus: FocusRead { current: focus, ..FocusRead::default() }, owner: InputOwner::Entry(entry),

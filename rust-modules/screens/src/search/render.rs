@@ -170,7 +170,7 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
             screen.owner_alpha.pos,
             f.cx.measure,
         );
-        if let Some(src) = screen.row_cards(H::search(f.cx), i) {
+        if let Some(src) = screen.row_cards(H::search(f.cx), i, crate::registry::captions::policy_for(H::screen_inputs(f.cx))) {
             shelf.draw(f, p, &src, frame);
         }
     }

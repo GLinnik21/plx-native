@@ -225,7 +225,12 @@ fn shown_count(lanes: &[Lane]) -> usize { lanes.iter().map(|lane| lane.shown().c
 /// Puts the deck on every lane that has not got it yet. The preview is the lane's rows. With no lane
 /// placed yet the deck is the first [`MAX_SHELF_ITEMS`] cards in merged order (what the merge of the
 /// previews showed before any ask); a lane that joins a deck already placed shows the rows that fall
-/// inside the window's span and holds the rest as lookahead or as rows behind.
+/// inside the window's span and holds the rest as lookahead or as rows behind. A deck at its head
+/// (every lane already holding it starts at the head of its listing, [`fit`]'s own test) has nothing
+/// behind it to keep the reader's place on: the joiner's cards newer than the window's first card
+/// lead it, as the merge of every listing does, and the overflow is let go from the oldest end: a full
+/// window at its head lets go of its oldest shown cards, which stay ahead as lookahead. A joiner with
+/// no rows sits at its head, so it never counts as a lane the deck has moved past.
 pub(crate) fn place(lanes: &mut [Lane], previews: &[&[CwItem]]) {
     let mut fresh = Vec::new();
     for (i, (lane, preview)) in lanes.iter_mut().zip(previews).enumerate() {
@@ -268,15 +273,20 @@ pub(crate) fn place(lanes: &mut [Lane], previews: &[&[CwItem]]) {
         take(lanes, true, MAX_SHELF_ITEMS, &vec![true; lanes.len()]);
         return;
     };
+    // The lanes that held the deck before this call, judged before the joiners are seated.
+    let at_head = lanes.iter().enumerate().filter(|(i, _)| !fresh.contains(i))
+        .all(|(_, lane)| lane.lo == 0 && !lane.has_before());
     for &i in &fresh {
         let lane = &mut lanes[i];
-        let before = lane.rows.iter().filter(|row| order(row, &first.0) == Ordering::Less).count();
+        let before = if at_head { 0 } else { lane.rows.iter().filter(|row| order(row, &first.0) == Ordering::Less).count() };
         let upto = lane.rows.iter().filter(|row| order(row, &last.0) != Ordering::Greater).count();
-        let end = lane.tail.position + 1;
+        // A joiner with no rows sits at its head: seated at its tail it would read as a lane the deck
+        // has moved past and hold the newer cards of the next joiner behind the window.
+        let end = if lane.rows.is_empty() { lane.head.position } else { lane.tail.position + 1 };
         lane.lo = lane.rows.get(before).map_or(end, |row| row.position);
         lane.hi = lane.rows.get(upto.max(before)).map_or(end, |row| row.position);
     }
-    drop_excess(lanes, true);
+    drop_excess(lanes, !at_head);
 }
 
 /// Emits up to `n` cards in merged order from the lanes marked usable; returns how many. It stops
@@ -621,6 +631,8 @@ mod tests {
 
         fn lane(&self) -> Lane {
             let mc = self.list(0, PAGE).unwrap();
+            // A server with nothing to continue keeps the default lane, as `project_deck` leaves it.
+            if mc.metadata.is_empty() { return Lane::default(); }
             let rows: Vec<CwItem> = mc.metadata.iter().enumerate()
                 .filter_map(|(i, item)| row(sid(self.slot), item, i, &[])).collect();
             let key = |item: Option<&Metadata>| item.map_or_else(String::new, |item| clean(&item.rating_key));
@@ -912,6 +924,122 @@ mod tests {
             }
         }
         assert!(merged.iter().any(|key| key.starts_with("s2-")));
+    }
+
+    /// A server's first answer lands on a deck that is already placed, as `settle_deck` runs it:
+    /// the lane is placed against the others, then the window is fitted back to its bound.
+    fn join(lanes: &mut Vec<Lane>, server: &Server) {
+        lanes.push(server.lane());
+        let none = vec![&[][..]; lanes.len()];
+        place(lanes, &none);
+        fit(lanes);
+    }
+
+    #[test]
+    fn a_lane_that_joins_a_deck_at_its_head_shows_its_newer_cards_in_front() {
+        // The household's own server answers second, and every card it holds is newer than the
+        // friend's: nobody has moved the deck, so they lead it, as the merge of both listings does.
+        let shared = Server::new(2, &viewed(3, 10, 1000));
+        let own = Server::new(1, &viewed(5, 10, 5000));
+        let mut lanes = vec![shared.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        join(&mut lanes, &own);
+        assert_eq!(keys(&lanes), sorted(&[&own, &shared]));
+        let refs: Vec<&Lane> = lanes.iter().collect();
+        assert!(!merge_deck(&refs).1, "nothing is held behind a deck nobody moved");
+        assert_eq!(lanes.iter().map(|lane| lane.lo).sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn the_arrival_order_does_not_change_the_deck_at_its_head() {
+        let shared = Server::new(2, &viewed(3, 10, 1000));
+        let own = Server::new(1, &viewed(5, 10, 5000));
+        let mut lanes = vec![own.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        join(&mut lanes, &shared);
+        assert_eq!(keys(&lanes), sorted(&[&own, &shared]));
+    }
+
+    #[test]
+    fn a_joining_lane_at_the_head_keeps_the_newest_cards_when_the_window_overflows() {
+        let shared = Server::new(2, &viewed(20, 10, 1000));
+        let own = Server::new(1, &viewed(10, 10, 5000));
+        let mut lanes = vec![shared.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        join(&mut lanes, &own);
+        let merged = sorted(&[&own, &shared]);
+        assert_eq!(keys(&lanes), merged[..MAX_SHELF_ITEMS], "the newest cards, not the oldest, fill the bound");
+        let refs: Vec<&Lane> = lanes.iter().collect();
+        let (_, before, after) = merge_deck(&refs);
+        assert!(!before, "the head of the deck has nothing before it");
+        assert!(after, "the cards past the bound are ahead");
+    }
+
+    #[test]
+    fn a_lane_that_joins_a_deck_the_reader_moved_keeps_its_newer_cards_behind() {
+        // What the head rule must not change: a window the reader has paged along stays on its
+        // cards when a server joins, and the joiner's newer cards wait behind it.
+        let shared = Server::new(2, &viewed(60, 10, 1000));
+        let own = Server::new(1, &viewed(5, 10, 9000));
+        let mut lanes = vec![shared.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        ask(&mut lanes, &[&shared], true);
+        let window = keys(&lanes);
+        join(&mut lanes, &own);
+        assert_eq!(keys(&lanes), window, "the window stands on the cards the reader was on");
+        let refs: Vec<&Lane> = lanes.iter().collect();
+        assert!(merge_deck(&refs).1, "the joiner's newer cards are held behind");
+    }
+
+    #[test]
+    fn a_server_with_nothing_to_continue_does_not_hide_the_newest_cards_of_the_one_after_it() {
+        // The friend answers, then a server whose Continue Watching is empty, then the household's own
+        // server with newer cards. The empty one holds nothing, so it must not count as a lane the
+        // deck has moved past: the own server's cards still lead it, and nothing is held behind.
+        let shared = Server::new(2, &viewed(3, 10, 1000));
+        let empty = Server::new(3, &[]);
+        let own = Server::new(1, &viewed(5, 10, 5000));
+        let mut lanes = vec![shared.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        join(&mut lanes, &empty);
+        join(&mut lanes, &own);
+        assert_eq!(keys(&lanes), sorted(&[&own, &shared, &empty]));
+        let refs: Vec<&Lane> = lanes.iter().collect();
+        assert!(!merge_deck(&refs).1, "nothing is held behind a deck nobody moved");
+        assert_eq!(lanes.iter().map(|lane| lane.lo).sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn a_server_with_nothing_to_continue_leaves_nothing_before_the_deck() {
+        let shared = Server::new(2, &viewed(3, 10, 1000));
+        let empty = Server::new(3, &[]);
+        let mut lanes = vec![shared.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        join(&mut lanes, &empty);
+        assert_eq!(keys(&lanes), sorted(&[&shared]));
+        let refs: Vec<&Lane> = lanes.iter().collect();
+        assert!(!merge_deck(&refs).1, "an empty lane is no card the window has moved past");
+        assert_eq!(lanes.iter().map(|lane| lane.lo).sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn a_full_window_at_its_head_lets_go_of_its_oldest_cards_to_the_joiners_newer_ones() {
+        // A window at the bound with nothing before it (what an ask that grew it to the bound leaves)
+        // when a server joins with k newer cards: the shown cards are the newest bound's worth, and
+        // the oldest k it showed stay ahead as lookahead.
+        let shared = Server::new(2, &viewed(60, 10, 1000));
+        let own = Server::new(1, &viewed(5, 10, 9000));
+        let mut lanes = vec![shared.lane()];
+        place(&mut lanes, &vec![&[][..]; 1]);
+        assert_eq!(keys(&lanes).len(), MAX_SHELF_ITEMS, "the premise: the window is full");
+        join(&mut lanes, &own);
+        let merged = sorted(&[&own, &shared]);
+        assert_eq!(keys(&lanes), merged[..MAX_SHELF_ITEMS], "the newest cards fill the bound");
+        let refs: Vec<&Lane> = lanes.iter().collect();
+        let (_, before, after) = merge_deck(&refs);
+        assert!(!before, "the head of the deck has nothing before it");
+        assert!(after, "the cards it let go of are ahead");
+        assert!(lanes[0].ahead() >= 5, "the friend's dropped cards stay as lookahead");
     }
 
     #[test]

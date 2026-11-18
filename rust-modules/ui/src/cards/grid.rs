@@ -326,7 +326,7 @@ impl Grid {
                 // A deliberate move is the only focus change the eye should see travel; a restore
                 // or a reconcile is adopted whole by the next tick.
                 let arrival = to.entry == self.entry && std::mem::take(&mut self.arriving) && arrived.is_some();
-                let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
+                let deliberate = arrival || matches!(by, By::Dir | By::Script | By::Pointer);
                 // the reader has moved on from what the page returned with: a deliberate move, or
                 // focus gone from the grid's cards (a header control, a BACK that walks to one)
                 if deliberate || arrived.is_none() {
@@ -459,7 +459,7 @@ impl Grid {
         if self.dormant {
             self.landing.snap(src);
         } else {
-            self.play_landing(src, sy0, lifted, dt);
+            self.play_landing(src, sy0, lifted, dt, cx.modal, cx.page_image);
         }
         if focus.is_none() && !self.landing.has_takeover() {
             self.focus_band(None, false);
@@ -521,7 +521,7 @@ impl Grid {
     /// measured under the bands the last frame DREW ([`bands_was`](Self::bands_was): a focus the reader did not
     /// move settled the caption band on another row), so the band's move plays on the landing's
     /// spring with the cards. Whether a card crossed a line break is judged under the bands that stand now.
-    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32) {
+    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32, modal: plx_machine::machine::ModalRead, page_image: plx_machine::machine::PageImageRead) {
         let scroll_moved = match self.spec.scroll {
             ScrollMode::Own => self.scroll.pos - sy0,
             ScrollMode::External => self.shift,
@@ -557,7 +557,7 @@ impl Grid {
             (r.w, r.h)
         };
         let occupy = Occupancy { slot: &slot, size };
-        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale), Some(&occupy));
+        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale), Some(&occupy), modal, page_image);
     }
 
     /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes
@@ -1322,7 +1322,7 @@ impl Grid {
                 continue;
             }
             if lifted == Some(g.key) {
-                crate::popover::set_lift_owns(true);
+                if let Some(k) = f.lifted { f.leaves_out(k.entry, k.elem); }
                 continue;
             }
             let cell = self.cell(g.was, &bands);

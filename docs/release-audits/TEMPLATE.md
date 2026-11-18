@@ -14,7 +14,7 @@ Preview the generated half against a previous release at any time:
 
 # Release audit — vX.Y.Z
 
-The evidence behind [the vX.Y.Z release note](https://github.com/GLinnik21/plx-native/blob/main/docs/release-notes/vX.Y.Z.md). Written for a webosbrew reviewer, a contributor auditing an old release, and us in a year. The section at the bottom is generated from the artifact that was published; everything above it was written by a person before the release ran.
+The evidence behind [the vX.Y.Z release note](https://github.com/plxnative/plx-native/blob/main/docs/release-notes/vX.Y.Z.md). Written for a webosbrew reviewer, a contributor auditing an old release, and us in a year. The section at the bottom is generated from the artifact that was published; everything above it was written by a person before the release ran.
 
 ## Device test evidence
 

@@ -12,12 +12,12 @@ use super::test_support::*;
 use super::test_support::{frame, tick};
 
 /// A Bridge with `n` registered servers, so Home's first tick spawns one hub request per server.
-fn hubs_rig(n: i32) -> Bridge {
+fn hubs_rig(n: i32) -> crate::app::runtime_owners::Harness {
     plx_plex::plex::reset_servers_for_test();
     for i in 0..n {
         plx_plex::plex::register_for_test(&format!("hubs-dump-{i}"), "127.0.0.1", 9 + i, "synthetic", "cid");
     }
-    Bridge::for_test(|| 0)
+    crate::app::runtime_owners::Harness::new(|| 0)
 }
 
 /// Run Home frames until `claims` hub requests are out, and return the number of the frame that
@@ -52,7 +52,8 @@ fn hold_frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, at: Tick) -> u32 {
 fn home_hubs_land_on_the_next_frame_whatever_the_worker_timing() {
     let _guard = plx_base::testlock::serial();
     for extra in [0u32, 1, 7, 400, 20_000] {
-        let mut rig = hubs_rig(1);
+        let mut owner = hubs_rig(1);
+        let mut rig = owner.bridge();
         rig.stores.landgate.arm_dump_paced(0);
         let mut d = Dispatcher::<AppHost>::new();
         crate::app::adapters::stores::with_late_hubs_launches_for_test(extra, 3, || {
@@ -76,7 +77,8 @@ fn home_hubs_land_on_the_next_frame_whatever_the_worker_timing() {
 #[test]
 fn every_hub_request_spawned_in_one_frame_lands_in_the_next() {
     let _guard = plx_base::testlock::serial();
-    let mut rig = hubs_rig(2);
+    let mut owner = hubs_rig(2);
+    let mut rig = owner.bridge();
     rig.stores.landgate.arm_dump_paced(0);
     let mut d = Dispatcher::<AppHost>::new();
     crate::app::adapters::stores::with_late_hubs_launches_for_test(5_000, 2, || {
@@ -100,7 +102,8 @@ fn a_paced_hub_landing_is_due_a_lag_after_its_request_and_not_when_the_worker_an
     const LAG: u64 = 3;
     let _guard = plx_base::testlock::serial();
     for extra in [0u32, 20_000] {
-        let mut rig = hubs_rig(1);
+        let mut owner = hubs_rig(1);
+        let mut rig = owner.bridge();
         rig.stores.landgate.arm_dump_paced(LAG);
         let mut d = Dispatcher::<AppHost>::new();
         crate::app::adapters::stores::with_late_hubs_launches_for_test(extra, 3, || {
@@ -133,7 +136,8 @@ fn a_paced_hub_landing_is_due_a_lag_after_its_request_and_not_when_the_worker_an
 #[test]
 fn without_dump_mode_the_hub_landing_still_follows_the_worker() {
     let _guard = plx_base::testlock::serial();
-    let mut rig = hubs_rig(1);
+    let mut owner = hubs_rig(1);
+    let mut rig = owner.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     crate::app::adapters::stores::with_late_hubs_launches_for_test(0, 3, || {
         let spawned = spawn_frame(&mut d, &mut rig, 1);
@@ -146,13 +150,14 @@ fn without_dump_mode_the_hub_landing_still_follows_the_worker() {
 
 /// A Bridge in controlled-Home shape (the only one whose `take_live_results` takes a discovery
 /// result), with one registered server.
-fn discovery_rig() -> Bridge {
+fn discovery_rig() -> crate::app::runtime_owners::Harness {
     plx_plex::plex::reset_servers_for_test();
     plx_plex::plex::register_for_test("discovery-dump", "127.0.0.1", 9, "synthetic", "cid");
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let rig = owner.bridge();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
-    rig.home_io = Some(crate::app::HomeIo {
+    rig.retained.home_io = Some(crate::app::HomeIo {
         replay: false,
         preferences: Default::default(),
         requests: Vec::new(),
@@ -160,20 +165,21 @@ fn discovery_rig() -> Bridge {
         failure: None,
         profile: publisher.snapshot(),
     });
-    rig
+    owner
 }
 
 #[test]
 #[should_panic(expected = "store still owes an answer")]
 fn the_controlled_home_discovery_take_waits_for_a_request_it_owes_under_dump_mode() {
     let _guard = plx_base::testlock::serial();
-    let mut rig = discovery_rig();
+    let mut owner = discovery_rig();
+    let mut rig = owner.bridge();
     // The request is held, never started: the step raised the claim and no worker will ever
     // answer.
     rig.stores.browse.borrow().observe_pin_write();
-    crate::app::adapters::stores::refill_client_keys(&mut rig.client_keys);
-    let input = plx_data::browse::BrowseRosterInput {
-        keys: &rig.client_keys, session: &plx_plex::plex::session::peek(),
+    crate::app::adapters::stores::refill_client_keys(&mut rig.retained.client_keys);
+    let input = plx_data::browse::BrowseRosterInput { tenure: 0,
+        keys: &rig.retained.client_keys, session: &plx_plex::plex::session::peek(),
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(),
         profile_key: &plx_plex::plex::session::current_profile_key(),
@@ -190,7 +196,8 @@ fn the_controlled_home_discovery_take_waits_for_a_request_it_owes_under_dump_mod
 #[test]
 fn the_controlled_home_discovery_take_does_not_wait_without_a_request() {
     let _guard = plx_base::testlock::serial();
-    let mut rig = discovery_rig();
+    let mut owner = discovery_rig();
+    let mut rig = owner.bridge();
     assert!(!rig.stores.browse.borrow().discovery_owed());
     rig.stores.landgate.arm_dump(std::time::Duration::from_millis(20));
     assert!(rig.take_live_results().is_empty());

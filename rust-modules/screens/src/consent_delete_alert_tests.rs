@@ -176,7 +176,7 @@ fn the_alert_index_mapping_is_pinned_through_a_real_press_commit() {
         clip: Rect::FULL,
         index: None,
     };
-    let seated = Focusable::<InnerHost>::seat(&page.view(), ALERT_GROUP, placed, &c);
+    let seated = Focusable::<InnerHost>::seat(&page.view(plx_machine::machine::PressRead::<u32>::default()), ALERT_GROUP, placed, &c);
     assert_eq!(seated.elem, ALERT, "a freshly opened alert seats on Cancel, element 0 — never the destructive answer");
 
     // Element 0 (Cancel) must never delete anything, driven through the real event `step`
@@ -345,10 +345,42 @@ fn reconcile_keeps_the_alerts_own_choice_when_a_stray_key_names_something_outsid
     // A stray pointer hover on some unrelated table row — exactly what `FocusEngine::set`
     // parks into the engine's persisted scope with no regard for the modal being up.
     let stray = FocusKey { entry: EntryId(1), elem: 0 };
-    let reconciled = Focusable::<InnerHost>::reconcile(&page.view(), stray, &c);
+    let reconciled = Focusable::<InnerHost>::reconcile(&page.view(plx_machine::machine::PressRead::<u32>::default()), stray, &c);
     assert_eq!(
         reconciled,
         FocusKey { entry: EntryId(1), elem: ALERT + 1 },
         "reconcile must keep focus on the alert's OWN current choice (Destructive), not reset it to Cancel"
     );
+}
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **While the delete alert is open its two answers are the page's only elements**: `alert.cancel` and
+/// `alert.delete`, listed for the alert's group and found by their paths, and the table's rows answer
+/// nothing until it closes.
+#[test]
+fn the_open_delete_alert_answers_its_two_buttons_alone() {
+    use plx_ui::a11y::Role;
+    let _g = plx_base::testlock::serial();
+    let m = FixtureMeasure;
+    let c = test_cx(&m);
+    let (mut out, mut present) = sink();
+    let mut page = ConsentPage::settings(EntryId(1), &c, &mut mk_fx(&mut out, &mut present));
+    let delete_row = page.key_of(RowId::Delete);
+    page.row_commit(delete_row, &mut mk_fx(&mut out, &mut present));
+    assert!(page.alert.is_open());
+    plx_ui::a11y::conformance::<InnerHost, _>(&page, &c);
+    let mut keys = Vec::new();
+    Focusable::<InnerHost>::a11y_elems(&page, ALERT_GROUP, &c, &mut keys);
+    assert_eq!(keys, [ALERT, ALERT + 1]);
+    for (key, id) in [(ALERT, "alert.cancel"), (ALERT + 1, "alert.delete")] {
+        let a = Focusable::<InnerHost>::a11y(&page, &key, &c).expect("an answer projects");
+        let want = A11yPath::parse_relative(id).unwrap();
+        assert_eq!((a.path.clone(), a.role), (want.clone(), Role::Button));
+        assert_eq!(Focusable::<InnerHost>::a11y_find(&page, &want, &c), Some(key));
+    }
+    assert!(Focusable::<InnerHost>::a11y(&page, &delete_row, &c).is_none(), "a row under the alert is no element");
+    let mut rows = Vec::new();
+    Focusable::<InnerHost>::a11y_elems(&page, TABLE_GROUP, &c, &mut rows);
+    assert!(rows.is_empty(), "the table's group is not listed while the alert holds focus");
 }

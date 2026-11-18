@@ -21,6 +21,7 @@ use plx_machine::machine::{
     Machine, Measure, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::route_screen::{RouteGround, RouteLayout};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind,
@@ -101,12 +102,8 @@ fn table_frame(measure: &dyn Measure) -> Rect {
 /// The artwork follows the measured route narrative. A wrapped translated title must not
 /// collide with a fixed poster origin; artwork may scale to fit, while the text keeps its roles.
 fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Measure) -> Rect {
-    let text = layout.narrative_copy_frame(true, title, layout.action.y, measure);
-    let copy_h = plx_ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
-        .with_measure(measure)
-        .leading(theme::size::LABEL as f32 + theme::space::XS)
-        .max_lines(12)
-        .measure_h(text.w);
+    let text = layout.copy_text_frame(true, title, layout.action.y, measure);
+    let copy_h = RouteLayout::copy_view(copy, theme::TEXT_READING).with_measure(measure).measure_h(text.w);
     // The preview hangs one LG under the copy's block (never above its own slot): a single
     // `bottom + gap`, not a stack.
     let top = PV.y.max(text.y + copy_h + theme::space::LG);
@@ -246,7 +243,7 @@ impl FilmographyScreen {
             tabs: TabStrip::new(),
             tab_hscroll: Spring::at(0.0),
             pop: widgets::CtlPop::new(),
-            table: TableView::new(),
+            table: TableView::page(),
             model: Vec::new(),
             dirty: true,
             tab_c: Vec::new(),
@@ -472,7 +469,7 @@ impl FilmographyScreen {
     }
 
     /// The department strip — capsules and pills — inside the caller's clip.
-    fn draw_tabs(&self, p: plx_ui::Painter, measure: &dyn Measure) {
+    fn draw_tabs<K: Copy>(&self, p: plx_ui::Painter, measure: &dyn Measure, press: plx_machine::machine::PressRead<K>) {
         widgets::draw_strip(
             p,
             &self.tabs,
@@ -481,7 +478,7 @@ impl FilmographyScreen {
             PILL_H,
             self.tab_hscroll.pos,
             TabGround::Plated {
-                pop: self.pop.scale(0),
+                pop: self.pop.scale_with(0, press),
             },
         );
     }
@@ -685,7 +682,7 @@ impl FilmographyScreen {
             .painter
             .translate((1.0 - f.page_alpha) * SCR_W, 0.0)
             .alpha(f.page_alpha);
-        self.ground.draw_host(p);
+        if self.ground.draw_host(p) { f.request_frame(); }
         self.ground_ready = opaque_ground_ready(f.page_alpha);
         let layout = route_layout(f.measure);
         let total: usize = self.model.iter().map(|d| d.total).sum();
@@ -696,7 +693,6 @@ impl FilmographyScreen {
             Some(&self.name),
             title,
             &copy,
-            theme::size::LABEL,
             f.measure,
         );
 
@@ -712,7 +708,7 @@ impl FilmographyScreen {
             // Capsules and pills through ONE scroll offset (issue 14): the capsules used to be
             // drawn here in content space through this un-scrolled painter while the pills were
             // laid out already scrolled, so a scrolled row showed the focus plate off its label.
-            self.draw_tabs(p, f.measure);
+            self.draw_tabs(p, f.measure, f.press);
             p.clip_clear();
 
             if self.tab_hscroll.pos > 0.5 {
@@ -947,6 +943,43 @@ impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
             .unwrap_or_else(|| self.selected_tab());
         self.focus_key(Located::Tab(i))
     }
+
+    /// `filmography.tab.<i>` (a department's pill, by its position) and `filmography.row.<i>` (a
+    /// credit of the open department, by its position). A credit's subject is the ratingKey of the
+    /// copy a server holds, when it has one.
+    fn a11y(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        match self.locate(*key)? {
+            Located::Tab(i) => {
+                let department = self.model.get(i)?;
+                Some(A11y::new(A11yPath::new().name("tab").index(i), A11yRole::Tab).with_label(department.title.as_str()))
+            }
+            Located::Row(i) => {
+                let credit = self.rows().get(i)?;
+                let a = A11y::new(A11yPath::new().name("row").index(i), A11yRole::Row).with_label(credit.title.as_str());
+                Some(match &credit.local {
+                    Some((_, rk)) => a.with_subject(rk.as_str()),
+                    None => a,
+                })
+            }
+        }
+    }
+
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == TAB_GROUP {
+            out.extend((0..self.model.len()).filter_map(|i| self.elem_for_tab(i)));
+        } else if g == LIST_GROUP {
+            out.extend((0..self.rows().len()).filter_map(|i| self.elem_for_row(i)));
+        }
+    }
+
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("tab")), Some(Seg::Index(i)), None) => self.elem_for_tab(i),
+            (Some(Seg::Name("row")), Some(Seg::Index(i)), None) => self.elem_for_row(i),
+            _ => None,
+        }
+    }
 }
 
 impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
@@ -1043,6 +1076,10 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
         // The test manifest intentionally records this opaque modal as route=person.
         super::registry::word::PERSON
     }
+    /// Its own id namespace: `name()` is the word `Person` shares, and an id names its owner.
+    fn a11y_ns(&self) -> &'static str {
+        "filmography"
+    }
 
     fn state(&self) -> &dyn LogicalState {
         self
@@ -1088,7 +1125,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{
@@ -1105,6 +1142,9 @@ mod tests {
         type Views<'a> = plx_data::person::PersonView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
+    }
+    impl crate::registry::ScreenInputsLike for FilmographyHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
     }
     impl PersonLike for FilmographyHost {
         fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
@@ -1165,7 +1205,7 @@ mod tests {
     #[test]
     fn a_fresh_filmography_reads_only_the_person_view_it_is_given() {
         let mut first = plx_data::stores::person::PersonStore::default();
-        first.run(plx_data::stores::person::PersonCmd::Open {
+        crate::registry::run_person_fixture(&mut first, plx_data::stores::person::PersonCmd::Open {
             sid: ServerId::UNSET, key: "person".into(), guid: "guid".into(),
             name: "First owner".into(), thumb: String::new(),
         });
@@ -1204,6 +1244,7 @@ mod tests {
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(focus.map_or(EntryId(0), |k| k.entry)),
         }
@@ -1271,13 +1312,13 @@ mod tests {
     #[test]
     fn a_wrapped_filmography_heading_keeps_the_preview_below_its_copy_and_inside_safe_bounds() {
         let measure = FixtureMeasure;
-        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle";
+        // long enough to wrap at the route title's rung and push the preview off its fixed origin
+        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle";
         let copy = "12 credits";
         let layout = RouteLayout::screen_for_title(COPY_W, RouteLayout::screen().content.w, title, &measure);
         let frame = preview_frame(layout, title, copy, &measure);
-        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
-        let copy_h = plx_ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
-            .with_measure(&measure).leading(theme::size::LABEL as f32 + theme::space::XS).measure_h(text.w);
+        let text = layout.copy_text_frame(true, title, layout.action.y, &measure);
+        let copy_h = RouteLayout::copy_view(copy, theme::TEXT_READING).with_measure(&measure).measure_h(text.w);
         assert!(frame.y >= text.y + copy_h + theme::space::LG);
         assert!(frame.y > PV.y, "the old fixed origin overlaps this expanded title");
         assert!(plx_ui::consts::inside_safe(frame));
@@ -1340,7 +1381,7 @@ mod tests {
                 }
                 scrolled = scrolled.max(s.tab_hscroll.pos);
                 let log = plx_ui::draw_census::capture(|| {
-                    s.draw_tabs(plx_ui::Painter::recording(), &measure);
+                    s.draw_tabs(plx_ui::Painter::recording(), &measure, plx_machine::machine::PressRead::<()>::default());
                 });
                 if frame < 39 {
                     continue;
@@ -1520,6 +1561,7 @@ mod tests {
                         assert!(!has_content(&out, |_| true));
                     }
                     PressEvent::Commit(_, _, _) => commits += 1,
+                    PressEvent::PageDamage => {}
                 }
             }
         }
@@ -1803,12 +1845,56 @@ mod tests {
             let _guard = language_on_this_thread_for_test(language);
             let mut section = Section::new("");
             section.rows = credits.iter().map(|c| credit_row(c, c.local.as_ref().map(|_| "home-server".to_string()))).collect();
-            let mut table = TableView::new();
+            let mut table = TableView::page();
             table.tall_rows(true);
             table.set_sections(vec![section], 0, false);
             out.extend(table.app_fit_failures(w, language.tag()));
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The accessibility ids:** the screen answers its own namespace (`filmography`, not the
+    /// `person` word it shares), the department pills `tab.<i>` and the open department's credits
+    /// `row.<i>`; a credit a server holds carries that copy's ratingKey as its subject, and the
+    /// view conforms.
+    #[test]
+    fn tabs_and_rows_answer_their_ids_and_conform() {
+        assert!(!filmography_conforms().is_empty());
+    }
+
+    /// The Filmography page over two departments, run through the id conformance with the id asserts
+    /// above (`ContentArg::Filmography`; the coverage table calls this, and so does the test above).
+    pub(crate) fn filmography_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
+        let mut namespaces = Vec::new();
+        use plx_ui::a11y::{A11yPath, Role};
+        let serial = plx_base::testlock::serial();
+        let mut s = screen(7, &serial);
+        let measure = FixtureMeasure;
+        let c = cx(&measure, None);
+        assert_eq!(Screen::<FilmographyHost>::a11y_ns(&s), "filmography");
+        namespaces.push(conform::<FilmographyHost, _>(&s, &c));
+
+        let find = |text: &str| Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative(text).unwrap(), &c);
+        assert_eq!(find("tab.0"), s.elem_for_tab(0));
+        assert_eq!(find("tab.1"), s.elem_for_tab(1));
+        assert_eq!(find("tab.2"), None, "two departments");
+        assert_eq!(find("row.39"), s.elem_for_row(39));
+        assert_eq!(find("row.40"), None, "forty credits in Actor");
+        let row = Focusable::<FilmographyHost>::a11y(&s, &find("row.3").unwrap(), &c).unwrap();
+        assert_eq!(row.role, Role::Row);
+        assert_eq!(row.label.as_deref(), Some("Film 3"));
+        assert_eq!(row.subject, None, "no copy on a server");
+
+        s.department = "Writer".to_string();
+        s.sync_keys(); // re-indexes the open department's credits
+        s.sync_rows(0, false);
+        namespaces.push(conform::<FilmographyHost, _>(&s, &c));
+        let first = Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative("row.0").unwrap(), &c).unwrap();
+        let written = Focusable::<FilmographyHost>::a11y(&s, &first, &c).unwrap();
+        assert_eq!(written.subject.as_deref(), Some("77"), "the held copy's ratingKey");
+    
+        namespaces
     }
 }
 
@@ -1825,22 +1911,15 @@ mod preview_gap_tests {
         let layout = RouteLayout::screen();
         let measure = FixtureMeasure;
         let title = "A Title";
-        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
+        // the copy's drawn text frame (`draw_narrative` lowers it by the copy's cap drop)
+        let text = layout.copy_text_frame(true, title, layout.action.y, &measure);
         let long = "word ".repeat(400);
-        let long_h = plx_ui::text_view::TextView::new(&long, theme::size::LABEL, theme::TEXT_READING)
-            .with_measure(&measure)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .measure_h(text.w);
+        let long_h = RouteLayout::copy_view(&long, theme::TEXT_READING).with_measure(&measure).measure_h(text.w);
         let long_top = preview_frame(layout, title, &long, &measure).y;
         assert!(long_top > PV.y, "a tall copy pushes the preview below its slot");
         assert!((long_top - (text.y + long_h + theme::space::LG)).abs() < 1e-3);
         // A short copy hangs the same LG under its own (shorter) block, and never above the slot.
-        let short_h = plx_ui::text_view::TextView::new("x", theme::size::LABEL, theme::TEXT_READING)
-            .with_measure(&measure)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .measure_h(text.w);
+        let short_h = RouteLayout::copy_view("x", theme::TEXT_READING).with_measure(&measure).measure_h(text.w);
         let short_top = preview_frame(layout, title, "x", &measure).y;
         assert!(short_top >= PV.y && short_top < long_top);
         assert_eq!(short_top, PV.y.max(text.y + short_h + theme::space::LG));

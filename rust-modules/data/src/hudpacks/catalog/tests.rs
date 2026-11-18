@@ -273,7 +273,7 @@ fn boot_never_dials_and_a_crash_during_get_keeps_the_persisted_attempt_backoff()
     );
     let record = match &fx[0] {
         CatalogEffect::Write { record, .. } => record.clone(),
-        _ => panic!("attempt persisted before network"),
+        CatalogEffect::Read { .. } | CatalogEffect::Get { .. } | CatalogEffect::Refused { .. } => panic!("attempt persisted before network"),
     };
     fx.clear();
     catalog.step(

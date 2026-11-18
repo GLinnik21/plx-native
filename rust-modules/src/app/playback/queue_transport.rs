@@ -1,8 +1,13 @@
 //! Explicit queue navigation and Up Next share one stop → resolve → start ritual.
 use super::*;
-use plx_media::route::{previous_restarts, queue_neighbor, QueueStep};
+use plx_media::route::{queue_neighbor, QueueStep};
 use plx_plex::plex::QueueRow;
 
+/// Previous and Next both ask for the neighbouring queue row and play it through [`play`]; neither
+/// is ever a seek. The outgoing episode is stopped by the replacement itself
+/// (`stop_for_replacement` → `final_report`), which reports the playhead it really reached, so its
+/// resume point survives the step. Restarting the current episode is `from_beginning` (the Info
+/// tab's action, and a More-menu row in a package that folds it), not a Previous.
 pub(super) fn step(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
@@ -10,12 +15,6 @@ pub(super) fn step(
     pages: &mut plx_ui::dispatch::Dispatcher<super::super::bridge::AppHost>,
     bridge: &mut super::super::bridge::Bridge,
 ) {
-    if direction == QueueStep::Previous && previous_restarts(plx_media::player::intended_pos_ns(ps))
-    {
-        request_seek(ps, pa, 0);
-        resume_if_paused(ps, pa);
-        return;
-    }
     let Some(row) = queue_neighbor(ps, direction) else {
         return;
     };

@@ -71,6 +71,7 @@ fn submit_shared<R: Send + 'static>(
     start: impl FnOnce() -> Result<Executor, std::io::Error>,
     operation: impl FnOnce() -> R + Send + 'static,
 ) -> Result<TypedTicket<R>, SubmitError> {
+    crate::step::assert_io_allowed("storage_worker::submit");
     // This lock protects queue construction/admission only, never a callback or disk I/O.
     // The worker releases it before taking session::IO (whose nested order is IO -> CACHE).
     let mut slot = shared.lock().unwrap_or_else(|error| error.into_inner());
@@ -96,6 +97,7 @@ static RETAINED: Mutex<Retained> = Mutex::new(Retained {
 
 pub fn submit_retained<R: Send + 'static>(operation: impl FnOnce() -> R + Send + 'static)
     -> TypedTicket<R> {
+    crate::step::assert_io_allowed("storage_worker::submit_retained");
     let (reply, result) = mpsc::channel();
     let (done, worker) = mpsc::channel();
     let job: Job = Box::new(move || {
@@ -109,6 +111,7 @@ pub fn submit_retained<R: Send + 'static>(operation: impl FnOnce() -> R + Send +
 }
 
 pub fn pump_retained() {
+    crate::step::assert_io_allowed("storage_worker::pump_retained");
     pump_retained_locked(&mut RETAINED.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
@@ -169,6 +172,7 @@ impl Executor {
         &self,
         operation: impl FnOnce() -> R + Send + 'static,
     ) -> Result<TypedTicket<R>, SubmitError> {
+        crate::step::assert_io_allowed("storage_worker::Executor::submit");
         let (reply, result) = mpsc::channel();
         let job: Job = Box::new(move || {
             let _ = reply.send(operation());
@@ -275,6 +279,7 @@ impl<C: Send + 'static, R: Send + 'static> Writer<C, R> {
         command: C,
         tx: mpsc::Sender<R>,
     ) -> Result<(), SubmitErrorGeneric<C>> {
+    crate::step::assert_io_allowed("storage_worker::Writer::submit");
         match self.sender.try_send((command, tx)) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full((command, _))) => Err(SubmitErrorGeneric::Full(command)),

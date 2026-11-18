@@ -41,9 +41,7 @@ fn base_root_inputs() -> RootInputs {
 
 /// Build `inputs` through the real [`root_form`] and collect the app-owned findings.
 fn overflowing_root(tag: &str, inputs: &RootInputs, out: &mut Vec<String>) {
-    let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
-    form.table.compact = false;
-    form.table.board_metrics(true); // as `RootPage::rebuild` draws it
+    let mut form = FormTable::<RootId, Action, SettingsPage>::page(super::super::registry::BAND);
     form.set(root_form(inputs), None);
     overflowing(tag, &form.table, out);
 }
@@ -55,8 +53,8 @@ fn every_settings_row_fits_its_column_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory).form.table, &mut out);
-        overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
+        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory, &crate::registry::capture_fixture()).form.table, &mut out);
+        overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0), &crate::registry::capture_fixture()).form.table, &mut out);
         // The Diagnostics page's Export row reads `trace_label(status)`: every status, through the
         // page's own constructor (the table it draws), not a table of the test's own.
         for status in ALL_TRACE_STATUSES {
@@ -144,7 +142,7 @@ fn the_shipped_measure_sums_whole_pixel_advances_like_the_device() {
 fn the_restart_hint_fits_the_language_narrative_in_every_language() {
     use plx_ui::text_view::TextView;
     use plx_ui::widgets::KeyHint;
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);

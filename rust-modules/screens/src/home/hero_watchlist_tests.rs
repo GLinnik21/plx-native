@@ -258,7 +258,7 @@ fn hero_runs(s: &mut HomeScreen, view: HubsView<'_>, slot: Option<usize>) -> Vec
     let env = s.env(0.0);
     plx_gfx::text::capture_text_runs_for_test(|| {
         let focus = slot.map(Located::Hero);
-        s.draw_hero_actions(hero, &env, Painter::recording(), 0.0, true, 0.5, focus, &plx_ui::fixture::FixtureMeasure, 1.0);
+        s.draw_hero_actions(hero, &env, Painter::recording(), 0.0, true, 0.5, focus, &plx_ui::fixture::FixtureMeasure, Default::default());
     })
 }
 

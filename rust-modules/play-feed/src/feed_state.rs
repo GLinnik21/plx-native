@@ -99,6 +99,24 @@ pub(crate) struct SegmentPlay {
     pub waiting_since: Option<u32>,
 }
 
+/// What the progressive hold keeps between ticks (`feed_pump::maybe_begin_progressive_rebuffer`):
+/// the clock-debt detector's state, the native position callback it was last stepped with, and the
+/// number of holds this Engine has begun (the `n` of the hold and resume lines).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProgressiveHoldWatch {
+    pub debt: plx_playback_contract::clock_debt::ClockDebt,
+    /// `FEED_SHARED.dg_pos_ticks` as of the last step: the detector steps once per native callback.
+    pub seen_pos_ticks: u32,
+    pub holds: u32,
+}
+
+impl ProgressiveHoldWatch {
+    /// Something stopped the clock on purpose, or a hold began: forget the debt.
+    pub fn reset(&mut self) {
+        self.debt = plx_playback_contract::clock_debt::ClockDebt::Ineligible;
+    }
+}
+
 /// MAIN-THREAD-CONFINED. No worker thread ever names an Engine field.
 pub struct Engine {
     /// Physical callback mailbox for this feed executor; common owns its lifetime and reset.
@@ -134,6 +152,9 @@ pub struct Engine {
     /// The post-seek keyframe has installed its segment but has not yet been accepted by
     /// Starfish. Native presentation callbacks remain fenced until that exact AU returns `O`.
     pub presentation_rearm_pending: bool,
+    /// The progressive hold's clock-debt detector and its hold count: stepped by the pump's begin
+    /// decision, named by the resume line.
+    pub progressive_hold: ProgressiveHoldWatch,
     pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
     pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
     /// Fed pts of the AU that opened this timeline's audio — the one the demuxer marked as its

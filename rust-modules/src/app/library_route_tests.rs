@@ -194,13 +194,13 @@ fn run(rows: Vec<Row>) {
 
 /// The Collections page's own listing answered: `n` collections.
 fn collections_answered(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_collections_for_test(12);
     w.frames(40);
 }
 
 /// The Collections page's listing answered, with the first-letter counts the rail is made of.
 fn collections_lettered(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 6), ("M", 6)]);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 6), ("M", 6)]);
     collections_answered(w);
 }
 
@@ -208,13 +208,13 @@ fn collections_lettered(w: &mut World) {
 fn members_answered(w: &mut World) {
     let sid = w.own;
     let items: Vec<_> = (0..9).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("m{i}"), title: format!("Movie {i}"), ..Default::default() }).collect();
-    w.bridge.stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
+    w.bridge.bridge().stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
     w.frames(40);
 }
 
 /// The server's answer to a filter: `n` of the library's films remain.
 fn films_answered<const N: usize>(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(N);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(N);
     w.frames(30);
 }
 
@@ -331,12 +331,12 @@ fn the_crumb_root_pops_to_the_library_and_up_from_it_is_the_movies_pill() {
 /// Eleven Movie libraries: the header names the first two and folds the rest behind "+N".
 fn many_libraries(w: &mut World) {
     {
-        let mut browse = w.bridge.stores.browse.borrow_mut();
+        let mut browse = w.bridge.stores().browse.borrow_mut();
         for k in 0..9 {
             browse.append_section_for_test(k % 2, 10 + k as i64, &format!("Extra library number {k} of the household"), SecKind::Movie);
         }
     }
-    w.bridge.refresh_browse_directory();
+    w.bridge.bridge().refresh_browse_directory();
     w.open_library();
     w.climb_into_header();
     let (names, folded) = w.library().probe_names();
@@ -352,7 +352,7 @@ fn the_pick_kept_the_favorite_shortcuts(w: &mut World) -> Vec<String> {
     if visible != [0, 4, 2] || folded != [6, 8, 10, 12] {
         fails.push(format!("temporary selection moved the favorite prefix: {visible:?}, folded {folded:?}"));
     }
-    if w.bridge.stores.browse.borrow().current_for_test() != 2 { fails.push("the selected non-favorite is not on view".into()); }
+    if w.bridge.bridge().stores.browse.borrow().current_for_test() != 2 { fails.push("the selected non-favorite is not on view".into()); }
     if here(w) != "header:name2" { fails.push(format!("focus missed the selected pill: {}", here(w))); }
     if w.d.surface_up() { fails.push("the menu is still up".into()); }
     fails
@@ -363,7 +363,7 @@ fn nothing_was_picked(w: &mut World) -> Vec<String> {
     let visible: Vec<usize> = names.iter().map(|(_, section)| *section).collect();
     let mut fails = Vec::new();
     if visible != [0, 4] || folded != [6, 8, 10, 12] { fails.push(format!("the fold changed: names {visible:?}, list {folded:?}")); }
-    let current = w.bridge.stores.browse.borrow().current_for_test();
+    let current = w.bridge.bridge().stores.browse.borrow().current_for_test();
     if current != 0 { fails.push(format!("the store left library 0 for {current}")); }
     fails
 }
@@ -448,40 +448,96 @@ fn the_plus_n_list_and_sort_filter_both_lift_their_opener() {
     ]);
 }
 
-/// **The opener pill is painted AFTER the panel, in the real dispatcher draw** (design review S12,
-/// code review R1/R3): with Library Sort & Filter open, every text run the frame draws is
-/// censused (`record_walk` makes the root painters record: no GL), and the pill's run must come
-/// later than the panel's rows, the order that lets the glass grow out from under a pill that does
-/// not change. The page pass leaves the pill out (`DrawFrame::lifted`), so the lift pass is its
-/// ONLY copy. Red while the lift lived in the application's page closure: the dispatcher's own
-/// draw (this test, and a surfaces-only plan) painted the panel and never the pill.
+/// **The opener pill is the lift's ALONE, painted AFTER the panel, and the glass CONSUMES it, in the
+/// real dispatcher draw** (design review S12, code review R1/R3; owner decision 2026-11-17, which
+/// reverses S12's "the opener is never part of the morph"). With Library Sort & Filter pressed, every
+/// frame from the press to the menu's removal is drawn and its text runs censused (`record_walk`
+/// makes the root painters record: no GL). The page pass leaves the pill out (`DrawFrame::lifted`),
+/// so on every frame the menu owns it the lift pass is its ONLY copy, and it paints it at the
+/// morph's `opener_alpha`:
+/// - a frame that paints it paints it ONCE, at exactly that alpha, and AFTER every panel row the
+///   frame also drew (the order that lets the glass grow out from under a pill that does not
+///   change: the mount frames, which draw the rows before the glass has risen over them);
+/// - the glass consumes the pill on the way in (it fades through the first frames and is absent
+///   from the one that is no longer lifted at all) and the pill is never drawn beside rows that
+///   are visible, so a settled menu has NO pill (`opener_alpha` 0: the lift paints nothing) and
+///   the pill's ghost is not left under or over the panel;
+/// - it comes back as the droplet drains into it (non-decreasing alpha on the way out), and once
+///   the surface is gone the page draws it again, once, whole.
+///
+/// Red while the lift lived in the application's page closure: the dispatcher's own draw (this
+/// test, and a surfaces-only plan) painted the panel and never the pill. The settled frame used to
+/// be the one this test read, asserting the pill drawn once after the panel; under the droplet the
+/// settled frame has no pill by design, so the order is read on the mount frames and the
+/// consumption on the settled ones.
 #[test]
-fn the_sort_filter_pill_is_painted_after_the_panel_in_the_dispatchers_own_draw() {
-    use plx_ui::frame::backdrop::Z;
+fn the_sort_filter_pill_is_the_lifts_alone_after_the_panel_and_the_glass_consumes_it() {
     let mut w = World::movies_library("route-sort-lift-order", false);
     w.climb_into_header();
     header_stop(&mut w, "collections");
-    for (key, at) in [(Key::Right, "header:recommended"), (Key::Right, "header:sort"), (Key::Ok, "menu:unwatched")] {
+    for (key, at) in [(Key::Right, "header:recommended"), (Key::Right, "header:sort")] {
         w.press(key);
         w.frames(30);
         assert_eq!(here(&w), at, "premise: {key:?} lands on {at}");
     }
-    assert!(w.d.lifted_opener().is_some(), "premise: the menu names the pill as its lifted opener");
-    let mut glass = plx_ui::frame::glass::GlassPlan::new();
-    let sources = glass.sources.clone();
-    sources.borrow_mut().begin(w.d.backdrop_layers(1.0));
-    let words = plx_ui::draw_census::capture_text(|| {
-        let _declarations = plx_ui::frame::backdrop::discover(sources.clone());
-        w.d.draw_with_glass_below(&mut w.bridge, &mut glass, true, Z::ALL);
-    });
-    let words: Vec<&str> = words.iter().map(|(s, _)| s.as_str()).collect();
-    let at = |word: &str| words.iter().position(|w| *w == word);
     // The control draws its criterion and never its name ("Sort & Filter"): the pill's run is "Title".
-    let pills: Vec<usize> = (0..words.len()).filter(|i| words[*i] == "Title").collect();
-    let (panel_first, panel_last) = (at("SORT").expect("the panel drew its Sort section"), at("Genre").expect("…and its last Filter row"));
-    assert_eq!(pills.len(), 1, "the pill is drawn once, by the lift (the page pass left it out): {words:?}");
-    assert!(pills[0] > panel_last && panel_first < panel_last,
-        "the pill's run ({}) comes after the panel's rows ({panel_first}..={panel_last}): {words:?}", pills[0]);
+    // The panel's rows run from its "SORT" section to the last "Genre" row.
+    let frame = |w: &mut World| {
+        let runs = w.drawn().runs;
+        let pills: Vec<f32> = runs.iter().filter(|r| r.text == "Title").map(|r| r.ink[3]).collect();
+        let pill_at = runs.iter().position(|r| r.text == "Title");
+        let last_row = runs.iter().rposition(|r| r.text == "Genre");
+        let rows_alpha = runs.iter().find(|r| r.text == "SORT").map(|r| r.ink[3]);
+        let lifted = w.d.lifted_opener().is_some();
+        // what the surface says it leaves of its opener (`Screen::opener_alpha`), the alpha the lift paints at
+        let owed = w.d.nav.modals.surfaces.iter().find_map(|s| s.entry.inst.as_ref().map(|i| i.screen.opener_alpha()));
+        (pills, pill_at, last_row, rows_alpha, lifted, owed)
+    };
+    #[derive(Default)]
+    struct Tally { ordered: u32, fading: u32, consumed: u32, lifted: u32, back_on_page: u32 }
+    let mut tally = Tally::default();
+    let mut fell = Vec::new();
+    let mut check = |w: &mut World, leg: &str, n: u32| {
+        let (pills, pill_at, last_row, rows_alpha, lifted, owed) = frame(w);
+        let owed = if lifted { owed.unwrap_or(1.0) } else { 1.0 };
+        assert!(pills.len() <= 1, "{leg} frame {n}: the pill is drawn at most once (the lift is its only copy): {pills:?}");
+        assert_eq!(!pills.is_empty(), owed > 0.0, "{leg} frame {n}: drawn iff the glass leaves any of it (alpha {owed}, drawn {pills:?})");
+        if lifted { tally.lifted += 1 } else if !pills.is_empty() { tally.back_on_page += 1 }
+        if let Some(&alpha) = pills.first() {
+            assert!((alpha - owed).abs() < 1e-3, "{leg} frame {n}: the lift paints it at the morph's alpha ({alpha} vs {owed})");
+            if (0.001..0.999).contains(&alpha) { tally.fading += 1; }
+            if let (Some(at), Some(row)) = (pill_at, last_row) {
+                assert!(at > row, "{leg} frame {n}: the pill's run ({at}) comes after the panel's rows (..={row})");
+                tally.ordered += 1;
+            }
+            assert!(rows_alpha.is_none_or(|a| a < 0.5), "{leg} frame {n}: the pill is drawn beside visible rows ({rows_alpha:?})");
+        } else if lifted && rows_alpha.is_some_and(|a| a > 0.999) {
+            tally.consumed += 1;
+        }
+        fell.push((leg.to_string(), n, owed));
+    };
+    // OPEN: the press, the mount, the glass rising over the pill, the settled menu
+    w.tap(Key::Ok, 0);
+    check(&mut w, "open", 0);
+    for n in 1..70 { w.step(vec![]); check(&mut w, "open", n); }
+    assert!(w.d.lifted_opener().is_some(), "premise: the menu names the pill as its lifted opener");
+    // CLOSE: the droplet drains into the pill, the surface is removed, the page draws it again
+    w.tap(Key::Back, 0);
+    check(&mut w, "close", 0);
+    for n in 1..70 { w.step(vec![]); check(&mut w, "close", n); }
+    assert!(tally.lifted > 20, "the lift owned the pill on {} frames", tally.lifted);
+    assert!(tally.ordered >= 1, "a frame drew the pill AND panel rows, so the order was read");
+    assert!(tally.fading >= 2, "the pill fades out as the glass consumes it, and back in as the droplet drains into it: {} frames", tally.fading);
+    assert!(tally.consumed >= 10, "a settled menu draws its rows and no pill: {} frames", tally.consumed);
+    assert!(tally.back_on_page >= 1, "once the menu is gone the page draws the pill again");
+    // the glass consumes the pill on the way in and returns it on the way out
+    let alphas = |leg: &str| fell.iter().filter(|(l, _, _)| l == leg).map(|(_, _, a)| *a).collect::<Vec<f32>>();
+    let (open, close) = (alphas("open"), alphas("close"));
+    let first_zero = open.iter().position(|a| *a <= 0.0).expect("the glass consumes the pill");
+    assert!(open[..first_zero].windows(2).all(|p| p[1] <= p[0] + 1e-4), "the pill only fades out on the way in: {open:?}");
+    let last_zero = close.iter().rposition(|a| *a <= 0.0).expect("the pill is consumed until the droplet drains into it");
+    assert!(close[last_zero..].windows(2).all(|p| p[1] + 1e-4 >= p[0]), "the pill only comes back on the way out: {close:?}");
+    assert!(close.last().is_some_and(|a| *a >= 1.0), "and it ends whole: {close:?}");
 }
 
 /// **A library the server says has no collections has no Collections stop** (the rig's probe is
@@ -524,7 +580,7 @@ fn with_genres(w: &mut World) {
     w.climb_into_header();
     header_stop(w, "collections");
     let genre = |id: &str, title: &str| GenreEntry { id: id.into(), title: title.into() };
-    w.bridge.stores.browse.borrow_mut().seed_query_choices_for_test(Vec::new(), vec![genre("g1", "Drama"), genre("g2", "Comedy")]);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_query_choices_for_test(Vec::new(), vec![genre("g1", "Drama"), genre("g2", "Comedy")]);
     w.frames(30);
 }
 
@@ -581,7 +637,7 @@ fn a_filter_shows_n_of_m_beside_the_control_and_clears_when_reset() {
 
 /// 120 films in four letters of thirty: A, C, M and Z. The other twenty-two letters have no title.
 fn lettered(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 30), ("C", 30), ("M", 30), ("Z", 30)]);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 30), ("C", 30), ("M", 30), ("Z", 30)]);
     w.open_library();
     w.climb_into_header();
     header_stop(w, "collections");
@@ -781,13 +837,13 @@ fn the_recommended_pages_first_hubs_land_while_the_press_that_opened_it_still_sp
         assert!(frames < 90, "premise: OK on the Recommended control opened the page, the top page is {}", top(&w));
     }
     assert!(w.d.input.press.is_live(), "premise: the press that opened the page is still springing back");
-    assert_ne!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
+    assert_ne!(w.bridge.retained().section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
         "premise: nothing is committed for the page yet");
     // The worker's answer arrives, staged behind the gate.
-    w.bridge.stores.browse.borrow_mut().stage_shelves_for_test(0);
+    w.bridge.bridge().stores.browse.borrow_mut().stage_shelves_for_test(0);
     w.frames(2);
     assert!(w.d.input.press.is_live(), "premise: the press has not rested yet");
-    assert_eq!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
+    assert_eq!(w.bridge.retained().section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
         "the first hubs are committed while the press springs, so the page leaves its spinner");
 }
 
@@ -799,17 +855,17 @@ fn the_recommended_pages_first_hubs_land_while_the_press_that_opened_it_still_sp
 #[test]
 fn the_recommended_page_prints_the_librarys_fingerprint_on_a_shelf_card() {
     let mut w = World::recommended("rec-fingerprint");
-    let probe = |w: &World| content_probe(&w.d, &w.bridge);
-    let on_a_card = probe(&w);
+    let probe = |w: &mut World| content_probe(&w.d, &w.bridge.bridge());
+    let on_a_card = probe(&mut w);
     assert!(on_a_card.contains(" region=shelf row=0 col=0 "), "the page seats its first shelf card: {on_a_card}");
     assert!(on_a_card.contains(" card=1 menu=0 "), "a published card is focused: {on_a_card}");
     assert!(on_a_card.contains(" sid=") && !on_a_card.contains(" rk=-"), "it names the card's server and ratingKey: {on_a_card}");
     w.press(Key::Down);
-    let lower = probe(&w);
+    let lower = probe(&mut w);
     assert!(lower.contains(" region=shelf row=1 col="), "Down moves the fingerprint to the next shelf: {lower}");
     w.press(Key::Up);
     w.press(Key::Up);
-    let crumb = probe(&w);
+    let crumb = probe(&mut w);
     assert!(crumb.contains(" region=crumb row=-1 col=-1 ") && crumb.contains(" card=0 "),
         "the crumb row is a region of its own: {crumb}");
 }
@@ -825,22 +881,22 @@ fn a_non_favorite_visit_survives_child_returns_and_ends_when_leaving_library() {
         assert!(here(&w).starts_with("menu:section:1:1"));
         w.press(Key::Ok);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2);
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 2);
         super::open_settings_at(&mut w.d, plx_screens::family::SettingsPage::LibraryFavourites);
         w.frames(60);
         w.press(Key::Back);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2, "Back from Settings preserves the visit");
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 2, "Back from Settings preserves the visit");
         header_stop(&mut w, "collections");
         w.press(Key::Ok);
         w.frames(40);
         w.press(Key::Back);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2, "Back from a child preserves the visit");
-        super::nav_tab(&mut w.d, &mut w.bridge, destination, None, None);
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 2, "Back from a child preserves the visit");
+        super::nav_tab(&mut w.d, &mut w.bridge.bridge(), destination, None, None);
         w.frames(90);
-        super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+        super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Movies, None, None);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 0, "a new visit restores the favorite");
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 0, "a new visit restores the favorite");
     }
 }

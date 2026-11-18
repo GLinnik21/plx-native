@@ -192,7 +192,6 @@
   "widgets.ass.unavailable": "Opgemaakte ondertitels worden in deze installatie niet ondersteund",
   "widgets.ass.fonts_unavailable": "Kan lettertypen voor ondertitels niet laden",
   "widgets.ass.init_failed": "Kan opgemaakte ondertitels niet initialiseren",
-  "widgets.ass.font_too_large": "Het geïnstalleerde ondertitellettertype is te groot",
   "widgets.ass.unreadable": "Dit opgemaakte ondertitelbestand kon niet worden gelezen",
   "widgets.ass.font_name": "Deze naam van het ondertitellettertype is ongeldig",
   "widgets.ass.track_fonts": "Kan de lettertypen van deze ondertitel niet laden",

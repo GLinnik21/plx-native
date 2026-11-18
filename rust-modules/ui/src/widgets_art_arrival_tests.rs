@@ -74,9 +74,12 @@ fn shown(owner: usize, n: u32) -> f32 {
 }
 
 fn asked_to_repaint() -> bool {
-    plx_machine::idle::frame_begin(1.0 / 60.0);
-    plx_machine::idle::note_present(0);
-    plx_machine::idle::should_present(0)
+    let mut present = plx_machine::present::Present::new();
+    present.take(0);
+    present.acknowledge(0);
+    plx_machine::motion::report::collect_into(&mut present, 0);
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
+    present.take(0)
 }
 
 /// The defect: art that lands after the skeleton went from nothing to everything on one frame.

@@ -32,7 +32,16 @@ and contrasting-ambient replay with outbound IO denied, malformed-input refusals
 supported-effect discriminator. Its private recording must pass `tools/plxnative-rec check`
 before `import`/`rerecord`; a live-mock focus smoke alone is not replay acceptance.
 
-The hash includes `AppFrameV4{route,overlay,focus,tree,session,consent,initial}`: the press machine, the route/overlay words and the
+`6-settings-family` and `12-filmography-detail-return` are the historical key-only fixtures: they
+retain their original `AppFrameV4` ledger and expected
+hashes. (`1-boot-home-chip-grid` was one until its re-recording as a current `AppFrameV5` recording,
+see the last entry below.) Controlled preflight proves all inputs are owned keys; the grader then writes the
+frozen idle bytes of the retired app press before the unchanged V4 frame fields. No
+legacy press is constructed/stepped in production and no frame grades are skipped. Legacy
+pointer/direct-token profiles cannot prove idle shadow state and are refused. New
+recordings use `AppFrameV5` and the current codec-6 bootstrap envelope.
+
+The historical hash includes `AppFrameV4{route,overlay,focus,tree,session,consent,initial}`: the press machine, the route/overlay words and the
 focus fingerprint from phase 2, plus — since phase 5b — `tree`, which is `Dispatcher::state_hash`
 (every live container instance's `LogicalState`, the tree's shape and surface phases, saved entry
 arguments and return memory even after eviction, the engine's focus and the queue depth), plus
@@ -45,8 +54,10 @@ Controlled replay supplies Home/Browse results through the production dispatcher
 Flow 12 Detail/Person results at their original store consumers. It binds the recorded Client
 explicitly and denies resource execution and data transport. Account, playback, and every other
 unlisted domain remain unsupported and fail closed before IO. Product replay has two explicit
-modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
-Resolve runs the current engine/map and grades every resolution pointwise before continuing.
+modes: Targets substitutes each recorded Focus, Hit (pointer) or Id (by-id) resolution before
+dependent effects, while Resolve runs the current engine/map and grades every resolution pointwise
+before continuing. `focus_diffs` counts the Focus family; `hit_diffs` counts Hit AND Id (the
+`resolution=focus|hit|id` word of the `replay: input diverge` line tells them apart).
 
 Person's provider requests use the captured authority throughout controlled recording and replay.
 Ambient session-cache recovery cannot retire those requests or introduce unrecorded retries.
@@ -97,11 +108,12 @@ library-matched credit opened in Detail, and both BACK steps). Phase 7 rerecorde
 after an observed loader refusal and added the content-return anchor. **Phase 11 rerecorded all
 three onto schema 2**, which carries the landing schedule above. **The product Resolve milestone
 rerecorded them onto schema 3**, adding a typed, bit-exact Width/Cap/Line measurement table, one
-final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations.
+final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations (the Id
+family, a by-id `focus:`/`press:` input's resolution, joined them with `13-by-id-filmography`).
 A key missing from that table refuses the replay, with one exception: the text-prewarm walks
 (`rec::speculative`), which lay out a page no frame is drawing yet so its glyphs are resident.
 Their answers are recorded like any other. A key an older recording lacks inside such a walk
-answers 0.0, and state, presents, effects and Focus/Hit are still graded on every frame. The
+answers 0.0, and state, presents, effects and Focus/Hit/Id are still graded on every frame. The
 held-page walk measures Flow 12's focused cast caption, which that anchor never drew, because the
 Person page is pushed before Detail's replacement capture.
 
@@ -110,6 +122,20 @@ controlled-replay coverage. Flow 12 has typed initial state, exact synchronous a
 recorded content results, and denied resource execution. This bounded support does not imply
 all-domain acceptance. Editing manifest fingerprints or state hashes is never a replacement for
 rerecording. The D1 results below describe that earlier build, not current all-domain acceptance.
+
+**The by-id anchor.** `13-by-id-filmography` (`tests/focusfp.sh` flow 13) is Flow 12's controlled
+domain driven by the harness's by-id tokens: `focus:nav.watchlist` (refused: the Filmography page has
+no strip), `focus:filmography.row.3` and `press:filmography.row.0` (no `@subject`; a press that opens
+Detail like Flow 12's `down ok`), four BACK keys down to Home, and `focus:nav.watchlist` again (it
+resolves there). It carries the only `by_id` input rows and `Id` resolution rows in the directory, and
+`ALPHABET.json` admits its one refusal log line, and the Person store's `close`, as literals.
+A recording of a `press:<id>@<subject>` token holds the subject (a ratingKey) in its `in` row and no
+pattern admits it, so such a recording cannot become a fixture. The fixture lives on Flow 12's page
+because that is the only controlled domain whose manifest shape the closed gates admit and where a
+press records: `press:nav.profile`, `press:nav.movies` and `press:home.hero.info` on the controlled
+Home abort the recording with `replay: REFUSED -- unsupported Home application effect`. It is kept
+short because the loader refuses a recording past its decoded budget (about 1.3 MB here) as
+`invalid or incompatible recording`.
 
 **Historical Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
 for: `enum Route` was folded into `AppArg`, so `ARG_SHAPE` lost its nested `Legacy:Route{…}` and
@@ -683,3 +709,27 @@ with a measurement table miss. The anchors were re-recorded with
 `tests/focusfp.sh --rec --only 1,6,12`, keeping the same inputs and manifests. The closed alphabet
 adds the three exact strings from the seed-1 mock. Targets and Resolve both match all frames at
 960x540.
+
+Home's snap dive now lands exactly on its target (`Spring::land`, called by `HomeScreen::update` after
+the dive's `step`, so the parked hero's backdrop cache keeps its name after a Hero to grid to Hero trip,
+PR #1302): the dive used to park one ulp off with a velocity of ~1e-44, which the canon hashes bit for
+bit. `1-boot-home-chip-grid` was observed diverging from frame 154 (46 of 200 frames) in Targets and
+Resolve with every other counter zero (`present_diffs`, `input_diffs`, `result_diffs`, `land_diffs`,
+`effect_diffs`, `focus_diffs`, `hit_diffs`), while `6-settings-family` stayed SAME and
+`12-filmography-detail-return` stayed REFUSED_EXPECTED. The divergence was attributed by replaying the
+committed anchors against a build with only that `Spring::land` call removed (every anchor SAME, every
+counter zero). The fixture was a historical key-only `AppFrameV4` recording (shape `4239819007634745513`)
+that the current recorder cannot emit, so it could not be recorded afresh on its own shape: it was
+re-recorded as a current `AppFrameV5`/codec-6 recording (`tests/focusfp.sh --rec --only 1`,
+`MOCK_PORT=32552 FOCUS_STEP=0.35 FOCUS_SETTLE=1.5 FOCUS_BOOT_SETTLE=1`, shape `13512213413816145485`,
+266 frames, `plxnative-rec check` synthetic) and replaced with `tools/plxnative-rec rerecord`, which keeps the
+`anchor` flag. That retires this one fixture's `AppFrameV4` ledger; `6-settings-family` remains the key-only
+fixture that replays SAME. `make check-replay` replays every fixture as SAME or REFUSED_EXPECTED in Targets and
+Resolve with every difference counter at zero (three consecutive runs, one of them at the CI window, 960x540).
+
+The shared route anatomy (2026-11-17: every route title, Filmography's included, is the 48 Settings
+title) changed recorded behaviour without moving the shape: the `v13-owned-input-content` anchor was
+observed being refused in both modes (`replay: REFUSED — replay measurement table miss`) and was
+recorded afresh the same way (`tests/focusfp.sh --rec --only 12`, `plxnative-rec import`, `anchor:
+true` restored), then replayed SAME in Targets and Resolve on three consecutive runs.
+`docs/ui-replay-v13-anchor.md` has the record.

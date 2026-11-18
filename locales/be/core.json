@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "запытаная дастаўка",
   "core.preview_domain_source_video": "відэакодэк крыніцы (толькі ў справаздачах пра адмову)",
   "core.preview_domain_source_audio": "аўдыёкодэк крыніцы (толькі ў справаздачах пра адмову)",
+  "core.preview_domain_preview_refusal": "прычына адмовы ў аўтаматычным паказе трэйлера (толькі ў справаздачах пра адмову ў паказе)",
   "core.preview_domain_quality": "якасць",
   "core.preview_domain_observed_rate": "вымераная хуткасць",
   "core.preview_domain_raster": "разрозненне",

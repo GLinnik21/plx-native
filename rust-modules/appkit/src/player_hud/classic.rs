@@ -166,7 +166,7 @@ pub(super) fn readout_frame() -> Rect {
 /// disappeared 4.5 s in with the HUD linger, leaving exactly the silent black screen the read-out
 /// exists to prevent. A read-out is not transport chrome.
 pub fn draw_readout(
-    ps: &plx_media::route::PlaybackSession,
+    failure: Option<&FailureReadout>,
     busy: Busy,
     now: u32,
     failure_focus: usize,
@@ -180,7 +180,7 @@ pub fn draw_readout(
         // constant verdict, one reason, a row of controls. The caption is not drawn here: the
         // verdict line is constant by design, so a viewer who has seen it once recognises it
         // before reading, and the caption's suffix is re-derived as the reason.
-        draw_failed_readout(ps, Painter::root(), failure_focus, measure);
+        if let Some(failure) = failure { draw_failed_readout(failure, Painter::root(), failure_focus, measure); }
         return;
     }
     StatusOverlay::new(readout_frame(), caption, kind)
@@ -259,7 +259,7 @@ pub(super) fn tab_of_section(section: &str) -> Option<i32> {
 }
 
 fn draw_failed_readout(
-    ps: &plx_media::route::PlaybackSession,
+    failure: &FailureReadout,
     p: Painter,
     focus: usize,
     measure: &dyn plx_machine::machine::Measure,
@@ -271,7 +271,7 @@ fn draw_failed_readout(
     // Error to Failed for BOTH values of `seen_frame`, i.e. a mid-playback failure over a held
     // frame is a state the code contemplates.
     p.rrect(Rect::FULL, 0.0, 0.0, theme::scrim_black(1.0));
-    FailureReadout::now(ps).draw(p, focus, measure);
+    failure.draw(p, focus, measure);
 }
 
 // (`scrub_hit` stood here, and then `icon_hit` and `tab_hit_rect` beside it: the raw `(cx,cy) -> Option`
@@ -454,11 +454,8 @@ pub(super) fn draw_player_title_at(
         let elapsed = clock.read(&key) as f32;
         let offset = plx_ui::marquee::TITLE.reveal_once(elapsed, full_width, width);
         if offset < full_width - width {
-            if elapsed < plx_ui::marquee::TITLE.hold_ms {
-                plx_machine::idle::wake();
-            } else {
-                plx_machine::idle::invalidate();
-            }
+            // The hold and reveal are one frame-captured animation, never worker work.
+            plx_machine::motion::report::note_motion();
         }
         if offset > 0.0 {
             // an Arabic or Hebrew title's end is on its left: it moves right instead

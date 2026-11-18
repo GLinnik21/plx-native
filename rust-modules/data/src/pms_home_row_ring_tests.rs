@@ -49,7 +49,7 @@ fn ring_home(rows: usize, make: fn(u16, usize) -> Shelf) -> (Owner, ServerId) {
     let (build, _) = merge_held(&mut srcs, &scope, o.state.hold);
     o.state.srcs = srcs;
     remember_roster(&mut o.state, &scope);
-    o.state.seen_facts = facts_key();
+    o.state.seen_facts = facts_key(&scope);
     commit(&mut o.state, build);
     (o, id)
 }
@@ -370,7 +370,7 @@ fn merge_held_equals_a_merge_of_the_settled_ring_across_sources_the_deck_pins_an
         src(b.raw(), "", HubState::Ready, Some(built(b.raw(), &deck[..3], shelves(b)))),
     ];
     settle_deck(&mut srcs, true);
-    let scope = BrowseScope { sections_gen: 1, pins: vec![(a, 5, false)], clients: Default::default() };
+    let scope = BrowseScope { sections_gen: 1, pins: &[(a, 5, false)], clients: Default::default() };
     let keys = |build: &HubBuild| build.0.iter().map(|m| (m.sid, m.rk.clone(), m.art.clone())).collect::<Vec<_>>();
     let rows = |build: &HubBuild| build.1.iter().map(|h| (h.title.clone(), h.hub_id.clone(), h.key.clone(),
         h.source.clone(), h.total, h.start, h.len, h.offset, h.more, h.epoch)).collect::<Vec<_>>();

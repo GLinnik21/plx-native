@@ -93,7 +93,7 @@ fn assert_every_nav_item_pushes_exactly_its_dest(label: &str, items: &[(u32, Set
 }
 
 fn root_items() -> Vec<(u32, SettingsPage)> {
-    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test());
+    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test(), &crate::registry::capture_fixture());
     nav_items(&page.form)
 }
 
@@ -165,13 +165,14 @@ fn every_audio_and_subtitles_field_pushes_its_picker() {
     let previous = plx_plex::plex::session::current_snapshot();
     struct Restore(std::sync::Arc<plx_plex::plex::session::CurrentProfile>);
     impl Drop for Restore {
-        fn drop(&mut self) { plx_plex::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
+        fn drop(&mut self) { plx_plex::plex::session::publish_seat_for_test(self.0.user.clone(), self.0.generation, self.0.stamp.clone()); }
     }
     let _restore = Restore(previous);
-    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "nav-structure-audio".into(), ..Default::default() };
+    let user = plx_plex::plex::session::UserRef { id: 7, uuid: "nav-structure-audio".into(), plex_tv_token: Some("synthetic-token".into()), ..Default::default() };
     // seated: the Look rows (this app's own per-profile picks) are read-only for nobody
     plx_plex::plex::session::publish_seat_for_test(Some(user.clone()), 81, "nav-structure-stamp".into());
-    let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, AudioPreferences::default());
+    let (_, snapshot) = PreferenceRequest::fixture_for_test(user, 81, AudioPreferences::default());
+    let request = PreferenceRequest::capture().expect("the host captures the stamped fixture seat");
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&AudioPreferences::default()));
     assert_eq!(items.len(), 7, "the four account fields and the three Look rows (subtitle size, position and color): {items:?}");
     assert_every_nav_item_pushes_exactly_its_dest("audio & subtitles", &items, &|| {
@@ -370,6 +371,15 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_instant_dpad_seeking(*ses::InstantDpadSeeking::LADDER.last().unwrap());
     r::restore_uri_engine(*ses::UriEngine::LADDER.last().unwrap());
     r::restore_dolby_vision_mode(*ses::DolbyVisionMode::LADDER.last().unwrap());
+    let captured = ses::ProfilePrefs {
+        playback_quality: Some(quality), direct_play_mode: Some(r::DirectPlayMode::Disabled),
+        subtitle_size: ses::SubtitleSize::LADDER.last().copied(), subtitle_position: ses::SubtitlePosition::LADDER.last().copied(),
+        subtitle_tone: ses::SubtitleTone::LADDER.last().copied(), hdr_overlay_brightness: ses::HdrOverlayBrightness::LADDER.last().copied(),
+        next_episode_mode: ses::NextEpisodeMode::LADDER.last().copied(), deck_press: ses::DeckPress::LADDER.last().copied(),
+        skip_interval: ses::SkipInterval::LADDER.last().copied(), instant_dpad_seeking: ses::InstantDpadSeeking::LADDER.last().copied(),
+        uri_engine: ses::UriEngine::LADDER.last().copied(), dolby_vision_mode: ses::DolbyVisionMode::LADDER.last().copied(),
+        ..Default::default()
+    };
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,
@@ -391,7 +401,11 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     for &(row, dest) in playback.iter().filter(|(_, d)| *d != SettingsPage::PlayerHud) {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
-            &format!("playback {kind:?}"), &|| consent_opened(SettingsPage::Playback), row, dest, lines(kind));
+            &format!("playback {kind:?}"), &|| {
+                let (d, mut rig, id) = consent_opened(SettingsPage::Playback);
+                rig.preferences = Some(captured.clone());
+                (d, rig, id)
+            }, row, dest, lines(kind));
     }
 
     // Audio & Subtitles: the account's stored answers.
@@ -400,16 +414,17 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         let previous = ses::current_snapshot();
         struct Restore(std::sync::Arc<ses::CurrentProfile>);
         impl Drop for Restore {
-            fn drop(&mut self) { ses::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
+            fn drop(&mut self) { ses::publish_seat_for_test(self.0.user.clone(), self.0.generation, self.0.stamp.clone()); }
         }
         let _restore = Restore(previous);
-        let user = ses::UserRef { id: 7, uuid: "nav-structure-checked-lines".into(), ..Default::default() };
+        let user = ses::UserRef { id: 7, uuid: "nav-structure-checked-lines".into(), plex_tv_token: Some("synthetic-token".into()), ..Default::default() };
         ses::publish_seat_for_test(Some(user.clone()), 81, "nav-structure-stamp".into());
         let language_line = |code: &str| 1 + plx_plex::plex::languages::picker().position(|l| l.code == code)
             .unwrap_or_else(|| panic!("{code} is in the language picker")) as u32;
         let prefs = AudioPreferences { stated_language: Some("fr".into()), subtitle_language: Some("de".into()),
             subtitle_mode: 2, subtitle_forced: 3, ..Default::default() };
-        let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, prefs.clone());
+        let (_, snapshot) = PreferenceRequest::fixture_for_test(user, 81, prefs.clone());
+        let request = PreferenceRequest::capture().expect("the host captures the stamped fixture seat");
         let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&prefs));
         assert_eq!(items.len(), 7, "every Audio & Subtitles picker is in the table: {items:?}");
         for &(row, dest) in &items {
@@ -426,6 +441,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
             };
             assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(&format!("audio {kind:?}"), &|| {
                 let (mut d, mut rig, id) = consent_opened(SettingsPage::AudioSubtitles);
+                rig.preferences = Some(captured.clone());
                 frame(&mut d, &mut rig, 32, vec![]);
                 let Some(registry::PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
                     panic!("the page asks its host for the load");
@@ -566,7 +582,7 @@ fn the_under_posters_page_walks_title_both_details_reset_and_back_with_keys() {
 fn every_language_nav_item_pushes_exactly_its_dest() {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-language");
-    let items = nav_items(&LanguagePage::new(EntryId(0)).form);
+    let items = nav_items(&LanguagePage::new(EntryId(0), &crate::registry::capture_fixture()).form);
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(), [SettingsPage::Contribute]);
     for &(elem, dest) in &items {
         for method in [Method::Ok, Method::Right] {

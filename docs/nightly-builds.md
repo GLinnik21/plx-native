@@ -99,9 +99,9 @@ How releases are told apart:
 
 | Release | Cut from | Version moves | The nightlies after it |
 | --- | --- | --- | --- |
-| Minor (the normal case) | `main` | `0.7.0` to `0.8.0` | head for the next minor: `0.9.<date>` |
-| Patch | a maintenance branch (`release/vX.Y`) | `0.7.0` to `0.7.1` | `main` is unaffected; nightlies still come only from `main` |
-| Major | `main`, bumped by hand | `0.x.y` to `1.0.0` | head for `1.1.<date>` |
+| Minor (the normal case) | its release line, `release/v0.8`, cut from `main` | `0.7.0` to `0.8.0` | head for the next minor from the moment the line is cut: `0.9.<date>` |
+| Patch | the same release line | `0.8.0` to `0.8.1` | `main` is unaffected; nightlies still come only from `main` |
+| Major | a `release/v1.0` line, cut with `bump: major` | `0.x.y` to `1.0.0` | head for `1.1.<date>` |
 
 Some consequences:
 
@@ -121,13 +121,13 @@ Some consequences:
 - **Homebrew Channel will not take the URL.** Check it character by character, including `https://`
   and the `.json` ending. Typing with the TV remote makes this the most common slip.
 - **Install or update fails.** Note the exact message, the version Homebrew Channel lists and your
-  TV model and webOS version, and [open an issue](https://github.com/GLinnik21/plx-native/issues/new/choose).
+  TV model and webOS version, and [open an issue](https://github.com/plxnative/plx-native/issues/new/choose).
   Installing nightlies through Homebrew Channel is new, so a failure here is worth reporting.
 - **The app is gone after a while.** That is the Developer Mode session expiring, not the nightly.
   See the [installation guide](install-and-verify.md#important-developer-mode-expires).
 
 ## Reporting problems
 
-[Open an issue](https://github.com/GLinnik21/plx-native/issues/new/choose) and include the **reported
+[Open an issue](https://github.com/plxnative/plx-native/issues/new/choose) and include the **reported
 version** from the About screen, for example `0.8.0-nightly-20261006`, with your TV model and webOS
 version. Do not post passwords, Plex tokens or screenshots that show them.

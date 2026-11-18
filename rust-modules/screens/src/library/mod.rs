@@ -19,7 +19,7 @@ mod toolbar;
 mod status;
 pub mod menu;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 #[cfg(test)]
@@ -43,6 +43,7 @@ use crate::registry::{
 };
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole};
 use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -209,6 +210,8 @@ pub enum Listing {
 
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
 pub struct LibraryScreen {
+    /// Derived from retained effective frame inputs, shared by live/target grid geometry.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
     /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
     listing: Listing,
@@ -353,6 +356,7 @@ impl LibraryScreen {
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         let layout = Layout::new(false, 0);
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
@@ -554,10 +558,11 @@ impl LibraryScreen {
         // a grid lists ONE kind of tile, so its band is sized by that kind's own line (a TV shows
         // grid by the show line; Movies, Seasons and Collections by the movie line, `details_for`)
         let shows = self.listed == LibraryType::Primary && self.kind == SecKind::Show;
-        (self.listed != LibraryType::Episodes).then(|| parts::caption_policy().only(shows))
+        (self.listed != LibraryType::Episodes).then(|| self.caption_policy.only(shows))
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         let listing = H::listing(cx);
         self.listed = listing.library_type();
         self.layout = self.layout.with_episodes(self.listed == plx_data::browse::LibraryType::Episodes);
@@ -628,7 +633,7 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
-        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
+        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value_for(H::screen_inputs(cx)),
             listing.sorts().get(listing.sort_index()).map(|sort| sort.key.as_str()));
         // The rows' pitch changes with the value lines (60 <-> 40 px) under a grid that is already
         // laid out and held at a scroll of its own: not a first layout, a restore still to be
@@ -904,7 +909,7 @@ impl LibraryScreen {
     /// has arrived (the page scroll, the fade and the card's own glide).
     fn hint_input<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> plx_ui::hold_hint::HintInput {
         let none = plx_ui::hold_hint::HintInput::default();
-        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) {
+        if !self.hold_hint.wants_input(cx.press.held_ms.is_some(), cx.hold_hint) {
             return none;
         }
         let Some(key) = cx.focus.current.filter(|key| key.entry == self.entry) else { return none };
@@ -1438,7 +1443,7 @@ impl LibraryScreen {
                 // focus WITHIN the page. Only the latter claims the arrival from the cells that land.
                 let engine_seat = by == &By::Dir && self.initial && !self.switched && to.entry == self.entry
                     && from.is_none_or(|from| from.entry != self.entry);
-                if matches!(by, By::Dir | By::Pointer) && !engine_seat {
+                if matches!(by, By::Dir | By::Pointer | By::Script) && !engine_seat {
                     self.initial = false;
                     self.provisional = None;
                 }
@@ -1517,7 +1522,7 @@ impl LibraryScreen {
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
                     // A page that returns is not put to sleep (`Grid::dormant`).
-                    self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
+                    self.pair.detail.dormant(self.page_fade.is_arriving() || cx.page_image.is_held());
                     self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused
                     // element's row (`Landed`) comes back as the document shift that keeps the
@@ -1536,7 +1541,9 @@ impl LibraryScreen {
                     // frame (its window moved with the step) must hold keys before it draws.
                     if self.owns_listing() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
-                    self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
+                    if let Some(event) = self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev), cx.hold_hint) {
+                        fx.push(Fx::HoldHint(event));
+                    }
                     let arrival = if self.initial && self.layout.first().is_some() { self.arrival_group() } else { None };
                     if let Some(group) = arrival.filter(|_| self.seed_cursor(cx, fx)) {
                         self.initial = false;
@@ -1718,7 +1725,39 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         // The failed read-out's one control.
         self.key(self.row_elems(Some(group)).first().copied().unwrap_or(plx_ui::dispatch::STRIP_BASE))
     }
+
+    /// **The ids** (`library.<path>`): while the plaintext question is open its answers `alert.<verb>`
+    /// (the page beneath is no owner's), else the header row's controls `header.<name>` (`sort`,
+    /// `collections`, `recommended`, `libraries`, `crumb`; a library's own name is `header.left.<n>`,
+    /// its position, since the name is runtime text), the failed read-out's `status.retry`, the rail's
+    /// letters `rail.<i>` and the grid's cards `grid.card.<i>`. The header, the alert and the parts
+    /// answer for themselves: this page only says which of them a key or a path is for.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if let Some(answer) = self.plaintext_alert.a11y(*key) { return answer; }
+        if let Some(a) = self.header.row().and_then(|row| row.a11y(*key)) { return Some(a); }
+        if self.readout == Readout::Failed && *key == RETRY { return Some(A11y::new(retry_path(), A11yRole::Button)); }
+        Focusable::<H>::a11y(&self.pair, key, cx)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if self.plaintext_alert.a11y_elems(g, out) { return; }
+        if g == LIBRARY_GROUP {
+            if let Some(row) = self.header.row() { row.a11y_elems(out); }
+        } else if g == STATUS_GROUP {
+            if self.readout == Readout::Failed { out.push(RETRY); }
+        } else {
+            Focusable::<H>::a11y_elems(&self.pair, g, cx, out);
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        if let Some(found) = self.plaintext_alert.a11y_find(path) { return found; }
+        if let Some(elem) = self.header.row().and_then(|row| row.a11y_find(path)) { return Some(elem); }
+        if *path == retry_path() { return (self.readout == Readout::Failed).then_some(RETRY); }
+        Focusable::<H>::a11y_find(&self.pair, path, cx)
+    }
 }
+
+/// The failed read-out's Try again: `status.retry`.
+fn retry_path() -> A11yPath { A11yPath::new().name("status").name("retry") }
 
 impl LibraryScreen {
     fn row_elems(&self, group: Option<GroupId>) -> Vec<u32> {

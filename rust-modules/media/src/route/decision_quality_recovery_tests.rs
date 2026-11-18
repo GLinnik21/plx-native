@@ -2953,3 +2953,26 @@ fn a_failed_original_trial_of_an_original_start_rolls_back_through_the_door() {
         );
     }
 }
+
+/// A panic inside a cleanup observation must not leave its record claimed: `checking` stays set
+/// otherwise, `take_unchecked` skips the record for the rest of the process and every ABR trial
+/// on that server is deferred behind a check that will never finish.
+#[test]
+fn a_panicking_encoder_cleanup_check_releases_its_claim() {
+    let sid = ServerId::from_raw(60_417);
+    ENCODER_CLEANUP.lock().unwrap_or_else(|e| e.into_inner()).remember(sid, "panic-claim");
+    let mut claimed = ENCODER_CLEANUP.lock().unwrap_or_else(|e| e.into_inner()).take_unchecked(sid);
+    assert_eq!(claimed.len(), 1);
+    let check = claimed.remove(0);
+
+    let outcome = std::panic::catch_unwind(|| {
+        run_encoder_cleanup_check_with(check, |_| panic!("observation blew up"));
+    });
+    assert!(outcome.is_err(), "the observation's panic propagates");
+
+    let retry = ENCODER_CLEANUP.lock().unwrap_or_else(|e| e.into_inner()).take_unchecked(sid);
+    // Remove the record before asserting so a red run leaves no process-global debris.
+    ENCODER_CLEANUP.lock().unwrap_or_else(|e| e.into_inner()).pending.retain(|e| e.sid != sid);
+    assert_eq!(retry.len(), 1, "the record is claimable again after the panic, so a later check runs");
+    assert!(retry[0].stop_needed, "no verdict was published, so the stop is still owed");
+}

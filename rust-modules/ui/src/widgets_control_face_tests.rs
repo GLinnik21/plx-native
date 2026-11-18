@@ -1,5 +1,19 @@
 //! Control face treatment: ambient-keyed vs. unkeyed grounds, focus pop (`CtlPop`) motion, the danger face, and the blended pill/capsule outline + focus cast shadow.
 
+// An independently owned input supplies identity even when two presses overlap a spring-back.
+struct TestPress { machine: crate::dispatch::press::Press, identity: u32 }
+impl TestPress {
+    fn new() -> Self { Self { machine: crate::dispatch::press::Press::new(), identity: 0 } }
+    fn begin(&mut self, now: u32) { self.identity += 1; self.machine.begin(now); }
+    fn begin_ctl(&mut self, now: u32) { self.identity += 1; self.machine.begin_ctl(now); }
+    fn read(&self) -> plx_machine::machine::PressRead {
+        plx_machine::machine::PressRead { identity: self.identity, live: self.machine.is_live(), active: self.machine.is_active(), scale: self.machine.scale(), ..Default::default() }
+    }
+}
+impl std::ops::Deref for TestPress { type Target = crate::dispatch::press::Press; fn deref(&self) -> &Self::Target { &self.machine } }
+impl std::ops::DerefMut for TestPress { fn deref_mut(&mut self) -> &mut Self::Target { &mut self.machine } }
+fn dip(scale: f32) -> plx_machine::machine::PressRead { plx_machine::machine::PressRead { scale, live: scale != 1.0, active: scale != 1.0, ..Default::default() } }
+
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -67,16 +81,16 @@ fn a_control_leaving_focus_shrinks_while_its_neighbour_grows() {
     for _ in 0..40 {
         pop.step(Some(0), 1.0 / 60.0);
     }
-    let settled = pop.scale(0);
+    let settled = pop.scale(0, dip(1.0));
     assert!(
         (settled - CTRL_FOCUS_SCALE).abs() < 0.005,
         "a held focus settles ON the pop, not near it: {settled}"
     );
-    assert_eq!(pop.scale(1), 1.0, "and its neighbour is at rest");
+    assert_eq!(pop.scale(1, dip(1.0)), 1.0, "and its neighbour is at rest");
 
     // focus moves — one frame later BOTH are in flight, neither at an endpoint
     pop.step(Some(1), 1.0 / 60.0);
-    let (leaving, arriving) = (pop.scale(0), pop.scale(1));
+    let (leaving, arriving) = (pop.scale(0, dip(1.0)), pop.scale(1, dip(1.0)));
     assert!(
         leaving < settled && leaving > 1.0,
         "the leaving face is still shrinking: {leaving}"
@@ -101,13 +115,13 @@ fn a_control_leaving_focus_shrinks_while_its_neighbour_grows() {
 /// Takes `testlock::serial()` for the pop's own statics; the press is the test's own `Press`.
 #[test]
 fn the_season_strips_pop_takes_the_press_dip_only_while_the_row_holds_focus() {
-    let mut p = crate::press::Press::new();
+    let mut p = TestPress::new();
     let _g = plx_base::testlock::serial();
     let mut pop: CtlPop<1> = CtlPop::new();
     for _ in 0..60 {
         pop.step(Some(0), 1.0 / 60.0);
     }
-    let focused = pop.scale(0);
+    let focused = pop.scale(0, p.read());
     assert!(
         (focused - CTRL_FOCUS_SCALE).abs() < 0.005,
         "a focused season pill settles on the control pop: {focused}"
@@ -122,7 +136,7 @@ fn the_season_strips_pop_takes_the_press_dip_only_while_the_row_holds_focus() {
         p.tick(now, 1.0 / 60.0);
         pop.step(Some(0), 1.0 / 60.0);
     }
-    let pressed = pop.scale(0);
+    let pressed = pop.scale(0, p.read());
     assert!(
         pressed < focused - 0.02,
         "the press must dip the focused pill inward: {pressed} vs {focused}"
@@ -134,7 +148,7 @@ fn the_season_strips_pop_takes_the_press_dip_only_while_the_row_holds_focus() {
         away.step(None, 1.0 / 60.0);
     }
     assert_eq!(
-        away.scale(0),
+        away.scale(0, p.read()),
         1.0,
         "a row without focus is at rest, press or no press"
     );
@@ -166,7 +180,7 @@ fn the_pop_grows_to_focus_without_ringing() {
     let mut peak = 1.0f32;
     for _ in 0..40 {
         pop.step(Some(0), 1.0 / 60.0);
-        peak = peak.max(pop.scale(0));
+        peak = peak.max(pop.scale(0, dip(1.0)));
     }
     assert!(
         peak <= CTRL_FOCUS_SCALE + 0.0005,
@@ -183,6 +197,7 @@ fn the_pop_grows_to_focus_without_ringing() {
 /// with a control standing proud of its row.
 #[test]
 fn a_row_with_no_focus_settles_flat() {
+    let _serial = plx_base::testlock::serial(); // reset reports frame damage through Spring::jump
     let mut pop: CtlPop<3> = CtlPop::new();
     for _ in 0..40 {
         pop.step(Some(2), 1.0 / 60.0);
@@ -192,14 +207,14 @@ fn a_row_with_no_focus_settles_flat() {
     }
     for i in 0..3 {
         assert!(
-            (pop.scale(i) - 1.0).abs() < 0.005,
+            (pop.scale(i, dip(1.0)) - 1.0).abs() < 0.005,
             "control {i} eased back to rest"
         );
     }
     pop.step(Some(1), 1.0 / 60.0);
     pop.reset();
     for i in 0..3 {
-        assert_eq!(pop.scale(i), 1.0, "…and reset is exact, not nearly");
+        assert_eq!(pop.scale(i, dip(1.0)), 1.0, "…and reset is exact, not nearly");
     }
 }
 
@@ -211,9 +226,9 @@ fn a_row_with_no_focus_settles_flat() {
 fn an_index_past_the_row_is_a_resting_control() {
     let mut pop: CtlPop<2> = CtlPop::new();
     pop.step(Some(7), 1.0 / 60.0);
-    assert_eq!(pop.scale(7), 1.0);
+    assert_eq!(pop.scale(7, dip(1.0)), 1.0);
     assert_eq!(
-        pop.scale(0),
+        pop.scale(0, dip(1.0)),
         1.0,
         "and an out-of-range FOCUS pops nothing in range either"
     );
@@ -642,12 +657,12 @@ fn a_selected_player_tab_keeps_a_quiet_face_until_it_owns_focus() {
 #[test]
 fn an_abandoned_press_springs_back_on_the_control_that_was_pressed() {
     let mut pop: CtlPop<2> = CtlPop::new();
-    let mut press = crate::press::Press::new();
+    let mut press = TestPress::new();
     let mut focus = Some(0);
     for _ in 0..60 { pop.step(focus, 0.016); }
     let mut ms = 0;
     press.begin(ms);
-    let mut prev = [pop.scale_with(0, press.scale()), pop.scale_with(1, press.scale())];
+    let mut prev = [pop.scale_with(0, press.read()), pop.scale_with(1, press.read())];
     let mut worst = 0.0f32;
     let mut dipped_after_move = 0.0f32;
     for n in 1..=60 {
@@ -658,7 +673,7 @@ fn an_abandoned_press_springs_back_on_the_control_that_was_pressed() {
         ms += 16;
         press.tick(ms, 0.016);
         pop.step(focus, 0.016);
-        let now = [pop.scale_with(0, press.scale()), pop.scale_with(1, press.scale())];
+        let now = [pop.scale_with(0, press.read()), pop.scale_with(1, press.read())];
         for c in 0..2 {
             worst = worst.max((now[c] / prev[c] - 1.0).abs());
         }
@@ -675,24 +690,57 @@ fn an_abandoned_press_springs_back_on_the_control_that_was_pressed() {
 #[test]
 fn the_dip_latch_follows_the_pressed_index_not_focus() {
     let l = DipLatch::default();
-    assert_eq!(l.factor(0, Some(0), 1.0), 1.0, "at rest nothing dips");
-    assert_eq!(l.factor(1, None, 0.9), 1.0, "an unfocused avatar painted first does not latch");
-    assert_eq!(l.factor(0, Some(0), 0.9), 0.9, "the focused avatar latches");
-    assert_eq!(l.factor(0, None, 0.92), 0.92, "focus moved on: the pressed avatar keeps the dip");
-    assert_eq!(l.factor(1, Some(1), 0.92), 1.0, "and the new focus does not take it");
-    assert_eq!(l.factor(0, None, 1.0), 1.0, "back at rest releases");
-    assert_eq!(l.factor(1, Some(1), 0.95), 0.95, "the next press latches afresh");
+    assert_eq!(l.factor(0, Some(0), dip(1.0)), 1.0, "at rest nothing dips");
+    assert_eq!(l.factor(1, None, dip(0.9)), 1.0, "an unfocused avatar painted first does not latch");
+    assert_eq!(l.factor(0, Some(0), dip(0.9)), 0.9, "the focused avatar latches");
+    assert_eq!(l.factor(0, None, dip(0.92)), 0.92, "focus moved on: the pressed avatar keeps the dip");
+    assert_eq!(l.factor(1, Some(1), dip(0.92)), 1.0, "and the new focus does not take it");
+    assert_eq!(l.factor(0, None, dip(1.0)), 1.0, "back at rest releases");
+    assert_eq!(l.factor(1, Some(1), dip(0.95)), 0.95, "the next press latches afresh");
+}
+
+#[test]
+fn a_cancelled_press_never_latches_a_newly_focused_row() {
+    use plx_machine::machine::{EntryId, FocusKey, PressRead};
+    let _serial = plx_base::testlock::serial();
+    let mut hero = CtlPop::<1>::new();
+    let mut seasons = CtlPop::<1>::new();
+    for _ in 0..60 { hero.step(Some(0), 1.0 / 60.0); }
+    let held = PressRead { identity: 7, live: true, active: true, scale: 0.93,
+        owner: Some(FocusKey { entry: EntryId(1), elem: 1u32 }), ..Default::default() };
+    assert!(hero.scale(0, held) < CTRL_FOCUS_SCALE - 0.02);
+    let cancelled = PressRead { live: false, ..held };
+    hero.step(None, 1.0 / 60.0);
+    seasons.step(Some(0), 1.0 / 60.0);
+    let unpressed = seasons.scale(0, PressRead::<u32>::default());
+    assert_eq!(seasons.scale(0, cancelled), unpressed, "the new row cannot steal the old row's spring-back");
+    assert!(hero.scale(0, cancelled) < hero.scale(0, PressRead::<u32>::default()),
+        "the original row retains its own cancelled press");
+}
+
+#[test]
+fn a_cancelled_press_keeps_its_owner_when_the_spring_crosses_rest() {
+    use plx_machine::machine::PressRead;
+    let latch = DipLatch::default();
+    let held = PressRead::<()> { identity: 4, scale: 0.93, live: true, active: true, ..Default::default() };
+    assert_eq!(latch.factor(0, Some(0), held), 0.93);
+    let crossing = PressRead { scale: 1.0, live: false, ..held };
+    assert_eq!(latch.factor(0, None, crossing), 1.0);
+    let overshoot = PressRead { scale: 1.02, ..crossing };
+    assert_eq!(latch.factor(0, None, overshoot), 1.02, "crossing rest does not end a live spring-back");
+    assert_eq!(latch.factor(1, Some(1), overshoot), 1.0);
+    assert_eq!(latch.factor(0, None, PressRead { active: false, ..overshoot }), 1.0);
 }
 
 /// Frames of a control row under a real press: `reads` says whether the row is drawn (scale read)
 /// on a given frame. Returns the final scales.
-fn row_frames(pop: &mut CtlPop<2>, press: &mut crate::press::Press, ms: &mut u32, focus: Option<usize>, n: usize, draws: bool) -> [f32; 2] {
+fn row_frames(pop: &mut CtlPop<2>, press: &mut TestPress, ms: &mut u32, focus: Option<usize>, n: usize, draws: bool) -> [f32; 2] {
     let mut out = [1.0; 2];
     for _ in 0..n {
         *ms += 16;
         press.tick(*ms, 0.016);
         pop.step(focus, 0.016);
-        if draws { out = [pop.scale_with(0, press.scale()), pop.scale_with(1, press.scale())]; }
+        if draws { out = [pop.scale_with(0, press.read()), pop.scale_with(1, press.read())]; }
     }
     out
 }
@@ -702,7 +750,7 @@ fn row_frames(pop: &mut CtlPop<2>, press: &mut crate::press::Press, ms: &mut u32
 #[test]
 fn a_press_after_an_undrawn_spring_dips_the_control_pressed_now() {
     let mut pop: CtlPop<2> = CtlPop::new();
-    let mut press = crate::press::Press::new();
+    let mut press = TestPress::new();
     let mut ms = 0;
     for _ in 0..60 { pop.step(Some(0), 0.016); }
     press.begin_ctl(ms);
@@ -723,7 +771,7 @@ fn a_press_after_an_undrawn_spring_dips_the_control_pressed_now() {
 #[test]
 fn a_press_armed_inside_the_previous_springback_dips_the_new_control() {
     let mut pop: CtlPop<2> = CtlPop::new();
-    let mut press = crate::press::Press::new();
+    let mut press = TestPress::new();
     let mut ms = 0;
     for _ in 0..60 { pop.step(Some(0), 0.016); }
     press.begin_ctl(ms);

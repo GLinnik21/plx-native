@@ -112,22 +112,25 @@ fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
 }
 
 /// A rig on Home with the store over `script`, and the Watchlist tab pressed and mounted.
-fn mounted(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
+fn mounted(script: &Arc<Script>) -> (Dispatcher<AppHost>, crate::app::runtime_owners::Harness) {
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
+    rig.store_runner.set_watchlist_write_io(script.clone());
     rig.seat_watchlist_account_for_test(script.token);
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
     super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
     super::frame(&mut d, &mut rig, tick(1), vec![]);
-    (d, rig)
+    (d, harness)
 }
 
 /// A few loop iterations of Watchlist work: land what the workers brought, then feed the page.
 fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
         rig.watchlist_pump();
+        rig.store_runner.run_held_watchlist_writes();
         rig.watchlist_feed(d);
         super::frame(d, rig, tick(from + i), vec![]);
     }
@@ -168,7 +171,8 @@ fn the_strip_press_mounts_the_page_and_the_strip_carries_the_bookmark() {
 fn the_tab_arrival_seats_in_the_page_not_on_the_strip() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let page = d.nav.top_page().map(|e| e.id);
     let seat = d.focus();
@@ -182,7 +186,8 @@ fn the_tab_arrival_seats_in_the_page_not_on_the_strip() {
 fn the_arrival_seat_moves_to_the_first_tile_when_the_rows_land() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     assert_eq!(d.focus(), None, "nothing landed yet: the page seats nothing");
     settle(&mut d, &mut rig, 2);
     assert_eq!(d.focus().map(|k| k.elem), page(&d).elem_at(0), "the rows landed: the first tile holds it");
@@ -195,7 +200,8 @@ fn a_key_before_the_rows_land_keeps_the_readers_choice() {
     use plx_machine::machine::Key;
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     super::frame(&mut d, &mut rig, tick(2), super::script_key(Key::Up, tick(2)));
     super::frame(&mut d, &mut rig, tick(3), vec![]);
     let chosen = d.focus();
@@ -218,7 +224,8 @@ fn a_key_ahead_of_the_pages_deferred_seat_enter_keeps_the_readers_move() {
     use plx_ui::screen::ScreenEvent;
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     assert_eq!(d.focus(), None, "control: nothing landed yet, the page seats nothing");
     let inst = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
     // Land the rows (the page's cells are fed), then spend both budgets of the next frame on
@@ -250,7 +257,8 @@ fn a_key_ahead_of_the_pages_deferred_seat_enter_keeps_the_readers_move() {
 fn a_mounted_page_opens_the_store_and_is_fed_the_ordered_list() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     assert_eq!(page(&d).list(), ListState::Loading, "nothing has landed when the page mounts");
     settle(&mut d, &mut rig, 2);
     // Date Added, newest first: the script's `added_at` falls as the number rises.
@@ -263,7 +271,8 @@ fn a_mounted_page_opens_the_store_and_is_fed_the_ordered_list() {
 fn the_sort_and_filter_value_reaches_the_store_and_the_page_follows() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let options = WatchlistOptionsState { show: ShowFilter::OnYourServers, ..Default::default() };
     rig.watchlist_set_options(&options);
@@ -279,7 +288,8 @@ fn the_sort_and_filter_value_reaches_the_store_and_the_page_follows() {
 fn the_hold_menus_remove_flips_the_tile_and_writes_the_remove() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert!(rig.watchlist_remove(&guid(2), true));
     settle(&mut d, &mut rig, 10);
@@ -294,26 +304,39 @@ fn the_hold_menus_remove_flips_the_tile_and_writes_the_remove() {
 /// menu has let go commits the Remove.
 #[test]
 fn the_feed_hands_the_page_nothing_while_a_menu_holds_it() {
-    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
+    use plx_ui::containers::modal::{Phase, Style, CLOSING_GONE};
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert!(rig.watchlist_remove(&guid(2), true));
+    // The feed reads the actual owning stack, not a process/TLS fixture publication.
+    let (modal, _) = d.nav.modals.present(&mut d.nav.ids, AppArg::Home, Style::Compact);
     for veil in [1.0, 0.5, CLOSING_GONE * 1.5] {
-        set_veil(veil);
+        let surface = d.nav.modals.surface_mut(modal).unwrap();
+        surface.phase = Phase::Closing;
+        surface.motion.appear = veil;
         rig.watchlist_pump();
-        let _ = plx_machine::idle::take_local_damage();
+        let before = d.present.damage_epoch();
+        let page_before = d.present.page_damage_epoch();
         rig.watchlist_feed(&mut d);
         assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "veil {veil}: the page is as the menu found it");
         assert_eq!(page(&d).count(), Some(Count::All(3)), "veil {veil}: and so is its count");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "veil {veil}: nothing invalidated the host");
+        assert_eq!(d.present.damage_epoch() - before, 0, "veil {veil}: nothing invalidated the host");
+        assert_eq!(d.present.page_damage_epoch() - page_before, 0, "veil {veil}: no page damage");
     }
-    set_veil(CLOSING_GONE * 0.5);
+    d.nav.modals.surface_mut(modal).unwrap().motion.appear = CLOSING_GONE * 0.5;
     rig.watchlist_pump();
+    let before = d.present.damage_epoch();
+    let page_before = d.present.page_damage_epoch();
     rig.watchlist_feed(&mut d);
+    assert_eq!(d.present.damage_epoch() - before, 1, "one applied publication, one owned landing");
+    assert_eq!(d.present.page_damage_epoch() - page_before, 1);
+    rig.watchlist_feed(&mut d);
+    assert_eq!(d.present.damage_epoch() - before, 1, "unchanged feed adds no damage");
     assert_eq!(guids(&d), vec![guid(1), guid(3)], "the first feed after the menu let go commits the Remove");
-    set_veil(0.0);
+    d.nav.modals.retire_where(|s| s.entry.id == modal);
 }
 
 /// Q8: the write fails (plex.tv unreachable; this script's io refuses it). The tile went at the press
@@ -324,7 +347,8 @@ fn a_write_that_fails_puts_the_tile_back_with_nothing_said() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
     script.fail_writes.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert!(rig.watchlist_remove(&guid(2), true));
     settle(&mut d, &mut rig, 10);
@@ -339,7 +363,8 @@ fn a_write_that_fails_puts_the_tile_back_with_nothing_said() {
 fn a_profile_without_a_token_reads_out_that_the_watchlist_is_unavailable() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, false);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(page(&d).list(), ListState::Unavailable);
     assert_eq!(page(&d).readout(), Some(Readout::NoToken));
@@ -350,7 +375,8 @@ fn a_profile_without_a_token_reads_out_that_the_watchlist_is_unavailable() {
 fn leaving_the_page_and_coming_back_shows_the_list_again() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(rig.held_keys(&AppArg::Watchlist).len(), 0, "nothing matched, so nothing to read back");
     super::nav_tab(&mut d, &mut rig, HomeTab::Search, None, None);
@@ -367,7 +393,8 @@ fn leaving_the_page_and_coming_back_shows_the_list_again() {
 fn a_profile_switch_is_noticed_in_the_frame_pass_and_the_new_profile_reads_once() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)]);
     let reads = script.reads.load(Ordering::SeqCst);
@@ -387,7 +414,8 @@ fn a_profile_switch_is_noticed_in_the_frame_pass_and_the_new_profile_reads_once(
 fn a_switch_to_a_profile_with_no_credential_reads_nothing() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let reads = script.reads.load(Ordering::SeqCst);
     rig.seat_watchlist_account_for_test(false);
@@ -403,7 +431,8 @@ fn a_hold_names_its_tile_by_guid_and_opens_the_catalog_menu() {
     use plx_data::watchlist::model::TileState;
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let entry = d.nav.top_page().unwrap().id;
     let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::ComingSoon, None)
@@ -421,7 +450,8 @@ fn a_failed_first_read_reads_out_and_try_again_reads_the_list() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
     script.fail_reads.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(page(&d).list(), ListState::Failed);
     assert_eq!(page(&d).readout(), Some(Readout::Unreachable));
@@ -442,7 +472,8 @@ fn an_unmatched_title_gets_its_poster_through_a_reachable_server() {
     let _serial = plx_base::testlock::serial();
     let mut script = Script::new(&THREE, true);
     Arc::get_mut(&mut script).unwrap().items[0].thumb = Some("https://image.example/one.jpg".into());
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(page(&d).art_of(0), Some((String::new(), 0)), "no server reachable: the skeleton");
 
@@ -452,7 +483,8 @@ fn an_unmatched_title_gets_its_poster_through_a_reachable_server() {
         w.items[0].thumb = Some("https://image.example/one.jpg".into());
         w.server = Some(ServerId::from_raw(1));
     }
-    let (mut d, mut rig) = mounted(&with_server);
+    let (mut d, mut harness) = mounted(&with_server);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(page(&d).art_of(0), Some(("https://image.example/one.jpg".to_string(), 1)));
 }
@@ -464,7 +496,8 @@ fn a_resume_with_the_page_live_reads_the_list_again() {
     use super::super::reread::{self, Reread};
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let mut reread = Reread::default();
     let before = script.reads.load(Ordering::SeqCst);
@@ -488,7 +521,8 @@ fn the_hold_window_follows_the_cursor_onto_a_reserved_cell() {
     let titles: Vec<(u8, String)> = (1..=12).map(|n| (n, format!("Title {n}"))).collect();
     let refs: Vec<(u8, &str)> = titles.iter().map(|(n, t)| (*n, t.as_str())).collect();
     let script = Script::new(&refs, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     assert_eq!(page(&d).tiles().len(), 12);
     // The service says more are coming than have landed: cells 12.. are reserved.
@@ -519,7 +553,8 @@ fn a_playable_titles_hold_is_the_card_menu_of_its_copy() {
     use plx_data::watchlist::model::{ServerMatch, TileState};
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let entry = d.nav.top_page().unwrap().id;
     let copy = ServerMatch { server_id: ServerId::from_raw(1), rating_key: 42, blur: None };
@@ -545,7 +580,8 @@ fn a_catalog_hold_carries_no_pms_identity_even_with_a_cached_copy() {
     use plx_data::watchlist::model::{ServerMatch, TileState};
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let entry = d.nav.top_page().unwrap().id;
     let copy = ServerMatch { server_id: ServerId::from_raw(1), rating_key: 42, blur: None };
@@ -566,10 +602,11 @@ fn a_catalog_hold_carries_no_pms_identity_even_with_a_cached_copy() {
 #[test]
 fn ok_on_a_strip_pill_asks_to_leave_the_page() {
     use plx_machine::machine::Key;
-    use plx_screens::watchlist::page::WatchlistOut;
+
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
-    let (mut d, mut rig) = mounted(&script);
+    let (mut d, mut harness) = mounted(&script);
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let mut i = 40;
     let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
@@ -588,10 +625,11 @@ fn ok_on_a_strip_pill_asks_to_leave_the_page() {
         press(&mut d, &mut rig, Key::Right);
         assert_ne!(d.focus(), before, "the Home pill is on the strip");
     }
-    rig.take_watchlist_reqs();
+    rig.retained.completed_screen_commands.clear();
     press(&mut d, &mut rig, Key::Ok);
-    let asked: Vec<WatchlistOut> = rig.take_watchlist_reqs().into_iter().map(|(_, out, _)| out).collect();
-    assert_eq!(asked, vec![WatchlistOut::Tab(HomeTab::Home)], "OK on the Home pill asks for Home");
+    assert_eq!(rig.retained.completed_screen_commands, ["watchlist:Tab(Home)"],
+        "OK on the Home pill executes Home exactly once");
+    assert!(d.top_arg() == Some(&AppArg::Home), "the product runner performs the navigation");
 }
 
 #[test]
@@ -654,7 +692,8 @@ const MOVIES: WatchlistOptionsState = WatchlistOptionsState {
 #[test]
 fn a_sort_and_filter_change_first_draws_the_frame_before_it() {
     let _serial = plx_base::testlock::serial();
-    let (mut d, mut rig) = mounted(&mixed());
+    let (mut d, mut harness) = mounted(&mixed());
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     quiet(&mut d, &mut rig, 100);
     assert_eq!(guids(&d).len(), 14, "premise: the whole list is on the page");
@@ -676,7 +715,8 @@ fn a_sort_and_filter_change_first_draws_the_frame_before_it() {
 #[test]
 fn a_remove_first_draws_the_frame_before_it() {
     let _serial = plx_base::testlock::serial();
-    let (mut d, mut rig) = mounted(&mixed());
+    let (mut d, mut harness) = mounted(&mixed());
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     quiet(&mut d, &mut rig, 100);
     let before = seen(&d);
@@ -718,7 +758,8 @@ fn open_options_menu(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) -
 #[test]
 fn a_sort_and_filter_choice_changes_the_grid_while_the_menu_is_open() {
     let _serial = plx_base::testlock::serial();
-    let (mut d, mut rig) = mounted(&mixed());
+    let (mut d, mut harness) = mounted(&mixed());
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let now = open_options_menu(&mut d, &mut rig, 20);
     rig.watchlist_set_options(&MOVIES);
@@ -744,7 +785,8 @@ fn a_sort_and_filter_choice_changes_the_grid_while_the_menu_is_open() {
 fn the_hold_menu_still_freezes_the_grid_under_it() {
     use plx_data::watchlist::model::TileState;
     let _serial = plx_base::testlock::serial();
-    let (mut d, mut rig) = mounted(&mixed());
+    let (mut d, mut harness) = mounted(&mixed());
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     let entry = d.nav.top_page().unwrap().id;
     let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::NotOnAnyServer, None).expect("on the page");
@@ -800,7 +842,8 @@ fn a_removes_caption_changes_on_the_frame_the_count_drops() {
     use plx_data::watchlist::model::TileState;
     use plx_machine::machine::Key;
     let _serial = plx_base::testlock::serial();
-    let (mut d, mut rig) = mounted(&named());
+    let (mut d, mut harness) = mounted(&named());
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     quiet(&mut d, &mut rig, 100);
     assert_eq!(caption_and_count(&d), (Some("T1".into()), Some(Count::All(14))), "premise: the first title is focused");
@@ -828,7 +871,8 @@ fn a_removes_caption_changes_on_the_frame_the_count_drops() {
 fn a_filters_caption_changes_on_the_frame_the_count_drops() {
     use plx_machine::machine::Key;
     let _serial = plx_base::testlock::serial();
-    let (mut d, mut rig) = mounted(&named());
+    let (mut d, mut harness) = mounted(&named());
+    let mut rig = harness.bridge();
     settle(&mut d, &mut rig, 2);
     quiet(&mut d, &mut rig, 100);
     for (i, k) in [Key::Right, Key::Right].into_iter().enumerate() {

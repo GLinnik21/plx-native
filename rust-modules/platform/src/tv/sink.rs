@@ -9,7 +9,7 @@ pub use super::plane::PlaneCompletion;
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
 /// comment at the top of `src/video_plane.c`.
 pub const VP_NONE: c_int = 0;
-/// The legacy ACB plane; controlled URI experiments require this mode and a boot-created handle.
+/// The legacy ACB plane; controlled URI experiments require this mode.
 pub const VP_ACB: c_int = 1;
 pub const VP_EXPORTED: c_int = 2;
 
@@ -99,15 +99,16 @@ pub trait DisplaySink: Sync {
     unsafe fn destroy_window(&self, mt: &MainThread);
     unsafe fn plane_create(&self, mt: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long;
     /// Make `handle` (a value [`plane_create`](Self::plane_create) returned) the one every other
-    /// `plane_*` verb addresses; true when the sink knows it. The boot creates up to two handles
-    /// (`tv::plane::PlaneHandle`), and only the plane owner calls this, when it grants a bind: one
+    /// `plane_*` verb addresses; true when the sink knows it. A process creates up to two handles
+    /// (`tv::plane::PlaneHandle`: Feed's at the boot, the URI engine's on demand), and only the plane owner calls this, when it grants a bind: one
     /// binding at a time makes the current handle the bound one. A sink that holds one handle has
     /// nothing to select, and says so.
     unsafe fn plane_select(&self, _mt: &MainThread, _handle: c_long) -> bool { false }
     /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1) for the CURRENT handle. A
-    /// created handle alone is not that. Only meaningful at the boot, right after that handle's
-    /// create: the boot reads it once per handle into the plane owner (`HandleSeat::initialized`),
-    /// which is what the paced URI bind's gate and the product binding read afterwards.
+    /// created handle alone is not that. Only meaningful right after that handle's create: the plane
+    /// owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, when its
+    /// first source is offered, for the URI engine's) into `HandleSeat::initialized`, which is what the paced URI
+    /// bind's gate and the product binding read afterwards.
     unsafe fn plane_initialized(&self, mt: &MainThread) -> bool;
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;
@@ -327,9 +328,10 @@ pub const SCRIPTED_PLAYING_TASK: c_long = 4;
 
 /// A display sink for tests of the plane owner and of the backends that use it. Every verb is
 /// refused as `NoSink` does except the plane unload (whose answer a test scripts), the completion
-/// mailbox (which a test, or the unload itself with `complete_at_once`, fills), and the ACB bind
-/// verbs, which answer success unless a test lists them in `failing` and record each call in
-/// `calls` (`plane_send_video_data` records the length of its payload, never its content).
+/// mailbox (which a test, or the unload itself with `complete_at_once`, fills), the handle create
+/// (which answers `create_ids` in order, the last repeating, and 0 when none is scripted), and the
+/// ACB bind verbs, which answer success unless a test lists them in `failing` and record each call
+/// in `calls` (`plane_send_video_data` records the length of its payload, never its content).
 #[cfg(any(test, feature = "test-support"))]
 pub struct ScriptedPlaneSink {
     pub unload_answer: std::sync::Mutex<PlaneUnload>,
@@ -339,6 +341,8 @@ pub struct ScriptedPlaneSink {
     pub unloads: std::sync::atomic::AtomicUsize,
     /// What `plane_initialized` answers.
     pub initialized: std::sync::atomic::AtomicBool,
+    /// What each `plane_create` answers: the handle id, one per call, the last repeating.
+    pub create_ids: std::sync::Mutex<Vec<c_long>>,
     /// Verb names (`"plane_media_id"`, ...) that answer failure.
     pub failing: std::sync::Mutex<Vec<&'static str>>,
     /// Every ACB verb called, in order.
@@ -354,6 +358,7 @@ impl ScriptedPlaneSink {
             mailbox: super::plane::CompletionQueue::new(8),
             unloads: std::sync::atomic::AtomicUsize::new(0),
             initialized: std::sync::atomic::AtomicBool::new(true),
+            create_ids: std::sync::Mutex::new(Vec::new()),
             failing: std::sync::Mutex::new(Vec::new()),
             calls: std::sync::Mutex::new(Vec::new()),
         }
@@ -361,6 +366,10 @@ impl ScriptedPlaneSink {
     pub fn unload_count(&self) -> usize { self.unloads.load(std::sync::atomic::Ordering::Relaxed) }
     /// The ACB verbs called so far, in order.
     pub fn calls(&self) -> Vec<String> { self.calls.lock().unwrap().clone() }
+    /// The player types `plane_create` was asked for so far, in order.
+    pub fn created_player_types(&self) -> Vec<c_int> {
+        self.calls().iter().filter_map(|call| call.strip_prefix("plane_create ")?.parse().ok()).collect()
+    }
     /// Record `verb` and answer 1 (accepted) unless it is listed in `failing`.
     fn answer(&self, verb: &'static str, detail: String) -> c_int {
         self.calls.lock().unwrap().push(if detail.is_empty() { verb.to_owned() } else { format!("{verb} {detail}") });
@@ -370,10 +379,20 @@ impl ScriptedPlaneSink {
 
 #[cfg(any(test, feature = "test-support"))]
 impl DisplaySink for ScriptedPlaneSink {
-    refuse_window_verbs!();
+    unsafe fn create_window(&self, _mt: &MainThread) -> *const c_char { std::ptr::null() }
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn place_window(&self, _mt: &MainThread, _src_w: c_int, _src_h: c_int, _dst_x: c_int,
+        _dst_y: c_int, _dst_w: c_int, _dst_h: c_int) -> c_int { 0 }
+    unsafe fn destroy_window(&self, _mt: &MainThread) {}
     refuse_dev_plane_verbs!();
     fn window_mode(&self) -> c_int { VP_ACB }
     fn window_id(&self) -> &'static CStr { c"" }
+    unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, player_type: c_int) -> c_long {
+        let asked = self.calls.lock().unwrap().iter().filter(|call| call.starts_with("plane_create ")).count();
+        self.calls.lock().unwrap().push(format!("plane_create {player_type}"));
+        let ids = self.create_ids.lock().unwrap();
+        ids.get(asked).or(ids.last()).copied().unwrap_or(0)
+    }
     unsafe fn plane_initialized(&self, _mt: &MainThread) -> bool {
         self.initialized.load(std::sync::atomic::Ordering::Relaxed)
     }

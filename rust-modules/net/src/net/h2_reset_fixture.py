@@ -12,7 +12,6 @@ import ssl
 import subprocess
 import sys
 import tempfile
-import time
 
 
 def frame(kind, flags, stream, payload=b""):
@@ -73,7 +72,22 @@ def main():
                         # Literal without indexing, indexed :status name, three ASCII digits.
                         peer.sendall(frame(1, 4, stream, b"\x08\x03" + str(status).encode("ascii")))
                         peer.sendall(frame(0, 0, stream, b"short"))  # no END_STREAM
-                        time.sleep(0.05)
+                        # A timer cannot prove the client consumed HEADERS under load.
+                        # Its PING ACK fences processing of the preceding status and DATA.
+                        ping = b"headers!"
+                        peer.sendall(frame(6, 0, 0, ping))
+                        while True:
+                            ack = receive(peer, 9)
+                            ack_length = int.from_bytes(ack[:3], "big")
+                            assert ack_length <= 16384
+                            ack_payload = receive(peer, ack_length)
+                            ack_kind, ack_flags = ack[3], ack[4]
+                            ack_stream = int.from_bytes(ack[5:], "big") & 0x7fffffff
+                            if ack_kind == 4 and not ack_flags & 1:
+                                peer.sendall(frame(4, 1, 0))
+                            if ack_kind == 6 and ack_flags & 1 and ack_stream == 0:
+                                assert ack_payload == ping
+                                break
                         peer.sendall(frame(3, 0, stream, (2).to_bytes(4, "big")))  # INTERNAL_ERROR
                         print("h2-reset-sent", flush=True)
                         break

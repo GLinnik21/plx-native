@@ -18,6 +18,10 @@ impl ScreenArg for Arg {
     fn same_instance(&self, other: &Self) -> bool { self == other }
 }
 struct TestHost;
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
@@ -60,6 +64,7 @@ impl crate::registry::MetadataLike for TestHost {
 // container lifecycle seams, without requiring a configured server or a graphics context.
 fn body(entry: EntryId, rk: &str) -> DetailScreen {
     DetailScreen {
+        caption_policy: crate::registry::captions::policy(),
         entry, sid: ServerId::UNSET, rk: rk.into(), pending_season: None,
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
         local_by_key: Default::default(), prev_by_key: Default::default(), gone: Default::default(), return_pending: false,
@@ -116,13 +121,25 @@ impl Rig<TestHost> for TestRig {
     }
     fn deliver(&mut self, _: MachineId, _: &AppMsg, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) -> Handled { Handled::No }
     fn timer(&mut self, _: MachineId, _: TimerId, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
-    fn app_fx(&mut self, _: MachineId, effect: AppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {
-        match effect {
-            AppFx::Content(ContentReq::Push(arg)) => self.opened.push(arg),
-            AppFx::Content(ContentReq::Back) => self.backs += 1,
-            AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd)) => self.asked.push(cmd),
+    fn app_fx(&mut self, _: MachineId, effect: crate::registry::InlineAppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {
+        if let crate::registry::InlineAppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd)) = effect {
+            self.asked.push(cmd);
+        }
+    }
+    fn run_yielded_app_command(&mut self, d: &mut Dispatcher<TestHost>,
+        report: &mut plx_ui::dispatch::FrameReport, tap: &mut dyn plx_ui::dispatch::Tap<TestHost>) -> Option<u32> {
+        let command = d.take_app_command()?;
+        let outcome = match &command.effect {
+            Ok(_) => plx_machine::machine::AppCommandOutcome::Completed,
+            Err(outcome) => *outcome,
+        };
+        match command.effect {
+            Ok(crate::registry::ExternalAppFx::Content(ContentReq::Push(arg))) => self.opened.push(arg),
+            Ok(crate::registry::ExternalAppFx::Content(ContentReq::Back)) => self.backs += 1,
             _ => {}
         }
+        Some(d.resume_app_command(self, command.id, outcome,
+            vec![], report, tap).unwrap())
     }
     fn log(&mut self, _: &str) {}
     fn prepare(&mut self, _: &mut Budget, _: &mut Present) {}
@@ -188,6 +205,7 @@ fn first(d: &Dispatcher<TestHost>, group: GroupId) -> FocusKey<u32> {
     let s = screen(d);
     let measure = FixtureMeasure;
     let cx = Cx::<TestHost> { views: (), tick: tick(16), measure: &measure,
+        modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint,
         press: Default::default(), focus: Default::default(), owner: InputOwner::Entry(s.entry) };
     let r = Rect::new(0.0, 0.0, 1.0, 1.0);
     Focusable::<TestHost>::seat(s, group, Placed { rect: r, rest_rect: r, clip: Rect::FULL, index: Some(0) }, &cx)
@@ -429,6 +447,7 @@ fn stray_runs(detail: Detail, server_values: &[&str]) -> Vec<String> {
         let inst = entry.inst.as_mut().expect("mounted detail");
         let measure = FixtureMeasure;
         let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: Default::default(), focus: Default::default(), owner };
         let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
         plx_gfx::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
@@ -498,6 +517,7 @@ fn census(detail: Detail) -> std::collections::BTreeMap<(u64, bool), usize> {
         let inst = entry.inst.as_mut().expect("mounted detail");
         let measure = FixtureMeasure;
         let cx = Cx::<TestHost> { views: (), tick: tick(32), measure: &measure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: Default::default(), focus: Default::default(), owner };
         let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
         plx_gfx::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
@@ -915,6 +935,7 @@ fn a_press_never_crosses_the_cards_between_the_head_and_a_window_that_slid_away(
     let step = |d: &Dispatcher<TestHost>, from: FocusKey<u32>, dir: Dir| {
         let measure = FixtureMeasure;
         let cx = Cx::<TestHost> { views: (), tick: tick(16), measure: &measure,
+            modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint,
             press: Default::default(), focus: Default::default(), owner: InputOwner::Entry(from.entry) };
         Focusable::<TestHost>::neighbour(screen(d), from, dir, &cx)
     };
@@ -963,7 +984,7 @@ fn a_refused_way_back_read_is_repeated_while_focus_stands_at_the_leading_edge() 
 fn related_cards_are_named_in_head_then_listing_order() {
     let global = |d: &Detail, which, i| {
         let keys = std::collections::HashMap::new();
-        plx_ui::cards::CardSource::<TestHost>::global(&cards::Cards::new(which, d, &keys, &keys), i)
+        plx_ui::cards::CardSource::<TestHost>::global(&cards::Cards::new(which, d, crate::registry::captions::policy(), &keys, &keys), i)
     };
     let (opening, slid) = (with_tail(0), with_tail(12));
     assert_eq!(global(&opening, cards::Which::Related, 2), 2, "the last head card");

@@ -106,6 +106,8 @@ impl Initial {
             srcs: Vec::new(),
             seen: self.seen,
             seen_facts: self.seen_facts,
+            seen_clients: ClientKeys::default(),
+            scope_pins: Vec::new(),
             hub_gen: self.generation,
             last_sections_gen: self.sections_generation,
             catalog_gen: self.catalog_generation,

@@ -99,6 +99,21 @@ EXIT_DEFINED=$(awk '$8 == "exit" && $4 == "FUNC" && $5 == "GLOBAL" && $6 == "DEF
   || fail "libc exit interposer: .dynsym must define exit exactly once (FUNC GLOBAL DEFAULT) and import no exit@... (src/exit.c, EXIT_INTERPOSER_LDFLAG)"
 ok "exit exported GLOBAL/DEFAULT and not imported"
 
+echo "== libc access interposer =="
+# src/access.c defines libc's `access` in the executable so that the `access()` the GPU driver makes
+# on four debug-switch paths under /tmp (API_PRINT at the top of every GL call, the other three per
+# draw, swap or glUseProgram; ~8.5 us of kernel time each on the webOS 5.6.2 TV, where they fail)
+# binds to the user-space answer instead of the kernel's. Same rule as
+# `exit` above: it only binds when the executable's .dynsym defines it, exactly one `access` row,
+# FUNC GLOBAL DEFAULT, and no `access@...` import row (readelf prints a definition bare and an import
+# with its version). `faccessat` is a different symbol and is not counted.
+ACCESS_ROWS=$(awk '$8 == "access" || index($8, "access@") == 1 { n++ } END { print n + 0 }' <<<"$DYN_SYMS")
+ACCESS_DEFINED=$(awk '$8 == "access" && $4 == "FUNC" && $5 == "GLOBAL" && $6 == "DEFAULT" && $7 != "UND" { n++ } \
+                      END { print n + 0 }' <<<"$DYN_SYMS")
+[ "$ACCESS_ROWS" -eq 1 ] && [ "$ACCESS_DEFINED" -eq 1 ] \
+  || fail "libc access interposer: .dynsym must define access exactly once (FUNC GLOBAL DEFAULT) and import no access@... (src/access.c, ACCESS_INTERPOSER_LDFLAG)"
+ok "access exported GLOBAL/DEFAULT and not imported"
+
 echo "== crash-report identity =="
 # Two facts a Sentry crash report is built out of, and BOTH fail silently when wrong: a frame comes
 # back `symbolicatorStatus: "missing_symbol"` with no error attached, which is indistinguishable
