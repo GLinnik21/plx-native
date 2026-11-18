@@ -479,6 +479,14 @@ pub trait DimSink {
     fn in_flight(&mut self, pending: bool);
     /// Paint one surface's dim through `field` at `alpha`.
     fn dim(&mut self, field: &crate::underlay::UnderlayField, alpha: f32);
+    /// The frame's lowest dim as the field stands once [`ModalUnderlay::sync`] has run, i.e. the dim the
+    /// glass is about to composite under. The host baked a glass menu's frost body at the head of the
+    /// frame from a PREDICTION of it (`ModalStack::first_dim` before the sync), and a field that
+    /// latched in this very sync makes the prediction wrong: the glass then draws that body for one
+    /// frame (`popover_glass::draw_shadowed`). Nothing else presents the frame whose head bakes the right
+    /// one, so the sink does: on a frost baked for another dim it keeps the loop turning for exactly
+    /// that one frame, the way [`in_flight`](Self::in_flight) does for the read itself.
+    fn dim_settled(&mut self, dim: Option<crate::frame::backdrop::Dim>);
 }
 
 /// The production [`DimSink`].
@@ -526,6 +534,11 @@ impl DimSink for GlDims<'_> {
         if pending {
             // A frame for the read to land in, without claiming the page changed — which would
             // re-capture the host and restart the read it is waiting on.
+            self.present.note(plx_machine::present::PresentEvent::Wake);
+        }
+    }
+    fn dim_settled(&mut self, dim: Option<crate::frame::backdrop::Dim>) {
+        if crate::popover::host::frost_body_stale(dim) {
             self.present.note(plx_machine::present::PresentEvent::Wake);
         }
     }
@@ -1005,6 +1018,11 @@ impl<H: Host> ModalStack<H> {
         // surface on a frame that captured nothing still queues nothing.
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
+            // The field may have latched in that sync, after the head of the frame predicted the dim
+            // the frost body was baked for: tell the sink what the glass will composite under.
+            if let Some(&(_, a)) = dims.first() {
+                sink.dim_settled(Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, a)));
+            }
         }
         for (id, a) in dims {
             let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);

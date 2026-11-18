@@ -1175,6 +1175,15 @@ pub mod host {
         cache(|c| c.frost_body_for(dim))
     }
 
+    /// Does a frost stand whose body was baked for ANOTHER dim than `dim`, the one this frame's glass
+    /// will draw under? The one place [`frost_body_current`]'s verdict is turned into "a frame is owed":
+    /// `GlDims::dim_settled` asks it once the field has latched, and answers it with a wake. `false`
+    /// when no frost can be drawn at all (a failed build or bake latches the frost off, and a body
+    /// nothing will ever rebake is not a reason to present for ever).
+    pub fn frost_body_stale(dim: Option<crate::frame::backdrop::Dim>) -> bool {
+        cache(|c| c.frost_possible() && c.frost_read().is_some() && !c.frost_body_for(dim))
+    }
+
     /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
     /// field is still being read off the GPU: the ground quad bakes the dim in, so a ground taken
     /// now would keep the dim of the field BEFORE the read lands for as long as the panel stays

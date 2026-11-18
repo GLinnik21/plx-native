@@ -379,6 +379,12 @@ struct FakeFb {
     in_flight: bool,
     /// Did this frame capture the host (`DimSink::captured`)?
     captured: bool,
+    /// The dim the host's frost body was last baked for (`None`: no frost stands): what
+    /// `popover::host::begin_frame` bakes from `ModalStack::first_dim` at the head of a frame
+    /// ([`FakeFb::head`]).
+    baked: Option<Option<crate::frame::backdrop::Dim>>,
+    /// Frames asked for because a frost body was baked for another dim (`DimSink::dim_settled`).
+    wakes: u32,
 }
 
 impl FakeFb {
@@ -394,7 +400,14 @@ impl FakeFb {
             reduced: 0.0,
             in_flight: false,
             captured: false,
+            baked: None,
+            wakes: 0,
         }
+    }
+    /// The head of a frame: the host bakes the frost's body from the pure prediction of the lowest dim,
+    /// before this frame's sync (`bake_frost`).
+    fn head(&mut self, d: &Dispatcher<FixtureHost>) {
+        self.baked = Some(d.nav.modals.first_dim(1.0));
     }
     /// The previous frame is swapped and the page is drawn again (live, or served from the
     /// snapshot) at the start of the next.
@@ -441,6 +454,11 @@ impl super::modal::DimSink for FakeFb {
     fn dim(&mut self, _field: &crate::underlay::UnderlayField, alpha: f32) {
         self.events.push("dim");
         self.level *= 1.0 - alpha;
+    }
+    fn dim_settled(&mut self, dim: Option<crate::frame::backdrop::Dim>) {
+        if self.baked.is_some_and(|b| b != dim) {
+            self.wakes += 1;
+        }
     }
 }
 
@@ -526,6 +544,46 @@ fn the_page_read_lands_a_frame_after_it_is_queued_and_holds_the_ground_until_the
     dims_frame(&mut d, &rig, &mut fb);
     assert!(d.nav.modals.underlay.field().is_latched());
     assert!(!fb.in_flight, "landed: the ground may be taken and the loop may rest");
+}
+
+/// **A frost body baked for a dim the field then changed is corrected by one more frame, and no more.**
+/// The host bakes the body at the head of a frame from `first_dim` BEFORE the sync, and the read a
+/// settled menu waits on lands inside that sync (`FIELD_READ_LAG_SWAPS`): the glass draws the old body
+/// for that frame (`draw_shadowed`'s stale case, which holds the ground), and the head that bakes the
+/// right one only comes if a frame is presented. Nothing else guarantees one — the appear spring has
+/// rested and the keepalive is two seconds away — so `DimSink::dim_settled` asks for it, once.
+///
+/// Observed RED with `draw_scrims_on` not telling the sink: `wakes` stayed 0 on the landing frame.
+#[test]
+fn a_frost_body_baked_before_the_field_latched_is_redrawn_once_and_then_the_loop_rests() {
+    let (mut d, mut rig, _) = booted();
+    let _stand_in = crate::underlay::stand_in_upload_for_test(7);
+    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, a).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    let mut fb = FakeFb::new(0.5);
+
+    // The capture frame queues the read; the head baked the flat ink, which still IS the dim.
+    fb.captured = true;
+    fb.head(&d);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.wakes, 0, "nothing latched yet: the prediction holds");
+
+    // The read lands inside this frame's sync, after the head baked from the unlatched field.
+    fb.frame(0.5);
+    fb.captured = false;
+    fb.head(&d);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(d.nav.modals.underlay.field().is_latched(), "the read landed");
+    assert_eq!(fb.wakes, 1, "the body was baked for the flat ink and the glass drew the field's: one more frame");
+
+    // That frame's head bakes from the latched field: the prediction holds, and the loop rests.
+    for _ in 0..3 {
+        fb.frame(0.5);
+        fb.head(&d);
+        dims_frame(&mut d, &rig, &mut fb);
+    }
+    assert_eq!(fb.wakes, 1, "redrawn once, then quiet");
 }
 
 /// **The page is read on the frame that captured it, before any dim is seen.** That frame's GPU
