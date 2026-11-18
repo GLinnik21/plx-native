@@ -1014,6 +1014,7 @@ class SelfTest(unittest.TestCase):
                          "tv-session by-id contract (grammar, a title's element needs --rk, nonce match)",
                          "tv-session FIFO quoting (any one-word token is sent as one remote word; a token with whitespace is not sent)",
                          "tv-session key door (focus:/press:/state: only through their verbs; a refusal sends nothing)",
+                         "tv-session usage text (the whole command and option list, ending on --keep)",
                          "tv-session identity contract"):
             self.assertIn(contract, out)
 

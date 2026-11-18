@@ -13,7 +13,7 @@
 //! [`A11yPath::parse_id`], whose result exists to be COMPARED with a projected path
 //! ([`Focusable::a11y_find`]); it is never logged and never kept.
 //!
-//! An element's [`A11y::label`] and [`A11y::subject`] (the ratingKey of a catalog card) are runtime
+//! An element's [`A11y::label`] and [`A11y::subject`] (the ratingKey of the title the element acts on) are runtime
 //! text. They never reach a `LogLine` or a heartbeat; the state file a test reads back is where they
 //! are written. A `press:<id>@<subject>` token records its `@<subject>` text in the recording's `in`
 //! row, which on a press that resolves equals the element's subject, so a recording of a

@@ -81,8 +81,10 @@ arguments, and its time is the `dt` it is handed.
    **A new focusable element answers an accessibility id.** Tests and agents reach it with
    `focus:<id>` / `press:<id>` (`tools/a11y.py`), not by walking keys to it, so an element that
    cannot be named cannot be tested. An element whose press acts on a title (a card, a Home hero
-   Play, Info or Watchlist button, an item-menu row) also carries that title's ratingKey as its `subject`
-   (`A11y::with_subject`), because the harness refuses to press it without naming the title; a new such
+   Play, Info or Watchlist button, a Detail hero control that plays or writes, an item-menu row) also carries
+   the ratingKey it ACTS ON as its `subject` (`A11y::with_subject`), because the harness refuses to press it
+   without naming the title (a hero control's key is not always the page's: Detail's Mark watched writes a
+   started show's on-deck episode, `hero_control_subject`); a new such
    shape joins `SUBJECT_BEARING` in `tools/a11y.py` and `a11y_subject_bearing` in `tools/tv-session.sh`
    (`tests/test_a11y_tool.py` counts the `with_subject` calls per file). It gets its id from the three `Focusable` hooks (`a11y`,
    `a11y_elems`, `a11y_find`, `screen.rs`) or from the shared widget it composes (`card_a11y` for a

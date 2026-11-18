@@ -49,7 +49,8 @@ an app that never answered or a FIFO that is not there; 2 is an id, subject or t
 
 A title is pressed by NAME. A `press` (or a `send press:<id>`) of an element whose subject is a title (a
 card, a Detail episode or season tab, a Filmography credit, the catalog page's pill, a Home hero Play, Info or
-Watchlist button, an item-menu row: `SUBJECT_BEARING`) needs `--subject <ratingKey>` and exits 2 without it, because the
+Watchlist button, a Detail hero Play, Restart, Trailer, Mark watched, Mark unwatched or Watchlist button, an
+item-menu row: `SUBJECT_BEARING`) needs `--subject <ratingKey>` and exits 2 without it, because the
 simulator boots against the owner's real server unless it is aimed at a mock, and OK on a title can play it.
 The library function `press` (`press_token`) stays unguarded for a script that means an element with no
 subject. `send` writes ONE word: a token with whitespace in it (`"back press:card"`) is refused, because the
@@ -112,11 +113,19 @@ def valid_subject(text):
 #   home.hero.play       screens/src/home/mod.rs: `hero.play|info|watchlist`, the hero item's ratingKey (three
 #   home.hero.info       explicit ids, not a glob: `home.hero.action`, the failure read-out's retry, is not a title's
 #   home.hero.watchlist  control and stays pressable)
+#   detail.hero.play            screens/src/detail/mod.rs `hero_control_subject`: the Detail hero's six controls that
+#   detail.hero.restart         PLAY or WRITE, each named by the ratingKey it acts on and not by the route's: Play and
+#   detail.hero.trailer         Restart the episode (a show) or the picked version's movie, Mark watched / unwatched
+#   detail.hero.mark_watched    the ON-DECK episode of a started show (`hero::hero_episode`, so a chain `press
+#   detail.hero.mark_unwatched  detail.episodes.text.0 --rk E`, `press detail.hero.go_to_show`, `press
+#   detail.hero.watchlist       detail.hero.mark_watched` cannot mark an episode nobody named), Watchlist and Trailer
+#                               the page's own title. Explicit ids, not a glob: `go_to_show`, `alt`, `version` and
+#                               `more` only navigate or open a menu and stay pressable bare
 #   itemmenu.*           screens/src/item_menu.rs: `<row>` and `version.<n>`, the menu's item's ratingKey
 #
 # fnmatch globs, which are spelled exactly like the `case` patterns of `a11y_subject_bearing` in
 # tools/tv-session.sh (tests/test_a11y_tool.py reads both and holds them equal). Not subject-bearing, so never
-# in the list: `detail.hero.*` (Detail is only reached through a named route), `detail.about.card`,
+# in the list: `detail.hero.go_to_show|alt|version|more` (they navigate or open a menu), `detail.about.card`,
 # `under-posters.row.3` and every other `*.row.*` outside Filmography.
 #
 # The rows of a Catalog item menu have NO ratingKey to name (a Watchlist title no server holds: its identity is a
@@ -124,7 +133,9 @@ def valid_subject(text):
 # because they act on a catalog title. `home.hero.action` is not in the list: it has no title (the failure
 # read-out's retry, shown while there is no hero) and a bare press of it goes out.
 SUBJECT_BEARING = ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
-                   "home.hero.play", "home.hero.info", "home.hero.watchlist", "itemmenu.*")
+                   "home.hero.play", "home.hero.info", "home.hero.watchlist",
+                   "detail.hero.play", "detail.hero.restart", "detail.hero.trailer", "detail.hero.mark_watched",
+                   "detail.hero.mark_unwatched", "detail.hero.watchlist", "itemmenu.*")
 
 
 def subject_bearing(id_):

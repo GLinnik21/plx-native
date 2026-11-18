@@ -294,13 +294,16 @@ with whitespace in it is refused too (`key back "ok press:<card>"`): the app cut
 whitespace, so it would be two tokens, the second a press nothing had checked.
 
 **Prefer `focus` / `press` by id over key walks.** A walk of `down down right ok` breaks when a row
-gains a card; an id (`watchlist.grid.card.7`, `detail.hero.play`; the grammar is in `tools/a11y.py`)
+gains a card; an id (`watchlist.grid.card.7`, `detail.hero.go_to_show`; the grammar is in `tools/a11y.py`)
 names the element whatever the row holds. Ids resolve in the namespace of whoever owns input, so a
 menu answers `itemmenu.*`, not the screen under it. A press of any element whose subject is a title
 (a card `*.card.*`, a Detail episode `detail.episodes.*`, where OK on a still PLAYS it, a season tab, a
 Filmography credit, the catalog pill, a Home hero Play, Info or Watchlist button `home.hero.play|info|watchlist`
 (the carousel advances by itself; the failure read-out's retry, `home.hero.action`, names no title and is
-pressed bare), an item-menu row `itemmenu.*`; `a11y_subject_bearing` in `tools/tv-session.sh`) needs `--rk
+pressed bare), a Detail hero control that plays or writes `detail.hero.play|restart|trailer|mark_watched|mark_unwatched|watchlist`
+(its subject is the ratingKey it ACTS on: Mark watched on a started show is the on-deck episode, not the page's; `go_to_show`,
+`alt`, `version` and `more` only navigate or open a menu and are pressed bare), an item-menu row `itemmenu.*`;
+`a11y_subject_bearing` in `tools/tv-session.sh`) needs `--rk
 <ratingKey>` so a re-sorted row, a moved hero or a menu opened on another card cannot press a different title, and on a real account that title's
 `ratingKey` must be one you read from the log (the boot rule: never `ok` a title you have not read). `state` is the
 structured readback: it sends a random nonce and reads `plxnative-a11y.json` until the nonce comes

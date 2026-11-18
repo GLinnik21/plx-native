@@ -237,7 +237,9 @@ can play it, so the command line refuses to press one UNNAMED: `python3 tools/a1
 <id>` WITHOUT `--subject <ratingKey>` (and `send press:<id>` without an `@<subject>`) exits 2 and sends
 nothing when the id is of an element whose subject is a title (a card `*.card.*`, a Detail episode
 `detail.episodes.*`, a season tab, a Filmography credit, the catalog pill, a Home hero Play, Info or Watchlist
-button `home.hero.play|info|watchlist` (not the failure read-out's retry, `home.hero.action`), an item-menu row
+button `home.hero.play|info|watchlist` (not the failure read-out's retry, `home.hero.action`), a Detail hero control
+that plays or writes `detail.hero.play|restart|trailer|mark_watched|mark_unwatched|watchlist` (its subject is the ratingKey it acts
+on, on a started show's Mark watched the on-deck episode; `go_to_show`, `alt`, `version` and `more` stay bare), an item-menu row
 `itemmenu.*`; `SUBJECT_BEARING` in `tools/a11y.py`). Read the ratingKey from `state`
 first. The library function `a11y.press` stays unguarded, for a script that drives the mock. `a11y.py
 send` writes ONE token: a word with whitespace in it (`send "back press:<card>"`) exits 2 and sends

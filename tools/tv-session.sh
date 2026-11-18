@@ -11,8 +11,8 @@
 #   tv-session.sh press <id> [--rk <ratingKey>]
 #                                focus that element and press OK; an element whose subject is a title
 #                                (a card, a Detail episode or season tab, a Filmography credit, the catalog
-#                                pill, a Home hero Play/Info/Watchlist button, an item-menu row) needs --rk: see
-#                                "BY ID" below
+#                                pill, a Home hero Play/Info/Watchlist or Detail hero Play/Restart/Mark/
+#                                Watchlist button, an item-menu row) needs --rk: see "BY ID" below
 #   tv-session.sh state [--out FILE]
 #                                what is on screen, by id: the focused id, the groups, every element
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
@@ -134,8 +134,11 @@
 # ratingKey you have not read: `press` refuses, without `--rk`, any id whose element's subject is a title (a
 # card `*.card.*`, a Detail episode `detail.episodes.*` (OK on a still PLAYS it) or season tab, a Filmography
 # credit, the catalog pill, a Home hero button `home.hero.play|info|watchlist` (the carousel advances by itself,
-# but `home.hero.action`, the failure read-out's retry, names no title and is pressed bare), an item-menu
-# row `itemmenu.*`: `a11y_subject_bearing`), and the app refuses the press when the element now there carries
+# but `home.hero.action`, the failure read-out's retry, names no title and is pressed bare), a Detail hero
+# control that plays or writes `detail.hero.play|restart|trailer|mark_watched|mark_unwatched|watchlist` (its
+# subject is the ratingKey it ACTS on, which on a started show's Mark watched is the on-deck episode, not the
+# page's; `go_to_show`, `alt`, `version` and `more` only navigate or open a menu and are pressed bare), an
+# item-menu row `itemmenu.*`: `a11y_subject_bearing`), and the app refuses the press when the element now there carries
 # another subject (`a11y: refused press <id> subject_mismatch ...` in the event log). `key` refuses a
 # `focus:`, `press:` or `state:` word, so there is ONE door per action, and a word with whitespace in it is
 # refused (the app would cut it into two tokens, the second past every check here).
@@ -1095,6 +1098,24 @@ selftest_fifo() {
   ok "tv-session key door (focus:/press:/state: only through their verbs; a refusal sends nothing)"
 }
 
+# The usage text ends on the header's last option row (`--keep`) and holds every option whole: it began as a line
+# count that stopped inside `--remote` once the list outgrew it.
+selftest_usage() {
+  local out last
+  out=$(usage) || { bad "usage: the header's end marker (# SCREEN OFF is a panel state) is gone"; return 1; }
+  case "$(printf '%s\n' "$out" | sed -n 1p)" in
+    "tv-session.sh "*) ;;
+    *) bad "usage does not start at the header's title"; return 1 ;;
+  esac
+  last=$(printf '%s\n' "$out" | tail -n 1)
+  case "$last" in
+    "  --keep "*) ;;
+    *) bad "usage ends at '$last', not at the header's last option row (--keep; if an option was added after it, move this check)"; return 1 ;;
+  esac
+  printf '%s\n' "$out" | grep -q 'never a router port forward' || { bad "usage stops inside the --remote entry"; return 1; }
+  ok "tv-session usage text (the whole command and option list, ending on --keep)"
+}
+
 # Run one door (`cmd_key`, `cmd_press`, ...) in a subshell, the set and its lock stubbed out: each `tv` call is one
 # line in `$1`. Prints "<exit status> <tokens sent>". `exit` inside a door only ends the subshell.
 selftest_door() {  # $1 = scratch file, then the door and its words
@@ -1121,6 +1142,8 @@ selftest_key_doors_in() {  # $1 = scratch file
     "cmd_key back press:home.continue.card.0" "cmd_key press:home.hero.play back"
     "cmd_press home.hero.play" "cmd_press home.hero.info" "cmd_press home.hero.watchlist"
     "cmd_press itemmenu.play" "cmd_press itemmenu.watchlist_remove" "cmd_press itemmenu.version.0"
+    "cmd_press detail.hero.play" "cmd_press detail.hero.restart" "cmd_press detail.hero.trailer"
+    "cmd_press detail.hero.mark_watched" "cmd_press detail.hero.mark_unwatched" "cmd_press detail.hero.watchlist"
     "cmd_press home.shelf.2.card.5" "cmd_press home.hero.play --rk" "cmd_press home.hero.play --rk 1+2"
   )
   local door
@@ -1140,7 +1163,9 @@ press:x")" = "2 0" ] || { bad "key sent a word with a newline in it"; return 1; 
   [ "$(selftest_door "$m" cmd_press home.hero.play --rk 12)" = "0 1" ] && grep -q "'press:home.hero.play@12'" "$m" || { bad "press --rk did not send press:<id>@<rk>"; return 1; }
   [ "$(selftest_door "$m" cmd_press itemmenu.watchlist_remove --rk 7)" = "0 1" ] && grep -q "'press:itemmenu.watchlist_remove@7'" "$m" || { bad "an item-menu press naming its title was not sent"; return 1; }
   [ "$(selftest_door "$m" cmd_press home.hero.action)" = "0 1" ] && grep -q "'press:home.hero.action'" "$m" || { bad "a bare press of the failure read-out's retry (no title) was not sent"; return 1; }
-  [ "$(selftest_door "$m" cmd_press detail.hero.play)" = "0 1" ] && grep -q "'press:detail.hero.play'" "$m" || { bad "a Detail hero press (no title to name) was not sent"; return 1; }
+  [ "$(selftest_door "$m" cmd_press detail.hero.mark_watched --rk 200622)" = "0 1" ] && grep -q "'press:detail.hero.mark_watched@200622'" "$m" || { bad "a Detail hero press naming its title was not sent"; return 1; }
+  # a Detail hero control that only navigates or opens a menu acts on no title, so a bare press of it goes out
+  [ "$(selftest_door "$m" cmd_press detail.hero.go_to_show)" = "0 1" ] && grep -q "'press:detail.hero.go_to_show'" "$m" || { bad "a bare press of the Detail hero's Go to Show (it only navigates) was not sent"; return 1; }
   return 0
 }
 
@@ -1204,25 +1229,29 @@ nav.home"; do
     ! a11y_id_ok "$aid" || { bad "a11y_id_ok accepted a malformed id: $aid"; return 1; }
   done
   [ "$(a11y_token focus nav.watchlist)" = "focus:nav.watchlist" ] || { bad "focus token"; return 1; }
-  [ "$(a11y_token press detail.hero.play)" = "press:detail.hero.play" ] || { bad "press token"; return 1; }
+  [ "$(a11y_token press detail.hero.go_to_show)" = "press:detail.hero.go_to_show" ] || { bad "press token"; return 1; }
   [ "$(a11y_token press home.shelf.2.card.5 1234)" = "press:home.shelf.2.card.5@1234" ] || { bad "press-with-subject token"; return 1; }
   [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on the catalog pill"; return 1; }
   # Every id whose element's subject is a title is pressed by name: a card, a Detail episode (OK on a still
   # PLAYS it), a season tab, a Filmography credit, the catalog pill, a Home hero Play, Info or Watchlist button
-  # (the carousel advances by itself, so a bare press acts on whichever title is showing), an item-menu row (it acts on the title the hold
-  # opened). Without --rk each is refused; with it, each is sent as press:<id>@<rk>.
+  # (the carousel advances by itself, so a bare press acts on whichever title is showing), a Detail hero control
+  # that plays or writes (Play, Restart, Trailer, Mark watched, Mark unwatched, Watchlist: each acts on the
+  # ratingKey its subject names), an item-menu row (it acts on the title the hold opened). Without --rk each is
+  # refused; with it, each is sent as press:<id>@<rk>.
   for aid in home.shelf.2.card.5 home.continue.card.0 watchlist.grid.card.3 detail.episodes.still.0 \
              detail.episodes.text.0 detail.episodes.still.3 detail.season.1 filmography.row.2 catalog.primary \
-             home.hero.play home.hero.info home.hero.watchlist itemmenu.play itemmenu.watchlist_remove itemmenu.version.0; do
+             home.hero.play home.hero.info home.hero.watchlist detail.hero.play detail.hero.restart detail.hero.trailer \
+             detail.hero.mark_watched detail.hero.mark_unwatched detail.hero.watchlist \
+             itemmenu.play itemmenu.watchlist_remove itemmenu.version.0; do
     if a11y_token press "$aid" >/dev/null 2>&1; then bad "a press of $aid without --rk was accepted"; return 1; fi
     [ "$(a11y_token press "$aid" 4321)" = "press:$aid@4321" ] || { bad "press of $aid with --rk was not sent as press:<id>@<rk>"; return 1; }
     [ "$(a11y_token focus "$aid")" = "focus:$aid" ] || { bad "focus of $aid was refused"; return 1; }
   done
-  # ... and the ones that carry no title still press with none (nothing is named by `--rk` there): Detail is only
-  # reached through a named route, so its hero buttons stay unguarded, and `home.hero.action` (the failure
-  # read-out's retry) acts on no title, so it is pressed bare.
-  for aid in detail.about.card detail.about.languages detail.hero.play detail.hero.mark_watched under-posters.row.3 \
-             filmography.tab.2 nav.watchlist home.hero.action; do
+  # ... and the ones that carry no title still press with none (nothing is named by `--rk` there): the Detail hero's
+  # controls that only navigate or open a menu or a panel (`go_to_show`, `alt`, `version`, `more`), and
+  # `home.hero.action` (the failure read-out's retry), which acts on no title, are pressed bare.
+  for aid in detail.about.card detail.about.languages detail.hero.go_to_show detail.hero.alt detail.hero.version \
+             detail.hero.more under-posters.row.3 filmography.tab.2 nav.watchlist home.hero.action; do
     [ "$(a11y_token press "$aid")" = "press:$aid" ] || { bad "press of $aid needlessly wanted --rk"; return 1; }
   done
   for aid in "1 2" "12'34" '12@3' '12$x' "12;x" ""; do
@@ -1238,6 +1267,7 @@ nav.home"; do
   [ "${#aid}" -eq 16 ] || { bad "a11y_nonce is not 16 characters"; return 1; }
   ok "tv-session by-id contract (grammar, a title's element needs --rk, nonce match)"
   selftest_fifo || return 1
+  selftest_usage || return 1
 
   # ---- identity: `--guest` must resolve the real managed-user token or REFUSE, and must never
   # fall through to the owner's — the 2026-09-10 TV session 5 defect (a warning printed, then the
@@ -1466,13 +1496,19 @@ a11y_subject_ok() {  # $1 = a ratingKey / subject
 #                       screens/src/home/mod.rs: `hero.play|info|watchlist` (the carousel advances by itself: a bare
 #                       press acts on whatever title is showing at that frame; three explicit ids, because
 #                       `home.hero.action`, the failure read-out's retry, names no title and stays pressable)
+#   detail.hero.play|restart|trailer|mark_watched|mark_unwatched|watchlist
+#                       screens/src/detail/mod.rs `hero_control_subject`: the six hero controls that PLAY or WRITE,
+#                       each named by the ratingKey it acts on (a show's Play and Restart the episode they play, its
+#                       Mark watched / unwatched the ON-DECK episode of a started show, not the route's key; the
+#                       bookmark and the trailer the page's title); six explicit ids, because `go_to_show`, `alt`,
+#                       `version` and `more` only navigate or open a menu and stay pressable bare
 #   itemmenu.*          screens/src/item_menu.rs: every row of the menu a hold opened (it acts on that title)
-# A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled out. `detail.hero.*`
-# is NOT in it: Detail is only reached through a named route. The rows of a Catalog item menu have no ratingKey,
-# so `press` cannot name them and refuses them (a Watchlist title no server holds: the safe side).
+# A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled out. The rows of a
+# Catalog item menu have no ratingKey, so `press` cannot name them and refuses them (a Watchlist title no server
+# holds: the safe side).
 a11y_subject_bearing() {  # $1 = a full accessibility id
   case "$1" in
-    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary|home.hero.play|home.hero.info|home.hero.watchlist|itemmenu.*) return 0 ;;
+    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary|home.hero.play|home.hero.info|home.hero.watchlist|detail.hero.play|detail.hero.restart|detail.hero.trailer|detail.hero.mark_watched|detail.hero.mark_unwatched|detail.hero.watchlist|itemmenu.*) return 0 ;;
   esac
   return 1
 }
@@ -1487,7 +1523,7 @@ a11y_token() {
     press)
       if a11y_subject_bearing "$id"; then
         [ -n "$rk" ] || {
-          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill, a Home hero Play/Info/Watchlist button, an item-menu row), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
+          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill, a Home hero Play/Info/Watchlist button, a Detail hero Play/Restart/Trailer/Mark watched/Mark unwatched/Watchlist button, an item-menu row), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
           return 2; }
       fi
       if [ -n "$rk" ]; then
@@ -1862,6 +1898,17 @@ CUT
   esac
 }
 
+# The text an unknown subcommand prints: the header's command and option list, from line 3 down to the paragraph
+# that opens the prose (`# SCREEN OFF is a panel state`), found by THAT LINE and not by a line count. The count it
+# replaced (`sed -n '3,60p'`) went stale each time the list grew, and the text stopped in the middle of `--remote`;
+# `selftest_usage` holds the end.
+usage() {
+  local text
+  text=$(awk 'NR < 3 { next } /^# SCREEN OFF is a panel state/ { found = 1; exit } { print } END { exit !found }' \
+         "${BASH_SOURCE[0]}") || { echo "tv-session: internal: the header's usage text has no end marker (# SCREEN OFF ...)" >&2; return 1; }
+  printf '%s\n' "$text" | sed 's/^# \{0,1\}//'
+}
+
 case "${1:-}" in
   selftest) cmd_selftest ;;
   wan)    shift; cmd_wan "$@" ;;
@@ -1878,5 +1925,5 @@ case "${1:-}" in
   shot)   shift; cmd_shot "$@" ;;
   log)    shift; cmd_log "$@" ;;
   down)   shift; cmd_down ;;
-  *) sed -n '3,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) usage; exit 2 ;;
 esac

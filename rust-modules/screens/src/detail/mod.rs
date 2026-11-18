@@ -1987,7 +1987,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     /// linked heading `collection.heading` and the About footer's two stops `about.card` and
     /// `about.languages`. An index is a position in the collection its segment names, so a card or an
     /// episode off screen has its id as well. The `subject` of a season, an episode or a card is its
-    /// ratingKey.
+    /// ratingKey, and so is the subject of each hero control that PLAYS or WRITES to a title: the
+    /// ratingKey it acts on ([`hero_control_subject`]), which on a show that has been started is the
+    /// on-deck episode, not the page's. A control that only navigates or opens a menu has none.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let meta = H::metadata(cx);
         let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
@@ -1997,7 +1999,13 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // projection outlives the borrow of the views (a read-side state file only)
         let with_subject = |a: A11y<'static>, rk: &str| if rk.is_empty() { a } else { a.with_subject(rk.to_owned()) };
         Some(match located {
-            Located::Hero(ctl) => A11y::new(named("hero").name(ctl.a11y_name()), A11yRole::Button),
+            Located::Hero(ctl) => {
+                let a = A11y::new(named("hero").name(ctl.a11y_name()), A11yRole::Button);
+                match d.and_then(|d| hero_control_subject(ctl, d, self.selected())) {
+                    Some(rk) => with_subject(a, rk),
+                    None => a,
+                }
+            }
             Located::Season(i) => {
                 let season = d?.seasons.get(i)?;
                 let a = A11y::new(named("season").index(i), A11yRole::Tab).with_label(season.title.clone());
@@ -4690,7 +4698,7 @@ impl DetailScreen {
                         StoreId::ViewState,
                         StoreCmd::ViewState(ViewStateCmd::Request {
                             sid: d.sid,
-                            rk: hero::hero_episode(d).map_or_else(|| d.rk.clone(), |ep| ep.rk.clone()),
+                            rk: hero_control_subject(ctl, d, None).map_or_else(|| d.rk.clone(), str::to_owned),
                             // The watched action follows the episode displayed by the hero.
                             scope: hero_mark_scope(d),
                             write: if ctl == hero::HeroCtl::MarkWatched {
@@ -4837,6 +4845,33 @@ impl DetailScreen {
 /// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
 fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
     hero::hero_episode(d).or_else(|| d.episodes.first())
+}
+
+/// **The ratingKey a hero control acts on**: the accessibility `subject` of each control that plays a
+/// title or writes to one, so the harness's guard can make a press name the title it is about (the rule is
+/// never to press OK on a title whose ratingKey you have not read). It is what the activation itself
+/// reads, not the route's key: Play and Restart play [`hero_episode_played`] on a show page, the loaded
+/// card (`selected`) or the page's item on any other; the watched toggle writes the on-deck episode of a
+/// show that has been started, else the page's item; the bookmark and the trailer act on the page's item.
+/// `None` for the controls that only navigate or open a menu or a panel (Go to Show, Also available, Play
+/// Version, More): their own rows, or the page they open, are where a title is acted on. Exhaustive, so a
+/// new control must be placed here.
+pub(crate) fn hero_control_subject<'a>(
+    ctl: hero::HeroCtl,
+    d: &'a Detail,
+    selected: Option<&'a plx_data::pms::PmsMovie>,
+) -> Option<&'a str> {
+    use hero::HeroCtl;
+    match ctl {
+        HeroCtl::Play | HeroCtl::Restart => Some(if d.is_show {
+            hero_episode_played(d).map_or(d.rk.as_str(), |ep| ep.rk.as_str())
+        } else {
+            selected.map_or(d.rk.as_str(), |m| m.rk.as_str())
+        }),
+        HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => Some(hero::hero_episode(d).map_or(d.rk.as_str(), |ep| ep.rk.as_str())),
+        HeroCtl::Watchlist | HeroCtl::Trailer => Some(d.rk.as_str()),
+        HeroCtl::GoToShow | HeroCtl::Alt | HeroCtl::Version | HeroCtl::More => None,
+    }
 }
 
 /// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's

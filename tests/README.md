@@ -169,9 +169,10 @@ A debug (`devtriggers`) build takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
 the remote FIFO (`tools/a11y.py` writes and reads them; `tools/tv-session.sh focus|press|state` is
 the television's form). An id is a place-based dot path in the namespace of whoever owns input
 (`nav.watchlist`, `watchlist.grid.card.7`, `itemmenu.watchlist_remove`); a press whose element's subject
-is a title (a card, a Home hero Play, Info or Watchlist button, an item-menu row, a Detail episode...) names it,
+is a title (a card, a Home hero Play, Info or Watchlist button, a Detail hero Play, Restart, Mark watched or Watchlist button,
+an item-menu row, a Detail episode...) names it,
 `press:<id>@<ratingKey>`, and the app refuses it when another title is there (the committed scenario's
-`press:itemmenu.watchlist_remove@2001` and `press:home.hero.watchlist@200622`); `state` writes
+`press:itemmenu.watchlist_remove@2001`, `press:home.hero.watchlist@200622` and `press:detail.hero.watchlist@1001`); `state` writes
 `plxnative-a11y.json` (route, owner, the focused id, every element) and echoes the nonce, so a script
 can assert where focus is before it takes a screenshot. **A script that only needs to REACH a screen
 element uses these**, as `tests/scenarios/watchlist_captures.json` does (`keys` entries, plus an
