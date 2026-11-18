@@ -21,18 +21,39 @@ pub fn format(typed: &str) -> Option<String> {
     Some(format!("{}-{}", &code[..3], &code[3..]))
 }
 
-pub fn relay_for<'a>(code: &str, relays: &'a [Relay]) -> Option<&'a Relay> {
-    let first = code.chars().next()?;
+pub fn relay_for<'a>(typed: &str, relays: &'a [Relay]) -> Option<&'a Relay> {
+    let first = normalize(typed)?.chars().next()?;
     relays.iter().find(|relay| relay.prefixes.contains(first))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relays::embedded_public_list;
+
+    fn routed(typed: &str) -> Option<String> {
+        relay_for(typed, &embedded_public_list().unwrap()).map(|relay| relay.id.clone())
+    }
 
     #[test]
     fn a_typed_code_is_grouped_for_display() {
         assert_eq!(format("k7m q2x").as_deref(), Some("K7M-Q2X"));
         assert_eq!(format("K7MQ2"), None);
+    }
+
+    #[test]
+    fn a_typed_code_is_normalized_before_it_routes() {
+        assert_eq!(routed("k7m-q2x").as_deref(), Some("asia"));
+        assert_eq!(routed(" k7m\u{2014}q2x\u{A0}").as_deref(), Some("asia"));
+        assert_eq!(routed("9ab cde").as_deref(), Some("eu"));
+    }
+
+    #[test]
+    fn an_invalid_code_routes_nowhere() {
+        assert_eq!(routed("K"), None);
+        assert_eq!(routed("K7MQ2"), None);
+        assert_eq!(routed("K7M-Q2X7"), None);
+        assert_eq!(routed("K7M-Q2O"), None);
+        assert_eq!(routed("QRS-TUV"), None);
     }
 }

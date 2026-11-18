@@ -68,8 +68,8 @@ fn names(input: &Json) -> Json {
 }
 
 fn code_routing(input: &Json) -> Json {
-    let typed = field(input, "code").as_text().filter(|t| !t.unpaired);
-    let Some(code) = typed.and_then(|t| code::normalize(&t.value)) else {
+    let typed = field(input, "code").as_text().filter(|t| !t.unpaired).map(|t| t.value.as_str()).unwrap_or_default();
+    let Some(code) = code::normalize(typed) else {
         return object(vec![("error", string("invalid_code"))]);
     };
     let relays: Vec<Relay> = match field(input, "relays") {
@@ -84,7 +84,7 @@ fn code_routing(input: &Json) -> Json {
             .collect(),
         _ => Vec::new(),
     };
-    let relay = code::relay_for(&code, &relays).map_or(Json::Null, |relay| string(&relay.id));
+    let relay = code::relay_for(typed, &relays).map_or(Json::Null, |relay| string(&relay.id));
     object(vec![("code", string(&code)), ("relay", relay)])
 }
 
