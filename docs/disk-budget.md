@@ -544,3 +544,21 @@ does.
 | 4 | A `PreToolUse` hook that catches direct `cargo` in a Claude session |
 | 5 (#845, landed) | `make test-hostsim` and `make check-nodef`, which replace the `/tmp` recipe; hooked into `DISK_ENTRIES` by PR 3 |
 | 6 (optional) | `build-gc.sh --dedup` as rung 1 |
+
+## Build directly on a second volume
+
+On macOS, create a dedicated directory on the mounted build volume, then run
+`python3 tools/build-root.py install /absolute/path/to/build-root` from the clone to enable it.
+The path lives in the user's `~/.config/plxnative/build-root`. The installer adds a clone-local
+Git post-checkout hook and exclude rules for target links. It refuses to replace a custom hook.
+The Codex local environment and build preflight run the same repeatable setup. Grant sandboxed
+builders write access to the configured directory. Checkouts already on the build volume use
+their native target directories.
+
+Run `python3 tools/build-root.py prepare` in an existing checkout. To move existing Cargo trees,
+run `python3 tools/build-root.py migrate` there. Migration checks liveness, copies and compares
+the files, exchanges the original directory with its link atomically on macOS, and checks the
+original again before reclaiming it. A changed or busy original is retained. A diagnostic naming
+a retained copy identifies the paths to inspect before retrying. Closing a session leaves its cache
+available. `make disk` lists external owners and `tools/build-gc.sh --orphans -n` previews the
+derived trees left behind by removed worktrees.

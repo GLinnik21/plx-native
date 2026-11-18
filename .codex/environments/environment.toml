@@ -1,0 +1,5 @@
+version = 1
+name = "PlxNative"
+
+[setup]
+script = "if [ -f \"$HOME/.config/plxnative/build-root\" ]; then python3 tools/build-root.py prepare; fi"

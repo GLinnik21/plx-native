@@ -762,7 +762,7 @@ checkout_kb() {
 lane_trees() {
   for d in "$1"/rust-modules/target*; do
     case "$d" in *'*'*) continue ;; esac
-    if [ -d "$d" ]; then echo "$d"; fi
+    if [ ! -L "$d" ] && [ -d "$d" ]; then echo "$d"; fi
   done
   vendor_trees "$1"
 }
@@ -781,7 +781,7 @@ vendor_trees() {
 incremental_trees() {
   for d in "$1"/rust-modules/target*/debug/incremental; do
     case "$d" in *'*'*) continue ;; esac
-    if [ -d "$d" ]; then echo "$d"; fi
+    if [ ! -L "${d%/debug/incremental}" ] && [ -d "$d" ]; then echo "$d"; fi
   done
 }
 
@@ -867,7 +867,7 @@ stale_deps_dirs() {
 target_roots() {
   for d in "$1"/rust-modules/target*; do
     case "$d" in *'*'*) continue ;; esac
-    if [ -d "$d" ]; then echo "$d"; fi
+    if [ ! -L "$d" ] && [ -d "$d" ]; then echo "$d"; fi
   done
 }
 external_target_roots() {
@@ -1848,6 +1848,9 @@ report)
   done
   echo "  (a checkout nested inside another is subtracted from that one's TOTAL, not counted twice)"
 
+  if [ -f "$HOME/.config/plxnative/build-root" ] && [ -f "$ROOT/tools/build-root.py" ]; then
+    python3 "$ROOT/tools/build-root.py" inventory
+  fi
   ext=$(external_trees | sort -u)
   if [ -n "$ext" ]; then
     echo
@@ -2182,6 +2185,9 @@ esac
 case "$MODE" in
 orphans)
   echo "== external lane target dirs whose worktree is gone =="
+  if [ -f "$HOME/.config/plxnative/build-root" ] && [ -f "$ROOT/tools/build-root.py" ]; then
+    python3 "$ROOT/tools/build-root.py" orphans | skip_live | drop
+  fi
   external_trees | sort -u | while IFS= read -r d; do
     if external_is_orphan "$d"; then echo "$d"; fi
   done | skip_live | drop

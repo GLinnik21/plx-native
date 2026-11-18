@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Prepare per-checkout Cargo target links on a locally configured build volume."""
+import argparse
+import ctypes
+import fcntl
+import hashlib
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CONFIG = Path.home() / ".config/plxnative/build-root"
+HOOK = """#!/bin/sh
+# plxnative-build-root v1
+case "$1" in *[!0]*) exit 0 ;; esac
+exec python3 "$(dirname "$0")/plxnative-build-root.py" prepare
+"""
+TARGETS = ("target", "target-fast", "target-hostsim", "target-sim", "target-sim-lab",
+           "target-sim-shots", "target-sim-video", "target-fuzz", "target-macapp",
+           "target-release", "target-storage", "target-release-storage")
+
+
+def git(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k.startswith("GIT_CONFIG")}
+    return subprocess.check_output(["git", "-C", cwd, *args], env=env, text=True).rstrip("\n")
+
+
+def atomic_write(path, data, mode):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as f:
+        f.write(data)
+        os.fchmod(f.fileno(), mode)
+    os.replace(f.name, path)
+
+
+def install(checkout, root):
+    if not root.is_absolute() or not root.is_dir() or root != root.resolve():
+        raise ValueError("the build root must be an existing, absolute physical directory")
+    if root == checkout or checkout in root.parents or root in checkout.parents:
+        raise ValueError("choose a dedicated directory outside the checkout")
+    if CONFIG.exists() and CONFIG.read_text().strip() != str(root):
+        raise ValueError(f"{CONFIG} already names a different build root")
+    hooks = Path(git(checkout, "rev-parse", "--path-format=absolute", "--git-path", "hooks"))
+    common = Path(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    if hooks != common / "hooks":
+        raise ValueError("custom hooksPath configured; refusing to replace it")
+    hook = hooks / "post-checkout"
+    if os.path.lexists(hook) and (hook.is_symlink() or hook.read_text() != HOOK):
+        raise ValueError(f"existing hook at {hook}")
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    hooks.mkdir(exist_ok=True)
+    atomic_write(CONFIG, (str(root) + "\n").encode(), 0o600)
+    atomic_write(hooks / "plxnative-build-root.py", Path(__file__).read_bytes(), 0o644)
+    exclude = common / "info/exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    # Older branches ignore only directories. These links must also stay out of their index.
+    with exclude.open("a+") as f:
+        f.seek(0)
+        if "/rust-modules/target-*" not in f.read().splitlines():
+            f.write("\n/rust-modules/target\n/rust-modules/target-*\n")
+    atomic_write(hook, HOOK.encode(), 0o755)
+
+
+def location(checkout):
+    common = Path(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    if not (common / "hooks/plxnative-build-root.py").is_file():
+        return None
+    root = Path(CONFIG.read_text().strip())
+    if not root.is_absolute() or not root.is_dir() or root.resolve() != root:
+        raise ValueError(f"configured build root unavailable: {root}")
+    if root.parts[1:2] == ("Volumes",) and not os.path.ismount(Path(*root.parts[:3])):
+        raise ValueError(f"build volume is unmounted: {root}")
+    if checkout.stat().st_dev == root.stat().st_dev and root.parts[1:2] == ("Volumes",):
+        return None  # A checkout already on this DAS keeps its native paths.
+    key = hashlib.sha256(os.fsencode(checkout)).hexdigest()
+    return root / key
+
+
+def prepare(checkout, tree=None, migrate=False):
+    if not CONFIG.exists():
+        return
+    directory = location(checkout)
+    if directory is None:
+        return
+    module = checkout / "rust-modules"
+    if module.is_symlink() or not (module / "Cargo.toml").is_file():
+        return
+    names = set(TARGETS)
+    if tree is not None:
+        if tree.parent != module:
+            return  # Explicit external overrides keep their own target location.
+        names = {tree.name, tree.name + "-storage"} if tree.name == "target" else {tree.name}
+    if migrate and tree is None:
+        names.update(p.name for p in module.glob("target*") if p.is_dir())
+    if any(not re.fullmatch(r"target(?:-[a-zA-Z0-9_-]+)?", n) for n in names):
+        raise ValueError("unexpected Cargo target directory name")
+    if directory.is_symlink():
+        raise ValueError(f"unexpected symlink: {directory}")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    # Lock the directory inode. Setup, hook retries and migration share this lock.
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        owner = directory / ".checkout"
+        if not owner.exists():
+            atomic_write(owner, os.fsencode(checkout), 0o600)
+        if owner.read_bytes() != os.fsencode(checkout):
+            raise ValueError(f"checkout identity mismatch at {directory}")
+        tracked = git(checkout, "ls-files", "--", *["rust-modules/" + n for n in sorted(names)])
+        if tracked:
+            raise ValueError("a selected target contains tracked files")
+        for name in sorted(names):
+            src, dst = module / name, directory / name
+            if dst.is_symlink():
+                raise ValueError(f"unexpected destination link: {dst}")
+            if src.is_symlink():
+                if Path(os.readlink(src)) != dst or not dst.is_dir():
+                    raise ValueError(f"unexpected or broken target link: {src}")
+                if tree == src:
+                    with tempfile.TemporaryFile(dir=dst):
+                        pass  # Check the actual harness can write through the link.
+                continue
+            if src.exists():
+                if migrate:
+                    move_idle(checkout, src, dst)
+                elif tree == src:
+                    raise ValueError(f"{src} needs migration before building")
+                continue
+            dst.mkdir(exist_ok=True)
+            src.symlink_to(dst, target_is_directory=True)
+    finally:
+        os.close(fd)
+
+
+def move_idle(checkout, src, dst):
+    # Only the explicit rollout command copies or reclaims data. Setup hooks never do.
+    if not src.is_dir():
+        raise ValueError(f"unexpected target type: {src}")
+    tools = Path(__file__).resolve().parent
+    def idle(path):
+        cmd = [sys.executable, str(tools / "disk-budget.py"), "probe", "--root", str(checkout),
+               "--tree", str(path), "--checkout", str(checkout), "--class", "lane"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode:
+            print(f"deferred {src}: {result.stdout.strip() or result.stderr.strip()}", file=sys.stderr)
+        return result.returncode == 0
+    if not idle(src):
+        return
+    if sys.platform != "darwin":
+        raise ValueError("live tree migration requires macOS atomic path exchange")
+    import runpy
+    cold = runpy.run_path(str(tools / "cold-store.py"))
+    backup = src.with_name("." + src.name + ".plx-original")
+    if os.path.lexists(backup):
+        raise ValueError(f"previous migration needs inspection: {backup}")
+    if not dst.exists():
+        with tempfile.TemporaryDirectory(prefix=".copy-", dir=dst.parent) as temp:
+            copied = Path(temp) / "tree"
+            cold["copy_tree"](str(src), str(copied))
+            copied.rename(dst)
+    # Also covers retry after interruption between publishing the copy and switching.
+    if not identical(src, dst):
+        raise ValueError(f"source and DAS copy differ; both retained: {src}, {dst}")
+    if not idle(src):
+        return
+    swap = ctypes.CDLL(None, use_errno=True).renamex_np
+    # After this single syscall src is the new link and backup holds the original inode.
+    backup.symlink_to(dst)
+    if swap(os.fsencode(src), os.fsencode(backup), 2) != 0:
+        backup.unlink()
+        raise OSError(ctypes.get_errno(), f"cannot exchange {src} and {backup}")
+    if not idle(backup):
+        print(f"retained original: {backup}", file=sys.stderr)
+        return
+    if not identical(backup, dst):
+        raise ValueError(f"tree changed during cutover; retained original: {backup}")
+    cold["flush_cold_volume"](str(dst.parent / ".checkout"))
+    shutil.rmtree(backup)
+    print(f"migrated {src}", flush=True)
+
+
+def identical(src, dst):
+    # Include extra files, symlink targets, file modes and content checksums.
+    changes = subprocess.check_output(["rsync", "-nrcpli", "--delete", str(src) + "/", str(dst) + "/"])
+    return not changes
+
+
+def inventory(checkout, orphans):
+    if not CONFIG.is_file():
+        return
+    common = Path(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    if not (common / "hooks/plxnative-build-root.py").is_file():
+        return
+    root = Path(CONFIG.read_text().strip())
+    if not root.is_absolute() or not root.is_dir() or root.resolve() != root:
+        return
+    registered = {line[9:] for line in git(checkout, "worktree", "list", "--porcelain").splitlines()
+                  if line.startswith("worktree ")}
+    for directory in sorted(root.iterdir()):
+        marker = directory / ".checkout"
+        if (not re.fullmatch(r"[a-f0-9]{64}", directory.name) or directory.is_symlink()
+                or marker.is_symlink() or not marker.is_file()):
+            continue
+        owner = marker.read_bytes()
+        if hashlib.sha256(owner).hexdigest() != directory.name:
+            continue
+        path = os.fsdecode(owner)
+        gone = path not in registered and not os.path.lexists(path)
+        if orphans:
+            if gone:
+                for tree in directory.iterdir():
+                    if (re.fullmatch(r"target(?:-[a-zA-Z0-9_-]+)?", tree.name)
+                            and not tree.is_symlink() and tree.is_dir()):
+                        print(tree)
+        else:
+            print(f"  {path} -> {directory}" + (" (orphan)" if gone else ""))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=("install", "prepare", "migrate", "inventory", "orphans"))
+    parser.add_argument("path", type=Path, nargs="?")
+    args = parser.parse_args()
+    checkout = Path(git(Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
+    if args.command == "install":
+        if args.path is None:
+            parser.error("install requires the existing build root directory")
+        install(checkout, args.path)
+    elif args.command in ("inventory", "orphans"):
+        inventory(checkout, args.command == "orphans")
+    else:
+        prepare(checkout, args.path, args.command == "migrate")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        sys.exit(f"build-root: {error}")

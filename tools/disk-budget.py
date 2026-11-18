@@ -268,6 +268,17 @@ def fast_preflight(argv, env):
 
 
 if __name__ == "__main__" and sys.argv[1:2] == ["preflight"]:
+    if os.path.isfile(os.path.expanduser("~/.config/plxnative/build-root")):
+        # Run before DONE and before measuring free space. Older disposable fixtures may
+        # contain just this tool; only the installed clone opts into routing.
+        import subprocess
+        root = argv_option(sys.argv[2:], "--root") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-root.py")
+        if os.path.isfile(helper):
+            result = subprocess.run([sys.executable, helper, "prepare",
+                                     build_tree_of(argv_option(sys.argv[2:], "--tree"), root)], cwd=root)
+            if result.returncode:
+                sys.exit(result.returncode)
     _fast = fast_preflight(sys.argv[2:], os.environ)
     if _fast is not None:
         sys.exit(_fast)
@@ -1480,6 +1491,12 @@ def cmd_report(args, env) -> int:
     need = int(args.need_gib * GIB) if args.need_gib is not None else estimate_need(build_tree, current, env)
     free, total = free_bytes(root, env)
     print(render(inv, th, free, total, root, build_tree, need, now, env))
+    # The SSD ladder measures only its own volume. Account for redirected Cargo
+    # artifacts separately, without recursively sizing the external disk.
+    external_tree = real(build_tree)
+    if device_of(external_tree) != device_of(root):
+        external_free, external_total = free_bytes(nearest_existing(external_tree), env)
+        print("Cargo volume  %s free of %s at %s" % (gib(external_free), gib(external_total), tilde(external_tree)))
     return 0
 
 

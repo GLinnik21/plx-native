@@ -67,6 +67,7 @@ python3 ci/test_disk_budget.py
 # trees; the cold store's unpark of an absent parked tree: the cheap no-gos (config removed, volume unmounted) come before any lock wait, the
 # lock is held to claim the copy and not across it (two trees restore at once), a claimed or dead-claimed tree, and the free-space rule. `make -n` and `make -s print-*` only, no cargo.
 python3 ci/test_disk_preflight.py
+python3 ci/test_build_root.py
 # The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
 # HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
 # line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
