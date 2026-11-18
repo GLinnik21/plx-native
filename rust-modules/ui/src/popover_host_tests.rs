@@ -119,8 +119,8 @@ fn same_thread_owner_switch_never_reuses_another_hosts_frozen_pixels() {
     assert_eq!(a.modal_presentation().read, a_open.read, "render cache switches cannot mutate modal authority");
 }
 
-/// **The container's own dismissal of a LIVE-host surface keeps the page's snapshot.** A caching
-/// surface (`Style::Compact`; the frozen styles below retake it) starting to close changes the owner's cache key (its layer is `Closing` now), and `bind_owner`
+/// **The container's own dismissal keeps the page's snapshot.** A caching surface (here a
+/// `Style::Compact`; a Sheet below) starting to close changes the owner's cache key (its layer is `Closing` now), and `bind_owner`
 /// answered with a full `invalidate()`: the close's first frame then redrew the page into the
 /// snapshot, re-sourced the tab bar's blur and re-latched the dim field, the 131% of a 60 Hz
 /// frame's GPU budget that `Popover::release` no longer costs a glass menu. A closing flip drops
@@ -172,24 +172,27 @@ fn a_surface_that_starts_closing_keeps_the_page_snapshot_and_drops_only_a_ground
     assert!(held() == Held::Nothing, "a closing surface keeps no ground snapshot");
 }
 
-/// **Only a surface that kept the host LIVE while it was open may keep the page's snapshot when it
-/// starts closing.** `surface_policy` freezes the host under a Sheet, an Alert and an
-/// `Opaque { snapshot: true }` surface, and a frozen page gets no Tick: the page's snapshot is as
-/// old as the surface. The full `invalidate()` at the Open -> Closing flip is the one retake after
-/// that stretch: keeping the snapshot there showed the Library's OLD captions through Settings'
-/// exit fade (an `Opaque` snapshot surface; Under posters changed inside it) and the page jumped
-/// when the layer was pruned. Presents `styles` bottom to top (a frame each, the page
-/// drawn and held in between), dismisses the TOP one and answers whether the close's first frame
-/// redrew the page (the snapshot was thrown away) rather than served it.
-fn the_close_retakes_the_page(styles: &[crate::containers::modal::Style]) -> bool {
+/// **A closing surface keeps the page's snapshot whatever froze the host under it; the page's own
+/// damage is what retakes it.** `surface_policy` freezes the host under a Sheet, an Alert and an
+/// `Opaque { snapshot: true }` surface, and a frozen page gets no Tick, so its snapshot is as old
+/// as the surface. What a page can have changed meanwhile is the page's to report: typed page damage
+/// (`begin_frame`'s `typed_page_damage`, from the owning `Present`) retakes the snapshot, on the
+/// close's first frame as on any other, and a page that reports none is the page it was (Settings
+/// changing Under posters under a covered Library is the Library's damage, `step`'s head). The
+/// close's cache-key flip itself is no retake: it cost a Sheet's close 14.9M GPU cycles against an
+/// 11.2M budget on the TV, a dropped frame on every account menu BACK.
+/// Presents `styles` bottom to top (a frame each, the page drawn and held in between), dismisses the
+/// TOP one and answers whether the close's first frame, handed `page_damaged` as the page's typed
+/// damage, redrew the page (the snapshot was thrown away) rather than served it.
+fn the_close_retakes_the_page(styles: &[crate::containers::modal::Style], page_damaged: bool) -> bool {
     use crate::dispatch::NoTap;
     use crate::fixture::{booted, tick, FixtureArg};
     use plx_machine::machine::{MachineId, NavOp};
     let _serial = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let (mut d, mut rig, _) = booted();
-    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
-        super::begin_frame(modal, 0.0, false, false);
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page, damaged| {
+        super::begin_frame(modal, 0.0, false, damaged);
         PIXELS.with(|p| p.borrow_mut().clear());
         { let _page = page_pass(modal); ink(page); }
         PIXELS.with(|p| p.borrow().clone())
@@ -200,7 +203,7 @@ fn the_close_retakes_the_page(styles: &[crate::containers::modal::Style]) -> boo
         d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
         ms += 16;
         d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
-        assert_eq!(draw(&d.modal_presentation(), "page").len(), 1, "premise: the page is drawn under {style:?}");
+        assert_eq!(draw(&d.modal_presentation(), "page", false).len(), 1, "premise: the page is drawn under {style:?}");
     }
     assert!(held() == Held::Page, "premise: the stack froze the page");
     let top = d.nav.modals.top().expect("presented").entry.id;
@@ -210,31 +213,37 @@ fn the_close_retakes_the_page(styles: &[crate::containers::modal::Style]) -> boo
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
     let closing = d.modal_presentation();
     assert!(!open.cache_key().same_snapshot(&closing.cache_key()), "premise: the close changed the cache key");
-    draw(&closing, "retaken") == ["retaken"]
+    draw(&closing, "retaken", page_damaged) == ["retaken"]
 }
 
 #[test]
-fn a_frozen_host_surface_that_starts_closing_retakes_the_page() {
+fn a_sheet_that_closes_with_no_page_damage_keeps_the_page_snapshot() {
+    use crate::containers::modal::Style;
+    assert!(!the_close_retakes_the_page(&[Style::Sheet], false),
+        "a Sheet froze the host, and the page reported no change: its close serves the snapshot it has");
+}
+
+#[test]
+fn a_frozen_host_surface_that_starts_closing_retakes_the_page_after_the_page_changed_while_frozen() {
     use crate::containers::modal::Style;
     let kept: Vec<Style> = [Style::Sheet, Style::Alert, Style::Opaque { snapshot: true }]
-        .into_iter().filter(|style| !the_close_retakes_the_page(&[*style])).collect();
+        .into_iter().filter(|style| !the_close_retakes_the_page(&[*style], true)).collect();
     assert!(kept.is_empty(),
-        "{kept:?} froze the host while open, so the page each kept is as old as the surface: \
-         the close's first frame must retake it");
+        "{kept:?} froze the host while open and the page reported damage: the close's first frame must retake it");
 }
 
 #[test]
 fn a_live_host_surface_that_starts_closing_still_keeps_the_page() {
     use crate::containers::modal::Style;
-    assert!(!the_close_retakes_the_page(&[Style::Compact]),
+    assert!(!the_close_retakes_the_page(&[Style::Compact], false),
         "a Compact surface kept the host live while open: the page's snapshot is current");
 }
 
 #[test]
-fn a_mixed_stack_whose_frozen_host_layer_starts_closing_retakes_the_page() {
+fn a_mixed_stack_whose_frozen_host_layer_starts_closing_retakes_the_page_after_the_page_changed_while_frozen() {
     use crate::containers::modal::Style;
-    assert!(the_close_retakes_the_page(&[Style::Compact, Style::Sheet]),
-        "the Sheet above a Compact menu froze the host: its close retakes the page");
+    assert!(the_close_retakes_the_page(&[Style::Compact, Style::Sheet], true),
+        "the Sheet above a Compact menu froze the host and the page reported damage: its close retakes the page");
 }
 
 struct Reset {

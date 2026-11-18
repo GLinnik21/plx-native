@@ -319,9 +319,6 @@ pub struct ModalPresentation {
     pub read: plx_machine::machine::ModalRead,
     pub reflow: bool,
     key: ModalCacheKey,
-    /// The caching layers whose style kept the host live while open ([`Self::kept_host_live`]); not
-    /// part of the cache key, which is identity only.
-    live_hosts: Vec<EntryId>,
 }
 /// GL snapshot signature only. Never consulted for phase, policy, veil or input decisions.
 #[derive(Clone, Debug)]
@@ -333,37 +330,26 @@ impl ModalCacheKey {
     pub fn same_snapshot(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers
     }
-    /// The layers that STARTED closing between this key and `other`, when `other` is this key's
-    /// stack with the same layers, some of which started closing and none of which came or went (a
-    /// layer is `(entry, closing)`); `None` for any other change. What a dismissal changes and
-    /// nothing else. Whether the host cache may then keep the page's snapshot is not the key's to
-    /// say (it holds identity only): `popover::host::bind_owner` asks the presentation, through
-    /// [`ModalPresentation::kept_host_live`], about each layer returned.
-    pub fn began_closing(&self, other: &Self) -> Option<Vec<EntryId>> {
+    /// Is `other` this key's stack with the same layers, some of which STARTED closing and none of
+    /// which came or went (a layer is `(entry, closing)`)? What a dismissal changes and nothing
+    /// else: `false` for any other change.
+    pub fn began_closing(&self, other: &Self) -> bool {
         if !std::sync::Arc::ptr_eq(&self.owner, &other.owner) || self.layers.len() != other.layers.len() {
-            return None;
+            return false;
         }
-        let mut began = Vec::new();
+        let mut began = false;
         for (a, b) in self.layers.iter().zip(&other.layers) {
             // the same layer, which may only have STARTED closing (never un-closed)
             if a.0 != b.0 || (a.1 && !b.1) {
-                return None;
+                return false;
             }
-            if !a.1 && b.1 {
-                began.push(a.0);
-            }
+            began |= !a.1 && b.1;
         }
-        Some(began)
+        began
     }
 }
 impl ModalPresentation {
     pub fn cache_key(&self) -> ModalCacheKey { self.key.clone() }
-    /// Did the caching layer `id` keep the host LIVE while it was open (`surface_policy(style, Open,
-    /// _).0 == Live`, which is `Style::Compact`)? Then the page snapshot it leaves is as current as
-    /// the page, and its close may keep it. A Sheet, an Alert or an `Opaque` snapshot surface froze
-    /// the host, which got no Tick, so what it leaves is as old as the surface. False for a layer
-    /// this presentation does not hold, which `bind_owner` answers with the full `invalidate()`.
-    pub fn kept_host_live(&self, id: EntryId) -> bool { self.live_hosts.contains(&id) }
 }
 
 // Veil is captured by ModalStack::presentation before pages tick. Consumers read Cx.modal;
@@ -692,10 +678,6 @@ impl<H: Host> ModalStack<H> {
             key: ModalCacheKey { owner: self.presentation_owner.clone(),
                 layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
                     .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
-            live_hosts: self.surfaces.iter()
-                .filter(|s| holders.contains(&s.entry.id)
-                    && surface_policy(s.style, Phase::Open, false).0 == HostUpdate::Live)
-                .map(|s| s.entry.id).collect(),
         }
     }
 
