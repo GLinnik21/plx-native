@@ -1989,7 +1989,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     /// episode off screen has its id as well. The `subject` of a season, an episode or a card is its
     /// ratingKey, and so is the subject of each hero control that PLAYS or WRITES to a title: the
     /// ratingKey it acts on ([`hero_control_subject`]), which on a show that has been started is the
-    /// on-deck episode, not the page's. A control that only navigates or opens a menu has none.
+    /// on-deck episode, not the page's. A control whose target the page fixes (it only navigates or opens
+    /// a menu) has none.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let meta = H::metadata(cx);
         let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;

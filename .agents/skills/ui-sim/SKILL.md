@@ -235,12 +235,14 @@ stays where the test's subject IS the travel (fps walks, focus fingerprints, a h
 The simulator boots against the owner's real server unless you aim it at the mock, and OK on a title
 can play it, so the command line refuses to press one UNNAMED: `python3 tools/a11y.py press <runtime>
 <id>` WITHOUT `--subject <ratingKey>` (and `send press:<id>` without an `@<subject>`) exits 2 and sends
-nothing when the id is of an element whose press plays or writes a title (it plays, restarts, finishes or retries
-it, marks it watched or unwatched, bookmarks it, or acts on the title a menu was opened for: a card, a hero button,
-an item-menu row, a Play Version row, a player control that starts a title; an element that only navigates or opens a
-panel stays bare). `SUBJECT_BEARING` in `tools/a11y.py` is the one list of those ids, and the key to name is the
-one the element ACTS on, which `state` prints as its subject. Read the ratingKey from `state`
-first. The library function `a11y.press` stays unguarded, for a script that drives the mock. `a11y.py
+nothing when the id is of an element that ACTS ON a title it names (it plays, restarts, finishes or retries it,
+marks it watched or unwatched, bookmarks it, acts on the title a menu was opened for, or opens that title's own page
+or menu where the title can change under the press: a card, a credit, the Home carousel's Info, a hero button, an
+item-menu row, a Play Version row, a player control that starts a title; only a control whose target the page fixes
+stays bare). `SUBJECT_BEARING` in `tools/a11y.py` is the one list of those ids, and the key to name is the ratingKey
+of the title the press acts on, which `state` prints as the element's subject. Read the ratingKey from `state`
+first. The library functions `a11y.press` / `press_token` stay unguarded, for a script that drives the mock (a
+script that imports them against a real server has no check). `a11y.py
 send` writes ONE token: a word with whitespace in it (`send "back press:<card>"`) exits 2 and sends
 nothing, because the app cuts a FIFO line at any whitespace and the second token would skip that guard.
 

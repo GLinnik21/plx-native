@@ -6,8 +6,8 @@ a11y-ids plan, D1-D8):
 
     focus:<id>             move focus to the element the id names
     press:<id>             focus it, then press OK (an ordinary OK Down and Up)
-    press:<id>@<subject>   ... but only if the element's subject (a card's ratingKey) is <subject>;
-                           a mismatch refuses and presses nothing
+    press:<id>@<subject>   ... but only if the element's subject (the ratingKey of the title the press
+                           acts on) is <subject>; a mismatch refuses and presses nothing
     state:<nonce>          replace `plxnative-a11y.json` in the runtime directory with a snapshot of the
                            page that owns input: its route word, who owns input, the focused full id,
                            every focus group and every element with its id, role, rest rectangle,
@@ -47,14 +47,14 @@ token goes into its `plxnative-remote` FIFO. Exit 0 is done; 1 is a focus that i
 an app that never answered or a FIFO that is not there; 2 is an id, subject or token the grammar refuses
 (nothing was sent). Each failure is one line on stderr, never a traceback.
 
-A title is pressed by NAME. A `press` (or a `send press:<id>`) of an element whose subject is a title (a
-card, a Detail episode or season tab, a Filmography credit, the catalog page's pill, a Home hero Play, Info or
-Watchlist button, a Detail hero Play, Restart, Trailer, Mark watched, Mark unwatched or Watchlist button, an
-item-menu row: `SUBJECT_BEARING`) needs `--subject <ratingKey>` and exits 2 without it, because the
-simulator boots against the owner's real server unless it is aimed at a mock, and OK on a title can play it.
-The library function `press` (`press_token`) stays unguarded for a script that means an element with no
-subject. `send` writes ONE word: a token with whitespace in it (`"back press:card"`) is refused, because the
-app would cut it into two tokens and the second would never meet the press guard.
+A title is pressed by NAME. A `press` (or a `send press:<id>`) of an element that ACTS ON a title it names
+(the ids are `SUBJECT_BEARING` below: the rule is stated there) needs `--subject <ratingKey>`, the ratingKey of
+the title the press acts on, and exits 2 without it, because the simulator boots against the owner's real server
+unless it is aimed at a mock, and OK on a title can play it. Only the COMMAND LINE refuses: the library
+functions `press` / `press_token` stay unguarded for a script that drives the mock, so a script that imports
+them against a real server has no check. `send` writes ONE word: a token with whitespace in it
+(`"back press:card"`) is refused, because the app would cut it into two tokens and the second would never meet
+the press guard.
 
 On the television use `tools/tv-session.sh focus|press|state`.
 """
@@ -95,12 +95,15 @@ def valid_subject(text):
     return isinstance(text, str) and SUBJECT_RE.fullmatch(text) is not None
 
 
-# The id shapes whose element carries a SUBJECT, a title's ratingKey (a catalog page's hex id). THE RULE: an
-# element is on this list when pressing it PLAYS or WRITES a title (plays, restarts, finishes or retries it,
-# marks it watched or unwatched, bookmarks it, opens or removes it from a menu that acts on it); an element that
-# only navigates or opens a panel is not, and stays pressable bare. The real-account rule is never to press OK on
-# a title whose ratingKey you have not read, so the COMMAND LINE and `tools/tv-session.sh press` make the press
-# name it (`--subject` / `--rk`) and the app refuses a mismatch. This tuple is THE list (the other spellings of it,
+# The id shapes whose element carries a SUBJECT, the ratingKey of the title the press acts on (a catalog page's
+# hex id). THE RULE: an element is on this list when its press ACTS ON a title it names: it plays, restarts,
+# finishes or retries it, marks it watched or unwatched, bookmarks it, opens or removes it from a menu that acts
+# on it, or opens that title's own page or menu where the title can change under the press (a card, a credit and
+# the Home carousel's Info only open a page, and are on it). Navigation is not the test: only a control whose
+# target the page fixes (Go to Show, Also available, the Play Version opener, More, a panel opener, a seek) is
+# not, and stays pressable bare. The real-account rule is never to press OK on a title whose ratingKey you have
+# not read, so the COMMAND LINE and `tools/tv-session.sh press` make the press name it (`--subject` / `--rk`) and
+# the app refuses a mismatch. This tuple is THE list (the other spellings of it,
 # `a11y_subject_bearing` in tools/tv-session.sh, the docs and the refusal message, describe it by that rule): it
 # is read off the code, not guessed. Each production `A11y::with_subject` call SITE is an entry
 # (`git grep -n with_subject rust-modules`), a test here holds the number of calls per file equal to the table
@@ -192,7 +195,7 @@ def focus_token(id_):
 
 
 def press_token(id_, subject=None):
-    """`press:<id>`, or `press:<id>@<subject>` when the press must name the card it means."""
+    """`press:<id>`, or `press:<id>@<subject>` when the press must name the title it acts on (`SUBJECT_BEARING`)."""
     if not valid_id(id_):
         raise ValueError(f"not an accessibility id (<ns>.<segment>..., e.g. nav.watchlist): {id_!r}")
     if subject is None:
@@ -331,8 +334,10 @@ def focus(fifo, id_):
 
 
 def press(fifo, id_, subject=None):
-    """Focus `id_` and press OK on it, once. With `subject` (a card's ratingKey) the app presses only if the
-    element's subject is that; a mismatch presses nothing and logs `a11y: refused press ... subject_mismatch`."""
+    """Focus `id_` and press OK on it, once. With `subject` (the ratingKey of the title the press acts on;
+    `SUBJECT_BEARING` lists the ids that need one) the app presses only if the element's subject is that; a
+    mismatch presses nothing and logs `a11y: refused press ... subject_mismatch`. UNGUARDED: nothing here
+    refuses an unnamed press of a title-acting id, only the command line does (`guarded_press_token`)."""
     send(fifo, press_token(id_, subject))
 
 

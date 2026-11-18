@@ -347,11 +347,11 @@ def without_test_code(text):
 
 
 class SubjectBearing(unittest.TestCase):
-    """An element whose press PLAYS or WRITES a title (a card, a Detail episode or season tab, a Filmography credit,
-    the catalog page's pill, a Home or Detail hero button, an item-menu row, a Play Version row, a player control that
-    starts or restarts a title) is pressed by NAMING that title: the real-account rule is never to press OK on a title
-    whose ratingKey you have not read, and OK on a Detail episode's still PLAYS it at once. ONE list of those id
-    shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's `a11y_subject_bearing` is the same list."""
+    """An element whose press ACTS ON a title it names (it plays or writes it, or opens that title's own page or menu
+    where the title can change under the press) is pressed by NAMING that title, the ratingKey of the title the
+    press acts on: the real-account rule is never to press OK on a title whose ratingKey you have not read, and OK on
+    a Detail episode's still PLAYS it at once. ONE list of those id shapes lives in `a11y.SUBJECT_BEARING`;
+    tools/tv-session.sh's `a11y_subject_bearing` is the same list."""
 
     SUBJECT_IDS = ["home.shelf.2.card.5", "home.continue.card.0", "watchlist.grid.card.7", "library.grid.card.3",
                    "collection.card.1", "detail.related.card.0", "detail.episodes.still.3", "detail.episodes.text.3",
@@ -465,15 +465,32 @@ class SubjectBearing(unittest.TestCase):
         self.assertNotIn("more.fold.*", a11y.SUBJECT_BEARING)
 
     # The messages a screen constructs when a press PLAYS or WRITES a title: a Play request, a queue step or restart
-    # (`PlayerReq::Command` carries Previous, Next and From beginning), the Play Version commit, the watched and
-    # watchlist writes, the catalog pill's write, and the Tracks menu's two writes to the server: a track pick
-    # (`PlayerReq::CommitTrack`, which selects the part's streams) and a subtitle-search result (`SubSearchCmd::Download`,
-    # which installs the subtitle on the item).
+    # (`PlayerReq::Command` carries Previous, Next and From beginning), the Play Version commit, the watched,
+    # deck and watchlist writes, the catalog pill's write, the item menu's own actions that Detail and Home push
+    # through `AppFx::ItemMenu` (`ItemMenuAction::Play`, `PlayFromStart`, `PlayTrailer`, `PlayVersion`,
+    # `MarkWatched`, `MarkUnwatched`, `RemoveFromDeck`; a file that imports the type as `ItemMenuAction as
+    # Action`, as Detail's hero and Home's do, is read under that alias too: `acting_hits`), and the Tracks menu's
+    # two writes to the server: a track pick (`PlayerReq::CommitTrack`, which selects the part's streams) and a
+    # subtitle-search result (`SubSearchCmd::Download`, which installs the subtitle on the item). It does NOT see
+    # the presses that only OPEN a title's page or menu (a card, a credit, the Home carousel's Info): those are held
+    # by the `with_subject` call count per file, and by `card_a11y`'s `*.card.*`.
+    ITEM_MENU_ACTIONS = r"(?:Play|PlayFromStart|PlayTrailer|PlayVersion|MarkWatched|MarkUnwatched|RemoveFromDeck)"
+    ITEM_MENU_ALIAS = re.compile(r"ItemMenuAction as (\w+)")
     TITLE_ACTING = re.compile(
         r"\b(ContentReq::Play\b|HomeReq::Play\b|LibraryReq::Play\b|AppMsg::PlayVersion|"
         r"PlayerReq::(?:Command|StandIn|RetryPlayback|PlayAutomatically|More|CommitTrack)\b|SubSearchCmd::Download\b|"
-        r"Write::(?:Watched|Unwatched)\b|"
+        r"Write::(?:Watched|Unwatched|RemoveFromDeck)\b|"
+        r"ItemMenuAction::" + ITEM_MENU_ACTIONS + r"\b|"
         r"WatchlistAdd\b|WatchlistRemove\b|AppFx::Catalog\b|PlayIntent::\w+)")
+
+    @classmethod
+    def acting_hits(cls, source):
+        """The title-acting messages the PRODUCTION code of one file constructs."""
+        text = without_test_code(source)
+        hits = cls.TITLE_ACTING.findall(text)
+        for alias in cls.ITEM_MENU_ALIAS.findall(text):
+            hits += re.findall(rf"\b{alias}::{cls.ITEM_MENU_ACTIONS}\b", text)
+        return hits
     PLAYER_WORDS = ("player.control.previous", "player.control.next", "player.control.next_episode",
                     "player.control.from_beginning", "player.control.skip", "player.control.[0-9]*",
                     "player.section.*", "player.failure.try_again", "player.failure.play_automatically")
@@ -513,7 +530,7 @@ class SubjectBearing(unittest.TestCase):
                     if not name.endswith(".rs") or name == "tests.rs" or name.endswith("_tests.rs"):
                         continue
                     path = pathlib.Path(root, name)
-                    hits = set(self.TITLE_ACTING.findall(without_test_code(path.read_text(errors="replace"))))
+                    hits = set(self.acting_hits(path.read_text(errors="replace")))
                     if hits:
                         found[path.relative_to(ROOT / "rust-modules").as_posix()] = sorted(hits)
         self.assertEqual(set(found), set(self.TITLE_ACTING_FILES), found)
@@ -524,7 +541,16 @@ class SubjectBearing(unittest.TestCase):
     def test_the_census_helper_reads_production_code_only(self):
         text = ("fn a() { ContentReq::Play }\n// PlayerReq::Command\n#[cfg(test)]\nmod tests { fn t() { PlayerReq::Command } }\n"
                 "#[cfg(test)]\nmod more_tests;\nfn b() { Write::Watched }\n")
-        self.assertEqual(sorted(self.TITLE_ACTING.findall(without_test_code(text))), ["ContentReq::Play", "Write::Watched"])
+        self.assertEqual(sorted(self.acting_hits(text)), ["ContentReq::Play", "Write::Watched"])
+
+    def test_the_census_reads_the_item_menu_actions_by_either_spelling(self):
+        spelled = "fn a() { Some(ItemMenuAction::PlayTrailer { rk }) }\nfn b() { Write::RemoveFromDeck }\n"
+        self.assertEqual(sorted(self.acting_hits(spelled)), ["ItemMenuAction::PlayTrailer", "Write::RemoveFromDeck"])
+        aliased = ("fn a() {\n    use crate::registry::ItemMenuAction as Action;\n    Action::MarkWatched(rk);\n"
+                   "    Action::WatchlistRemove(guid);\n}\n")
+        self.assertEqual(sorted(self.acting_hits(aliased)), ["Action::MarkWatched", "WatchlistRemove"])
+        # another enum called `Action` in a file that never imports the item menu's is none of the census's business
+        self.assertEqual(self.acting_hits("fn a() { Action::Play(i); episodes::Action::Play(i) }\n"), [])
 
     def test_the_detail_closure_is_applied_to_exactly_the_shapes_the_list_names(self):
         """The one `.with_subject(` call in screens/src/detail/mod.rs sits inside a closure applied at each id shape

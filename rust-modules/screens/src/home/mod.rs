@@ -804,6 +804,9 @@ pub struct HomeScreen {
     reveal_press: Option<u32>,
     /// Stable element still visible while the engine has already crossed the hero/grid door.
     /// This is a press landing policy, not current focus, and retires at the visual midpoint.
+    /// It exists for a hand on the remote: a `By::Script` arrival (a by-id press, which names its
+    /// element) clears it, and the focused element's `a11y` subject names the title it lands on
+    /// (`Self::a11y`), so a press that names the other title is refused, never played.
     visible_activation: Option<u32>,
     cta_available: bool,
     strip_chosen: bool,
@@ -3252,45 +3255,29 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// to another title; the card's `subject` (its ratingKey) is what a press names to stay safe
     /// when a publication moves them. A hero control's `subject` is the ratingKey of the hero item it acts
     /// on (the carousel advances by itself, so a press names the title it read); the failure read-out's
-    /// `hero.action` has none. A listing position the window does not hold is no element.
+    /// `hero.action` has none. While the picture still shows the other side of the hero/grid door
+    /// after a KEY crossed it, the focused element's `subject` is the title its press lands on
+    /// (`activation_elem`), not its own. A listing position the window does not hold is no element.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
-        // while the question is open its answers are the page's only elements
-        if let Some(answer) = self.plaintext_alert.a11y(*key) {
-            return answer;
+        let own = self.element_a11y(key, cx)?;
+        // The subject is the title the PRESS acts on, and a press on the engine's focused element
+        // lands where `activation_elem` says: while the picture still shows the other side of the
+        // hero/grid door after a key crossed it, that is the element the picture shows. A by-id press
+        // that names the focused element moves no focus (`FocusEngine::set` answers `Nothing`), so it
+        // cannot clear the remap the way a scripted arrival does (`[Down, press:X]`): it is refused
+        // here by its subject instead of playing the other title. Any other element is pressed where
+        // it stands, because a press moves focus to it first.
+        let focused = cx.focus.current.is_some_and(|f| f.entry == self.entry && f.elem == *key);
+        let acts = if focused { self.activation_elem(*key) } else { *key };
+        if acts == *key {
+            return Some(own);
         }
-        let view = H::hubs(cx);
-        match self.locate(*key)? {
-            Located::Hero(slot) => {
-                if !self.hero_has(view, slot) {
-                    return None;
-                }
-                let name = match slot {
-                    _ if status_read(view).is_some() => "action",
-                    0 => "play",
-                    1 => "info",
-                    _ => "watchlist",
-                };
-                let a = A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button);
-                // The ratingKey of the hero item the controls act on NOW (`selected_hero`, the one every
-                // activation reads), because the carousel advances by itself: a bare `press home.hero.play`
-                // plays whatever title is showing at that frame. The failure read-out's lone action acts
-                // on no title, and an item with no key has no subject to name.
-                Some(match self.selected_hero(view).map(|hero| hero.item.rk.as_str()).filter(|rk| !rk.is_empty() && name != "action") {
-                    Some(rk) => a.with_subject(rk.to_owned()),
-                    None => a,
-                })
-            }
-            Located::Heading(row) => {
-                let title = self.rows.get(row)?.title.as_str();
-                Some(A11y::new(shelf_path(self.rows.get(row)?, row).name("heading"), A11yRole::Button).with_label(title))
-            }
-            Located::Item(row, col) => {
-                let projection = self.rows.get(row)?;
-                // a slot whose card has not landed exists and can be focused, not pressed: it is
-                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
-                Some(ui_cards::card_a11y::<H, _>(shelf_path(projection, row), &self.cards(view, row), col))
-            }
-        }
+        let acting = self.element_a11y(&acts, cx);
+        Some(A11y {
+            subject: acting.as_ref().and_then(|a| a.subject.clone()),
+            loaded: own.loaded && acting.as_ref().is_some_and(|a| a.loaded),
+            ..own
+        })
     }
 
     /// Every element of group `g` in index order: the hero's controls in ROW order, a shelf's cards
@@ -3410,6 +3397,48 @@ impl HomeScreen {
             self.visible_activation.unwrap_or(engine_elem)
         } else {
             engine_elem
+        }
+    }
+
+    /// An element's own projection, whatever the picture shows ([`Focusable::a11y`] is this one,
+    /// but for the title the press on the engine's focused element lands on).
+    fn element_a11y<H: HomeLike>(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        // while the question is open its answers are the page's only elements
+        if let Some(answer) = self.plaintext_alert.a11y(*key) {
+            return answer;
+        }
+        let view = H::hubs(cx);
+        match self.locate(*key)? {
+            Located::Hero(slot) => {
+                if !self.hero_has(view, slot) {
+                    return None;
+                }
+                let name = match slot {
+                    _ if status_read(view).is_some() => "action",
+                    0 => "play",
+                    1 => "info",
+                    _ => "watchlist",
+                };
+                let a = A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button);
+                // The ratingKey of the hero item the controls act on NOW (`selected_hero`, the one every
+                // activation reads), because the carousel advances by itself: a bare `press home.hero.play`
+                // plays whatever title is showing at that frame. The failure read-out's lone action acts
+                // on no title, and an item with no key has no subject to name.
+                Some(match self.selected_hero(view).map(|hero| hero.item.rk.as_str()).filter(|rk| !rk.is_empty() && name != "action") {
+                    Some(rk) => a.with_subject(rk.to_owned()),
+                    None => a,
+                })
+            }
+            Located::Heading(row) => {
+                let title = self.rows.get(row)?.title.as_str();
+                Some(A11y::new(shelf_path(self.rows.get(row)?, row).name("heading"), A11yRole::Button).with_label(title))
+            }
+            Located::Item(row, col) => {
+                let projection = self.rows.get(row)?;
+                // a slot whose card has not landed exists and can be focused, not pressed: it is
+                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
+                Some(ui_cards::card_a11y::<H, _>(shelf_path(projection, row), &self.cards(view, row), col))
+            }
         }
     }
 
@@ -3634,7 +3663,15 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.feed_shelves(ev, cx, fx);
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);
-                if let (Some(a), Some(b)) = (from_loc, to_loc) {
+                if *by == By::Script {
+                    // A scripted arrival (a by-id `focus:`/`press:`) NAMES what the press that
+                    // follows acts on, and the dispatcher queues that press in the same frame, before
+                    // the dive has run a tick. The picture's remap is for a hand on the remote that
+                    // has not yet seen the page move, so it never applies here, and one a key left
+                    // behind does not survive the move either. The dive itself still runs: the
+                    // remap is where a press lands, not the picture.
+                    self.visible_activation = None;
+                } else if let (Some(a), Some(b)) = (from_loc, to_loc) {
                     if self.on_grid_page(a) != self.on_grid_page(b) {
                         self.visible_activation = from.map(|key| key.elem);
                     }

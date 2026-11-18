@@ -1787,6 +1787,159 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
         "the same input activates different items, so these cannot be the same logical state");
 }
 
+// --- The hero/grid door: where a press LANDS --------------------------------------------------
+//
+// A human's quick OK after a Dir key across the door lands on what the picture still shows
+// (`visible_activation`); a by-id press names what it presses, so it lands on exactly that, and
+// the app refuses it when its subject is not the title the press would act on.
+
+/// A page with a poster shelf first, so the door exists (the Continue Watching row stands in view
+/// on the hero's page and has none), and three cards in it. The billboard shows the shelf's FIRST
+/// title, so the test's `card` and `next` are its second and third: a press that lands on the wrong
+/// side of the door acts on a different rating key.
+struct Door {
+    s: HomeScreen,
+    snapshot: plx_data::pms::HubsSnapshot,
+    hero: FocusKey<u32>,
+    card: FocusKey<u32>,
+    next: FocusKey<u32>,
+    hero_rk: String,
+    card_rk: String,
+    next_rk: String,
+}
+
+impl Door {
+    fn new() -> Self {
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        plx_data::pms::seed_grid_for_test(&mut state, &adapter, 1, 3);
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
+        let s = screen(snapshot.view());
+        let view = snapshot.view();
+        let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+        let card = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
+        let next = FocusKey { entry: s.entry, elem: s.rows[0].elems[2] };
+        let hero_rk = s.selected_hero(view).expect("the page has a hero").item.rk.to_string();
+        let card_rk = s.item_at(view, 0, 1).expect("the second card").rk.to_string();
+        let next_rk = s.item_at(view, 0, 2).expect("the third card").rk.to_string();
+        assert!(hero_rk != card_rk && hero_rk != next_rk && card_rk != next_rk,
+            "premise: three different titles ({hero_rk}, {card_rk}, {next_rk})");
+        assert!(!s.holds_page(0), "premise: the first shelf is not the Continue Watching row, so the door exists");
+        Self { s, snapshot, hero, card, next, hero_rk, card_rk, next_rk }
+    }
+
+    fn view(&self) -> HubsView<'_> { self.snapshot.view() }
+
+    /// The page at rest on the shelves.
+    fn on_the_shelves(&mut self) {
+        self.s.snap.jump(1.0);
+        self.s.snap_target = 1.0;
+    }
+
+    fn moved(&mut self, from: FocusKey<u32>, to: FocusKey<u32>, by: By) {
+        let view = self.snapshot.view();
+        step(&mut self.s, view, Some(to), &ScreenEvent::FocusMoved { from: Some(from), to, by });
+    }
+
+    /// The press the focus `at` commits, as the requests it emitted: `(kind, rk)`.
+    fn press(&mut self, at: FocusKey<u32>) -> Vec<(&'static str, String)> {
+        let view = self.snapshot.view();
+        let (_, out, _) = step(&mut self.s, view, Some(at), &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        out.iter().filter_map(|stamped| match &stamped.fx {
+            Fx::App(AppFx::Home(HomeReq::Play { rk, .. })) => Some(("play", rk.to_string())),
+            Fx::App(AppFx::Home(HomeReq::Detail { rk, .. })) => Some(("detail", rk.to_string())),
+            _ => None,
+        }).collect()
+    }
+
+    /// The `subject` the screen projects for `elem` while the engine's focus is `at`.
+    fn subject(&self, elem: u32, at: FocusKey<u32>) -> Option<String> {
+        Focusable::<TestHost>::a11y(&self.s, &elem, &cx(self.view(), Some(at)))
+            .and_then(|a| a.subject.map(|s| s.into_owned()))
+    }
+}
+
+/// A scripted arrival on a card from the hero's Play, then the press: the card's title opens. The
+/// picture is still on the hero (the dive has not run a frame), and a by-id press puts the move and
+/// the OK in ONE frame, so the remap a human's quick OK gets must not apply to it.
+#[test]
+fn a_scripted_arrival_on_a_card_across_the_door_presses_that_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Script);
+    assert!(d.s.snap.pos < 0.5, "premise: the picture is still on the hero");
+    assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "the card's title opens, not the hero's");
+}
+
+/// The reverse: from a card with the page on the shelves, a scripted arrival on the hero's Play
+/// plays the hero's item, not the card the page came from.
+#[test]
+fn a_scripted_arrival_on_the_hero_across_the_door_presses_the_hero() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    d.on_the_shelves();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(card, hero, By::Script);
+    assert!(d.s.snap.pos > 0.5, "premise: the picture is still on the shelves");
+    assert_eq!(d.press(hero), [("play", d.hero_rk.clone())], "the hero's item plays, not the card's");
+}
+
+/// A stale remap must not survive a scripted move that crosses no door: a Dir key across it sets
+/// the remap, the scripted move to the card's neighbour (same page) then presses THAT card.
+#[test]
+fn a_scripted_move_within_a_page_clears_the_remap_an_earlier_key_left() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card, next) = (d.hero, d.card, d.next);
+    d.moved(hero, card, By::Dir);
+    d.moved(card, next, By::Script);
+    assert!(d.s.snap.pos < 0.5, "premise: the picture is still on the hero");
+    assert_eq!(d.press(next), [("detail", d.next_rk.clone())]);
+}
+
+/// The human case is kept: a Dir key across the door and a quick OK activates what the picture
+/// still shows, the hero's Play, in both directions.
+#[test]
+fn a_key_across_the_door_and_a_quick_ok_still_lands_on_what_the_picture_shows() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Dir);
+    assert_eq!(d.press(card), [("play", d.hero_rk.clone())], "the picture still shows the hero");
+    d.on_the_shelves();
+    d.s.visible_activation = None;
+    d.moved(card, hero, By::Dir);
+    assert_eq!(d.press(hero), [("detail", d.card_rk.clone())], "the picture still shows the card");
+}
+
+/// A by-id press on the element the engine's focus ALREADY rests on emits no `FocusMoved`
+/// (`FocusEngine::set` answers `Nothing`), so the Script rule cannot clear the remap a key left: the
+/// `[Down, press:X]` batch. The element's `subject` is then the title the press acts on, so the
+/// dispatcher refuses a press that names the card (`subject_mismatch`) rather than playing the hero.
+#[test]
+fn the_subject_of_the_focused_element_is_the_title_its_press_acts_on() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Dir);
+    assert_eq!(d.subject(card.elem, card), Some(d.hero_rk.clone()),
+        "a press on the card now plays the hero's item, and the projection says so");
+    assert_eq!(d.subject(d.next.elem, card), Some(d.next_rk.clone()),
+        "an element that is not the focused one is pressed where it stands: a press moves focus first");
+    assert_eq!(d.subject(hero.elem, card), Some(d.hero_rk.clone()));
+    // the dive passes its midpoint: the remap retires and the card's own title is its subject
+    d.s.snap.jump(1.0);
+    let view = d.snapshot.view();
+    step(&mut d.s, view, Some(card), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert_eq!(d.subject(card.elem, card), Some(d.card_rk.clone()));
+    // and the reverse door
+    d.s.snap_target = 1.0;
+    d.moved(card, hero, By::Dir);
+    assert_eq!(d.subject(hero.elem, hero), Some(d.card_rk.clone()),
+        "a press on the hero's Play now opens the card the picture still shows");
+}
+
 #[test]
 fn the_home_census_covers_input_motion_and_current_projection() {
     let _guard = plx_base::testlock::serial();

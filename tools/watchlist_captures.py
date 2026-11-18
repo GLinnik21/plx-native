@@ -16,7 +16,7 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      direction key stands between the boot and the target in any capture. What stays a key is a key whose
      subject is the key itself: `hold`, a timing (`ok@0.12`), `back`; and `ck:<x>,<y>` pointer clicks,
      which `w6/detail-offline.png` alone uses as its walk. An id is checked against the grammar before
-     anything boots. A press whose element's press plays or writes a title (`a11y.SUBJECT_BEARING` is the one
+     anything boots. A press of an element that acts on a title it names (`a11y.SUBJECT_BEARING` is the one
      list) NAMES that title, `press:<id>@<ratingKey>`, and the app refuses it when
      another title is there, so a hero that moved on or a menu opened on another card fails the capture
      instead of acting on it: `press:itemmenu.watchlist_remove@2001` (The Long Meridian, the mock's second

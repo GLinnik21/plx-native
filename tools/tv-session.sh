@@ -9,9 +9,8 @@
 #   tv-session.sh click <x> <y>  click at authored 1920x1080 coords
 #   tv-session.sh focus <id>     move focus to the element an accessibility id names (`nav.watchlist`)
 #   tv-session.sh press <id> [--rk <ratingKey>]
-#                                focus that element and press OK; an element whose press plays or writes a
-#                                title (a card, a hero or menu button, a player control that starts one: the
-#                                list is `SUBJECT_BEARING` in tools/a11y.py) needs --rk: see "BY ID" below
+#                                focus that element and press OK; an element that acts on a title it names
+#                                (the list is `SUBJECT_BEARING` in tools/a11y.py) needs --rk: see "BY ID" below
 #   tv-session.sh state [--out FILE]
 #                                what is on screen, by id: the focused id, the groups, every element
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
@@ -130,12 +129,15 @@
 # `press:<id>[@<ratingKey>]`, `state:<nonce>`; debug builds only, `devtriggers`). Ids are place-based dot paths
 # (`nav.watchlist`, `home.hero.play`, `detail.hero.play`, `watchlist.grid.card.3`); `state` lists the real ones.
 # Prefer them to `key` walks, which are for tests whose subject is travel. Never press OK on a title whose
-# ratingKey you have not read: `press` refuses, without `--rk`, any id whose element's press PLAYS or WRITES a
-# title (it plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, or acts on the title
-# a menu was opened for), and an element that only navigates or opens a panel is pressed bare. The list of those ids
-# is `SUBJECT_BEARING` in tools/a11y.py, read off the code (`a11y_subject_bearing` below is the same list), and the
-# `--rk` is the ratingKey the element ACTS on, which `state` prints as its subject (on a started show's Mark watched it
-# is the on-deck episode, on a player's Next the queue neighbour, not the page's or the playing item's). The app
+# ratingKey you have not read: `press` refuses, without `--rk`, any id whose element ACTS ON a title it names (it
+# plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, acts on the title a menu was
+# opened for, or opens that title's own page or menu where the title can change under the press: a card, a credit,
+# the Home carousel's Info). Navigation is not the test: only a control whose target the page fixes (Go to Show, Also
+# available, the Play Version opener, More, a panel opener, a seek) is pressed bare. The list of those ids is
+# `SUBJECT_BEARING` in tools/a11y.py, read off the code (`a11y_subject_bearing` below is the same list), and the
+# `--rk` is the ratingKey of the title the press acts on, which `state` prints as the element's subject (on a started
+# show's Mark watched it is the on-deck episode, on a player's Next the queue neighbour, not the page's or the playing
+# item's). The app
 # refuses the press when the element now there carries another subject (`a11y: refused press <id> subject_mismatch
 # ...` in the event log). `key` refuses a
 # `focus:`, `press:` or `state:` word, so there is ONE door per action, and a word with whitespace in it is
@@ -1168,7 +1170,7 @@ press:x")" = "2 0" ] || { bad "key sent a word with a newline in it"; return 1; 
   [ "$(selftest_door "$m" cmd_press itemmenu.watchlist_remove --rk 7)" = "0 1" ] && grep -q "'press:itemmenu.watchlist_remove@7'" "$m" || { bad "an item-menu press naming its title was not sent"; return 1; }
   [ "$(selftest_door "$m" cmd_press home.hero.action)" = "0 1" ] && grep -q "'press:home.hero.action'" "$m" || { bad "a bare press of the failure read-out's retry (no title) was not sent"; return 1; }
   [ "$(selftest_door "$m" cmd_press detail.hero.mark_watched --rk 200622)" = "0 1" ] && grep -q "'press:detail.hero.mark_watched@200622'" "$m" || { bad "a Detail hero press naming its title was not sent"; return 1; }
-  # a Detail hero control that only navigates or opens a menu acts on no title, so a bare press of it goes out
+  # a Detail hero control whose target the page fixes (it only navigates or opens a menu) names no title, so a bare press of it goes out
   [ "$(selftest_door "$m" cmd_press detail.hero.go_to_show)" = "0 1" ] && grep -q "'press:detail.hero.go_to_show'" "$m" || { bad "a bare press of the Detail hero's Go to Show (it only navigates) was not sent"; return 1; }
   return 0
 }
@@ -1236,7 +1238,7 @@ nav.home"; do
   [ "$(a11y_token press detail.hero.go_to_show)" = "press:detail.hero.go_to_show" ] || { bad "press token"; return 1; }
   [ "$(a11y_token press home.shelf.2.card.5 1234)" = "press:home.shelf.2.card.5@1234" ] || { bad "press-with-subject token"; return 1; }
   [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on the catalog pill"; return 1; }
-  # Every id whose press plays or writes a title is pressed by name (`SUBJECT_BEARING`): a card, a Detail episode
+  # Every id whose press acts on a title it names is pressed by name (`SUBJECT_BEARING`): a card, a Detail episode
   # (OK on a still PLAYS it), a season tab, a Filmography credit, the catalog pill, a Home hero Play, Info or
   # Watchlist button (the carousel advances by itself, so a bare press acts on whichever title is showing), a Detail
   # hero control that plays or writes (Play, Restart, Trailer, Mark watched, Mark unwatched, Watchlist: each acts on
@@ -1258,8 +1260,8 @@ nav.home"; do
     [ "$(a11y_token focus "$aid")" = "focus:$aid" ] || { bad "focus of $aid was refused"; return 1; }
   done
   # ... and the ones that start or write no title still press with none (nothing is named by `--rk` there): the
-  # Detail hero's controls that only navigate or open a menu or a panel (`go_to_show`, `alt`, `version`, `more`),
-  # `home.hero.action` (the failure read-out's retry), which acts on no title, and the player's controls that open a
+  # Detail hero's controls whose target the page fixes (`go_to_show`, `alt`, `version`, `more`: they navigate or open a
+  # menu or a panel), `home.hero.action` (the failure read-out's retry), which acts on no title, and the player's controls that open a
   # panel, seek, pause or leave (tests/player_shots.sh presses its panel openers bare) are pressed bare.
   for aid in detail.about.card detail.about.languages detail.hero.go_to_show detail.hero.alt detail.hero.version \
              detail.hero.more under-posters.row.3 filmography.tab.2 nav.watchlist home.hero.action \
@@ -1504,8 +1506,9 @@ a11y_subject_ok() {  # $1 = a ratingKey / subject
 # `A11y::with_subject` call SITE, and is the same list as `SUBJECT_BEARING` in tools/a11y.py, which carries the table of
 # what each entry is and why (a test holds the two equal; another holds the number of calls per file equal to the
 # sites it was derived from, and another the set of files that construct a title-acting message equal to the files it
-# covers). THE RULE: an id is in it when its press plays or writes a title; an element that only navigates or opens a
-# panel is pressed bare. A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled
+# covers). THE RULE (stated in full at `SUBJECT_BEARING`): an id is in it when its press ACTS ON a title it names, which
+# includes opening that title's own page or menu where the title can change under the press (a card, a credit, the Home
+# carousel's Info); only a control whose target the page fixes is pressed bare. A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled
 # out, and the player's controls are spelled by word (`player.control.subtitles` opens a panel and stays bare) with
 # the positional spelling `player.control.[0-9]*` guarded whole, and the player's menus' rows by kind (a folded command
 # that starts a title and `more.rung.*`, the quality rungs, which re-resolve it; the Tracks menu's track picks and
@@ -1528,7 +1531,7 @@ a11y_token() {
     press)
       if a11y_subject_bearing "$id"; then
         [ -n "$rk" ] || {
-          echo "tv-session: press $id: pressing this element plays or writes a title (the ids are SUBJECT_BEARING in tools/a11y.py: a card, a hero or menu button, a Play Version row, a player control that starts one), so name the title with --rk <ratingKey> (read it from \`state\`'s subject for the element, or the log, first)" >&2
+          echo "tv-session: press $id: pressing this element acts on a title it names (the ids are SUBJECT_BEARING in tools/a11y.py), so name the title with --rk <ratingKey>, the ratingKey of the title the press acts on (read it from \`state\`'s subject for the element, or the log, first)" >&2
           return 2; }
       fi
       if [ -n "$rk" ]; then

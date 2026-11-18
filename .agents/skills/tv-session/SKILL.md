@@ -45,7 +45,7 @@ tools/tv-session.sh key down down ok        # key tokens through the real handle
 tools/tv-session.sh click 960 540           # authored 1920x1080 coords
 tools/tv-session.sh focus watchlist.grid.card.7   # move focus to an element BY ID (no key walk)
 tools/tv-session.sh press nav.watchlist     # focus it, then an OK press
-tools/tv-session.sh press home.shelf.0.card.2 --rk <ratingKey>  # an element whose press plays or writes a title (card, hero button, menu row, player Next...) REQUIRES the title it must be
+tools/tv-session.sh press home.shelf.0.card.2 --rk <ratingKey>  # an element that acts on a title it names (card, credit, hero button, menu row, player Next...) REQUIRES the title it must be
 tools/tv-session.sh state [--out FILE]      # the app's JSON snapshot: route, owner, focused id, every element
 tools/tv-session.sh shot [out.png]          # panel capture (video plane included)
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
@@ -296,14 +296,18 @@ whitespace, so it would be two tokens, the second a press nothing had checked.
 **Prefer `focus` / `press` by id over key walks.** A walk of `down down right ok` breaks when a row
 gains a card; an id (`watchlist.grid.card.7`, `detail.hero.go_to_show`; the grammar is in `tools/a11y.py`)
 names the element whatever the row holds. Ids resolve in the namespace of whoever owns input, so a
-menu answers `itemmenu.*`, not the screen under it. A press of any element whose press PLAYS or WRITES a
-title (it plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, or acts on the
-title a menu was opened for: a card, a hero button, an item-menu row, a Play Version row, a player control that
-starts a title) needs `--rk <ratingKey>`, the key the element ACTS on and `state` prints as its subject (Mark
-watched on a started show is the on-deck episode, a player's Next the queue neighbour); an element that only
-navigates or opens a panel (`detail.hero.go_to_show`, `player.control.subtitles`, `home.hero.action`) is pressed
-bare. The ids are `SUBJECT_BEARING` in `tools/a11y.py`, the one list (`a11y_subject_bearing` in
-`tools/tv-session.sh` is the same list, and a test holds them equal), so a re-sorted row, a moved hero or a menu opened on another card cannot press a different title, and on a real account that title's
+menu answers `itemmenu.*`, not the screen under it. A press of any element that ACTS ON a title it names (it
+plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, acts on the title a menu was
+opened for, or opens that title's own page or menu where the title can change under the press: a card, a credit,
+the Home carousel's Info, a hero button, an item-menu row, a Play Version row, a player control that starts a
+title) needs `--rk <ratingKey>`, the ratingKey of the title the press acts on, which `state` prints as the element's
+subject (Mark watched on a started show is the on-deck episode, a player's Next the queue neighbour). Navigation is
+not the test: only a control whose target the page fixes (`detail.hero.go_to_show`, the Play Version opener, a
+panel opener such as `player.control.subtitles`, a seek, `home.hero.action`) is pressed bare. The ids are
+`SUBJECT_BEARING` in `tools/a11y.py`, the one list (`a11y_subject_bearing` in `tools/tv-session.sh` is the same
+list, and a test holds them equal), so a re-sorted row, a moved hero, a menu opened on another card or Home's
+hero/grid door (where a quick OK after a key lands on what the picture shows, and the focused element's subject says
+so) cannot press a different title, and on a real account that title's
 `ratingKey` must be one you read from the log (the boot rule: never `ok` a title you have not read). `state` is the
 structured readback: it sends a random nonce and reads `plxnative-a11y.json` until the nonce comes
 back, so a stale file never passes for the answer. Walks stay for tests whose subject is travel

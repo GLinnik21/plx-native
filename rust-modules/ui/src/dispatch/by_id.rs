@@ -11,8 +11,14 @@
 //!    `state` read and the press is closed in this one step);
 //! 3. on success abandons a press armed elsewhere (`abandon_if_off`, the rule a direction key
 //!    uses), sets focus with `By::Script` and notes the d-pad (hover is not live);
-//! 4. pushes to the FRONT of the queue, in order, the `FocusMoved{by: Script}` delivery and, for a
-//!    press, an ordinary OK `Down` and `Up`.
+//! 4. pushes to the FRONT of the queue, in order, the `FocusMoved{by: Script}` delivery (when focus
+//!    moved) and, for a press, an ordinary OK `Down` and `Up`.
+//!
+//! A press on the element focus ALREADY rests on moves nothing (`FocusEngine::set` answers `Nothing`) and
+//! delivers no `FocusMoved`, so a screen cannot tell it from a human's OK. The screen's own answer is
+//! the `subject` it projects for the FOCUSED element: when its OK lands somewhere else than on that
+//! element (Home's door remap, after a Dir key), the subject is the title it lands on, and step 2
+//! refuses the press that names another.
 //!
 //! The OK Down is delivered next and the screen sees it exactly as a remote OK; unconsumed, it
 //! arms on the engine's current key, which is now the element. The Up follows, and the delivery

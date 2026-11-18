@@ -283,7 +283,8 @@ pub enum Role {
 
 /// One element's projection: its id and what a test reads about it.
 ///
-/// `label` and `subject` are runtime text (a card's title, its ratingKey): they go to the state file,
+/// `label` and `subject` are runtime text (a card's title; the ratingKey of the title the press acts on, see
+/// `SUBJECT_BEARING` in `tools/a11y.py`): they go to the state file,
 /// never to a log line or heartbeat (a press's `@<subject>` guard is kept by a recording, see the
 /// module doc).
 /// `loaded` is false for a placeholder whose item has not arrived. The borrow is of the view the
