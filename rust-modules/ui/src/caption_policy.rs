@@ -219,7 +219,7 @@ pub fn part_value(part: DetailPart, facts: &CaptionFacts, locale: &LocaleContext
         DetailPart::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
         DetailPart::VideoQuality => join(
             facts.video_resolution.as_deref().and_then(resolution_mark).into_iter()
-                .chain(crate::fmt::dynamic_range(facts.hdr, facts.dolby_vision).map(str::to_owned)).collect(),
+                .chain(crate::fmt::dynamic_range(plx_base::detail_parts::DynamicRange::carried(facts.hdr, facts.dolby_vision)).map(str::to_owned)).collect(),
         ),
         DetailPart::AgeRating => facts.content_rating.clone().filter(|r| !r.is_empty()),
         DetailPart::Score => facts.audience_rating.filter(|s| *s > 0.0).map(|s| locale.decimal((s * 10.0).round() as i64, 1)),
