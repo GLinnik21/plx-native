@@ -60,8 +60,10 @@ def install(checkout, root):
     # Older branches ignore only directories. These links must also stay out of their index.
     with exclude.open("a+") as f:
         f.seek(0)
-        if "/rust-modules/target-*" not in f.read().splitlines():
-            f.write("\n/rust-modules/target\n/rust-modules/target-*\n")
+        existing = f.read().splitlines()
+        for pattern in ("/rust-modules/target", "/rust-modules/target-*", "/fuzz/target"):
+            if pattern not in existing:
+                f.write("\n" + pattern + "\n")
     atomic_write(hook, HOOK.encode(), 0o755)
 
 
@@ -130,13 +132,19 @@ def prepare(checkout, tree=None, migrate=False):
         return
     names = set(TARGETS)
     if tree is not None:
-        if tree.parent != module:
-            return  # Explicit external overrides keep their own target location.
-        names = {tree.name, tree.name + "-storage"} if tree.name == "target" else {tree.name}
+        names = {tree.name} if tree.parent == module else set()
+        if tree == module / "target":
+            names.add("target-storage")
     if migrate and tree is None:
         names.update(p.name for p in module.glob("target*") if p.is_dir())
     if any(not re.fullmatch(r"target(?:-[a-zA-Z0-9_-]+)?", n) for n in names):
         raise ValueError("unexpected Cargo target directory name")
+    sources = {module / name: name for name in names}
+    fuzz = checkout / "fuzz"
+    if tree in (None, fuzz / "target") and not fuzz.is_symlink() and (fuzz / "Cargo.toml").is_file():
+        sources[fuzz / "target"] = "fuzz-target"
+    if not sources:
+        return  # Explicit external overrides keep their own target location.
     if directory.is_symlink():
         raise ValueError(f"unexpected symlink: {directory}")
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -149,11 +157,11 @@ def prepare(checkout, tree=None, migrate=False):
             atomic_write(owner, os.fsencode(checkout), 0o600)
         if owner.read_bytes() != os.fsencode(checkout):
             raise ValueError(f"checkout identity mismatch at {directory}")
-        tracked = git(checkout, "ls-files", "--", *["rust-modules/" + n for n in sorted(names)])
+        tracked = git(checkout, "ls-files", "--", *[str(src.relative_to(checkout)) for src in sources])
         if tracked:
             raise ValueError("a selected target contains tracked files")
-        for name in sorted(names):
-            src, dst = module / name, directory / name
+        for src, name in sorted(sources.items()):
+            dst = directory / name
             if dst.is_symlink():
                 raise ValueError(f"unexpected destination link: {dst}")
             if src.is_symlink():
@@ -258,7 +266,7 @@ def inventory(checkout, orphans):
         if orphans:
             if gone:
                 for tree in directory.iterdir():
-                    if (re.fullmatch(r"target(?:-[a-zA-Z0-9_-]+)?", tree.name)
+                    if ((tree.name == "fuzz-target" or re.fullmatch(r"target(?:-[a-zA-Z0-9_-]+)?", tree.name))
                             and not tree.is_symlink() and tree.is_dir()):
                         print(tree)
         else:

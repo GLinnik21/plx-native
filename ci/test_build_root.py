@@ -21,6 +21,8 @@ class CheckoutSetup(unittest.TestCase):
             module = root / 'rust-modules'
             module.mkdir(parents=True)
             (module / 'Cargo.toml').touch()
+            (root / 'fuzz').mkdir()
+            (root / 'fuzz/Cargo.toml').touch()
 
             def run(*args, cwd=root, check=True):
                 return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=check)
@@ -40,6 +42,10 @@ class CheckoutSetup(unittest.TestCase):
                 target = checkout / 'rust-modules/target'
                 self.assertTrue(target.is_symlink())
                 self.assertIn(das, target.resolve().parents)
+                fuzz = checkout / 'fuzz/target'
+                self.assertTrue(fuzz.is_symlink())
+                self.assertEqual(fuzz.resolve().parent, target.resolve().parent)
+                self.assertNotEqual(fuzz.resolve(), (checkout / 'rust-modules/target-fuzz').resolve())
                 self.assertEqual(run('git', 'status', '--porcelain', cwd=checkout).stdout, '')
             self.assertNotEqual((module / 'target').resolve(), (lane / 'rust-modules/target').resolve())
             lane_target = (lane / 'rust-modules/target').resolve()

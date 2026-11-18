@@ -556,7 +556,8 @@ sessions that skip Git's checkout hook. These commands preserve existing user ho
 handler to this clone. Codex may request hook trust in its Hooks settings. The Codex desktop local
 environment and build preflight also run the repeatable setup. Grant sandboxed
 builders write access to the configured directory. Checkouts already on the build volume use
-their native target directories.
+their native target directories. The independent Cargo workspace under `fuzz/` gets its own
+external target for direct Cargo and Rust Analyzer runs.
 
 Run `python3 tools/build-root.py prepare` in an existing checkout. To move existing Cargo trees,
 run `python3 tools/build-root.py migrate` there. Migration checks liveness, copies and compares
