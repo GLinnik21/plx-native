@@ -2186,7 +2186,13 @@ case "$MODE" in
 orphans)
   echo "== external lane target dirs whose worktree is gone =="
   if [ -f "$HOME/.config/plxnative/build-root" ] && [ -f "$ROOT/tools/build-root.py" ]; then
-    python3 "$ROOT/tools/build-root.py" orphans | skip_live | drop
+    python3 "$ROOT/tools/build-root.py" orphans | while IFS= read -r tree; do
+      # External ownership is recorded by the setup hook. Recheck open handles
+      # and Cargo locks just before passing a derived directory to the executor.
+      if python3 "$ROOT/tools/disk-budget.py" probe --tree "$tree" --class fleet >&2; then
+        printf '%s\n' "$tree"
+      fi
+    done | skip_live | drop
   fi
   external_trees | sort -u | while IFS= read -r d; do
     if external_is_orphan "$d"; then echo "$d"; fi

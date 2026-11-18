@@ -551,7 +551,10 @@ On macOS, create a dedicated directory on the mounted build volume, then run
 `python3 tools/build-root.py install /absolute/path/to/build-root` from the clone to enable it.
 The path lives in the user's `~/.config/plxnative/build-root`. The installer adds a clone-local
 Git post-checkout hook and exclude rules for target links. It refuses to replace a custom hook.
-The Codex local environment and build preflight run the same repeatable setup. Grant sandboxed
+Use `install-claude` and `install-codex` to register the same helper for native
+sessions that skip Git's checkout hook. These commands preserve existing user hooks and scope the
+handler to this clone. Codex may request hook trust in its Hooks settings. The Codex desktop local
+environment and build preflight also run the repeatable setup. Grant sandboxed
 builders write access to the configured directory. Checkouts already on the build volume use
 their native target directories.
 

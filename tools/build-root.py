@@ -4,9 +4,11 @@ import argparse
 import ctypes
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -61,6 +63,45 @@ def install(checkout, root):
         if "/rust-modules/target-*" not in f.read().splitlines():
             f.write("\n/rust-modules/target\n/rust-modules/target-*\n")
     atomic_write(hook, HOOK.encode(), 0o755)
+
+
+def install_harness(checkout, harness):
+    common = Path(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    helper = common / "hooks/plxnative-build-root.py"
+    if not helper.is_file():
+        raise ValueError("install the clone-local hook first")
+    # Native isolated sessions can bypass post-checkout. Use the installed, trusted
+    # copy so the same hook works on older branches and ignores unrelated clones.
+    if harness == "claude":
+        settings = Path.home() / ".claude/settings.json"
+        events = ("SessionStart", "CwdChanged", "SubagentStart")
+    else:
+        settings = Path.home() / ".codex/hooks.json"
+        events = ("SessionStart", "SubagentStart")
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    config = json.loads(settings.read_text()) if settings.exists() else {}
+    command = "python3 " + shlex.quote(str(helper)) + (" claude-event" if harness == "claude" else " session-event")
+    entry = {"hooks": [{"type": "command", "command": command}]}
+    for event in events:
+        entries = config.setdefault("hooks", {}).setdefault(event, [])
+        if entry not in entries:
+            entries.append(entry)
+    atomic_write(settings, (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode(), 0o600)
+
+
+def session_event():
+    event = json.load(sys.stdin)
+    cwd = event.get("new_cwd") or event.get("cwd")
+    if not cwd or not CONFIG.is_file():
+        return
+    common = Path(__file__).resolve().parent.parent
+    result = subprocess.run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                             "--show-toplevel"], capture_output=True, text=True)
+    if result.returncode:
+        return
+    repo, top = result.stdout.splitlines()
+    if Path(repo).resolve() == common:
+        prepare(Path(top).resolve())
 
 
 def location(checkout):
@@ -118,6 +159,8 @@ def prepare(checkout, tree=None, migrate=False):
             if src.is_symlink():
                 if Path(os.readlink(src)) != dst or not dst.is_dir():
                     raise ValueError(f"unexpected or broken target link: {src}")
+                if migrate and os.path.lexists(src.with_name("." + src.name + ".plx-original")):
+                    move_idle(checkout, src, dst)
                 if tree == src:
                     with tempfile.TemporaryFile(dir=dst):
                         pass  # Check the actual harness can write through the link.
@@ -153,24 +196,28 @@ def move_idle(checkout, src, dst):
     import runpy
     cold = runpy.run_path(str(tools / "cold-store.py"))
     backup = src.with_name("." + src.name + ".plx-original")
-    if os.path.lexists(backup):
-        raise ValueError(f"previous migration needs inspection: {backup}")
-    if not dst.exists():
-        with tempfile.TemporaryDirectory(prefix=".copy-", dir=dst.parent) as temp:
-            copied = Path(temp) / "tree"
-            cold["copy_tree"](str(src), str(copied))
-            copied.rename(dst)
-    # Also covers retry after interruption between publishing the copy and switching.
-    if not identical(src, dst):
-        raise ValueError(f"source and DAS copy differ; both retained: {src}, {dst}")
-    if not idle(src):
-        return
-    swap = ctypes.CDLL(None, use_errno=True).renamex_np
-    # After this single syscall src is the new link and backup holds the original inode.
-    backup.symlink_to(dst)
-    if swap(os.fsencode(src), os.fsencode(backup), 2) != 0:
-        backup.unlink()
-        raise OSError(ctypes.get_errno(), f"cannot exchange {src} and {backup}")
+    if src.is_symlink():
+        if src.resolve() != dst or backup.is_symlink() or not backup.is_dir():
+            raise ValueError(f"previous migration needs inspection: {backup}")
+    else:
+        if os.path.lexists(backup) and not (backup.is_symlink() and Path(os.readlink(backup)) == dst):
+            raise ValueError(f"previous migration needs inspection: {backup}")
+        if not dst.exists():
+            with tempfile.TemporaryDirectory(prefix=".copy-", dir=dst.parent) as temp:
+                copied = Path(temp) / "tree"
+                cold["copy_tree"](str(src), str(copied))
+                copied.rename(dst)
+        # Retry after interruption between publishing the copy and switching.
+        if not identical(src, dst):
+            raise ValueError(f"source and DAS copy differ; both retained: {src}, {dst}")
+        if not idle(src):
+            return
+        swap = ctypes.CDLL(None, use_errno=True).renamex_np
+        if not backup.is_symlink():
+            backup.symlink_to(dst)
+        if swap(os.fsencode(src), os.fsencode(backup), 2) != 0:
+            backup.unlink()
+            raise OSError(ctypes.get_errno(), f"cannot exchange {src} and {backup}")
     if not idle(backup):
         print(f"retained original: {backup}", file=sys.stderr)
         return
@@ -220,14 +267,19 @@ def inventory(checkout, orphans):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("install", "prepare", "migrate", "inventory", "orphans"))
+    parser.add_argument("command", choices=("install", "prepare", "migrate", "inventory", "orphans", "install-claude", "install-codex", "session-event", "claude-event"))
     parser.add_argument("path", type=Path, nargs="?")
     args = parser.parse_args()
+    if args.command in ("claude-event", "session-event"):
+        session_event()
+        return
     checkout = Path(git(Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
     if args.command == "install":
         if args.path is None:
             parser.error("install requires the existing build root directory")
         install(checkout, args.path)
+    elif args.command in ("install-claude", "install-codex"):
+        install_harness(checkout, args.command.split("-")[1])
     elif args.command in ("inventory", "orphans"):
         inventory(checkout, args.command == "orphans")
     else:

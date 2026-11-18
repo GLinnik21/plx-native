@@ -1,4 +1,5 @@
 """A checkout hook must route the very first plain Cargo build, including in another worktree."""
+import json
 import os
 import runpy
 from unittest import mock
@@ -46,6 +47,22 @@ class CheckoutSetup(unittest.TestCase):
             orphans = run(sys.executable, SCRIPT, 'orphans').stdout.splitlines()
             self.assertIn(str(lane_target), orphans)
             self.assertNotIn(str((module / 'target').resolve()), orphans)
+            installed = root / '.git/hooks/plxnative-build-root.py'
+            for harness, relative in [('claude', '.claude/settings.json'), ('codex', '.codex/hooks.json')]:
+                settings = base / relative
+                settings.parent.mkdir(exist_ok=True)
+                settings.write_text('{"other": true, "hooks": {"SessionStart": []}}')
+                run(sys.executable, SCRIPT, 'install-' + harness)
+                run(sys.executable, SCRIPT, 'install-' + harness)
+                config = json.loads(settings.read_text())
+                self.assertTrue(config['other'])
+                self.assertEqual(len(config['hooks']['SessionStart']), 1)
+            # Model the native client's checkout path that skips Git hooks.
+            run('git', '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add', '-q', '--detach', lane)
+            self.assertFalse((lane / 'rust-modules/target').exists())
+            subprocess.run([sys.executable, installed, 'session-event'], env=env, cwd=root, check=True,
+                           input=json.dumps({'cwd': str(lane)}), text=True)
+            self.assertTrue((lane / 'rust-modules/target').is_symlink())
             das.rename(base / 'offline')
             self.assertNotEqual(run(sys.executable, SCRIPT, 'prepare', check=False).returncode, 0)
             self.assertFalse(das.exists())
