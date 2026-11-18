@@ -113,21 +113,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-18T08:27:43Z",
+ "generated": "2026-11-18T10:20:03Z",
  "metrics": [
   {
-   "change30_pct": -8.5,
-   "change7_pct": -9.1,
-   "d30": 486,
-   "delta30": -41.5,
-   "delta7": -44.5,
+   "change30_pct": -8.8,
+   "change7_pct": -9.4,
+   "d30": 486.0,
+   "delta30": -43.0,
+   "delta7": -46,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 144,
+   "n_now": 145,
    "n_prev": 167,
-   "now": 444.5,
+   "now": 443,
    "prev7": 489,
    "shown": true,
    "state": "flat",
@@ -137,10 +137,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.2,
+   "change30_pct": -1.9,
    "change7_pct": -8.9,
-   "d30": 426.5,
-   "delta30": -9.5,
+   "d30": 425,
+   "delta30": -8.0,
    "delta7": -40.5,
    "group": "ci",
    "id": "push_wait",
@@ -158,10 +158,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 28.2,
+   "change30_pct": 21.5,
    "change7_pct": -11.2,
-   "d30": 21.7,
-   "delta30": 6.1,
+   "d30": 22.9,
+   "delta30": 4.9,
    "delta7": -3.5,
    "group": "local",
    "id": "bench.app",
@@ -173,16 +173,16 @@
    "prev7": 31.3,
    "shown": true,
    "state": "flat",
-   "state30": "worse",
+   "state30": "flat",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
    "unit": "s"
   },
   {
-   "change30_pct": 26.6,
+   "change30_pct": 22.2,
    "change7_pct": -15.3,
-   "d30": 42.5,
-   "delta30": 11.3,
+   "d30": 44.0,
+   "delta30": 9.8,
    "delta7": -9.7,
    "group": "local",
    "id": "bench.screens",
@@ -194,16 +194,16 @@
    "prev7": 63.5,
    "shown": true,
    "state": "flat",
-   "state30": "worse",
+   "state30": "flat",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
    "unit": "s"
   },
   {
-   "change30_pct": 95.5,
+   "change30_pct": 89.4,
    "change7_pct": -3.5,
-   "d30": 46.0,
-   "delta30": 44.0,
+   "d30": 47.5,
+   "delta30": 42.5,
    "delta7": -3.3,
    "group": "local",
    "id": "bench.ui",
@@ -221,10 +221,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 79.3,
+   "change30_pct": 66.6,
    "change7_pct": -2.3,
-   "d30": 114.7,
-   "delta30": 91.0,
+   "d30": 123.5,
+   "delta30": 82.2,
    "delta7": -4.8,
    "group": "local",
    "id": "bench.leaf",
@@ -263,10 +263,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -0.5,
+   "change30_pct": 5.4,
    "change7_pct": -5.7,
-   "d30": 1343.6,
-   "delta30": -6.1,
+   "d30": 1268.5,
+   "delta30": 69.1,
    "delta7": -81.2,
    "group": "local",
    "id": "bench.check",
@@ -298,8 +298,8 @@
   {
    "change30_pct": 20.5,
    "change7_pct": -4.2,
-   "d30": 2180.5,
-   "delta30": 447.0,
+   "d30": 2180,
+   "delta30": 447.5,
    "delta7": -115.5,
    "group": "ci",
    "id": "minutes",
@@ -340,7 +340,7 @@
   {
    "change30_pct": 27.1,
    "change7_pct": 5.2,
-   "d30": 310,
+   "d30": 310.0,
    "delta30": 84.0,
    "delta7": 19.5,
    "group": "ci",
@@ -359,10 +359,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -11.4,
+   "change30_pct": -11.0,
    "change7_pct": -20.0,
-   "d30": 402.0,
-   "delta30": -46.0,
+   "d30": 400,
+   "delta30": -44.0,
    "delta7": -89.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -380,10 +380,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 46.9,
+   "change30_pct": 46.6,
    "change7_pct": 8.4,
-   "d30": 237.5,
-   "delta30": 111.5,
+   "d30": 238.0,
+   "delta30": 111.0,
    "delta7": 27,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -403,7 +403,7 @@
   {
    "change30_pct": 37.2,
    "change7_pct": 13.7,
-   "d30": 188.0,
+   "d30": 188,
    "delta30": 70.0,
    "delta7": 31.0,
    "group": "ci",
@@ -422,10 +422,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.9,
+   "change30_pct": -39.0,
    "change7_pct": -43.4,
-   "d30": 398.0,
-   "delta30": -159.0,
+   "d30": 392,
+   "delta30": -153.0,
    "delta7": -183.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -443,10 +443,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.5,
+   "change30_pct": 45.9,
    "change7_pct": -22.0,
-   "d30": 160.5,
-   "delta30": 73.0,
+   "d30": 160,
+   "delta30": 73.5,
    "delta7": -66.0,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -466,7 +466,7 @@
   {
    "change30_pct": 45.5,
    "change7_pct": -6.2,
-   "d30": 156.0,
+   "d30": 156,
    "delta30": 71.0,
    "delta7": -15.0,
    "group": "ci",
@@ -485,10 +485,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.8,
+   "change30_pct": 46.2,
    "change7_pct": -0.4,
-   "d30": 153.0,
-   "delta30": 70.0,
+   "d30": 152.5,
+   "delta30": 70.5,
    "delta7": -1,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
@@ -506,10 +506,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 7.9,
+   "change30_pct": 7.1,
    "change7_pct": -1.9,
-   "d30": 189.0,
-   "delta30": 15.0,
+   "d30": 190.5,
+   "delta30": 13.5,
    "delta7": -4,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -527,10 +527,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -0.4,
+   "change30_pct": 5.4,
    "change7_pct": -5.7,
-   "d30": 1342.0,
-   "delta30": -6.0,
+   "d30": 1267.0,
+   "delta30": 69.0,
    "delta7": -81.0,
    "group": "local",
    "id": "bench.check.cargo",
@@ -549,10 +549,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 10.3,
+   "change30_pct": 11.4,
    "change7_pct": 8.3,
-   "d30": 982.5,
-   "delta30": 101.5,
+   "d30": 973.0,
+   "delta30": 111.0,
    "delta7": 83.0,
    "group": "local",
    "id": "bench.check.python",
@@ -636,7 +636,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 0.0,
-   "d30": 5,
+   "d30": 5.0,
    "delta30": 0.0,
    "delta7": 0.0,
    "group": "ci",
@@ -657,8 +657,8 @@
   {
    "change30_pct": -99.1,
    "change7_pct": 0.0,
-   "d30": 321.5,
-   "delta30": -318.5,
+   "d30": 321,
+   "delta30": -318.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -678,7 +678,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 0.0,
-   "d30": 3.0,
+   "d30": 3,
    "delta30": 0.0,
    "delta7": 0.0,
    "group": "ci",
@@ -697,10 +697,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 2.6,
+   "change30_pct": 8.3,
    "change7_pct": -4.9,
-   "d30": 0.8,
-   "delta30": 0.0,
+   "d30": 0.7,
+   "delta30": 0.1,
    "delta7": -0.0,
    "group": "local",
    "id": "bench.noop",
