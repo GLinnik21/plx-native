@@ -1,4 +1,4 @@
-{"updated":"2026-11-18T10:20:15Z",
+{"updated":"2026-11-18T11:33:27Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5400,7 +5400,8 @@
 {"id":44222743637,"at":"2026-11-18T02:22:14Z","sha":"9f5ff482e","title":"Player: a starved direct-play stream pauses and shows Buffering instead of slow motion","pr":1441,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":223,"Windows launcher syntax":17,"macOS simulator build + launch":213,"Linux simulator build + launch":349}},
 {"id":44252436042,"at":"2026-11-18T06:35:15Z","sha":"f314e0850","title":"Docs: DESIGN.md scopes \"no live blur chain\" to the menu, not the whole frame","pr":1459,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":286,"Linux simulator build + launch":361,"Windows launcher syntax":20,"macOS simulator build + launch":167}},
 {"id":44266125379,"at":"2026-11-18T08:20:24Z","sha":"ad3c18e14","title":"harness: guard only the hero controls that act on a title","pr":1442,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":366,"macOS tests against bundled FFmpeg and ASS":250,"macOS simulator build + launch":225,"Windows launcher syntax":18}},
-{"id":44283266228,"at":"2026-11-18T10:13:03Z","sha":"b10513fef","title":"Merge origin/main into a11y/harness","pr":1442,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":304,"Linux simulator build + launch":389,"Windows launcher syntax":39,"macOS tests against bundled FFmpeg and ASS":271}}
+{"id":44283266228,"at":"2026-11-18T10:13:03Z","sha":"b10513fef","title":"Merge origin/main into a11y/harness","pr":1442,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":304,"Linux simulator build + launch":389,"Windows launcher syntax":39,"macOS tests against bundled FFmpeg and ASS":271}},
+{"id":44294721129,"at":"2026-11-18T11:26:29Z","sha":"59fc06150","title":"harness: pin the Home door's by-id press at the 60 fps timing a television runs","pr":1442,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":220,"Windows launcher syntax":26,"Linux simulator build + launch":405,"macOS tests against bundled FFmpeg and ASS":226}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
