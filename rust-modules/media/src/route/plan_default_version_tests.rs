@@ -59,6 +59,47 @@ fn profile_8() -> Dovi {
 }
 
 #[test]
+fn played_video_uses_the_chosen_versions_range_and_resolution_together() {
+    use plx_base::detail_parts::DynamicRange;
+    let d = plx_data::metadata::Detail {
+        part: "/primary".into(), video_resolution: "4k".into(), vcodec: "hevc".into(),
+        dovi: profile_5(),
+        versions: vec![uhd_with(17, profile_5()), MediaVersion { hdr: true, ..full_hd() }],
+        ..Default::default()
+    };
+    let facts = |mode, capability| played_video(&d, mode, &Caps::assumed(), DolbyVisionMode::Auto, capability).unwrap();
+    let alternate = facts(DirectPlayMode::Auto, DvCapability::Unsupported);
+    assert_eq!((alternate.version.unwrap().id, alternate.resolution, alternate.range()),
+               (MediaId(2), "1080", DynamicRange::Hdr));
+    let primary = facts(DirectPlayMode::Auto, DvCapability::Supported);
+    assert!(primary.version.is_none());
+    assert_eq!((primary.resolution, primary.range()), ("4k", DynamicRange::DolbyVision));
+    let forced = facts(DirectPlayMode::Forced, DvCapability::Unsupported);
+    assert!(forced.version.is_none());
+    assert_eq!((forced.resolution, forced.range()), ("4k", DynamicRange::Sdr));
+}
+
+#[test]
+fn played_video_reports_the_on_deck_episodes_base_layer_when_dv_is_unavailable() {
+    use plx_base::detail_parts::DynamicRange;
+    use plx_data::metadata::{Detail, Episode};
+    let caps = Caps::assumed();
+    let mut d = Detail { hdr: true, dovi: profile_8(), ..Default::default() };
+    assert!(played_video(&d, DirectPlayMode::Auto, &caps, DolbyVisionMode::Auto, DvCapability::Supported).is_none());
+    d.on_deck = Some(Episode { part: "/episode".into(), vcodec: "hevc".into(), acodec: "aac".into(), ..Default::default() });
+    for (mode, capability, range) in [
+        (DolbyVisionMode::Auto, DvCapability::Supported, DynamicRange::DolbyVision),
+        (DolbyVisionMode::Off, DvCapability::Supported, DynamicRange::Hdr),
+        (DolbyVisionMode::Auto, DvCapability::Unsupported, DynamicRange::Hdr),
+    ] {
+        let file = played_video(&d, DirectPlayMode::Auto, &caps, mode, capability).unwrap();
+        assert_eq!((file.primary_part, file.vcodec, file.acodec), ("/episode", "hevc", "aac"));
+        assert!(file.dovi.present);
+        assert_eq!(file.range(), range);
+    }
+}
+
+#[test]
 fn a_set_without_dolby_vision_plays_the_hdr10_version_listed_after_a_profile_5() {
     let versions = [uhd_with(17, profile_5()), uhd_with(18, Dovi::NONE)];
     for probed in [DvCapability::Unsupported, DvCapability::Unknown] {

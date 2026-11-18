@@ -3109,10 +3109,8 @@ impl DetailScreen {
             parts.push(&d.rating);
         }
         if !d.edition.is_empty() { parts.insert(0, &d.edition); }
-        let resolution = match plx_media::route::detail_play_version(d) {
-            Some(v) => plx_ui::fmt::resolution(&v.resolution, v.width, v.height),
-            None => plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height),
-        };
+        let resolution = plx_media::route::detail_played_video(d)
+            .and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
         let chips: Vec<&str> = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),

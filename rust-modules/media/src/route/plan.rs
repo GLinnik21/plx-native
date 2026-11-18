@@ -4319,6 +4319,61 @@ pub(super) fn automatic_version<'a>(
     version_play_starts(versions, env.direct_play_mode, &env.caps, env.dolby_vision_mode, env.dv_capability)
 }
 
+/// Source video facts for the file that the detail page's Play action would start.
+pub struct PlayedVideo<'a> {
+    /// A substituted version. Otherwise the primary part and its backfilled detail facts apply.
+    pub version: Option<&'a plx_data::pms::MediaVersion>,
+    pub resolution: &'a str,
+    pub width: i64,
+    pub height: i64,
+    pub vcodec: &'a str,
+    pub acodec: &'a str,
+    pub kbps: i64,
+    pub hdr: bool,
+    pub dovi: plx_data::metadata::Dovi,
+    pub dv: plx_data::metadata::DvDecision,
+    pub(super) primary_part: &'a str,
+    pub(super) ceiling_kbps: i64,
+}
+
+impl PlayedVideo<'_> {
+    /// Source range with the set's Dolby Vision presentation decision applied.
+    pub fn range(&self) -> plx_base::detail_parts::DynamicRange {
+        plx_base::detail_parts::DynamicRange::carried(self.hdr, self.dv.presentation.declared().is_some())
+    }
+}
+
+pub fn played_video<'a>(
+    d: &'a plx_data::metadata::Detail,
+    mode: DirectPlayMode,
+    caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
+) -> Option<PlayedVideo<'a>> {
+    // A show's primary stream metadata is backfilled on Detail. Its part and codecs live on
+    // the episode, so the show container itself retains its identity as a non-playable item.
+    let (primary_part, vcodec, acodec, versions) = if d.part.is_empty() {
+        let ep = d.on_deck.as_ref().filter(|ep| !ep.part.is_empty())?;
+        (&ep.part, &ep.vcodec, &ep.acodec, &ep.versions)
+    } else {
+        (&d.part, &d.vcodec, &d.acodec, &d.versions)
+    };
+    let version = version_play_starts(versions, mode, caps, dv_mode, dv_probed);
+    Some(match version {
+        Some(v) => PlayedVideo {
+            version, primary_part, resolution: &v.resolution, width: v.width, height: v.height,
+            vcodec: &v.vcodec, acodec: &v.acodec, kbps: v.kbps,
+            ceiling_kbps: ceiling_kbps(v.video_kbps, v.kbps), hdr: v.hdr, dovi: v.dovi,
+            dv: frozen_dv_decision(dv_mode, dv_probed, v.dovi, &v.vcodec),
+        },
+        None => PlayedVideo {
+            version, primary_part, resolution: &d.video_resolution, width: d.width, height: d.height,
+            vcodec, acodec, kbps: d.bitrate, ceiling_kbps: source_kbps(d), hdr: d.hdr, dovi: d.dovi,
+            dv: frozen_dv_decision(dv_mode, dv_probed, d.dovi, vcodec),
+        },
+    })
+}
+
 pub fn version_play_starts<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     mode: DirectPlayMode,

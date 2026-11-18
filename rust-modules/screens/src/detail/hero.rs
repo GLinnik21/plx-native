@@ -677,15 +677,11 @@ enum Bit {
 const FACTS_BITS: usize = 8;
 
 fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
-    match plx_media::route::playback_preview(d) {
-        Some(plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux) => ([Bit::Air(0.0); FACTS_BITS], 0),
-        Some(preview) => play_mode_bits_for(preview, played_hdr(d), item_subscription(d), after),
+    match plx_media::route::detail_playback_preview(d) {
+        Some((plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux, _)) => ([Bit::Air(0.0); FACTS_BITS], 0),
+        Some((preview, file)) => play_mode_bits_for(preview, file.hdr, item_subscription(d), after),
         None => ([Bit::Air(0.0); FACTS_BITS], 0),
     }
-}
-
-fn played_hdr(d: &Detail) -> bool {
-    plx_media::route::detail_play_version(d).map_or(d.hdr, |v| v.hdr)
 }
 
 /// [`play_mode_bits`] once the item's route has been read: the line's play-mode clause, behind a
@@ -962,9 +958,9 @@ mod tests {
             versions: vec![version(1, "4k", 3840, 2160, "vp9", true), version(2, "1080", 1920, 1080, "h264", false)],
             ..Default::default()
         };
-        assert!(!played_hdr(&d), "the 1080p SDR copy plays, not the 4K HDR one");
+        assert!(!plx_media::route::detail_played_video(&d).unwrap().hdr, "the 1080p SDR copy plays, not the 4K HDR one");
         d.versions.clear();
-        assert!(played_hdr(&d), "a single version is described by the item itself");
+        assert!(plx_media::route::detail_played_video(&d).unwrap().hdr, "a single version is described by the item itself");
     }
 
     // TEST ONLY: this module's few call sites still read/write metadata as free functions, a
