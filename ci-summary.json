@@ -113,7 +113,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-19T03:36:10Z",
+ "generated": "2026-11-19T03:36:30Z",
  "metrics": [
   {
    "change30_pct": -12.8,
