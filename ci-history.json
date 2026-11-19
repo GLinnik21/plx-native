@@ -1,4 +1,4 @@
-{"updated":"2026-11-19T00:59:14Z",
+{"updated":"2026-11-19T01:32:40Z",
 "ci":[
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
@@ -5441,7 +5441,8 @@
 {"id":44427732981,"at":"2026-11-19T00:16:55Z","sha":"e49383210","title":"Record the on-set check of typing into Install from address","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":257,"macOS simulator build + launch":158,"Windows launcher syntax":25,"Linux simulator build + launch":367}},
 {"id":44430148938,"at":"2026-11-19T00:34:55Z","sha":"9484696a7","title":"Adopt the system keyboard for Search's text only","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":253,"macOS tests against bundled FFmpeg and ASS":266,"Windows launcher syntax":21,"Linux simulator build + launch":345}},
 {"id":44431112853,"at":"2026-11-19T00:42:10Z","sha":"99af1eda8","title":"Say what a text record's panel flag means now","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":324,"macOS tests against bundled FFmpeg and ASS":240,"Windows launcher syntax":19,"macOS simulator build + launch":250}},
-{"id":44432477476,"at":"2026-11-19T00:52:19Z","sha":"94347a0e1","title":"Deliver typed text to any field with the keyboard, not only Search","pr":1428,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":125,"Linux simulator build + launch":405,"macOS tests against bundled FFmpeg and ASS":172}}
+{"id":44432477476,"at":"2026-11-19T00:52:19Z","sha":"94347a0e1","title":"Deliver typed text to any field with the keyboard, not only Search","pr":1428,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":125,"Linux simulator build + launch":405,"macOS tests against bundled FFmpeg and ASS":172}},
+{"id":44436904821,"at":"2026-11-19T01:26:22Z","sha":"cf4bca339","title":"Keep Home focus in the collection when its remembered slot expires","pr":1464,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":219,"Linux simulator build + launch":366,"macOS simulator build + launch":220,"Windows launcher syntax":20}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
