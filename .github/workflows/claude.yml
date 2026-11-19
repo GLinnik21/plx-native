@@ -2,7 +2,9 @@ name: Claude
 
 # Answers `@claude` in an issue, a pull request comment, an inline review comment or a review body,
 # with the Claude Code GitHub Action (https://code.claude.com/docs/en/github-actions). Its main job is
-# reviewing pull requests, including ones from outside contributors' forks. It runs Claude Fable (the `fable` alias: the newest Fable the action's Claude Code knows).
+# reviewing pull requests, including ones from outside contributors' forks. It runs Claude Fable (the
+# `fable` alias: the newest Fable the action's Claude Code knows). `--append-system-prompt` sets the
+# tone: findings as inline review comments, and a short, casual summary comment.
 #
 # TWO JOBS. `route` decides whether the thread is a pull request from a fork, from GitHub's own record
 # of the head repository, and nothing else; then exactly one of these runs:
@@ -131,6 +133,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
             --model fable
+            --append-system-prompt "Write like a teammate on GitHub: short, casual, plain words. Put each finding on the line it is about as an inline review comment, one or two sentences, with a suggestion block when the fix is small. Keep the summary comment to a few lines: a one-line verdict, then at most a few bullets for what is not tied to a line. No headings, no restating the PR, no list of files you read, no praise. If nothing needs changing, say so in one line."
             --settings '{"disableAllHooks":true}'
             --disallowedTools "Bash(git tag:*)" "Bash(git push --tags:*)"
             --allowedTools "mcp__github_inline_comment__create_inline_comment"
@@ -174,6 +177,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: >-
             --model fable
+            --append-system-prompt "Write like a teammate on GitHub: short, casual, plain words. Put each finding on the line it is about as an inline review comment, one or two sentences, with a suggestion block when the fix is small. Keep the summary comment to a few lines: a one-line verdict, then at most a few bullets for what is not tied to a line. No headings, no restating the PR, no list of files you read, no praise. If nothing needs changing, say so in one line."
             --settings '{"disableAllHooks":true,"disableSkillShellExecution":true}'
             --disallowedTools "Skill" "Agent" "Task" "Bash(curl:*)" "Bash(wget:*)" "Bash(gh:*)"
             "Bash(git push:*)" "Bash(git tag:*)" "Bash(tools/:*)" "Bash(./tools/:*)" "Read(//proc/**)"
