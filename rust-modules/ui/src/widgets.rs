@@ -1803,7 +1803,8 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 }
 
 /// The identity band shared by both full-bleed heroes. The text run yields room to the
-/// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+/// outlined resolution, dynamic-range and accessibility chips, and overlong metadata elides within
+/// its column.
 /// Returns the width drawn, from `r.x` to the last chip's edge.
 pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
     identity_row(Some(p), r, parts, resolution, chips, theme::TEXT_SECONDARY, measure)
