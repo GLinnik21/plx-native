@@ -307,12 +307,47 @@ mod tests {
                 assert!(drawn.starts_with(&format!("{n}\u{a0}")) && !drawn.contains(' '), "{preference:?} {n}: {drawn:?}");
                 categories.insert(format!("{:?}", plx_platform::i18n::current().plural(i64::from(n))));
             }
-            // The counts are not all one category, and a language that declares `few` meets it.
-            assert!(categories.len() >= 2, "{preference:?}: {categories:?}");
+            // `many` in Spanish, Catalan, French, Italian and Portuguese is the millions alone. A line is
+            // never drawn for a million (and would be grouped, `1,000,000`), so the million is asked of
+            // the language's rule only, which is the rule every drawn count above follows.
+            categories.insert(format!("{:?}", plx_platform::i18n::current().plural(1_000_000)));
             let language = plx_platform::i18n::current().language();
             let declared = Language::PLURALS.iter().find(|(l, _)| *l == language).expect("declared plurals").1;
-            if declared.contains(&"few") { assert!(categories.contains("Few") && categories.contains("Many"), "{preference:?}: {categories:?}"); }
+            assert_counts_meet_every_declared_category(&format!("{preference:?}"), &categories, declared);
         }
+    }
+
+    /// The counts reach only plural categories the language declares in `languages.json`, and every
+    /// declared category but `other` at least once. `other` is exempt because some languages reach it
+    /// with fractions alone (Belarusian, Russian and Polish whole numbers are one, few or many), and a
+    /// catalogue entry always carries it anyway. One rule for every plural system (one/other,
+    /// one/many/other where `many` is the millions, one/few/many/other, one/few/other, one/two/few/other),
+    /// never a guess that one category implies another (#1463).
+    fn assert_counts_meet_every_declared_category(language: &str, categories: &std::collections::BTreeSet<String>,
+        declared: &[&str]) {
+        let reached: std::collections::BTreeSet<String> = categories.iter().map(|c| c.to_lowercase()).collect();
+        let declared: std::collections::BTreeSet<String> = declared.iter().map(|c| c.to_string()).collect();
+        assert!(reached.len() >= 2, "{language}: the counts are all one category: {reached:?}");
+        let undeclared: Vec<_> = reached.difference(&declared).collect();
+        assert!(undeclared.is_empty(), "{language}: the counts reach undeclared categories {undeclared:?}");
+        let unreached: Vec<_> = declared.iter().filter(|c| *c != "other" && !reached.contains(*c)).collect();
+        assert!(unreached.is_empty(), "{language}: the counts never reach the declared categories {unreached:?}");
+    }
+
+    /// #1463: Croatian (and Serbian, Bosnian) has `few` without `many`; the rule held only for be/ru/pl.
+    #[test]
+    fn a_language_with_few_but_no_many_meets_the_rule() {
+        let set = |cs: &[&str]| cs.iter().map(|c| c.to_string()).collect::<std::collections::BTreeSet<_>>();
+        assert_counts_meet_every_declared_category("hr", &set(&["One", "Few", "Other"]), &["one", "few", "other"]);
+        assert_counts_meet_every_declared_category("sl", &set(&["One", "Two", "Few", "Other"]), &["one", "two", "few", "other"]);
+        assert_counts_meet_every_declared_category("ru", &set(&["One", "Few", "Many"]), &["one", "few", "many", "other"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "never reach the declared categories")]
+    fn a_declared_category_the_counts_never_reach_fails() {
+        let set: std::collections::BTreeSet<String> = ["One", "Other"].iter().map(|c| c.to_string()).collect();
+        assert_counts_meet_every_declared_category("es", &set, &["one", "many", "other"]);
     }
 
     fn movie() -> PmsMovie {
