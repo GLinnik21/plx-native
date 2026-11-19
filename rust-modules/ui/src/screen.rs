@@ -38,16 +38,14 @@ pub enum RenderStrategy {
 /// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
 /// sits between the page and the surface's own glass, so it is part of what that glass looks
 /// through — which means it has to be on the framebuffer *before* the surface's glass grabs its
-/// backdrop, i.e. inside the page pass, several call frames away from the surface that owns it.
-/// The surface therefore states its weight here and the container
-/// ([`ModalStack::draw_scrims`](crate::containers::modal::ModalStack::draw_scrims)) draws it,
-/// in one place, for every surface, in phase order.
+/// backdrop. The container draws it at the end of the page pass, or in the surface pass
+/// when an opaque surface supplies the ground underneath the panel.
 ///
 /// **The weight is a ROLE, and the ink is the page's own light.** `alpha` is one of the
 /// `theme::underlay::DIM_*` rows — no surface states a number of its own — and the container paints
 /// it through the stack's one `UnderlayField` (`containers::modal::ModalUnderlay`) as
 /// `Role::Dim { weight: theme::underlay::TINT }`, latched from the undimmed host page (or, over the
-/// video plane, [`UnderlaySource::Flat`], the neutral ink). So the dim keeps the page's colour where the
+/// video plane or above an opaque surface, flat neutral ink). So the dim keeps the page's colour where the
 /// page has it; at `TINT == 0` it is the flat `theme::scrim_black` rect to the bit.
 ///
 /// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].

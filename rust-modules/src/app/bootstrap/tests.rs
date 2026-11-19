@@ -130,7 +130,7 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
     assert_eq!(Initial::decode_profile(legacy.clone(), legacy_hash, prior).unwrap().hash(), legacy_hash);
     assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, v6).unwrap().hash(), legacy_hash);
-    assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, super::super::recorder::state_fp_v7()).unwrap().hash(), legacy_hash);
+    assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, super::super::recorder::FP_V7).unwrap().hash(), legacy_hash);
     assert!(Initial::decode_profile(legacy_v6, legacy_hash, owned).is_err());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), v6).is_err());
@@ -541,7 +541,7 @@ fn v10_preferences_bind_every_typed_field_and_refuse_noncanonical_profiles() {
     bad["ui_preferences"]["under_posters"]["detail_parts"] = json!(["unknown"]);
     assert!(Initial::decode_profile(bad, initial.hash(), fp).is_err());
     for fingerprint in [super::super::recorder::FP_PRIOR, super::super::recorder::FP_V6,
-        super::super::recorder::state_fp_v7(), super::super::recorder::state_fp_v9(), fp ^ 1] {
+        super::super::recorder::FP_V7, super::super::recorder::state_fp_v9(), fp ^ 1] {
         assert!(Initial::decode_profile(value.clone(), initial.hash(), fingerprint).is_err());
     }
     assert!(Initial::decode_profile(value.clone(), initial.hash() ^ 1, fp).is_err());

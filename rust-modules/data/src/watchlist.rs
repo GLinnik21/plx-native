@@ -214,9 +214,9 @@ impl Failure {
 /// One server's answer for one guid.
 pub type Answer = (String, ServerId, Asked);
 
-/// `plex://movie|show/<hex>` to the 12 bytes of its hex, or `None` for anything else.
+/// Decode exactly 24 ASCII hex digits into a 12-byte catalog ID.
 pub fn decode_hex(hex: &str) -> Option<[u8; 12]> {
-    if hex.len() != 24 || !hex.is_ascii() {
+    if hex.len() != 24 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0u8; 12];
@@ -424,6 +424,8 @@ mod tests {
         let h = decode_hex("0123456789abcdef01234567").unwrap();
         assert_eq!(encode_hex(&h), "0123456789abcdef01234567");
         assert!(decode_hex("0123").is_none());
+        assert!(decode_hex("+1+1+1+1+1+1+1+1+1+1+1+1").is_none());
+        assert_eq!(decode_hex("0123456789ABCDEF01234567"), Some(h));
         assert!(decode_hex("zz23456789abcdef01234567").is_none());
         assert!(decode_hex("0123456789abcdef0123456é").is_none());
     }

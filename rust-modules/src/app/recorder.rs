@@ -211,6 +211,8 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// envelope when it is in the session.
 pub(crate) const FP_PRIOR: u64 = 4239819007634745513;
 pub(crate) const FP_V6: u64 = 741022075462080307;
+/// V7 as emitted before the live screen census changed for Filmography Watchlist.
+pub(crate) const FP_V7: u64 = 0xe6dd_66cf_91f4_03be;
 
 pub(crate) fn state_fp() -> u64 {
     plx_ui::rec::state_fp(&["ControlledHomeInitV11", "ControlledInstallLanguageV1{install_language:Preference};ControlledRunningLanguageV1{running_language:Preference};PlayerPresentation:unsupported_domain_neutral_no_ambient;NativePreview:controlled_port_unavailable", &state_fp_v10().to_string()])
@@ -227,14 +229,14 @@ pub(crate) fn state_fp_v9() -> u64 {
         &state_fp_v8().to_string()])
 }
 
-/// Frozen pre-preference-capture census; retained as an identity input, not an admission exception.
+/// Pre-preference envelope for the live census, used only to build newer identities.
 fn state_fp_v8() -> u64 {
     plx_ui::rec::state_fp(&["ControlledHomeInitV8", "ScreenCommandsV1{fifo:before_single_navigation_commit}",
-        super::bootstrap::RUNTIME_POLICY_SHAPE, &state_fp_v7().to_string()])
+        super::bootstrap::RUNTIME_POLICY_SHAPE, &screen_census_fp().to_string()])
 }
 
-/// Frozen V7 census: do not change historical profile identities.
-pub(crate) fn state_fp_v7() -> u64 {
+/// Live screen census in the legacy envelope used to build the current profile identity.
+fn screen_census_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
     let shape = shapes.iter_mut().find(|shape| **shape == super::bootstrap::SHAPE)
         .expect("controlled initial shape");
@@ -314,7 +316,7 @@ pub(crate) enum FrameHashProfile { OwnedV5, KeyOnlyV4 }
 /// Only owned key input can prove the retired app press stayed at its boot-time rest.
 /// Pointer/direct-token profiles are incompatible and are rejected before startup.
 fn recording_hash_profile(recording: &Recording) -> Result<FrameHashProfile, &'static str> {
-    if recording.header.state_fp == state_fp() || recording.header.state_fp == state_fp_v7() { return Ok(FrameHashProfile::OwnedV5); }
+    if recording.header.state_fp == state_fp() || recording.header.state_fp == FP_V7 { return Ok(FrameHashProfile::OwnedV5); }
     if recording.header.state_fp != FP_PRIOR { return Err("incompatible controlled state shape"); }
     for input in recording.frames.iter().flat_map(|frame| &frame.inputs) {
         if !matches!(decode_input(input).map_err(|_| "unsupported legacy press input")?.kind,
@@ -2941,6 +2943,34 @@ mod fixture_preflight_tests {
     }
 
     #[test]
+    fn pre_watchlist_v7_recording_passes_preflight() {
+        use super::super::bootstrap::Initial;
+
+        // V7 as emitted before Filmography's WatchlistAdd argument was added.
+        let historical_fp = 0xe6dd_66cf_91f4_03be;
+        let mut initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        initial.runtime_policy = None;
+        initial.ui_preferences = None;
+        initial.install_language = None;
+        initial.running_language = None;
+        let mut header = Header::new(historical_fp, &initial);
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        header.init_data = initial.to_v6_value().unwrap();
+        let segment = concat!(
+            "{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":0}\n",
+            "{\"f\":0,\"t\":\"st\",\"hash\":0}\n",
+            "{\"f\":0,\"t\":\"fo\",\"entry\":null,\"elem\":null,\"group\":null}\n",
+        );
+        let recording = Recording::parse(&header.to_json().to_string(), &[segment.as_bytes()], FP_V7).unwrap();
+        let decoded = Initial::decode_profile(recording.header.init_data.clone(),
+            recording.header.init_hash, recording.header.state_fp).unwrap();
+
+        assert_eq!(validate_controlled(&recording, &decoded), Ok(()));
+        assert_eq!(validate_resolution_recording(&recording), Ok(()));
+    }
+
+    #[test]
     fn historical_scheduler_boundary_uses_parsed_commands_not_names_or_text() {
         let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
         let mut header = Header::new(state_fp(), &initial);
@@ -2953,7 +2983,7 @@ mod fixture_preflight_tests {
             "payload":{"content":{"push":{"person":[0,"19","guid","name","thumb"]}}}});
         recording.frames[0].effects.push(command.clone());
         assert_eq!(validate_controlled(&recording, &initial), Ok(()), "current FIFO envelope");
-        for fp in [FP_PRIOR, state_fp_v7()] {
+        for fp in [FP_PRIOR, FP_V7] {
             recording.header.state_fp = fp;
             for content in [json!({"push":{"person":[0,"19","guid","name","thumb"]}}),
                 json!({"present":{"filmography":0}}), json!("back"), json!({"unknown":true})] {

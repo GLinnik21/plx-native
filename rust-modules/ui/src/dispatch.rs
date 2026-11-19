@@ -1536,7 +1536,20 @@ where
         if self.nav.modals.scrims(page_alpha).iter().any(|(_,a)| *a >= 1.0) {
             layers.push(Layer { z:Z::DIM, rect:canvas(), blocks:true, revision:0, composite_alpha:None });
         }
+        if let Some(opaque) = self.nav.modals.first_opaque() {
+            for (index, surface) in self.nav.modals.surfaces.iter().enumerate().skip(opaque + 1) {
+                if surface.scrim_alpha(page_alpha) >= 1.0 {
+                    layers.push(Layer { z: Self::surface_scrim_z(index), rect: canvas(),
+                        blocks: true, revision: 0, composite_alpha: None });
+                }
+            }
+        }
         layers
+    }
+
+    fn surface_scrim_z(index: usize) -> super::frame::backdrop::Z {
+        use super::frame::backdrop::Z;
+        Z(Z::surface(index).0 - 1)
     }
 
     /// Product draw entry with a strict z ceiling; `Z::ALL` is the visible frame.
@@ -1840,10 +1853,10 @@ where
             // The strip is the container's control, not a page-local pointer ladder: its stops go
             // above the page and below surfaces, from the same keyed geometry the engine queries.
             stops.extend(Self::bar_stops(nav, strip_owner, navigation));
-            // **The surfaces' modal dim, last thing in the page pass** (§6.2, §8.3). It is here
+            // **Page-backed modal dims, last thing in the page pass** (§6.2, §8.3). They go here
             // and not with each panel because the dim has to be on the framebuffer BEFORE any
             // surface's glass grabs its backdrop — see `ModalStack::draw_scrims`, which owns the
-            // rule and the one style it does not apply to. `surface_scope` is the freeze lift the
+            // page-backed rule. `surface_scope` is the freeze lift the
             // paint needs: a page served from its cached quad refuses every fill, and this is the
             // frame's first `popover::host::live()`, which is also what defines the host snapshot
             // as the UNDIMMED page — and the instant the dims' inherited field is read from
@@ -1873,12 +1886,32 @@ where
         // preloaded ahead of it) — which is what a popover panel's ground is drawn from
         // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
         let modals = &mut nav.modals;
-        let field = modals.underlay.field();
+        use super::containers::modal::{DimSink, GlDims};
+        let opaque = modals.first_opaque();
+        static FLAT: crate::underlay::UnderlayField = crate::underlay::UnderlayField::new();
         let (mut drain_surface_text, mut capture_surface) = (false, false);
         for (index, s) in modals.surfaces.iter_mut().enumerate() {
             let z = Z::surface(index);
-            if z >= ceiling { break; }
+            let scrim_z = Self::surface_scrim_z(index);
+            let over_opaque = opaque.is_some_and(|opaque| index > opaque);
+            if (if over_opaque { scrim_z } else { z }) >= ceiling { break; }
             if s.faded() { continue; }
+            let field = if over_opaque {
+                // The frozen page does not include the opaque host. Use the shared flat ink
+                // and composite it here so it covers that host without dimming the popup.
+                let alpha = s.scrim_alpha(navigation.page_alpha);
+                if alpha > 0.0 {
+                    let _dim_layer = backdrop::layer(scrim_z, false);
+                    let _scope = rig.surface_scope();
+                    backdrop::draw_span("scrims", || {
+                        crate::popover_glass::dim_owner(index, || GlDims::new(present).dim(&FLAT, alpha));
+                    });
+                }
+                &FLAT
+            } else {
+                modals.underlay.field()
+            };
+            if z >= ceiling { break; }
             let _layer = backdrop::layer(z, false);
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();

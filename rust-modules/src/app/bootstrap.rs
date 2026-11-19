@@ -350,7 +350,7 @@ impl Initial {
 
     pub(crate) fn decode_profile(mut value: serde_json::Value, expected_hash: u64, fingerprint: u64)
         -> Result<Self, &'static str> {
-        use super::recorder::{FP_PRIOR, FP_V6};
+        use super::recorder::{FP_PRIOR, FP_V6, FP_V7};
         // Unpublished V9 captured only six preferences. Missing machine inputs cannot be
         // reconstructed honestly from ambient cells or silently filled with today's defaults.
         if fingerprint == super::recorder::state_fp_v9() { return Err("incompatible six-field UI preference profile; requires V10 capture"); }
@@ -361,7 +361,7 @@ impl Initial {
         if value.get("install_language").is_some() != current || value.get("running_language").is_some() != current { return Err("incompatible install language profile"); }
         match fingerprint {
             FP_PRIOR => Self::decode(value, expected_hash),
-            fp if fp == FP_V6 || fp == super::recorder::state_fp_v7() || current => {
+            fp if fp == FP_V6 || fp == FP_V7 || current => {
                 let session = value.get_mut("session").ok_or("invalid session codec")?;
                 let envelope = session.as_object_mut().ok_or("invalid session codec")?;
                 if envelope.len() != 2 || envelope.get("codec").and_then(|v| v.as_u64()) != Some(6) {
@@ -436,7 +436,7 @@ impl Preflight {
                 let (mode, path) = super::recorder::ReplayMode::parse(&path)?;
                 let path = std::path::Path::new(path);
                 let recording = Recording::load(path, super::recorder::state_fp())
-                    .or_else(|_| Recording::load(path, super::recorder::state_fp_v7()))
+                    .or_else(|_| Recording::load(path, super::recorder::FP_V7))
                     .or_else(|_| Recording::load(path, super::recorder::FP_PRIOR))
                     .map_err(|_| "invalid or incompatible recording")?;
                 let initial = Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash,

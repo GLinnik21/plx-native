@@ -7,11 +7,10 @@
 //! popover's phase.
 //!
 //! - `input_owner()` = the topmost Opening|Open surface.
-//! - `draw_scrims()` runs inside the PAGE PASS, so the dim is on the framebuffer before the
-//!   surface's own glass looks through it — see its doc for the two hand-placed calls it replaces.
-//!   Every dim is painted through the stack's ONE inherited field ([`ModalUnderlay`]), latched
-//!   from the undimmed host page (over the video plane: unlatched, the flat neutral ink) at the head
-//!   of that call, re-latched when the host snapshot is re-taken, reset with the last surface.
+//! - `draw_scrims()` paints page-backed dims before the first surface. Dims above an opaque
+//!   surface are painted in the surface pass, after that ground and before the owning panel.
+//!   Page-backed dims use the stack's inherited field ([`ModalUnderlay`]), latched from the undimmed
+//!   page. Dims over an opaque surface or the hardware video plane use flat neutral ink.
 //!   A surface's LIFT (the element it was opened from) is drawn by the dispatcher's one lift pass
 //!   (`Z::OPENER`), after every surface, so a panel never covers the element it grows out of. The
 //!   host page's own opener (`Screen::opener`) is drawn in that same pass, by the dispatcher.
@@ -254,6 +253,17 @@ impl<H: Host> Surface<H> {
     /// no dim. Only menus: a sheet's or an opaque surface's close is decided by the spring's rest.
     pub fn faded(&self) -> bool {
         self.phase == Phase::Closing && self.style == Style::Compact && self.motion.gone()
+    }
+
+    pub(crate) fn scrim_alpha(&self, nav_page_alpha: f32) -> f32 {
+        self.scrim().map_or(0.0, |scrim| scrim.alpha * self.motion.appear * nav_page_alpha)
+    }
+
+    fn scrim(&self) -> Option<crate::screen::Scrim> {
+        if self.phase == Phase::Hidden || self.faded() || matches!(self.style, Style::Opaque { .. }) {
+            return None;
+        }
+        Some(self.entry.inst.as_ref()?.screen.scrim())
     }
 }
 
@@ -516,11 +526,11 @@ impl DimSink for GlDims<'_> {
 
 /// **The one inherited field under a presented stack** — owned HERE, by the container, rather than
 /// by any surface or a static: every surface over one host dims the same page, so the page is read
-/// once and every dim in the ladder is painted through the same texture.
+/// once and every page-backed dim in the ladder is painted through the same texture.
 ///
 /// **When it latches, and why it can never see its own dim.** It is brought up to date at the head
 /// of [`ModalStack::draw_scrims`], before the first dim of the frame is painted, and
-/// `draw_scrims` is the only place a surface's dim is ever painted. That call is the last thing in
+/// `draw_scrims` paints only the page-backed dims. That call is the last thing in
 /// the host's page pass and runs inside the frame's first `popover::host::live()` — the instant
 /// `popover::host` defines as "the page is complete and no surface has put a pixel on the
 /// framebuffer" and takes its own snapshot at. So what is sampled is the undimmed page (live, or
@@ -850,28 +860,10 @@ impl<H: Host> ModalStack<H> {
         })
     }
 
-    /// **Every surface's modal dim, drawn INSIDE THE PAGE PASS** (spec §6.2, §8.3) — bottom to
-    /// top, so a later surface's dim recedes the one below it exactly as its panel does.
-    ///
-    /// It is here, and not at each surface's own `draw`, because of WHERE the dim has to land
-    /// rather than what it looks like. The scrim sits between the host page and the surface's
-    /// glass, so it is part of what that glass looks through — and the glass grabs its backdrop
-    /// off the framebuffer (or, for a dynamic backdrop, off a re-render of the page closure). A
-    /// dim drawn with the panel lands after that grab, and the frosted ground then comes out at
-    /// full page brightness inside a dimmed screen. That was `account_menu`'s reported bug,
-    /// and the fix was two hand-placed `draw_scrim()` calls in the loop's page closure — a list
-    /// exactly two modules long, which no third panel could join without editing the loop.
-    ///
-    /// **`Style::Opaque` is skipped, and that is the mechanism's one documented boundary rather
-    /// than a second mechanism.** An opaque surface REPLACES its host once its ground is drawn
-    /// (`surface_policy`), so on the frames that matter there is no page pass to draw into and no
-    /// snapshot for the dim to belong to: its dim is part of its own ground, composed with it, in
-    /// its own `draw`. Every style whose host is CACHED — Compact, Sheet, Alert — goes through
-    /// here, and so does `PlayerPanel`: its host is `(Live, Live)` and behind it is punch-through
-    /// alpha to a hardware plane, but the player's page pass (subtitles, transport) is a page pass
-    /// like any other, so a dim painted at its end covers the HUD and lies under the panel — the
-    /// z-order the panels used to hand-draw. Its dim is [`UnderlaySource::Flat`] — the neutral ink —
-    /// because the page, which GL cannot read there, has no light to inherit.
+    /// **Page-backed modal dims, drawn inside the page pass** (spec §6.2, §8.3), before any
+    /// surface samples its glass backdrop. An opaque surface draws its own ground. Scrims above
+    /// that ground are deferred to the surface walk, where the page can no longer paint over them.
+    /// Player panels still dim the page pass (subtitles and HUD) with flat ink over the video plane.
     ///
     /// **Each dim is the page's own light pushed down, not a black sheet**: it is painted through
     /// the stack's one [`ModalUnderlay`] field as `Role::Dim { weight: theme::underlay::TINT }`,
@@ -942,42 +934,29 @@ impl<H: Host> ModalStack<H> {
         }
     }
 
-    /// Where the stack's field inherits from: the BOTTOM surface that declares a dim — it is the
-    /// one whose dim lies directly on the host, and every dim above it lies over the same page.
-    /// `None` when no surface declares one. Asked whatever the surface's appear; the READ waits for
-    /// the first frame a dim is painted (`draw_scrims_on`).
+    /// The first opaque ground cuts off page-backed scrims.
+    pub(crate) fn first_opaque(&self) -> Option<usize> {
+        self.surfaces.iter().position(|s| s.phase != Phase::Hidden
+            && matches!(s.style, Style::Opaque { .. }) && s.entry.inst.is_some())
+    }
+
+    fn page_surfaces(&self) -> impl Iterator<Item = &Surface<H>> {
+        self.surfaces.iter().take(self.first_opaque().unwrap_or(self.surfaces.len()))
+    }
+
+    /// The lowest page-backed dim determines which field to latch.
     fn underlay_source(&self) -> Option<UnderlaySource> {
-        self.surfaces
-            .iter()
-            .filter(|s| s.phase != Phase::Hidden && !matches!(s.style, Style::Opaque { .. }))
-            .filter_map(|s| s.entry.inst.as_ref())
-            .map(|inst| inst.screen.scrim())
+        self.page_surfaces().filter_map(Surface::scrim)
             .find(|scrim| scrim.alpha > 0.0)
             .map(|scrim| scrim.source)
     }
 
-    /// [`draw_scrims`](Self::draw_scrims)'s decision, without the paint: which surfaces owe their
-    /// host a dim this frame, at what alpha. Bottom to top.
-    ///
-    /// Split out so the rule is host-testable. A `cargo test --lib` run has no GL context — the
-    /// fixture screens register stops and paint nothing — so the two halves have to be separable
-    /// or neither the alpha ladder nor the draw ORDER could be graded at all. Every eligible
-    /// surface is ASKED (`Screen::scrim`) whatever its answer, which is what makes "the container
-    /// asked me, in the page pass" observable from a fixture that wants no dim.
+    /// Page-backed dim alphas and their owners, in stack order.
     pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32)> {
-        let mut out = Vec::new();
-        for s in &self.surfaces {
-            if s.phase == Phase::Hidden || s.faded() || matches!(s.style, Style::Opaque { .. }) {
-                continue;
-            }
-            let Some(inst) = s.entry.inst.as_ref() else { continue };
-            let scrim = inst.screen.scrim();
-            let a = scrim.alpha * s.motion.appear * nav_page_alpha;
-            if a > 0.0 {
-                out.push((s.entry.id, a));
-            }
-        }
-        out
+        self.page_surfaces().filter_map(|s| {
+            let alpha = s.scrim_alpha(nav_page_alpha);
+            (alpha > 0.0).then_some((s.entry.id, alpha))
+        }).collect()
     }
 
     /// A miss (a click beside every stop) against the top surface: consulted only while `Open`.
