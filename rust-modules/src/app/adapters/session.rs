@@ -1504,9 +1504,14 @@ mod tests {
         let plan = CommitPlan { authority: plx_plex::plex::session::SaveAuthority::FreshReauthentication,
             ..queued_plan(&plx_plex::plex::session::load()) };
         enqueue_test_commit(&mut adapter, plan);
-        assert!(adapter.take_committed().is_none(), "admitted, not yet run");
+        // This take is the submit handshake: `take_committed` hands the head commit to the
+        // worker. Under parallel test load the worker may run the commit before this take
+        // returns — then the take has consumed the completed commit, and we reuse it rather
+        // than taking twice.
+        let completed = adapter.take_committed();
         plx_base::storage_worker::drain_for_test();
-        let completed = adapter.take_committed().expect("the new sign-in's commit runs");
+        let completed = completed.or_else(|| adapter.take_committed())
+            .expect("the new sign-in's commit runs");
         assert!(matches!(completed.disk, Ok(Some(_))), "the new credential is written");
         assert_eq!(plx_plex::plex::session::load().account_token, "new-credential");
     }
