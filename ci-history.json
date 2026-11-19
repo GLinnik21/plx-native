@@ -1,4 +1,4 @@
-{"updated":"2026-11-19T00:24:37Z",
+{"updated":"2026-11-19T00:40:53Z",
 "ci":[
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
@@ -5436,7 +5436,8 @@
 {"id":44402252617,"at":"2026-11-18T21:30:55Z","sha":"59a0bc690","title":"Merge upstream main (dab26adb) into feat/owp-protocol","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":222,"macOS tests against bundled FFmpeg and ASS":212,"Linux simulator build + launch":377,"Windows launcher syntax":20}},
 {"id":44417131421,"at":"2026-11-18T23:02:13Z","sha":"31349b00c","title":"URI: a Dolby Vision MKV before webOS 10 stays on Standard","pr":1399,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":338,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":217}},
 {"id":44419024457,"at":"2026-11-18T23:14:39Z","sha":"d8c959902","title":"OWP: media::check names the first rule a descriptor breaks","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":893,"macOS simulator build + launch":217,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":268}},
-{"id":44427732981,"at":"2026-11-19T00:16:55Z","sha":"e49383210","title":"Record the on-set check of typing into Install from address","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":257,"macOS simulator build + launch":158,"Windows launcher syntax":25,"Linux simulator build + launch":367}}
+{"id":44427732981,"at":"2026-11-19T00:16:55Z","sha":"e49383210","title":"Record the on-set check of typing into Install from address","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":257,"macOS simulator build + launch":158,"Windows launcher syntax":25,"Linux simulator build + launch":367}},
+{"id":44430148938,"at":"2026-11-19T00:34:55Z","sha":"9484696a7","title":"Adopt the system keyboard for Search's text only","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":253,"macOS tests against bundled FFmpeg and ASS":266,"Windows launcher syntax":21,"Linux simulator build + launch":345}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
