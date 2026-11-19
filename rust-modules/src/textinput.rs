@@ -142,7 +142,7 @@ const TEXT_OFF: usize = if cfg!(feature = "hostsim") { 12 } else { 16 };
 /// Not a queue-depth tuning knob — a leak bound. Text events are delivered to the whole app, not
 /// to a screen, and on a desktop SDL they are enabled from `SDL_VideoInit` onward (see [`start`]),
 /// so every keystroke anywhere in the simulator lands here whether or not anything intends to
-/// read it. Nothing drains the queue in production (a focused search field takes its text through
+/// read it. Nothing drains the queue in production (a field with the keyboard, or Search, takes its text through
 /// `ingest_text` instead, see [`PENDING`]), so this bound is the whole of the queue's memory
 /// discipline.
 const MAX_PENDING: usize = 256;
@@ -150,7 +150,7 @@ const MAX_PENDING: usize = 256;
 thread_local! {
     /// Committed text, oldest first, waiting for [`drain`].
     ///
-    /// Nothing drains it in production: while a search field owns input, typed text (the
+    /// Nothing drains it in production: while a field owns text input (`bridge::text_owner`), typed text (the
     /// television's keyboard and the `txt:` remote token alike) goes through `app/run.rs`'s
     /// `ingest_text` into the app's input queue (`app.inputs`) and never reaches this one.
     /// [`on_event`] fills it only on every other route, where it is a bounded buffer
@@ -205,7 +205,8 @@ const SDL_LOG_PRIORITY_DEBUG: c_int = 2;
 /// deactivate and something else is wrong. One is a five-line mitigation, the other is not.
 ///
 /// Cheap and permanent: a handful of lines per keyboard session, on a log that is already the
-/// primary debugging surface, on a path a user reaches only by opening a search field.
+/// primary debugging surface, on a path a user reaches only by opening a text field: Search's,
+/// or Settings > Player HUD's "Install from address".
 fn trace_driver() {
     #[cfg(not(test))]
     unsafe {
@@ -321,7 +322,9 @@ const _: () = ();
 /// Re-take ownership of a panel that is demonstrably already up — see the note above and
 /// `screens::search::SearchScreen`. Deliberately does NOT call `SDL_StartTextInput` (the panel is up; asking
 /// for it again re-issues a wayland IME activation for nothing) and deliberately does NOT clear
-/// [`PENDING`], because the whole reason this is being called is that a commit is waiting in it.
+/// [`PENDING`]; clearing it is [`start`]'s fresh-field rule, and the commit that proved the panel up is
+/// not in it. That commit travels in `app.inputs`, behind the `SystemKeyboard(true)` input that led here
+/// (`app::events::text_inputs`).
 pub(crate) fn adopt() {
     unsafe {
         if *addr_of!(STARTED) {

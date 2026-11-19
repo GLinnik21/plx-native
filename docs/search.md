@@ -192,8 +192,11 @@ main-thread adapter's existing `textinput::start/stop` operations. Cover and sus
 binding. Both the binding and queued keyboard requests are included in the state hash.
 The owned path normalizes SDL and FIFO commits at ingress, before later edit keys, and uses
 `adopt` (never `start`) for a panel observation. Text recording preserves commit boundaries,
-original timing/source, and the observed panel capability, and replay reuses that observation
-rather than probing its current platform.
+original timing/source, and whether the commit carried the `SystemKeyboard(true)` adoption edge
+(`bridge::text_panel_edge`: the set has a panel and Search owns the text), and replay reuses that
+answer rather than probing its current platform. A commit on any other page records `panel:false`
+even on a set with a panel, so a non-Search recording's `panel:false` does not mean the set has
+none.
 
 **Live cutover is finished.** `AppArg::Search` mounts `screens::search::SearchScreen`
 unconditionally — there is no `AppMounter::search_owned` flag any more, no legacy ingress/lifecycle
@@ -348,7 +351,9 @@ carries a `char *text` **pointer** where SDL2 carries an inline `char[32]`; the 
 dereferences what it is handed. There is no Rust panic and no log line — the process is simply gone.
 The existing remote-FIFO injection is safe by luck of shape: key events and `ck:` pointer clicks are
 all scalar fields, and nothing in them is read as a pointer. Anything that wants to test the field
-headlessly must go in **above** SDL — through `textinput`'s own buffer — not by forging the event.
+headlessly must go in **above** SDL: through the `txt:` remote token or `ingest_text`'s event pair
+(`app::events::text_inputs`), never through `textinput`'s own buffer (which holds only text no field
+owns), and never by forging the event.
 
 ### Two dead ends, so nobody spends a day on them again
 
