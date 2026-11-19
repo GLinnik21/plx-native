@@ -29,7 +29,7 @@ pub fn valid_url(url: &str, allow_ws: bool) -> bool {
         _ => return false,
     };
     let host_length = rest.find('/').unwrap_or(rest.len());
-    host_length > 0 && url.ends_with("/v1/ws") && rest.bytes().all(|b| (0x21..=0x7E).contains(&b) && b != b'?' && b != b'#')
+    host_length > 0 && rest.ends_with("/v1/ws") && rest.bytes().all(|b| (0x21..=0x7E).contains(&b) && b != b'?' && b != b'#')
 }
 
 pub fn validate(list: &Json) -> Option<Vec<Relay>> {
@@ -85,5 +85,13 @@ mod tests {
         assert!(!valid_url("ws://192.168.1.5:8080/owp/v1/ws", false));
         assert!(!valid_url("wss:///v1/ws", false));
         assert!(!valid_url("wss://a.example/v1/ws?x", false));
+    }
+
+    #[test]
+    fn the_v1_ws_ending_comes_after_the_host() {
+        assert!(valid_url("wss://h/v1/ws", false));
+        assert!(!valid_url("wss://v1/ws", false));
+        assert!(!valid_url("ws://v1/ws", true));
+        assert!(!valid_url("wss://hv1/ws", false));
     }
 }
