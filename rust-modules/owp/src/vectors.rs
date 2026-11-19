@@ -458,9 +458,18 @@ fn escaped_names_and_values_read_as_their_text() {
 
 #[test]
 fn a_lone_surrogate_fails_a_checked_field_and_not_an_unknown_one() {
-    assert_eq!(decode(r#"{"type":"closed","reason":"kicked\ud800"}"#), Received::Malformed("closed"));
     assert_eq!(decode(&room_with_padding(0).replace(r#""peerId":"p1""#, r#""peerId":"p\ud800""#)), Received::Malformed("room"));
     assert!(matches!(decode(r#"{"type":"pong","id":1,"serverTime":5,"note":"\ud800"}"#), Received::Message(Incoming::Pong { .. })));
+}
+
+#[test]
+fn error_closed_and_action_kind_keep_a_lone_surrogate_as_a_replacement() {
+    let error = r#"{"type":"error","code":"busy\ud800","message":"\udc00","re":"join\ud83d"}"#;
+    let replaced = Incoming::Error { code: "busy\u{fffd}".into(), message: "\u{fffd}".into(), re: Some("join\u{fffd}".into()) };
+    assert_eq!(decode(error), Received::Message(replaced));
+    assert_eq!(decode(r#"{"type":"closed","reason":"kicked\ud800"}"#), Received::Message(Incoming::Closed { reason: "kicked\u{fffd}".into() }));
+    let room = room_with(r#""action":{"kind":"\ud800","by":"p1"}"#);
+    assert!(matches!(decode(&room), Received::Message(Incoming::Room { .. })));
 }
 
 #[test]

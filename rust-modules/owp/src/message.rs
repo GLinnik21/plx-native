@@ -233,8 +233,12 @@ fn plain_string(value: Option<&Json>) -> Option<String> {
     value.and_then(Json::as_text).filter(|text| !text.unpaired).map(|text| text.value.clone())
 }
 
+fn any_string(value: Option<&Json>) -> Option<String> {
+    value.and_then(Json::as_text).map(|text| text.value.clone())
+}
+
 fn non_empty(value: Option<&Json>) -> Option<String> {
-    plain_string(value).filter(|value| !value.is_empty())
+    any_string(value).filter(|value| !value.is_empty())
 }
 
 fn server_time(message: &Json) -> Option<i64> {
@@ -283,10 +287,10 @@ fn decode_pong(message: &Json) -> Received {
 fn decode_error(message: &Json) -> Received {
     let re = match message.get("re") {
         Some(Json::Null) => Some(None),
-        Some(re) => plain_string(Some(re)).map(Some),
+        Some(re) => any_string(Some(re)).map(Some),
         None => None,
     };
-    match (non_empty(message.get("code")), plain_string(message.get("message")), re) {
+    match (non_empty(message.get("code")), any_string(message.get("message")), re) {
         (Some(code), Some(text), Some(re)) => Received::Message(Incoming::Error { code, message: text, re }),
         _ => Received::Malformed("error"),
     }
