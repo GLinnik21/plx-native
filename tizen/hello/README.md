@@ -172,7 +172,11 @@ tizen/hello/build.sh --host-test                  # any host: the probe's unit t
 ```
 
 On WSL2 keep the checkout on the Linux filesystem (`~/...`, not `/mnt/c`) at a path without spaces (the
-SDL build refuses a path with spaces). The first build downloads the two tarballs and compiles SDL2
+SDL build refuses a path with spaces). The likeliest first-run failure on a new distro is the glibc
+ceiling: SDL's and FreeType's C objects are compiled against the build machine's headers, and glibc 2.38+
+headers turn calls like `strtol` into `__isoc23_strtol@GLIBC_2.38`. `build.sh` then stops with `GLIBC_2.xx
+exceeds GLIBC_2.39` (the `x86_64` limit; `PLX_MAX_GLIBC` overrides it) and its message names the way out:
+`X86_SYSROOT=<an older sysroot>` applies to the SDL compile as well as the Rust link. The first build downloads the two tarballs and compiles SDL2
 and SDL2_ttf. `--host-test` builds SDL for the host (macOS or Linux) and runs `cargo test`, which
 renders the label to a surface without any GL and checks its pixels (`PLX_H5_DUMP=/some/file.bmp`
 also writes the label as a BMP to look at).
@@ -294,4 +298,5 @@ warnings, and the package lists `res/appfont.ttf`, `res/OFL.txt` and the same `l
 - That ARM Tizen 6-9 sets are 32-bit ARMv7 armel. Some may be aarch64: the log says.
 - The ARM library has one symbol left unresolved at link time, `getauxval` (glibc 2.16+, absent from
   the NDK's 2.12 sysroot, used by Rust's std). It binds to the TV's own glibc at load time. Its
-  `DT_NEEDED` also lists `librt.so.1` and `ld-linux.so.3` beside libc/libdl/libpthread/libgcc_s.
+  `DT_NEEDED` also lists `librt.so.1`, `libm.so.6` and `ld-linux.so.3` beside libc/libdl/libpthread/libgcc_s
+  (`libm` since H5: SDL and FreeType use it).
