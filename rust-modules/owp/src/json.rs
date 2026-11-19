@@ -371,6 +371,15 @@ impl Json {
         }
     }
 
+    pub fn holds_a_non_finite_number(&self) -> bool {
+        match self {
+            Json::Float(f) => !f.is_finite(),
+            Json::Array(items) => items.iter().any(Json::holds_a_non_finite_number),
+            Json::Object(members) => members.iter().any(|(_, value)| value.holds_a_non_finite_number()),
+            Json::Null | Json::Bool(_) | Json::Int(_) | Json::Str(_) => false,
+        }
+    }
+
     pub fn write_compact(&self, out: &mut String) {
         match self {
             Json::Null => out.push_str("null"),

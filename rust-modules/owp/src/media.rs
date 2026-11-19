@@ -35,6 +35,7 @@ pub enum MediaRule {
     FileName,
     Ext,
     RepeatedName,
+    ExtNumber,
     ExtSize,
     Size,
 }
@@ -148,6 +149,7 @@ pub fn check(media: &Json, direction: Direction) -> Result<(), MediaRule> {
         Direction::Receive => Ok(()),
         Direction::Send => {
             require(!media.repeats_a_member_name(), MediaRule::RepeatedName)?;
+            require(media.get("ext").is_none_or(|ext| !ext.holds_a_non_finite_number()), MediaRule::ExtNumber)?;
             require(media.get("ext").is_none_or(|ext| ext.compact().len() <= MAX_EXT_BYTES), MediaRule::ExtSize)?;
             require(known_members(media).compact().len() <= MAX_MEDIA_BYTES, MediaRule::Size)
         }

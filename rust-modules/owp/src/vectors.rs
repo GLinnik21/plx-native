@@ -412,6 +412,19 @@ fn the_size_rules_apply_only_to_sending() {
     assert_eq!(checked(&both), [Ok(()), Err(MediaRule::ExtSize)]);
 }
 
+#[test]
+fn a_number_json_cannot_carry_in_ext_is_not_sent() {
+    let infinite = r#"{"kind":"video","title":"Clip","durationMs":1,"ext":{"a.b":{"n":[1e400]}}}"#;
+    assert_eq!(checked(infinite), [Ok(()), Err(MediaRule::ExtNumber)]);
+    assert_eq!(checked(r#"{"kind":"video","title":"Clip","durationMs":1,"ext":{"a.b":-1e400}}"#), [Ok(()), Err(MediaRule::ExtNumber)]);
+    assert_eq!(checked(r#"{"kind":"video","title":"Clip","durationMs":1,"ext":{"a.b":{"n":1e400,"n":1}}}"#)[1], Err(MediaRule::RepeatedName));
+    let ext = "x".repeat(MAX_EXT_BYTES);
+    let long = format!(r#"{{"kind":"video","title":"Clip","durationMs":1,"ext":{{"a.b":[1e400,"{ext}"]}}}}"#);
+    assert_eq!(checked(&long)[1], Err(MediaRule::ExtNumber));
+    let media = read(infinite).unwrap().value;
+    assert_eq!(Outgoing::SetMedia { media, position_ms: None }.encode(), Err(InvalidMessage("media")));
+}
+
 const JOINED: &str = r#"{"type":"joined","code":"D4XN7P","you":{"peerId":"p1","token":"q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"},"room":{"rev":1,"code":"D4XN7P","epoch":0,"phase":"idle","positionMs":0,"atMs":15023,"rate":1,"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Edde","client":"Example/1.31.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}],"action":{"kind":"join","by":"p1"}},"media":null,"serverTime":15023}"#;
 
 #[test]
