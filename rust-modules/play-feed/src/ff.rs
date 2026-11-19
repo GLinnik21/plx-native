@@ -7,6 +7,7 @@ use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, CommitReadout, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
 use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, HlsBufferClocks, PauseLane};
 use plx_playback_contract::SourceKey;
+use plx_playback_contract::feed::RpuDovi;
 use crate::SendPtr;
 use plx_net::stream::HttpStream;
 use plx_net::net::origin::Origin;
@@ -2475,6 +2476,288 @@ fn fit_active_area<'a>(nal: &'a [u8], area: &mut DvActiveArea) -> std::borrow::C
     }
 }
 
+/// How many video packets [`RpuOnlyScan`] reads before it gives up. A Dolby Vision stream carries an
+/// RPU in every access unit, so the first packet settles it; the spare ones cover a stream that
+/// starts on a packet without one.
+const RPU_SCAN_PACKETS: u8 = 8;
+
+/// The search for Dolby Vision in an HEVC stream whose container has no configuration record: a
+/// remux that dropped the `dvcC`/`dvvC` record (or the Matroska `BlockAdditionMapping`) but kept
+/// the RPUs (`UNSPEC62`) in the bitstream. The server then reports no Dolby Vision, the route
+/// declares none and the panel shows the base layer, while every RPU is still fed. The scan reads
+/// the first [`RPU_SCAN_PACKETS`] packets and reports, once, what the RPUs say the stream is
+/// ([`RpuDovi`]), which the player may declare and reload with.
+///
+/// Only what the Load can declare as a single layer is reported: a Profile 5 (`bl_compat` 0) and a
+/// Profile 8 over a PQ or HLG base layer (`bl_compat` 1 or 4, from the stream's transfer, since
+/// there is no record to read it from: [`stream_transfer`]). A packet with an
+/// enhancement-layer NAL, an RPU that maps an enhancement layer (a Profile 7, whose conversion keys on
+/// the record this stream lacks) or does not parse, and a Profile 8 over any other transfer end the
+/// scan with nothing reported but the refusal, for the log ([`RpuFinding::Refused`]).
+#[derive(Debug)]
+pub struct RpuOnlyScan {
+    packets_left: u8,
+    /// The stream's transfer (raw `AVCOL_TRC_*`, the same numbers as the VUI's
+    /// `transfer_characteristics`).
+    trc: c_int,
+}
+
+/// What [`RpuOnlyScan::packet`] found in the RPUs, once per scan.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RpuFinding {
+    /// Dolby Vision the Load can declare.
+    Found(RpuDovi),
+    /// A Profile 8 over a transfer that is neither PQ nor HLG (raw `AVCOL_TRC_*`).
+    Refused { profile: u8, trc: c_int },
+}
+
+impl RpuOnlyScan {
+    /// A scan of an HEVC stream with no configuration record and transfer `trc`.
+    pub fn new(trc: c_int) -> Self {
+        Self { packets_left: RPU_SCAN_PACKETS, trc }
+    }
+
+    /// No scan: a stream that is not length-prefixed HEVC, or whose container has a record.
+    pub const NONE: Self = Self { packets_left: 0, trc: 0 };
+
+    /// Look at one length-prefixed packet (`nls`-byte NAL lengths). `Some` at most once per scan.
+    pub fn packet(&mut self, au: &[u8], nls: usize) -> Option<RpuFinding> {
+        if self.packets_left == 0 || nls == 0 {
+            return None;
+        }
+        self.packets_left -= 1;
+        let mut rpu = None;
+        for nal in length_prefixed_nals(au, nls) {
+            if is_dv_enhancement_layer(nal) {
+                self.packets_left = 0;
+                return None;
+            }
+            if rpu.is_none() && ((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_RPU {
+                rpu = Some(nal);
+            }
+        }
+        let nal = rpu?;
+        self.packets_left = 0;
+        let rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
+        if rpu.el_type.is_some() {
+            return None;
+        }
+        let bl_compat = match (rpu.dovi_profile, self.trc) {
+            (5, _) => 0,
+            (8, crate::vp9_hdr::TRC_PQ) => 1,
+            (8, crate::vp9_hdr::TRC_HLG) => 4,
+            (profile, trc) => return Some(RpuFinding::Refused { profile, trc }),
+        };
+        Some(RpuFinding::Found(RpuDovi { profile: rpu.dovi_profile, bl_compat }))
+    }
+}
+
+/// The stream's transfer (raw `AVCOL_TRC_*`): the container's, or, where the container states none
+/// (a Matroska remux with no `Colour` element reports 2), the first SPS's VUI in `param_sets`
+/// (Annex-B, as [`parse_extradata`] builds them). The second value says the SPS gave it.
+pub fn stream_transfer(container: c_int, param_sets: &[u8]) -> (c_int, bool) {
+    use crate::vp9_hdr::{TRC_RESERVED0, TRC_UNSPECIFIED};
+    if !matches!(container, TRC_RESERVED0 | TRC_UNSPECIFIED) {
+        return (container, false);
+    }
+    annexb_nals(param_sets).find_map(hevc_sps_transfer).map_or((container, false), |t| (t, true))
+}
+
+/// The NAL units of an Annex-B byte stream, without their start codes.
+fn annexb_nals(b: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut next = annexb_start(b, 0);
+    std::iter::from_fn(move || {
+        let (at, len) = next?;
+        let body = at + len;
+        next = annexb_start(b, body);
+        Some(&b[body..next.map_or(b.len(), |(n, _)| n)])
+    })
+}
+
+/// The NAL units of a length-prefixed packet (`nls`-byte lengths), up to the first that does not fit.
+fn length_prefixed_nals(au: &[u8], nls: usize) -> impl Iterator<Item = &[u8]> {
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        if nls == 0 || i + nls > au.len() {
+            return None;
+        }
+        let nl = au[i..i + nls].iter().fold(0usize, |n, &b| n << 8 | usize::from(b));
+        let end = nal_end(i + nls, nl, au.len())?;
+        let nal = &au[i + nls..end];
+        i = end;
+        Some(nal)
+    })
+}
+
+/// An MSB-first reader over an RBSP (emulation-prevention bytes already removed).
+struct RbspBits<'a> {
+    b: &'a [u8],
+    pos: usize,
+}
+
+impl RbspBits<'_> {
+    fn bit(&mut self) -> Option<u32> {
+        let v = (self.b.get(self.pos / 8)? >> (7 - self.pos % 8)) & 1;
+        self.pos += 1;
+        Some(u32::from(v))
+    }
+
+    fn u(&mut self, n: u32) -> Option<u32> {
+        (0..n).try_fold(0u32, |v, _| Some(v << 1 | self.bit()?))
+    }
+
+    fn skip(&mut self, n: usize) -> Option<()> {
+        self.pos += n;
+        (self.pos <= self.b.len() * 8).then_some(())
+    }
+
+    fn ue(&mut self) -> Option<u32> {
+        let mut zeros = 0;
+        while self.bit()? == 0 {
+            zeros += 1;
+            if zeros > 31 {
+                return None;
+            }
+        }
+        Some((1u32 << zeros) - 1 + self.u(zeros)?)
+    }
+}
+
+/// The VUI `transfer_characteristics` of an HEVC SPS NAL (header included), or `None` for any other
+/// NAL, an SPS with no colour description, or one that does not parse. Reads ITU-T H.265 7.3.2.2
+/// up to the VUI's `video_signal_type` (E.2.1): everything ahead of it, the short-term reference
+/// picture sets included, has to be walked because none of it has a fixed width.
+fn hevc_sps_transfer(nal: &[u8]) -> Option<c_int> {
+    if nal.len() < 3 || (nal[0] >> 1) & 0x3f != 33 {
+        return None;
+    }
+    let rbsp = sei_rbsp(&nal[2..]);
+    let r = &mut RbspBits { b: &rbsp, pos: 0 };
+    r.skip(4)?; // sps_video_parameter_set_id
+    let max_sub_layers_minus1 = r.u(3)? as usize;
+    r.skip(1)?; // sps_temporal_id_nesting_flag
+    // profile_tier_level(1, max_sub_layers_minus1): the general part is 96 bits.
+    r.skip(96)?;
+    let mut sub = [(false, false); 7];
+    for s in sub.iter_mut().take(max_sub_layers_minus1) {
+        *s = (r.bit()? == 1, r.bit()? == 1);
+    }
+    if max_sub_layers_minus1 > 0 {
+        r.skip(2 * (8 - max_sub_layers_minus1))?;
+    }
+    for &(profile, level) in sub.iter().take(max_sub_layers_minus1) {
+        r.skip(if profile { 88 } else { 0 } + if level { 8 } else { 0 })?;
+    }
+    r.ue()?; // sps_seq_parameter_set_id
+    if r.ue()? == 3 {
+        r.skip(1)?; // separate_colour_plane_flag
+    }
+    r.ue()?; // pic_width_in_luma_samples
+    r.ue()?; // pic_height_in_luma_samples
+    if r.bit()? == 1 {
+        for _ in 0..4 {
+            r.ue()?; // conf_win offsets
+        }
+    }
+    r.ue()?; // bit_depth_luma_minus8
+    r.ue()?; // bit_depth_chroma_minus8
+    let log2_max_poc_lsb = r.ue()? + 4;
+    let ordering_all = r.bit()? == 1;
+    let first = if ordering_all { 0 } else { max_sub_layers_minus1 };
+    for _ in first..=max_sub_layers_minus1 {
+        r.ue()?;
+        r.ue()?;
+        r.ue()?;
+    }
+    for _ in 0..6 {
+        r.ue()?; // log2_min_luma_coding_block_size_minus3 .. max_transform_hierarchy_depth_intra
+    }
+    if r.bit()? == 1 && r.bit()? == 1 {
+        // scaling_list_data() (7.3.4)
+        for size_id in 0..4u32 {
+            let step = if size_id == 3 { 3 } else { 1 };
+            for _ in (0..6).step_by(step) {
+                if r.bit()? == 0 {
+                    r.ue()?; // scaling_list_pred_matrix_id_delta
+                } else {
+                    let coefs = 64.min(1u32 << (4 + (size_id << 1)));
+                    if size_id > 1 {
+                        r.ue()?; // scaling_list_dc_coef_minus8 (se(v), same length)
+                    }
+                    for _ in 0..coefs {
+                        r.ue()?; // scaling_list_delta_coef (se(v))
+                    }
+                }
+            }
+        }
+    }
+    r.skip(2)?; // amp_enabled_flag, sample_adaptive_offset_enabled_flag
+    if r.bit()? == 1 {
+        r.skip(8)?; // pcm sample bit depths
+        r.ue()?;
+        r.ue()?;
+        r.skip(1)?;
+    }
+    let num_st_rps = r.ue()? as usize;
+    if num_st_rps > 64 {
+        return None;
+    }
+    // st_ref_pic_set(i) (7.3.7): NumDeltaPocs of each set, which a predicted set reads back.
+    let mut num_delta_pocs = [0u32; 64];
+    for i in 0..num_st_rps {
+        let predicted = i != 0 && r.bit()? == 1;
+        num_delta_pocs[i] = if predicted {
+            r.skip(1)?; // delta_rps_sign
+            r.ue()?; // abs_delta_rps_minus1
+            let mut n = 0;
+            for _ in 0..=num_delta_pocs[i - 1] {
+                let used = r.bit()? == 1;
+                if used || r.bit()? == 1 {
+                    n += 1;
+                }
+            }
+            n
+        } else {
+            let neg = r.ue()?;
+            let pos = r.ue()?;
+            if neg > 16 || pos > 16 {
+                return None;
+            }
+            for _ in 0..neg + pos {
+                r.ue()?;
+                r.skip(1)?;
+            }
+            neg + pos
+        };
+    }
+    if r.bit()? == 1 {
+        let n = r.ue()?;
+        if n > 32 {
+            return None;
+        }
+        r.skip(n as usize * (log2_max_poc_lsb as usize + 1))?;
+    }
+    r.skip(2)?; // sps_temporal_mvp_enabled_flag, strong_intra_smoothing_enabled_flag
+    if r.bit()? == 0 {
+        return None; // no VUI
+    }
+    if r.bit()? == 1 && r.u(8)? == 255 {
+        r.skip(32)?; // sar_width, sar_height
+    }
+    if r.bit()? == 1 {
+        r.skip(1)?; // overscan_appropriate_flag
+    }
+    if r.bit()? == 0 {
+        return None; // no video_signal_type
+    }
+    r.skip(4)?; // video_format, video_full_range_flag
+    if r.bit()? == 0 {
+        return None; // no colour_description
+    }
+    r.skip(8)?; // colour_primaries
+    Some(r.u(8)? as c_int)
+}
+
 /// What to do with one HEVC NAL on its way to the decoder.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SeiStrip {
@@ -2572,8 +2855,8 @@ pub fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
     SeiStrip::Rewrite(out)
 }
 
-/// An SEI payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`), so
-/// message sizes count the bytes they describe.
+/// A NAL payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`): an
+/// SEI's message sizes count the bytes they describe, and an SPS's fields read as written.
 pub fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ebsp.len());
     let mut zeros = 0;
@@ -2610,27 +2893,8 @@ pub fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
 /// short to hold them is not one. Both fields sit in the first bytes, ahead of any emulation-
 /// prevention byte a valid header can need there.
 fn h264_slice_is_intra(nal: &[u8]) -> bool {
-    let bits = nal.get(1..).unwrap_or(&[]);
-    let mut pos = 0usize;
-    let mut ue = || -> Option<u32> {
-        let bit = |p: usize| bits.get(p / 8).map(|b| (b >> (7 - p % 8)) & 1);
-        let mut zeros = 0;
-        while bit(pos)? == 0 {
-            zeros += 1;
-            pos += 1;
-            if zeros > 31 {
-                return None;
-            }
-        }
-        pos += 1;
-        let mut v = 0u32;
-        for _ in 0..zeros {
-            v = (v << 1) | u32::from(bit(pos)?);
-            pos += 1;
-        }
-        Some((1u32 << zeros) - 1 + v)
-    };
-    ue().and_then(|_| ue()).is_some_and(|t| t == 2 || t == 7)
+    let r = &mut RbspBits { b: nal.get(1..).unwrap_or(&[]), pos: 0 };
+    r.ue().and_then(|_| r.ue()).is_some_and(|t| t == 2 || t == 7)
 }
 
 /// Does this H.264 NAL open a random access point: an IDR slice, or, when `intra_ok`, a non-IDR
@@ -6674,7 +6938,8 @@ pub fn demux(
                 // server's P5 item while sending all three on every P8 (swept 2026-08-21). This line
                 // is where a television settles it.
                 // All three were declared in the offsets table above and read NOWHERE until now.
-                let dv = match dovi_conf(vcp) {
+                let conf = dovi_conf(vcp);
+                let dv = match conf {
                     // `bl_compat` is the field that decides whether the base layer means anything on
                     // its own, so it is logged beside the profile rather than left to be inferred
                     // from it — 0 is Profile 5's "none", 1 the HDR10 of a Profile 8.1.
@@ -6740,7 +7005,7 @@ pub fn demux(
                 // rewrites the RPUs), so the pipeline is handed the single-layer stream the Load
                 // payload declares (`plx_data::metadata::Dovi::converts_to_p81`). Armed whether or
                 // not a node was sent: undeclared, what remains is the HDR10 base layer.
-                let dv_p7 = is_hevc && dovi_conf(vcp).is_some_and(|d| dovi_converts_to_p81(&d));
+                let dv_p7 = is_hevc && conf.is_some_and(|d| dovi_converts_to_p81(&d));
                 if dv_p7 {
                     session.media().record(
                         "ff: Dolby Vision P7 -> P8.1 conversion armed (EL dropped, RPUs rewritten)",
@@ -6750,12 +7015,24 @@ pub fn demux(
                 // one, not the coded one), and the check's per-stream latch, which
                 // `packet_to_annexb` reads and sets for each RPU.
                 let mut dv_area = DvActiveArea::new((*vcp).width, (*vcp).height);
+                // Dolby Vision the container does not declare: RPUs in a stream with no record.
                 let is_av1 = framing == VideoFraming::Av1;
                 let is_vp9 = framing == VideoFraming::Vp9;
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
                     (Vec::new(), 0)
                 } else {
                     parse_extradata(extradata.as_ptr(), extradata.len(), is_hevc)
+                };
+                let mut rpu_scan = if is_hevc && conf.is_none() {
+                    let (trc, from_sps) = stream_transfer((*vcp).color_trc, &param_blob);
+                    if from_sps {
+                        session.media().record(&format!(
+                            "ff: container transfer unspecified; the SPS says trc={trc}"
+                        ));
+                    }
+                    RpuOnlyScan::new(trc)
+                } else {
+                    RpuOnlyScan::NONE
                 };
                 let av1_cfg = if is_av1 { parse_av1c(extradata) } else { Vec::new() };
                 let av1_framing = if is_av1 {
@@ -6949,6 +7226,19 @@ pub fn demux(
                                 }
                             })
                         } else {
+                            match rpu_scan.packet(pkt_bytes, nal_len_size) {
+                                Some(RpuFinding::Found(dovi)) => {
+                                    session.media().record(&format!(
+                                        "ff: Dolby Vision P{} bl_compat={} in the RPUs with no configuration record",
+                                        dovi.profile, dovi.bl_compat
+                                    ));
+                                    session.media().publish(DemuxEffect::RpuDovi(dovi));
+                                }
+                                Some(RpuFinding::Refused { profile, trc }) => session.media().record(&format!(
+                                    "ff: Dolby Vision P{profile} RPUs with no configuration record not declared: transfer trc={trc} is neither PQ nor HLG"
+                                )),
+                                None => {}
+                            }
                             packet_to_annexb(
                                 (*pkt).data,
                                 (*pkt).size.max(0) as usize,

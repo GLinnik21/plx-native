@@ -509,7 +509,8 @@ pub struct PlaybackSession {
     /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
     /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
     /// Rewritten only by [`withdraw_dv_presentation`] (#1166), which downgrades the presentation to
-    /// what Dolby Vision Off would have planned and keeps the probed capability.
+    /// what Dolby Vision Off would have planned and keeps the probed capability, and by
+    /// [`declare_rpu_dovi`], which declares the RPUs of a stream whose container has no record.
     stream_dv_decision: plx_data::metadata::DvDecision,
     /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
     /// frozen at the resolve whatever route was taken. `stream_dovi` above is what is being fed;
@@ -7378,6 +7379,61 @@ pub fn withdraw_dv_presentation(ps: &mut PlaybackSession, why: &str) -> bool {
         "dv: capability={} presentation={} (withdrawn: {why})",
         off.capability.label(),
         off.presentation.label(),
+    ));
+    true
+}
+
+/// Declare the Dolby Vision the demuxer found in the RPUs of a stream the server reported none for
+/// (`FeedRaw::rpu_dovi`: a remux that dropped the configuration record but kept the RPUs), for the
+/// rest of this play, as if the server had reported it: the record and the decision `mode` makes of
+/// it with the capability the route froze. Returns whether the installed route now declares a node,
+/// which the caller answers with one reload; `false` changes nothing (the route already carries a
+/// record, or what it would plan for the record is not a declaration: no confirmed support,
+/// Dolby Vision Off, or a stream the server re-encoded, whose frozen capability is `Unknown`).
+///
+/// The file's own declaration and the stored Auto Original candidate follow when they carry no record
+/// either, so a trip to HLS and back to Original keeps the node, as [`withdraw_dv_presentation`]
+/// keeps it off. A withdrawal later in the play leaves `stream_dovi` in place, so the demuxer's
+/// report, which the next Load repeats, is not declared again.
+pub fn declare_rpu_dovi(
+    ps: &mut PlaybackSession,
+    rpu: plx_playback_contract::feed::RpuDovi,
+    mode: plx_plex::plex::session::DolbyVisionMode,
+) -> bool {
+    if ps.stream_dovi.present {
+        return false;
+    }
+    let dovi = plx_data::metadata::Dovi {
+        present: true,
+        profile: rpu.profile.into(),
+        bl_compat: rpu.bl_compat.into(),
+        bl_present: true,
+        rpu_present: true,
+        ..plx_data::metadata::Dovi::NONE
+    };
+    let decision = frozen_dv_decision(mode, ps.stream_dv_decision.capability, dovi, &ps.stream_vcodec);
+    if decision.presentation.declared().is_none() {
+        return false;
+    }
+    ps.stream_dovi = dovi;
+    ps.stream_dv_decision = decision;
+    // The record replaces silence only: a slot that carries one keeps it.
+    let adopt = |slot: &mut plx_data::metadata::Dovi, decided: &mut plx_data::metadata::DvDecision, vcodec: &str| {
+        if !slot.present {
+            *slot = dovi;
+            *decided = frozen_dv_decision(mode, decided.capability, dovi, vcodec);
+        }
+    };
+    adopt(&mut ps.src_dovi, &mut ps.src_dv_decision, &ps.stream_vcodec);
+    if let Some(c) = ps.auto_original.as_mut() {
+        adopt(&mut c.dovi, &mut c.dv_decision, &c.vcodec);
+    }
+    crate::player::log(&format!(
+        "dv: capability={} presentation={} (P{} bl_compat={} found in the RPUs; the container has no record)",
+        decision.capability.label(),
+        decision.presentation.label(),
+        rpu.profile,
+        rpu.bl_compat,
     ));
     true
 }

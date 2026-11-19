@@ -409,6 +409,7 @@ impl DemuxMedia for FeedDemuxMedia {
                     if a != 0 { FEED_SHARED.probe_actual_a.store(a, Ordering::Release); }
                 }
             }
+            DemuxEffect::RpuDovi(dovi) => FEED_SHARED.note_rpu_dovi(dovi),
             DemuxEffect::HttpStatus(status) => FEED_SHARED.dg_http_status.store(status, Ordering::Relaxed),
             DemuxEffect::TrackNames { audio, subs } => {
                 previous_names = Some((self.hooks.replace_track_names)(TrackNames { audio, subs }));

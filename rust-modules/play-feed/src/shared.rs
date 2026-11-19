@@ -10,12 +10,12 @@ use crate::native_gate::NativeGate;
 pub use crate::native_gate::{EventScope, NativeEventClass};
 use std::ffi::CString;
 use std::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
 use std::sync::{Condvar, Mutex};
 
 pub use plx_playback_contract::readout::RefusalPath;
-use plx_playback_contract::feed::ResetScope;
+use plx_playback_contract::feed::{ResetScope, RpuDovi};
 use std::time::{Duration, Instant};
 
 /// Physical 1x transport rate and its unknown speed-audio readout.
@@ -635,6 +635,10 @@ pub struct Shared {
     /// `demux_failed` in the session reset.
     pub probe_actual_v: AtomicU8,
     pub probe_actual_a: AtomicU8,
+    /// The Dolby Vision the demuxer found in the video's RPUs with no configuration record in the
+    /// container (`DemuxEffect::RpuDovi`): `profile << 8 | bl_compat`, 0 = none (a reported profile
+    /// is never 0). Read through [`Shared::rpu_dovi`]; cleared in the session reset.
+    rpu_dovi: AtomicU16,
     /// Auto-quality facts written by the demux worker and read through `FeedRaw::abr`.
     /// Mode: 0 inactive, 1 progressive Original watchdog, 2 fixed-session HLS controller. The
     /// adaptive worker's own measurements and decisions are not mailboxes: it ships them to the
@@ -670,6 +674,17 @@ pub type PhysicalShared = Shared;
 pub static FEED_SHARED: PhysicalShared = Shared::new();
 
 impl Shared {
+    /// Publish the Dolby Vision the demuxer found in the video's RPUs (`DemuxEffect::RpuDovi`).
+    pub fn note_rpu_dovi(&self, dovi: RpuDovi) {
+        self.rpu_dovi.store(u16::from_be_bytes([dovi.profile, dovi.bl_compat]), Ordering::Relaxed);
+    }
+
+    /// What [`Self::note_rpu_dovi`] published this session, if anything.
+    pub fn rpu_dovi(&self) -> Option<RpuDovi> {
+        let [profile, bl_compat] = self.rpu_dovi.load(Ordering::Relaxed).to_be_bytes();
+        (profile != 0).then_some(RpuDovi { profile, bl_compat })
+    }
+
     /// Record WHICH demuxer exit failed the session, without raising `demux_failed` (an exit that
     /// reaches the shared "produced no access units" tail through a plain `break`). FIRST WINS: a
     /// compare-exchange from 0, so the real cause is kept and any later cascade is ignored.
@@ -721,6 +736,7 @@ impl Shared {
             dg_load_a: AtomicU8::new(0),
             probe_actual_v: AtomicU8::new(0),
             probe_actual_a: AtomicU8::new(0),
+            rpu_dovi: AtomicU16::new(0),
             dg_abr_mode: AtomicU8::new(0),
             dg_abr_kbps: AtomicI64::new(0),
             dg_abr_declared_kbps: AtomicI64::new(-1),
@@ -1079,6 +1095,7 @@ impl Shared {
         self.dg_load_a.store(0, Ordering::Relaxed);
         self.probe_actual_v.store(0, Ordering::Relaxed);
         self.probe_actual_a.store(0, Ordering::Relaxed);
+        self.rpu_dovi.store(0, Ordering::Relaxed);
         self.dg_abr_mode.store(0, Ordering::Relaxed);
         self.dg_abr_kbps.store(0, Ordering::Relaxed);
         self.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);

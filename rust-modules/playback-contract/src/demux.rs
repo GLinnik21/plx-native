@@ -148,6 +148,9 @@ pub enum DemuxEffect {
     /// pump's one-shot probe retry consumes it to reload with the corrected declaration; a healthy
     /// open publishes nothing.
     ProbeActual { video: Option<u8>, audio: Option<u8> },
+    /// Dolby Vision the video's RPUs carry although the container has no configuration record
+    /// (`ff::RpuOnlyScan`); published at most once per open.
+    RpuDovi(crate::feed::RpuDovi),
     HttpStatus(i32),
     TrackNames { audio: Vec<String>, subs: Vec<String> },
     SideAnchor(Option<Anchor>),

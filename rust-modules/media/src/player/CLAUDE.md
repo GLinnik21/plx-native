@@ -229,12 +229,18 @@ something.
   probe's own capability (for read-outs) + that gated presentation decision, and every
   Load/reload/recovery consumes the
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
-  exception, and the Feed's `dv_start` guard (`play-feed/src/dv_start.rs`, reached only through `FeedLoad::dv_landing_due`) is the one mid-play change (#1166): at a landing the firmware's
+  exception, and the Feed's `dv_start` guard (`play-feed/src/dv_start.rs`, reached only through `FeedLoad::dv_landing_due`) is one of the two mid-play changes (#1166): at a landing the firmware's
   Dolby Vision splitter would skip, or after 4 s with no position update, it takes the declaration
   out of the route for the rest of that play request (`route::withdraw_dv_presentation`: what DV Off
   would have planned, the probed capability kept, on the installed route, the file's own declaration
   and the stored Auto Original candidate, so a trip to HLS and back to Original stays base-layer)
-  and reloads once. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
+  and reloads once. The other goes the opposite way: a stream whose container has no Dolby Vision
+  configuration record but whose RPUs say Profile 5 or Profile 8 over PQ/HLG (a remux that dropped
+  the record; the server then reports no Dolby Vision) is reported by the demuxer
+  (`ff::RpuOnlyScan`, `FeedRaw::rpu_dovi`), and once the Load has returned the pump has the route
+  declare it (`route::declare_rpu_dovi`, the decision the record would have frozen, so DV Off, a set
+  without confirmed support and a re-encode change nothing) and reloads once with the node.
+  Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.
 - **The Load's `adaptiveStreaming` ceiling is derived per session (`plx_play_feed::sink_envelope`), and
   it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264

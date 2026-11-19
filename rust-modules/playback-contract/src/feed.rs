@@ -147,6 +147,18 @@ pub struct DvWithdrawal {
     pub in_place: bool,
 }
 
+/// The Dolby Vision a video stream carries in its own bitstream when its container has no
+/// configuration record (a remux that dropped it): the profile the stream's RPUs describe and the
+/// base layer's compatibility id, inferred from the stream's transfer. The demuxer reports it once
+/// per open ([`FeedRaw::rpu_dovi`]); the player decides whether to declare it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpuDovi {
+    /// 5 or 8.
+    pub profile: u8,
+    /// 0 for Profile 5, 1 for a PQ (HDR10) base layer, 4 for an HLG one.
+    pub bl_compat: u8,
+}
+
 // ---------------------------------------------------------------------------------------------
 // The native open: what the route freezes for one Load, handed to the feed in one request.
 // ---------------------------------------------------------------------------------------------
@@ -530,6 +542,9 @@ pub struct FeedRaw {
     /// player's one-shot probe retry is its only consumer, and the session reset clears it.
     pub probe_actual_video: u8,
     pub probe_actual_audio: u8,
+    /// Dolby Vision the demuxer found in the video's RPUs although the container declares none;
+    /// `None` until then, and for every stream with a configuration record.
+    pub rpu_dovi: Option<RpuDovi>,
     /// What the Stats-for-nerds read-out shows of the feed's own mailboxes, from the same sample.
     pub diag: FeedDiag,
     /// The summed length (ms, wrapping) of the gaps between consecutive native presentation
@@ -720,7 +735,7 @@ impl FeedRaw {
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
-        probe_actual_video: 0, probe_actual_audio: 0,
+        probe_actual_video: 0, probe_actual_audio: 0, rpu_dovi: None,
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,

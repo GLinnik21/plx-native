@@ -1278,3 +1278,214 @@ fn a_truncated_sei_never_panics_and_only_a_seen_header_drops_it() {
     assert_eq!(strip_hdr10plus_sei(&[39 << 1, 1, 4, 200, 0xb5, 0x00, 0x3c]), SeiStrip::Drop);
     assert_eq!(strip_hdr10plus_sei(&[39 << 1, 1, 4, 200, 0xb5]), SeiStrip::Keep);
 }
+
+// -- Dolby Vision with no configuration record (RpuOnlyScan) ----------------------------------
+//
+// A remux that dropped the record but kept the RPUs: the scan reports what the RPUs say, once.
+
+use crate::vp9_hdr::{TRC_HLG, TRC_PQ};
+const TRC_BT709: c_int = 1;
+
+/// A Profile 5 RPU NAL, built with the crate (no fixture carries one).
+fn p5_rpu() -> Vec<u8> {
+    let config = dolby_vision::rpu::generate::GenerateConfig::default();
+    let nal = DoviRpu::profile5_config(&config).unwrap().write_hevc_unspec62_nalu().unwrap();
+    assert_eq!(parse_rpu(&nal).dovi_profile, 5, "the premise: the RPU reads as Profile 5");
+    nal
+}
+
+#[test]
+fn rpus_with_no_record_report_profile_8_over_the_streams_transfer() {
+    let rpu = rpu_fixture_nal(P81);
+    let au = packet_with_rpu(&rpu);
+    let mut pq = RpuOnlyScan::new(TRC_PQ);
+    assert_eq!(pq.packet(&au, 4), Some(RpuFinding::Found(RpuDovi { profile: 8, bl_compat: 1 })));
+    assert_eq!(pq.packet(&au, 4), None, "reported once");
+    assert_eq!(RpuOnlyScan::new(TRC_HLG).packet(&au, 4), Some(RpuFinding::Found(RpuDovi { profile: 8, bl_compat: 4 })));
+    // An SDR transfer cannot be told from a mislabelled stream: nothing is declared, and the refusal
+    // is kept for the log, once.
+    let mut sdr = RpuOnlyScan::new(TRC_BT709);
+    assert_eq!(sdr.packet(&au, 4), Some(RpuFinding::Refused { profile: 8, trc: TRC_BT709 }));
+    assert_eq!(sdr.packet(&au, 4), None, "the scan ended at the RPU");
+    // A stream with a record, or that is not length-prefixed HEVC, is not scanned at all.
+    let mut none = RpuOnlyScan::NONE;
+    assert_eq!(none.packet(&au, 4), None);
+}
+
+#[test]
+fn a_profile_5_rpu_with_no_record_is_reported_whatever_the_transfer() {
+    let au = packet_with_rpu(&p5_rpu());
+    assert_eq!(RpuOnlyScan::new(2).packet(&au, 4), Some(RpuFinding::Found(RpuDovi { profile: 5, bl_compat: 0 })));
+}
+
+#[test]
+fn an_enhancement_layer_ends_the_scan_with_nothing_reported() {
+    // A Profile 7 RPU maps an enhancement layer: its conversion keys on the record this stream lacks.
+    let p7 = packet_with_rpu(&rpu_fixture_nal(P7));
+    assert_eq!(RpuOnlyScan::new(TRC_PQ).packet(&p7, 4), None);
+    // An enhancement-layer NAL beside a single-layer RPU rules the stream out as well, for good.
+    let el_wrapped = [0x7Eu8, 0x01, 0xBB];
+    let rpu = rpu_fixture_nal(P81);
+    let mut scan = RpuOnlyScan::new(TRC_PQ);
+    assert_eq!(scan.packet(&avcc(&[&[0x02u8, 0x01, 0xAA], &el_wrapped, &rpu]), 4), None);
+    assert_eq!(scan.packet(&packet_with_rpu(&rpu), 4), None);
+}
+
+#[test]
+fn the_scan_gives_up_after_a_few_packets_without_an_rpu() {
+    let plain = avcc(&[&[0x02u8, 0x01, 0xAA]]);
+    let with = packet_with_rpu(&rpu_fixture_nal(P81));
+    let mut late = RpuOnlyScan::new(TRC_PQ);
+    for _ in 0..RPU_SCAN_PACKETS - 1 {
+        assert_eq!(late.packet(&plain, 4), None);
+    }
+    assert_eq!(late.packet(&with, 4), Some(RpuFinding::Found(RpuDovi { profile: 8, bl_compat: 1 })), "the last packet looked at");
+    let mut never = RpuOnlyScan::new(TRC_PQ);
+    for _ in 0..RPU_SCAN_PACKETS {
+        assert_eq!(never.packet(&plain, 4), None);
+    }
+    assert_eq!(never.packet(&with, 4), None, "past the budget nothing is read");
+    // An RPU that does not parse is not reported either.
+    assert_eq!(RpuOnlyScan::new(TRC_PQ).packet(&packet_with_rpu(&[0x7C, 0x01, 0, 0, 0]), 4), None);
+}
+
+// -- The transfer from the SPS, where the container leaves it unspecified ---------------------
+//
+// A Matroska remux with no `Colour` element reports `trc=2`, while the HEVC SPS's VUI still says PQ
+// (a C1 log: `ff: v=#0 codec=hevc ... trc=2 pri=2 spc=2`, then `DV RPU #1` and no declaration).
+
+/// An MSB-first bit writer for building SPS NALs.
+#[derive(Default)]
+struct BitsOut {
+    bits: Vec<u8>,
+}
+
+impl BitsOut {
+    fn u(&mut self, n: u32, v: u64) -> &mut Self {
+        for i in (0..n).rev() {
+            self.bits.push(if i >= 64 { 0 } else { ((v >> i) & 1) as u8 });
+        }
+        self
+    }
+    fn ue(&mut self, v: u32) -> &mut Self {
+        let x = u64::from(v) + 1;
+        let len = 64 - x.leading_zeros();
+        self.u(len - 1, 0).u(len, x)
+    }
+    fn se(&mut self, v: i32) -> &mut Self {
+        self.ue(if v > 0 { (2 * v - 1) as u32 } else { (-2 * v) as u32 })
+    }
+    /// The NAL: header, RBSP with its trailing bits, emulation prevention applied.
+    fn sps_nal(&mut self) -> Vec<u8> {
+        self.u(1, 1);
+        while self.bits.len() % 8 != 0 {
+            self.bits.push(0);
+        }
+        let rbsp: Vec<u8> = self.bits.chunks(8).map(|c| c.iter().fold(0u8, |a, &b| a << 1 | b)).collect();
+        let mut nal = vec![33 << 1, 0x01];
+        let mut zeros = 0;
+        for b in rbsp {
+            if zeros >= 2 && b <= 3 {
+                nal.push(3);
+                zeros = 0;
+            }
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+            nal.push(b);
+        }
+        nal
+    }
+}
+
+/// An SPS that walks every variable-width part ahead of the VUI: two sub-layers (one with its own
+/// profile and level), a conformance window, an explicit scaling list, PCM, a predicted short-term
+/// reference picture set, long-term pictures and an extended sample aspect ratio. `vui` is
+/// `Some(trc)` for a VUI with a colour description, `None` for none at all.
+fn sps(vui: Option<u8>) -> Vec<u8> {
+    let mut w = BitsOut::default();
+    w.u(4, 0).u(3, 1).u(1, 1); // vps id, max_sub_layers_minus1 = 1, nesting
+    w.u(2, 0).u(1, 0).u(5, 2).u(32, 0x2000_0000).u(4, 0b1001).u(43, 0).u(1, 0).u(8, 153); // general PTL
+    w.u(1, 1).u(1, 1); // sub-layer 0: profile and level present
+    w.u(2 * 7, 0); // reserved_zero_2bits for i in 1..8
+    w.u(88, 0).u(8, 120); // sub-layer 0's profile, level
+    w.ue(0).ue(1).ue(3840).ue(2160); // sps id, 4:2:0, size
+    w.u(1, 1).ue(0).ue(0).ue(0).ue(40); // conformance window
+    w.ue(2).ue(2).ue(4); // 10-bit, log2_max_poc_lsb_minus4 = 4
+    w.u(1, 1); // sub_layer_ordering_info_present: both sub-layers
+    for _ in 0..2 {
+        w.ue(4).ue(2).ue(0);
+    }
+    w.ue(0).ue(3).ue(0).ue(3).ue(1).ue(1);
+    w.u(1, 1).u(1, 1); // scaling_list_enabled, sps_scaling_list_data_present
+    for size_id in 0..4u32 {
+        let step = if size_id == 3 { 3 } else { 1 };
+        for matrix in (0..6).step_by(step) {
+            if matrix % 2 == 0 {
+                w.u(1, 0).ue(0);
+            } else {
+                w.u(1, 1);
+                if size_id > 1 {
+                    w.se(-3);
+                }
+                for k in 0..64.min(1u32 << (4 + (size_id << 1))) {
+                    w.se(if k % 3 == 0 { 2 } else { -1 });
+                }
+            }
+        }
+    }
+    w.u(1, 1).u(1, 1); // amp, sao
+    w.u(1, 1).u(4, 7).u(4, 7).ue(0).ue(1).u(1, 0); // pcm
+    w.ue(2); // two short-term sets
+    w.ue(2).ue(1).ue(0).u(1, 1).ue(1).u(1, 1).ue(0).u(1, 0); // set 0: 2 negative, 1 positive
+    w.u(1, 1).u(1, 0).ue(0); // set 1: predicted from set 0
+    for j in 0..=3 {
+        if j % 2 == 0 {
+            w.u(1, 1);
+        } else {
+            w.u(1, 0).u(1, 1);
+        }
+    }
+    w.u(1, 1).ue(2).u(8, 0x55).u(1, 1).u(8, 0xAA).u(1, 0); // two long-term pictures of 8-bit lsb
+    w.u(1, 1).u(1, 1); // temporal mvp, strong intra smoothing
+    match vui {
+        None => {
+            w.u(1, 0);
+        }
+        Some(trc) => {
+            w.u(1, 1);
+            w.u(1, 1).u(8, 255).u(16, 1).u(16, 1); // aspect ratio: extended
+            w.u(1, 1).u(1, 0); // overscan
+            w.u(1, 1).u(3, 5).u(1, 0).u(1, 1).u(8, 9).u(8, u64::from(trc)).u(8, 9);
+            w.u(7, 0); // rest of the VUI: absent
+        }
+    }
+    w.u(2, 0); // sps_extension
+    w.sps_nal()
+}
+
+#[test]
+fn the_sps_vui_says_the_transfer() {
+    let pq = sps(Some(16));
+    assert!(pq.windows(3).any(|w| w == [0, 0, 3]), "the premise: the SPS carries emulation prevention");
+    assert_eq!(hevc_sps_transfer(&pq), Some(TRC_PQ));
+    assert_eq!(hevc_sps_transfer(&sps(Some(18))), Some(TRC_HLG));
+    assert_eq!(hevc_sps_transfer(&sps(None)), None, "no VUI");
+    assert_eq!(hevc_sps_transfer(&[0x02, 0x01, 0xAA]), None, "not an SPS");
+    assert_eq!(hevc_sps_transfer(&pq[..pq.len() / 2]), None, "a truncated SPS");
+}
+
+#[test]
+fn an_unspecified_container_transfer_is_taken_from_the_sps() {
+    let mut blob = Vec::new();
+    for nal in [vec![0x40, 0x01, 0x0C], sps(Some(16)), vec![0x44, 0x01, 0xC0]] {
+        blob.extend_from_slice(&[0, 0, 0, 1]);
+        blob.extend_from_slice(&nal);
+    }
+    assert_eq!(stream_transfer(2, &blob), (TRC_PQ, true));
+    assert_eq!(stream_transfer(0, &blob), (TRC_PQ, true));
+    // A container that states the transfer keeps it, whatever the SPS says.
+    assert_eq!(stream_transfer(TRC_HLG, &blob), (TRC_HLG, false));
+    // With no SPS to say it, it stays unspecified, and a Profile 8 RPU is refused for it.
+    assert_eq!(stream_transfer(2, &[]), (2, false));
+    let au = packet_with_rpu(&rpu_fixture_nal(P81));
+    assert_eq!(RpuOnlyScan::new(2).packet(&au, 4), Some(RpuFinding::Refused { profile: 8, trc: 2 }));
+}

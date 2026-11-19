@@ -306,6 +306,75 @@ fn a_route_that_refuses_the_withdrawal_stands_the_guard_down_and_the_landing_fee
     assert!(reloads().is_empty());
 }
 
+// -- Dolby Vision the container does not declare -----------------------------------------------------
+//
+// A remux that dropped the configuration record but kept the RPUs plays as a plain HEVC direct play
+// until the demuxer reports the RPUs (`FeedRaw::rpu_dovi`): then the route declares them and the play
+// reloads once with the node, after the Load has returned.
+
+const RPU_P81: plx_playback_contract::feed::RpuDovi = plx_playback_contract::feed::RpuDovi { profile: 8, bl_compat: 1 };
+
+/// A direct play of an HEVC stream the server reported no Dolby Vision for, on a set that `probed`.
+fn undeclared(probed: DvCapability) -> Rig {
+    let mut rig = Rig::new(None);
+    assert!(crate::route::set_stream_declaration_for_test(&mut rig.ps, "hevc", "eac3", 23.976, Dovi::NONE, false, probed));
+    arm_guard(&mut rig, None);
+    rig
+}
+
+#[test]
+fn rpus_with_no_configuration_record_reload_once_with_dolby_vision() {
+    let _serial = plx_base::testlock::serial();
+    let mut rig = undeclared(DvCapability::Supported);
+    assert_eq!(rig.eng().dv_start.mode(), Mode::Inert, "the premise: nothing declared, nothing guarded");
+    frames(&mut rig, 3);
+    assert!(reloads().is_empty());
+    FEED_SHARED.note_rpu_dovi(RPU_P81);
+    let log = logged(|| frames(&mut rig, 6));
+    assert_eq!(reloads(), vec![60_000_000_000], "one reload, where the Engine was playing");
+    assert!(is_declared(&rig), "{log}");
+    assert!(log.contains("found in the RPUs"), "{log}");
+    // The reload's Engine is built from the declared route, so the landing guard covers it.
+    arm_guard(&mut rig, None);
+    assert_eq!(rig.eng().dv_start.mode(), Mode::Act);
+    // The next Load reports the RPUs again: the route declares once.
+    frames(&mut rig, 6);
+    assert_eq!(reloads().len(), 1);
+}
+
+#[test]
+fn rpus_wait_for_the_load_to_return() {
+    let _serial = plx_base::testlock::serial();
+    let mut rig = undeclared(DvCapability::Supported);
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    rig.eng().load_th = Some(std::thread::spawn(move || {
+        let _ = wait.recv();
+    }));
+    FEED_SHARED.note_rpu_dovi(RPU_P81);
+    frames(&mut rig, 6);
+    assert!(reloads().is_empty(), "no teardown while the Load is in flight");
+    assert!(!is_declared(&rig));
+    release.send(()).unwrap();
+    let th = rig.eng().load_th.take().unwrap();
+    while !th.is_finished() {
+        std::thread::yield_now();
+    }
+    rig.eng().load_th = Some(th);
+    frames(&mut rig, 6);
+    assert_eq!(reloads().len(), 1, "the Load returned: one reload");
+    assert!(is_declared(&rig));
+}
+
+#[test]
+fn rpus_on_a_set_without_confirmed_support_change_nothing() {
+    let _serial = plx_base::testlock::serial();
+    let mut rig = undeclared(DvCapability::Unknown);
+    FEED_SHARED.note_rpu_dovi(RPU_P81);
+    frames(&mut rig, 6);
+    assert!(reloads().is_empty());
+    assert!(!is_declared(&rig));
+}
+
 // -- beside the native surround-audio watchdog -------------------------------------------------------
 
 /// One audio access unit's duration in these rigs.
