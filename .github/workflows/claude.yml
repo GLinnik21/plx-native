@@ -85,13 +85,13 @@ jobs:
 
       # The same setup the action runs for `allowed_non_write_users`: bubblewrap gives the scrubbed
       # commands their own PID namespace, and Ubuntu 24.04 needs unprivileged user namespaces allowed.
-      - name: Sandbox for Claude's commands
+      # This runs from the default branch's checkout: the action checks the pull request out later.
+      - name: Install the sandbox for Claude's commands
+        uses: ./.github/actions/apt-install
+        with:
+          packages: bubblewrap socat
+      - name: Allow unprivileged user namespaces for the sandbox
         run: |
-          for i in 1 2 3; do
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat && break
-            echo "apt-get attempt $i failed, retrying..."
-            sleep 5
-          done
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
