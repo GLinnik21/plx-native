@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Package id plxnhello0: 10 alphanumerics, appid = package id (the host is one app).
+     Privileges: internet only. No partner privileges (drminfo and friends): they make an
+     unsigned-by-Samsung install fail on a retail TV. -->
+<manifest xmlns="http://tizen.org/ns/packages" api-version="6.0" package="plxnhello0" version="0.1.0">
+  <profile name="tv" />
+  <ui-application appid="plxnhello0" exec="PlxHello.dll" type="dotnet"
+                  multiple="false" taskmanage="true" nodisplay="false" launch_mode="single">
+    <label>PlxHello</label>
+    <icon>plxnhello0.png</icon>
+  </ui-application>
+  <privileges>
+    <privilege>http://tizen.org/privilege/internet</privilege>
+  </privileges>
+</manifest>

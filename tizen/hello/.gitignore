@@ -1,0 +1,8 @@
+# Throwaway test build: everything generated stays out of git. Never commit a certificate or a .tpk.
+/out/
+/plx/target/
+/host/PlxHello/bin/
+/host/PlxHello/obj/
+/host/PlxHello/lib/
+*.p12
+*.pfx

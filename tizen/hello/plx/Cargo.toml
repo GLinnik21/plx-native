@@ -1,0 +1,28 @@
+# Step-1 Samsung Tizen "hello world" library. A throwaway test build: it never lands on `main` and
+# is deliberately NOT a member of rust-modules' workspace (the empty `[workspace]` table below
+# makes this crate its own root, so cargo never walks up into the application's workspace).
+[package]
+name = "plx"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+# `libplx.so`, loaded by the C# host through [DllImport("plx")].
+name = "plx"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The only dependency. Every Tizen library (Ecore, wayland-egl, EGL, GLES) is dlopen'd at runtime,
+# so the .so's DT_NEEDED stays libc/libdl/libpthread/libm/libgcc_s.
+libc = "0.2"
+
+[workspace]
+
+[profile.release]
+opt-level = "s"
+# Panics unwind (the exports catch them at the C ABI). DWARF is dropped, function symbols stay, so
+# the .so is small enough to push to a TV and a crash address can still be matched to a name.
+panic = "unwind"
+debug = false
+strip = "debuginfo"

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Step-1 host for the Samsung Tizen "hello world". A type="dotnet" .tpk (retail TVs refuse a
+       native capp .tpk) whose C# host P/Invokes our Rust libplx.so; flutter-tizen's model.
+
+       TFM: the LEGACY Tizen.NET.Sdk route (NuGet), `tizen80` = API 8 = Tizen 6.0, as nuvio's
+       NuvioTpk60 does. The modern `net6.0-tizen*` workload only accepts Tizen >= 8.0, which would
+       exclude 2021 sets. `tizen80` binaries run on later Tizen too (nuvio ships tizen80 for 6.0
+       and tizen90 for 6.5-7; whether tizen80 alone is enough for 8/9 sets is UNVERIFIED here).
+
+       build.sh copies the native library to lib/libplx.so and the icon is in shared/res/; the SDK
+       packs lib/, res/ and shared/ into the .tpk as they are. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>tizen80</TargetFramework>
+    <AssemblyName>PlxHello</AssemblyName>
+    <RootNamespace>PlxHello</RootNamespace>
+    <LangVersion>8.0</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Tizen.NET" Version="8.0.*">
+      <ExcludeAssets>Runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Tizen.NET.Sdk" Version="1.1.*" />
+  </ItemGroup>
+</Project>
