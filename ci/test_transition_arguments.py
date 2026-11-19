@@ -96,11 +96,11 @@ class TransitionArguments(unittest.TestCase):
             return source if path.resolve() == target else old(path, *args, **kwargs)
         with patch.object(Path, 'read_text', read):
             problems, report = gate.check(ROOT / 'rust-modules', ROOT / 'ci/machines.ini')
-        self.assertEqual(sum(line.startswith('machine ') for line in report), 10)
+        self.assertEqual(sum(line.startswith('machine ') for line in report), 11)
         self.assertTrue(any('unbound transition argument' in p for p in problems), problems)
 
     def test_every_cohort_machine_rejects_unbound_arguments(self):
-        self.assertEqual(len(ENTRIES), 10)
+        self.assertEqual(len(ENTRIES), 11)
         for section in ENTRIES:
             for extra in ('next: RawState', 'renamed: RawAlias', 'ctx: Context', 'extra: u64',
                           'next: &RawState', 'next: &mut RawState', 'cb: fn(RawState)',
@@ -200,7 +200,7 @@ class TransitionArguments(unittest.TestCase):
         source = (ROOT / 'rust-modules/session/src/auth/owner.rs').read_text(encoding='utf-8')
         self.assertIn('tick_ms: u32', source)
         problems, report = gate.check(ROOT / 'rust-modules', ROOT / 'ci/machines.ini')
-        self.assertEqual(sum(line.startswith('machine ') for line in report), 10)
+        self.assertEqual(sum(line.startswith('machine ') for line in report), 11)
         self.assertEqual(problems, [])
 
 

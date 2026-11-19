@@ -267,6 +267,98 @@ fn the_chip_is_painted_exactly_once_on_every_frame_of_its_menus_open_and_close()
     assert_eq!(host::invalidations() - retakes, 1, "the chip changed hands back");
 }
 
+/// **A glass menu's surface, and so the opener's lift, ends on the frame its droplet is gone** (owner
+/// film, 2026-11-18: the profile chip, handed back by the account menu's close, stood LIGHTER than its
+/// resting look for ~300 ms and then snapped darker in one frame). The morph's close is over when the
+/// slab has drained into the opener (`Morph::closed`: the frame IS the closed frame, the opener at rest,
+/// no glass, no dim), but the surface was retired only when the CONTAINER's appear spring came to rest:
+/// a Sheet (the account menu) about 31 frames after BACK, the droplet's hand-back about 14. For those
+/// ~17 frames the lift still owned the chip and painted it on the stack's latched field (frozen glass,
+/// a lighter body than the tab strip's live glass, which the chrome pass paints once the lift lets go),
+/// so the one-frame step at the end of the lift was the chip changing material.
+///
+/// The surface answers `Screen::handed_back` and the container retires it then, so the lift and the
+/// chrome pass change hands exactly once, on the frame nothing else of the menu is drawn. The real
+/// path: BACK, `NavOp::Dismiss`, `ScreenEvent::Closing`, `Popover::dismiss`, the morph's close springs
+/// stepped by every `Tick`, the bar opener's rect handed in by the lift pass.
+///
+/// Red on the tree where only the spring's rest retired a Closing Sheet: the surface was still in
+/// the stack with its droplet gone, frame after frame.
+#[test]
+fn a_morph_menus_surface_and_lift_end_on_the_frame_its_droplet_is_gone() {
+    // the account menu is a Sheet; the Library's and the Watchlist's menus are Compact (their own
+    // fade retired them at `CLOSING_GONE`, still after the droplet): one rule for every style
+    for style in [Style::Sheet, Style::Compact] {
+        a_morph_surface_ends_with_its_droplet(style);
+    }
+}
+
+fn a_morph_surface_ends_with_its_droplet(style: Style) {
+    use crate::Rect;
+    let _guard = plx_base::testlock::serial();
+    struct PopoverOff;
+    impl Drop for PopoverOff {
+        fn drop(&mut self) { crate::fixture::modal_owns_popover(false); }
+    }
+    crate::fixture::modal_owns_popover(true);
+    let _off = PopoverOff;
+    let (mut d, mut rig, _) = booted();
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    // the chip is the page's focus when its menu opens, and BACK gives it back (the lift stands down
+    // for a close only once focus has moved off its opener): the fixture page's seat stands for it
+    let home = d.nav.top_page().unwrap().id;
+    let chip = 0;
+    d.set_focus(Some(FocusKey { entry: home, elem: chip }));
+    d.nav.next_style = style;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).bar_opener = Some(chip);
+    for _ in 0..90 { step(&mut d, &mut rig, vec![]); }
+    let panel = Rect::new(60.0, 120.0, 520.0, 400.0);
+    {
+        let pop = modal_of(&d, id).popover.as_ref().expect("the menu's popover");
+        assert!(pop.appear_settled() && pop.opener().is_some(), "premise: the droplet's panel stands over a measured opener");
+        assert_eq!(rig.chrome_lifted.last(), Some(&Some(chip)), "premise: the lift owns the chip while the menu stands");
+    }
+
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().expect("still closing").phase, Phase::Closing);
+    // the slab is gone: the frame IS the closed one, exactly what a morph that never opened draws
+    // (the opener at rest: no glass, no dim, its face whole)
+    let droplet_gone = |d: &Dispatcher<FixtureHost>| {
+        let pop = modal_of(d, id).popover.as_ref().expect("the menu's popover");
+        let f = pop.morph_frame(pop.opener(), panel, 24.0).expect("a morphing popover");
+        Some(f) == crate::popover::Popover::new().morphing().morph_frame(pop.opener(), panel, 24.0)
+    };
+    let mut asked = 0;
+    let mut left_after = None;
+    for n in 1..=120 {
+        let lifts = rig.bar_lifts.len();
+        step(&mut d, &mut rig, vec![]);
+        asked += rig.bar_lifts.len() - lifts;
+        if d.nav.modals.top().is_none() {
+            left_after = Some(n);
+            break;
+        }
+        assert!(!droplet_gone(&d), "{style:?}, frame {n} after BACK: the droplet is gone and the surface still stands (the lift still owns the chip)");
+    }
+    let n = left_after.expect("the surface left");
+    // BACK to the hand-back is the droplet's own close (~233 ms, 14 frames at 60 Hz), not the container's spring's rest (31)
+    assert!(n < 24, "{style:?}: the surface left {n} frames after BACK");
+    assert!(asked > 0, "premise: the lift painted the chip while the droplet drained into it");
+    assert_eq!(rig.chrome_lifted.last(), Some(&None), "from the first frame after the surface the chrome pass paints the chip: the lift lets it go once");
+    let lifts = rig.bar_lifts.len();
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(rig.bar_lifts.len(), lifts, "and the lift is not asked again");
+}
+
 #[test]
 fn a_bar_opener_does_not_draw_over_an_opaque_surface_that_is_arriving() {
     use super::modal::{EntryMotion, PopoverMotion};
@@ -339,6 +431,24 @@ fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
     assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
 }
 
+/// **The frame's lowest dim as a pure value** (`ModalStack::first_dim`, which the host bakes the frost's
+/// body from at the head of the frame): the first of `scrims` at the same alpha, through the stack's
+/// field. Nothing latched, that is the flat scrim ink at that alpha (`underlay::plan`'s contract); a
+/// surface that dims nothing, or an empty stack, has none.
+#[test]
+fn the_lowest_dim_value_is_the_first_scrim_through_the_stacks_field() {
+    let (mut d, mut rig, _) = booted();
+    assert_eq!(d.nav.modals.first_dim(1.0), None, "no surface, no dim");
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    assert_eq!(d.nav.modals.first_dim(1.0), None, "a surface that declares no dim owes none");
+    modal_mut(&mut d, id).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(0.4);
+    let dim = d.nav.modals.first_dim(1.0).expect("a ramping dim");
+    assert_eq!((dim.tex, dim.tint), (0, crate::theme::scrim_black(d.nav.modals.scrims(1.0)[0].1)), "unlatched: the flat ink");
+    assert!((dim.tint[3] - 0.2).abs() < 1e-6, "at the ramp's alpha, got {}", dim.tint[3]);
+    assert!((d.nav.modals.first_dim(0.5).unwrap().tint[3] - 0.1).abs() < 1e-6, "and the route dip rides it");
+}
+
 // ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
 
 /// A framebuffer that remembers what was painted on it: one grey level, darkened by every dim
@@ -361,6 +471,12 @@ struct FakeFb {
     in_flight: bool,
     /// Did this frame capture the host (`DimSink::captured`)?
     captured: bool,
+    /// The dim the host's frost body was last baked for (`None`: no frost stands): what
+    /// `popover::host::begin_frame` bakes from `ModalStack::first_dim` at the head of a frame
+    /// ([`FakeFb::head`]).
+    baked: Option<Option<crate::frame::backdrop::Dim>>,
+    /// Frames asked for because a frost body was baked for another dim (`DimSink::dim_settled`).
+    wakes: u32,
 }
 
 impl FakeFb {
@@ -376,7 +492,14 @@ impl FakeFb {
             reduced: 0.0,
             in_flight: false,
             captured: false,
+            baked: None,
+            wakes: 0,
         }
+    }
+    /// The head of a frame: the host bakes the frost's body from the pure prediction of the lowest dim,
+    /// before this frame's sync (`bake_frost`).
+    fn head(&mut self, d: &Dispatcher<FixtureHost>) {
+        self.baked = Some(d.nav.modals.first_dim(1.0));
     }
     /// The previous frame is swapped and the page is drawn again (live, or served from the
     /// snapshot) at the start of the next.
@@ -423,6 +546,11 @@ impl super::modal::DimSink for FakeFb {
     fn dim(&mut self, _field: &crate::underlay::UnderlayField, alpha: f32) {
         self.events.push("dim");
         self.level *= 1.0 - alpha;
+    }
+    fn dim_settled(&mut self, dim: Option<crate::frame::backdrop::Dim>) {
+        if self.baked.is_some_and(|b| b != dim) {
+            self.wakes += 1;
+        }
     }
 }
 
@@ -508,6 +636,85 @@ fn the_page_read_lands_a_frame_after_it_is_queued_and_holds_the_ground_until_the
     dims_frame(&mut d, &rig, &mut fb);
     assert!(d.nav.modals.underlay.field().is_latched());
     assert!(!fb.in_flight, "landed: the ground may be taken and the loop may rest");
+}
+
+/// **A frost body baked for a dim the field then changed is corrected by one more frame, and no more.**
+/// The host bakes the body at the head of a frame from `first_dim` BEFORE the sync, and the read a
+/// settled menu waits on lands inside that sync (`FIELD_READ_LAG_SWAPS`): the glass draws the old body
+/// for that frame (`draw_shadowed`'s stale case, which holds the ground), and the head that bakes the
+/// right one only comes if a frame is presented. Nothing else guarantees one — the appear spring has
+/// rested and the keepalive is two seconds away — so `DimSink::dim_settled` asks for it, once.
+///
+/// Observed RED with `draw_scrims_on` not telling the sink: `wakes` stayed 0 on the landing frame.
+#[test]
+fn a_frost_body_baked_before_the_field_latched_is_redrawn_once_and_then_the_loop_rests() {
+    let (mut d, mut rig, _) = booted();
+    let _stand_in = crate::underlay::stand_in_upload_for_test(7);
+    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, a).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    let mut fb = FakeFb::new(0.5);
+
+    // The capture frame queues the read; the head baked the flat ink, which still IS the dim.
+    fb.captured = true;
+    fb.head(&d);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.wakes, 0, "nothing latched yet: the prediction holds");
+
+    // The read lands inside this frame's sync, after the head baked from the unlatched field.
+    fb.frame(0.5);
+    fb.captured = false;
+    fb.head(&d);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(d.nav.modals.underlay.field().is_latched(), "the read landed");
+    assert_eq!(fb.wakes, 1, "the body was baked for the flat ink and the glass drew the field's: one more frame");
+
+    // That frame's head bakes from the latched field: the prediction holds, and the loop rests.
+    for _ in 0..3 {
+        fb.frame(0.5);
+        fb.head(&d);
+        dims_frame(&mut d, &rig, &mut fb);
+    }
+    assert_eq!(fb.wakes, 1, "redrawn once, then quiet");
+}
+
+/// **The production sink's wake**: `GlDims::dim_settled` presents a frame when the host's frost body was
+/// baked for another dim than the one the field now gives, and for no other reason (the fake above
+/// counts by its own comparison; this one runs `popover::host::frost_body_stale` for real).
+#[test]
+fn the_production_sink_wakes_the_loop_only_for_a_frost_baked_for_another_dim() {
+    use super::modal::{DimSink, GlDims};
+    use crate::frame::backdrop::Dim;
+    let flat = Dim { tex: 0, tint: [0.0, 0.0, 0.0, 0.3] };
+    let field = Dim { tex: 7, tint: [0.35, 0.35, 0.35, 0.3] };
+    let woken = |baked: Option<Option<Dim>>, now: Option<Dim>| {
+        crate::popover::host::mock_frost_body(baked);
+        let mut present = plx_machine::present::Present::new();
+        let _ = present.take(0);
+        present.acknowledge(0);
+        assert!(!present.changed(), "a settled gate to start from");
+        GlDims::new(&mut present).dim_settled(now);
+        let changed = present.changed();
+        crate::popover::host::mock_frost_body(None);
+        changed
+    };
+    assert!(woken(Some(Some(flat)), Some(field)), "baked for the flat ink, the field's is drawn: one frame");
+    assert!(!woken(Some(Some(field)), Some(field)), "the body is the one for this dim: nothing owed");
+    assert!(!woken(None, Some(field)), "no frost stands: nothing to correct");
+}
+
+/// A frame that cannot bake a frost (a video-plane frame, a flat-ink dim) is never told to correct one.
+#[test]
+fn a_flat_dim_and_a_video_plane_frame_never_report_a_settled_dim() {
+    let (mut d, mut rig, _) = booted();
+    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, a).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    let mut fb = FakeFb::new(0.5);
+    fb.video_plane = true;
+    fb.baked = Some(None);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.wakes, 0, "a video-plane frame has no frost to correct");
 }
 
 /// **The page is read on the frame that captured it, before any dim is seen.** That frame's GPU

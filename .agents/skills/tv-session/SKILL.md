@@ -41,8 +41,12 @@ read from the gitignored `src/config.local.h` at runtime and never printed.
 ```bash
 tools/tv-session.sh up [--flavor <f>] [--screen <name>] [--server <slot>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
 tools/tv-session.sh status [--flavor <f>]   # re-assert without disturbing the session
-tools/tv-session.sh key down down ok        # key tokens through the real handlers
+tools/tv-session.sh key down down ok        # key tokens through the real handlers (never focus:/press:/state:)
 tools/tv-session.sh click 960 540           # authored 1920x1080 coords
+tools/tv-session.sh focus watchlist.grid.card.7   # move focus to an element BY ID (no key walk)
+tools/tv-session.sh press nav.watchlist     # focus it, then an OK press
+tools/tv-session.sh press home.shelf.0.card.2 --rk <ratingKey>  # an element that acts on a title it names (card, credit, hero button, menu row, player Next...) REQUIRES the title it must be
+tools/tv-session.sh state [--out FILE]      # the app's JSON snapshot: route, owner, focused id, every element
 tools/tv-session.sh shot [out.png]          # panel capture (video plane included)
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
 tools/tv-session.sh screen off|on           # blank/restore the PANEL only (app keeps running)
@@ -283,7 +287,40 @@ a log you did not watch being produced.
 
 Every `plxnative-*` trigger in the install's runtime root is read **once at boot**, so it
 must be in place before the launch. Anything you want to do to a *running* app goes through
-the remote FIFO (`tv-session.sh key` / `click`).
+the remote FIFO (`tv-session.sh key` / `click`, or by id: `focus` / `press` / `state`). `key` sends keys
+and the like (`down`, `ok`, `ck:<x>,<y>`, `txt:...`) and refuses a `focus:`, `press:` or `state:` word, so each
+by-id action has ONE door, the verb, where the id is checked and a title's press must name the title. A word
+with whitespace in it is refused too (`key back "ok press:<card>"`): the app cuts a FIFO line at any
+whitespace, so it would be two tokens, the second a press nothing had checked.
+
+**Prefer `focus` / `press` by id over key walks.** A walk of `down down right ok` breaks when a row
+gains a card; an id (`watchlist.grid.card.7`, `detail.hero.go_to_show`; the grammar is in `tools/a11y.py`)
+names the element whatever the row holds. Ids resolve in the namespace of whoever owns input, so a
+menu answers `itemmenu.*`, not the screen under it. A press of any element that ACTS ON a title it names (it
+plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, acts on the title a menu was
+opened for, or opens that title's own page or menu where the title can change under the press: a card, a credit,
+the Home carousel's Info, a hero button, an item-menu row, a Play Version row, a player control that starts a
+title) needs `--rk <ratingKey>`, the ratingKey of the title the press acts on, which `state` prints as the element's
+subject (Mark watched on a started show is the on-deck episode, a player's Next the queue neighbour). Navigation is
+not the test: only a control whose target the page fixes (`detail.hero.go_to_show`, the Play Version opener, a
+panel opener such as `player.control.subtitles`, a seek, `home.hero.action`) is pressed bare. The ids are
+`SUBJECT_BEARING` in `tools/a11y.py`, the one list (`a11y_subject_bearing` in `tools/tv-session.sh` is the same
+list, and a test holds them equal), so a re-sorted row, a moved hero or a menu opened on another card cannot press a
+different title: the subject is compared where the press is delivered, and the press commits about 200 ms later, so
+Home's carousel does not turn while a press stands on a hero control (the 8 s countdown restarts from full while
+the press stands, as a focus move restarts it, so no turn is owed when the press settles and the next one comes a
+full interval later; Flip and Left/Right at the edge are refused while it stands, dropped rather than applied
+when it settles, so send them again then), which keeps the title the press was accepted
+against the title it plays (a landing that takes that title out of the hero pool inside the 200 ms is the one
+change nothing holds: the press then acts on its successor). At Home's hero/grid door
+a quick OK after a key lands on what the picture shows, not on the focused
+element: while the picture lags (about 8 frames, 130 ms at 60 fps: the dive's midpoint), a by-id press of the focused element, named or bare, is
+refused as `unloaded` (`a11y: refused press <id> unloaded`), and you press again once the screen has settled. On a
+real account the `ratingKey` you name must be one you read from the log (the boot rule: never `ok` a title you have not read). `state` is the
+structured readback: it sends a random nonce and reads `plxnative-a11y.json` until the nonce comes
+back, so a stale file never passes for the answer. Walks stay for tests whose subject is travel
+(fps walks, focus fingerprints, `hold`, timed keys). These need a debug (`devtriggers`) build;
+a release build answers none of them.
 
 **Some exceptions are deliberate and read LIVE**: `plxnative-failtest` (so a read-out variant
 can be swapped mid-playback), `plxnative-testpat` (the same for the synthetic ground),

@@ -125,6 +125,17 @@ pub(super) fn failure_fixture(ps: &plx_media::route::PlaybackSession) -> plx_app
     plx_appkit::player_hud::FailureReadout::captured(error, actions, support, ps.repair_status)
 }
 
+/// A session playing the middle episode `11` of a three-episode queue, `12` up next: the neighbours the accessibility
+/// subjects of the player's title-changing controls (the HUD's row, the Info card, a More fold) name.
+pub(super) fn middle_episode_session() -> plx_media::route::PlaybackSession {
+    let mut ps = plx_media::route::PlaybackSession::IDLE;
+    let sid = plx_media::route::cur_sid(&ps);
+    let row = |rk: &str, item_id: i64| plx_plex::plex::QueueRow { item_id, sid, rk: rk.into(), kind: "episode".into(), ..Default::default() };
+    let next = plx_media::route::UpNext { rk: "12".into(), ..Default::default() };
+    plx_media::route::seed_queue_for_test(&mut ps, "11", vec![row("10", 10), row("11", 11), row("12", 12)], Some(next));
+    ps
+}
+
 pub(super) fn presentation_fixture(ps: &plx_media::route::PlaybackSession) -> plx_appkit::player_hud::Presentation {
     use plx_media::player;
     use plx_appkit::player_hud::{Busy, Presentation};
@@ -457,6 +468,140 @@ fn the_more_popover_mounts_on_the_speed_page_when_addressed_to_it() {
     let (_, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert!(only_hud(&reqs) && !dismissed, "BACK on the Speed page only pops it: {reqs:?}");
     assert_eq!(more_page(&page), None);
+}
+
+/// **A folded row that starts a title names it** (`more.fold.previous|next|from_beginning`, in `SUBJECT_BEARING`),
+/// read the way the performer reads it (`HudCommand::plays_rk`): Previous and Next the queue neighbour, From
+/// beginning the item playing. The other folds (a seek, a panel, Go to details, Stats) start none and name none.
+#[test]
+fn a_folded_row_that_starts_a_title_names_it() {
+    use plx_appkit::player_hud::command::HudCommand;
+    let _g = plx_base::testlock::serial();
+    plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    let ps = middle_episode_session();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let minimal = plx_appkit::player_hud::loaded::load(
+        &plx_appkit::hud_format::fixtures::bytes("minimal"),
+        "0.0.0-test",
+        plx_platform::i18n::english(),
+        &FixtureMeasure,
+    )
+    .expect("the minimal fixture loads")
+    .compiled;
+    let model = plx_appkit::player_hud::model::HudModel {
+        controls: plx_appkit::player_hud::Controls::for_item(true, true, true),
+        chapters: true,
+        detail: true,
+        ..Default::default()
+    };
+    let folded = plx_appkit::more_menu::folded_rows(minimal.folds(), &model, meta.view());
+    let page = PlayerOverlayScreen::new_folded(&ps, meta.view(), ENTRY, OverlayKind::More { page: None }, false, None, folded.clone());
+    let cx = Cx { views: &ps, ..cx() };
+    let mut named = Vec::new();
+    for row in &folded {
+        let key = MoreRow::Act(MoreAction::Hud(row.command)).key().0;
+        let projected = Focusable::<TestHost>::a11y(&page, &key, &cx).unwrap_or_else(|| panic!("{:?} is a row", row.command));
+        let want = match row.command {
+            HudCommand::Previous => Some("10"),
+            HudCommand::Next => Some("12"),
+            HudCommand::FromBeginning => Some("11"),
+            _ => None,
+        };
+        assert_eq!(projected.subject.as_deref(), want, "{:?} ({})", row.command, projected.path);
+        if want.is_some() {
+            named.push(projected.path.to_string());
+        }
+    }
+    assert!(named.len() >= 2, "the minimal package folds title-starting commands: {named:?}");
+    // the rows that are not folds (Quality, Speed, Stats) name nothing
+    for row in [MoreRow::OpenQuality, MoreRow::OpenSpeed, MoreRow::Act(MoreAction::ToggleStats)] {
+        let projected = Focusable::<TestHost>::a11y(&page, &row.key().0, &cx).expect("a root row");
+        assert_eq!(projected.subject, None, "{}", projected.path);
+    }
+}
+
+/// **A track pick and a subtitle-search result write to the title playing, so each names it** (`TrackRow::writes_title`):
+/// the audio and subtitle rows (Off and Forced only included) select the part's streams on the PMS. The rows that open
+/// a page or pick a local setting (Timing, Style) name none.
+#[test]
+fn a_track_pick_names_the_title_it_writes_to() {
+    let _g = plx_base::testlock::serial();
+    plx_media::player::sidecar::reset();
+    let ps = middle_episode_session();
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(
+        english_audio_with_subs(&ps, vec![plx_data::metadata::Stream {
+            id: 1,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "srt".into(),
+            ..Default::default()
+        }]),
+    ))));
+    let rows = |tab: i32| {
+        let page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab });
+        let cx = Cx { views: &ps, ..cx() };
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GroupId(0), &cx, &mut elems);
+        elems.iter()
+            .filter_map(|key| Focusable::<TestHost>::a11y(&page, key, &cx))
+            .map(|a| (a.path.to_string(), a.subject.map(std::borrow::Cow::into_owned)))
+            .collect::<Vec<_>>()
+    };
+    let subject_of = |rows: &[(String, Option<String>)], id: &str| {
+        rows.iter().find(|(path, _)| path == id).unwrap_or_else(|| panic!("{id} is a row: {rows:?}")).1.clone()
+    };
+    let audio = rows(0);
+    assert_eq!(subject_of(&audio, "audio.0").as_deref(), Some("11"), "an audio pick: {audio:?}");
+    let subs = rows(1);
+    for id in ["off", "forced", "sub.0"] {
+        assert_eq!(subject_of(&subs, id).as_deref(), Some("11"), "{id}: {subs:?}");
+    }
+    for id in ["timing", "style"] {
+        assert_eq!(subject_of(&subs, id), None, "{id} writes nothing of the title's: {subs:?}");
+    }
+    // nothing playing: nothing to name
+    let idle = plx_media::route::PlaybackSession::IDLE;
+    let page = PlayerOverlayScreen::new(&idle, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    let off = TrackRow::SubOff.key().0;
+    let projected = Focusable::<TestHost>::a11y(&page, &off, &cx()).expect("the Off row");
+    assert_eq!(projected.subject, None);
+}
+
+/// **A quality rung names the title it re-resolves**: on a live play the item playing (`cur_rk`), on a failed one the
+/// REQUEST the failure read-out's Retry repeats (`app::playback::apply_more_action` retries `ps.request` when the
+/// state is `Error`, and a request whose plan never landed is not `cur_rk`). The Stats switch names none.
+#[test]
+fn a_quality_rung_names_the_title_it_re_resolves() {
+    let _g = plx_base::testlock::serial();
+    plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    let mut ps = middle_episode_session();
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let rungs = |ps: &plx_media::route::PlaybackSession| {
+        let page = PlayerOverlayScreen::new(ps, meta.view(), ENTRY, OverlayKind::More { page: Some(MorePage::Quality) });
+        let cx = Cx { views: ps, ..cx() };
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GroupId(0), &cx, &mut elems);
+        elems.iter()
+            .filter_map(|key| Focusable::<TestHost>::a11y(&page, key, &cx))
+            .map(|a| (a.path.to_string(), a.subject.map(std::borrow::Cow::into_owned)))
+            .collect::<Vec<_>>()
+    };
+    let live = rungs(&ps);
+    let (rung_rows, other): (Vec<_>, Vec<_>) = live.iter().partition(|(id, _)| id.contains("rung."));
+    assert!(!rung_rows.is_empty(), "the Quality page lists rungs: {live:?}");
+    assert!(rung_rows.iter().all(|(_, subject)| subject.as_deref() == Some("11")), "live: the item playing: {rung_rows:?}");
+    assert!(other.iter().all(|(_, subject)| subject.is_none()), "the other rows name none: {other:?}");
+    // a play that failed before its plan landed: the failure screen's quality pick retries the request, not `cur_rk`
+    plx_media::route::seed_request_for_test(&mut ps, "99");
+    plx_media::route::refuse_for_test(&mut ps, plx_media::route::PlayVerdict::DirectPlayDisabled);
+    assert_eq!(plx_media::player::state(&ps), plx_media::player::PlaybackState::Error, "rig: the play failed");
+    let failed = rungs(&ps);
+    assert!(
+        failed.iter().filter(|(id, _)| id.contains("rung.")).all(|(_, subject)| subject.as_deref() == Some("99")),
+        "failed: the request the retry repeats: {failed:?}"
+    );
 }
 
 /// **A folded row closes More first, then asks the app's one performer for its command.** OK on each row of the

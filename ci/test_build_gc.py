@@ -2106,7 +2106,8 @@ class InstallDiskWatchTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
 
-    def test_resolves_the_main_checkout_not_the_calling_lane(self):
+    def _fixture(self, extra_env=None):
+        """main checkout + a lane worktree + stubbed launchd/tmutil + a writable fake HOME."""
         main = self.root / "main"
         (main / "tools").mkdir(parents=True)
         for name in ("install-disk-watch.sh", "build-gc.sh"):
@@ -2131,6 +2132,9 @@ class InstallDiskWatchTests(unittest.TestCase):
         env = dict(os.environ)
         env["HOME"] = str(home)
         env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")
+        # The installer must see what THIS test declares, not what the developer's shell exported.
+        env.pop("PLX_FLEET_DIR", None)
+        env.update(extra_env or {})
 
         subprocess.run(["git", "init", "-q", str(main)], env=env, check=True)
         (main / "README").write_text("seed\n")
@@ -2141,7 +2145,10 @@ class InstallDiskWatchTests(unittest.TestCase):
         lane = self.root / "lane0"
         subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "-b", "lane0",
                         str(lane)], env=env, check=True)
+        return main, lane, home, env
 
+    def _install_from_lane(self, extra_env=None):
+        main, lane, home, env = self._fixture(extra_env)
         # The installer is invoked FROM the lane, not from `main` — exactly the case that broke:
         # `ROOT=$(cd "$(dirname "$0")/.." && pwd)` alone would resolve to the LANE.
         result = run_guarded(["sh", str(lane / "tools" / "install-disk-watch.sh")], lane, env)
@@ -2149,11 +2156,29 @@ class InstallDiskWatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, diagnostic)
         plist = home / "Library/LaunchAgents/com.plxnative.build-gc.plist"
         self.assertTrue(plist.exists(), diagnostic)
-        contents = plist.read_text()
+        return main, plist.read_text(), diagnostic
+
+    def test_resolves_the_main_checkout_not_the_calling_lane(self):
+        main, contents, diagnostic = self._install_from_lane()
         self.assertIn(str(main / "tools/build-gc.sh"), contents,
                       "plist did not point at the main checkout's script:\n" + contents)
-        self.assertNotIn(str(lane), contents,
+        self.assertNotIn(str(main.parent / "lane0"), contents,
                          "plist baked in the calling lane's own path:\n" + contents)
+        # With PLX_FLEET_DIR unset the agent keeps build-gc's own default: no env key belongs
+        # in the plist at all.
+        self.assertNotIn("EnvironmentVariables", contents,
+                         "plist baked an EnvironmentVariables block for an unset PLX_FLEET_DIR:\n"
+                         + contents)
+
+    def test_bakes_an_explicit_fleet_dir_into_the_agent_environment(self):
+        # launchd does not inherit the user's shell, so an explicitly configured $PLX_FLEET_DIR
+        # must be baked into the plist or the hourly --auto reaps the wrong roots.
+        fleet = str(self.root / "external-fleet")
+        _, contents, _ = self._install_from_lane({"PLX_FLEET_DIR": fleet})
+        self.assertIn("<key>EnvironmentVariables</key>", contents,
+                      "plist has no EnvironmentVariables block despite PLX_FLEET_DIR set")
+        self.assertIn(f"<string>{fleet}</string>", contents,
+                      "plist did not bake the installed PLX_FLEET_DIR:\n" + contents)
 
 
 class MakeCheckContractTests(unittest.TestCase):

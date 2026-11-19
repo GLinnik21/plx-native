@@ -1,0 +1,190 @@
+name: Claude
+
+# Answers `@claude` in an issue, a pull request comment, an inline review comment or a review body,
+# with the Claude Code GitHub Action (https://code.claude.com/docs/en/github-actions). Its main job is
+# reviewing pull requests, including ones from outside contributors' forks. It runs Claude Fable (the
+# `fable` alias: the newest Fable the action's Claude Code knows). `--append-system-prompt` sets how it
+# reviews, after umputun's review skill (github.com/umputun/cc-thingz, plugins/review): read the whole
+# conversation first and never repeat a settled point, diff against main, read CI instead of running
+# tests, findings inline, and a summary that is `lgtm` or a short numbered list, with none of the usual
+# bot noise. Read-only git (`git fetch origin`, `git diff`, `git log`, `git show`) is allowed in both
+# jobs for that diff: Fable runs without auto mode, so anything not allowed is refused.
+#
+# TWO JOBS. `route` decides whether the thread is a pull request from a fork, from GitHub's own record
+# of the head repository, and nothing else; then exactly one of these runs:
+#
+# - `own`: an issue, or a pull request from a branch of this repository. Claude signs in to GitHub as
+#   the Claude GitHub App (comments are signed claude[bot]) and can push a branch and open a pull
+#   request. The text it reads can still be an outsider's (an issue anyone filed), so it keeps the
+#   guards that cost nothing here: hooks off, no `git tag`, and the `v*` tag ruleset on the repository.
+# - `fork`: a pull request from a fork. The guards below.
+#
+# It signs in with the maintainer's Claude SUBSCRIPTION, not an API key: the repository secret
+# CLAUDE_CODE_OAUTH_TOKEN holds the long-lived token `claude setup-token` prints, and every run counts
+# against that subscription's usage. To rotate it, run `claude setup-token` again and
+# `gh secret set CLAUDE_CODE_OAUTH_TOKEN`; deleting the secret turns this workflow off (the job fails).
+#
+# WHO CAN START IT. The `if:` lets only an owner, member or collaborator through, so a stranger's
+# `@claude` on this public repository does not start a runner; the action then checks again that the
+# commenter has write access, and refuses bot actors. What Claude READS is another matter: the issue or
+# pull request text, every comment on it and, on a pull request, the contributor's whole tree. Mention
+# `@claude` on an outsider's thread only after reading what is there.
+#
+# PULL REQUESTS FROM FORKS (the `fork` job). Only a comment in the conversation (`issue_comment`) works there: it runs
+# this file from the default branch with its secrets. GitHub gives a fork's review and inline review
+# comment events no secrets, so `@claude` in a review on a fork's pull request fails for want of a token.
+# The action checks out the pull request's HEAD and restores only `.claude/`, CLAUDE.md, AGENTS.md and a
+# few config files from the default branch. `.claude/skills` and `.claude/agents/*.md` are links into
+# `.agents/`, and the nested module guides are not restored, so on a fork those come from the
+# contributor. The job is therefore built so that the checkout's tooling does not run on its own, and
+# whatever Claude is talked into, the token it holds cannot publish. The command rules below are
+# prefix rules, not a boundary (an absolute path or another program gets past them); the real limits
+# are the token's scope and the credential scrub:
+#
+# - The GitHub token is the job's own GITHUB_TOKEN (`github_token:` below), bounded by `permissions:`:
+#   it can comment on issues and pull requests and read CI, and it cannot push a commit, a branch or a
+#   tag. (The Claude GitHub App's token, the action's default, can write every repository in the
+#   organization, and release.yml publishes whatever `v*` tag is pushed.) Its comments are signed
+#   github-actions[bot], and it cannot push the `pr-N` branch the action would otherwise make of a fork.
+#   No `id-token: write`: with a token passed in, the action does not need OIDC, and an OIDC token from
+#   the default branch would satisfy this repository's Anthropic federation rule (issue-labels.yml).
+#   That is why forks get their own job (`fork`), with permissions no step can widen.
+# - Project hooks are off (`disableAllHooks`): the SessionEnd hook runs `tools/build-gc.sh`, which on a
+#   fork is the contributor's copy. Every hook in `.claude/settings.json` is tooling for the maintainer's
+#   Mac anyway.
+# - Skills and subagents are off (`Skill`, `Agent`, `Task` disallowed, `disableSkillShellExecution`): on
+#   a fork they are the contributor's, and a skill can grant itself tools.
+# - The obvious network and publishing commands are disallowed (`curl`, `wget`, `gh`, `git push`,
+#   `git tag`), and so are the repository's `tools/` scripts, which `.claude/settings.json` allows and
+#   which on a fork are the contributor's. Claude comments through the action's own tools, inline
+#   review comments included. For an author without write access the action also denies interpreters,
+#   shells, package managers and build tools, and turns git hooks off.
+# - `Read` may not open /proc, where Claude's own environment (the subscription token) is readable.
+# - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` strips the Anthropic credentials from the commands Claude runs, and
+#   the sandbox step installs bubblewrap so those commands run in their own PID namespace and cannot read
+#   Claude's environment from /proc. GH_TOKEN stays in the environment; it is the short-lived job token.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened]
+
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' &&
+        (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      fork: ${{ steps.kind.outputs.fork }}
+    steps:
+      # A fork is a pull request whose head repository is not this one; a deleted fork (no head
+      # repository) counts as a fork. Only numbers and repository names reach the shell.
+      - name: Is this a pull request from a fork?
+        id: kind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+        run: |
+          fork=false
+          if [ -n "$PR" ]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.head.repo.full_name // ""')
+            [ "$head" = "$GITHUB_REPOSITORY" ] || fork=true
+          fi
+          echo "pull request: ${PR:-none}, head: ${head:-n/a}, fork: $fork"
+          echo "fork=$fork" >> "$GITHUB_OUTPUT"
+
+  own:
+    needs: route
+    if: needs.route.outputs.fork == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write        # push a branch for an issue, or to this repository's pull request branch
+      pull-requests: write   # open a pull request, inline review comments
+      issues: write          # the progress comment
+      id-token: write        # the action exchanges it for the Claude GitHub App's token
+      actions: read          # lets Claude read a pull request's CI results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@f431adaf77e0fecf918431e75a2b5b45b85af002 # v1.0.283
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: >-
+            --model fable
+            --append-system-prompt "Review like a terse maintainer. First read the whole conversation, the earlier inline comments and any bot reviews: never raise a point that was already resolved or that a maintainer already made, and keep a bot finding only if you checked it yourself. To see the whole change, run git fetch origin main (git fetch origin --deepen=200 if there is no merge base), then git diff origin/main...HEAD. Read the CI results of the pull request instead of running tests. Look for real bugs, missing error handling, code that does not match the patterns around it, over-engineering (say what simpler thing would do), and changes unrelated to the purpose of the pull request. Put each finding inline on its line, one or two sentences, with a suggestion block when the fix is small. Summary comment: lgtm when nothing is wrong, otherwise a short numbered list of what is not tied to a line, with file:line. Casual tone, lowercase is fine. Never restate what the pull request does. No headings, no praise, no list of files you read, no sign-off, no filler, and none of these words: comprehensive, robust, leverage, utilize, facilitate, seamless, it is worth noting."
+            --settings '{"disableAllHooks":true}'
+            --disallowedTools "Bash(git tag:*)" "Bash(git push --tags:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            "Bash(git fetch origin:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"
+
+  fork:
+    needs: route
+    if: needs.route.outputs.fork == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write   # inline review comments
+      issues: write          # the progress comment, on an issue or a pull request's conversation
+      actions: read          # lets Claude read a pull request's CI results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The same setup the action runs for `allowed_non_write_users`: bubblewrap gives the scrubbed
+      # commands their own PID namespace, and Ubuntu 24.04 needs unprivileged user namespaces allowed.
+      # This runs from the default branch's checkout: the action checks the pull request out later.
+      - name: Install the sandbox for Claude's commands
+        uses: ./.github/actions/apt-install
+        with:
+          packages: bubblewrap socat
+      - name: Allow unprivileged user namespaces for the sandbox
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Run Claude Code
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+        uses: anthropics/claude-code-action@f431adaf77e0fecf918431e75a2b5b45b85af002 # v1.0.283
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --model fable
+            --append-system-prompt "Review like a terse maintainer. First read the whole conversation, the earlier inline comments and any bot reviews: never raise a point that was already resolved or that a maintainer already made, and keep a bot finding only if you checked it yourself. To see the whole change, run git fetch origin main (git fetch origin --deepen=200 if there is no merge base), then git diff origin/main...HEAD. Read the CI results of the pull request instead of running tests. Look for real bugs, missing error handling, code that does not match the patterns around it, over-engineering (say what simpler thing would do), and changes unrelated to the purpose of the pull request. Put each finding inline on its line, one or two sentences, with a suggestion block when the fix is small. Summary comment: lgtm when nothing is wrong, otherwise a short numbered list of what is not tied to a line, with file:line. Casual tone, lowercase is fine. Never restate what the pull request does. No headings, no praise, no list of files you read, no sign-off, no filler, and none of these words: comprehensive, robust, leverage, utilize, facilitate, seamless, it is worth noting."
+            --settings '{"disableAllHooks":true,"disableSkillShellExecution":true}'
+            --disallowedTools "Skill" "Agent" "Task" "Bash(curl:*)" "Bash(wget:*)" "Bash(gh:*)"
+            "Bash(git push:*)" "Bash(git tag:*)" "Bash(tools/:*)" "Bash(./tools/:*)" "Read(//proc/**)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            "Bash(git fetch origin:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"

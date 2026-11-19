@@ -1081,11 +1081,18 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
     }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
-    if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
-    if super::bridge::search_owns_input(&app.pages) {
-        if let Some(text) = token.strip_prefix("txt:") {
-            ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
-                plx_machine::machine::Source::RemoteFifo);
+    let drained = super::bridge::search_owns_input(&app.pages);
+    if drained { drain_sdl(app, fr); }
+    if let Some(text) = token.strip_prefix("txt:") {
+        // Any field with the keyboard (`text_owner`), not only Search's: the same order rule, keys first.
+        // The gate is read at ingest, and a page's keyboard goes up only when a frame delivers the OK that
+        // raised it: a `txt:` in the same FIFO batch (or LAB long-poll) as that OK still finds no owner and
+        // goes to `textinput`'s queue. Send the text in a later batch; the television's own keyboard always
+        // commits frames after it opened.
+        if !drained && super::bridge::text_owner(&app.pages) { drain_sdl(app, fr); }
+        if super::bridge::text_owner(&app.pages) {
+            let panel = super::bridge::text_panel_edge(&app.pages, crate::textinput::available());
+            ingest_text(app, &text.replace('+', " "), panel, plx_machine::machine::Source::RemoteFifo);
             return true;
         }
     }
@@ -1904,22 +1911,23 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // already took every wheel tick on this route and returned.
         }
     } else if et == SDL_TEXTINPUT {
-        // The television's own keyboard committing text. Route-UNCONDITIONAL, and
-        // `textinput::on_event` queues unconditionally too — it does NOT check
-        // whether we asked for the panel, deliberately. This is the raw platform
-        // seam: SDL delivered a character because SDL believes text input is on, and
-        // discarding it against our own flag would silently eat REAL typing the first
-        // time the two disagree (a panel dismissed from outside the app, or any
-        // future caller that enables text events another way). Dropping input is the
-        // worse failure, so instead both leaks are closed downstream, where they can
-        // be closed completely: `textinput::start` clears the queue, so nothing typed
-        // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
-        // nobody drains. Gating here would also be a second, weaker copy of a rule
-        // that lives in one place — and it would flip a frame away from the field's
-        // own edit state, because the route changes at the fade floor.
-        if super::bridge::search_owns_input(&app.pages) {
+        // The television's own keyboard committing text. Gated on `bridge::text_owner`,
+        // and the gate is deliberate. Search on top takes every commit whatever our own
+        // record of the panel says: a panel the OS raised or kept behind our back must
+        // not eat REAL typing, so Search adopts it (`textinput::adopt`, via
+        // `Bridge::adopt_system_keyboard`), and only Search's commit carries that
+        // adoption edge (`bridge::text_panel_edge`). Any other page takes text only while
+        // `Dispatcher::system_keyboard_up()` says it raised the keyboard. Everything
+        // else goes to `textinput::on_event`, which queues without checking and which
+        // nothing drains, so for a non-Search field our own flag decides: text that
+        // arrives while it is down is not delivered. The leaks of that queue are closed
+        // downstream, where they can be closed completely: `textinput::start` clears
+        // it, so nothing typed before a field opened can arrive in it, and
+        // `MAX_PENDING` bounds a queue nobody drains.
+        if super::bridge::text_owner(&app.pages) {
             let text = crate::textinput::decode(&app.ev);
-            ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl);
+            let panel = super::bridge::text_panel_edge(&app.pages, crate::textinput::available());
+            ingest_text(app, &text, panel, plx_machine::machine::Source::Sdl);
         } else {
             crate::textinput::on_event(&app.ev);
         }
@@ -3184,7 +3192,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // is no framebuffer to snapshot. Skip the door instead of tripping the
                         // debug assertion. A popover from this page halts the preview first, so
                         // this frame only skips while the picture is the intended ground.
-                        let modal = pages.modal_presentation();
+                        // Carrying the frame's lowest modal dim, the value `draw_scrims` is handed below: the host bakes
+                        // a glass menu's frost body from it at the head of the frame (`begin_frame`).
+                        let modal = pages.modal_presentation_at(bridge.navigation_presentation(&pages.nav).page_alpha);
                         if !(player.video_plane_bound && plx_media::route::is_preview(&player.session)) {
                             plx_base::diag::spans::span("host", || plx_ui::popover::host::begin_frame(
                                 &modal, fr.dt, fr.underlay_moving, pages.present.page_damaged()));
@@ -3795,8 +3805,13 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
     let u = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
     match kind {
         "text" => {
-            if !super::bridge::search_owns_input(&app.pages) {
-                log("replay: text has no owned Search recipient");
+            // Live ingress drains SDL before text for any field with the keyboard, not only Search's
+            // (`ingress_token`); replay keeps the same order.
+            if !super::bridge::search_owns_input(&app.pages) && super::bridge::text_owner(&app.pages) {
+                drain_sdl(app, fr);
+            }
+            if !super::bridge::text_owner(&app.pages) {
+                log("replay: text has no owned recipient");
             } else if let Some(events) = super::recorder::dec_text(v) {
                 app.inputs.extend(events);
                 app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
@@ -4824,6 +4839,171 @@ mod lifecycle_regression_tests {
             assert_eq!(app.inputs.len(), 2,
                 "both earlier key edges must be handled before the probe (fifo={fifo})");
         }
+    }
+
+    /// The loop's prepare window ticks the HUD driver (`huds_tick`, as `run::refresh_hud` does); `app_frame` alone does not.
+    fn hud_frames(app: &mut App, now: &mut u32, n: u32) {
+        for _ in 0..n {
+            *now += 16;
+            frame(app, *now);
+            let _ = app.runtime.bridge(&mut app.bridge).huds_tick(false);
+        }
+    }
+
+    /// One remote token through the real ingress, its SDL edges drained, and the frame that delivers them.
+    fn hud_keys(app: &mut App, fr: &mut Frame, now: &mut u32, token: &str) {
+        assert!(unsafe { ingress_token(app, fr, token) }, "{token}");
+        unsafe { drain_sdl(app, fr); }
+        let inputs = std::mem::take(&mut app.inputs);
+        *now += 16;
+        super::super::bridge::app_frame(app, plx_machine::machine::Tick { ms: *now, dt_us: 16_000 }, inputs);
+    }
+
+    /// Whether the Player HUD page's address field is editing, read off the page's probe.
+    fn hud_address_editing(app: &App) -> bool {
+        let mut probe = String::new();
+        app.pages.nav.modals.top().expect("Settings is up").entry.inst.as_ref().unwrap().screen.state().probe(&mut probe);
+        probe.rsplit_once("player-hud ").expect("the Player HUD page is the top page").1.contains("editing=true")
+    }
+
+    /// A scratch HUD directory, removed with the guard.
+    struct HudDir(std::path::PathBuf);
+    impl HudDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("plx-hud-typed-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for HudDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    /// The real App on Settings > Player HUD with its Install from address field editing and the television keyboard
+    /// up (`hud_settings::ADDRESS_KEY` focused, then OK through the FIFO), the HUD driver dialling `network`.
+    fn hud_address_field_up(dir: &std::path::Path,
+        network: fn(&str, usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure>) -> (App, Frame, u32) {
+        let mut app = app();
+        let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::english(),
+            &plx_base::fontcov::advances::ShippedMeasure);
+        app.runtime.hud.driver = super::super::adapters::huds::HudDriver::started_on_network(dir.to_path_buf(), classic,
+            "0.10.0", super::super::adapters::huds::HudRunner::inline("0.10.0").on_network(network));
+        super::super::bridge::open_settings_at(&mut app.pages, plx_screens::family::SettingsPage::PlayerHud);
+        let mut now = 0;
+        hud_frames(&mut app, &mut now, 60);
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        for _ in 0..8 {
+            if app.pages.focus().is_some_and(|key| key.elem == plx_screens::hud_settings::ADDRESS_KEY) { break; }
+            hud_keys(&mut app, &mut fr, &mut now, "down");
+        }
+        assert_eq!(app.pages.focus().map(|key| key.elem), Some(plx_screens::hud_settings::ADDRESS_KEY), "premise: the address row has focus");
+        hud_keys(&mut app, &mut fr, &mut now, "ok");
+        assert!(app.pages.system_keyboard_up(), "premise: OK on the row raised the television keyboard");
+        assert!(hud_address_editing(&app), "premise: the field is editing");
+        assert!(!super::super::bridge::search_owns_input(&app.pages), "premise: Search is not the recipient");
+        (app, fr, now)
+    }
+
+    /// **Typed text reaches a field that is not Search's: Settings > Player HUD > Install from address.** Every text
+    /// ingress was gated on `search_owns_input`, a downcast to `SearchScreen`, since Search was the only field (UI
+    /// restructure phase 8). The HUD page raised the keyboard, the television committed text, and the text went to
+    /// `textinput`'s queue, which nothing reads: on the set, `txt:` chunks left `pending=1, 2, 3` and an empty row, and
+    /// OK submitted an empty address (#1417's second TV pass). Both doors are graded, the FIFO's `txt:` and the
+    /// television keyboard's `SDL_TEXTINPUT`, through the real ingress, dispatcher, page, Bridge and HUD driver: the
+    /// address the driver dials is the address that was typed.
+    #[test]
+    fn typed_text_reaches_the_player_hud_address_field_and_its_fetch() {
+        use plx_machine::machine::{InputKind, TextEdit, Tick};
+        static DIALLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        fn record(url: &str, _: usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+            DIALLED.lock().unwrap().push(url.to_owned());
+            Err(plx_net::net::RequestError::Transport.into())
+        }
+        const ADDRESS: &str = "https://example.com/hud.plxhud";
+        let _serial = plx_base::testlock::serial();
+        // SDL's event subsystem only: no window, renderer, native playback or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        for fifo in [true, false] {
+            DIALLED.lock().unwrap().clear();
+            let dir = HudDir::new(&fifo.to_string());
+            let (mut app, mut fr, mut now) = hud_address_field_up(&dir.0, record);
+
+            // Type it as each door delivers it: the FIFO in one token, the television's keyboard one key, one commit.
+            // (A multi-character commit at the end of the field is an LG word prediction, which REPLACES the word being
+            // typed: `TextBuffer::commit`. So two chunks would leave only the second.)
+            let pending = crate::textinput::pending();
+            let commits: Vec<&str> = if fifo { vec![ADDRESS] } else { (0..ADDRESS.len()).map(|i| &ADDRESS[i..i + 1]).collect() };
+            for chunk in commits {
+                if fifo {
+                    assert!(unsafe { ingress_token(&mut app, &mut fr, &format!("txt:{chunk}")) });
+                } else {
+                    app.ev = crate::textinput::encode_event(chunk);
+                    event(&mut app, &mut fr, SDL_TEXTINPUT);
+                }
+                assert!(matches!(app.inputs.last().map(|input| &input.kind),
+                    Some(InputKind::Text(TextEdit::Commit(text))) if &**text == chunk),
+                    "the text reaches the app's input queue (fifo={fifo}), not textinput's");
+                let inputs = std::mem::take(&mut app.inputs);
+                now += 16;
+                super::super::bridge::app_frame(&mut app, Tick { ms: now, dt_us: 16_000 }, inputs);
+            }
+            assert_eq!(crate::textinput::pending(), pending, "nothing went to the unread queue (fifo={fifo})");
+            assert!(hud_address_editing(&app), "typing keeps the field open");
+            hud_keys(&mut app, &mut fr, &mut now, "ok");
+            hud_frames(&mut app, &mut now, 8);
+            assert_eq!(*DIALLED.lock().unwrap(), vec![ADDRESS.to_owned()], "the typed address is the one fetched (fifo={fifo})");
+        }
+    }
+
+    /// **Text that follows the key which closed the field in one drain must not put the keyboard back up.** The text
+    /// gate (`bridge::text_owner`) is read at ingest and the `SystemKeyboard(true)` adoption edge acts at delivery:
+    /// with the address field editing, a FIFO batch `back txt:x` finds the keyboard up at ingest, delivers Back
+    /// (`leave_field`, the keyboard goes down and `textinput::stop` runs), and then the edge, if sent, raised
+    /// `input.keyboard` again and latched `textinput`'s `STARTED` with no field editing. With the flag up, Press arms,
+    /// focus travel and Press delivery are off, the next OK's `start()` returns early on `STARTED`, and nothing on the
+    /// page clears it. Adoption is Search's rule alone (`bridge::text_panel_edge`). `available` is the argument, since
+    /// `textinput::available()` is false on the host.
+    #[test]
+    fn text_after_the_key_that_closes_the_hud_field_does_not_re_raise_the_keyboard() {
+        use plx_machine::machine::Tick;
+        fn dial(_: &str, _: usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+            Err(plx_net::net::RequestError::Transport.into())
+        }
+        let _serial = plx_base::testlock::serial();
+        // SDL's event subsystem only: no window, renderer, native playback or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        let dir = HudDir::new("close-then-text");
+        let (mut app, mut fr, mut now) = hud_address_field_up(&dir.0, dial);
+
+        // The FIFO batch `back txt:x`, as `ingress_token` walks it: the key, then SDL drained ahead of the text.
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "back") });
+        unsafe { drain_sdl(&mut app, &mut fr); }
+        assert!(super::super::bridge::text_owner(&app.pages), "premise: the keyboard is still up when the text is ingested");
+        let panel = super::super::bridge::text_panel_edge(&app.pages, true);
+        ingest_text(&mut app, "x", panel, plx_machine::machine::Source::RemoteFifo);
+        let inputs = std::mem::take(&mut app.inputs);
+        now += 16;
+        super::super::bridge::app_frame(&mut app, Tick { ms: now, dt_us: 16_000 }, inputs);
+        assert!(!hud_address_editing(&app), "Back closed the field");
+        assert!(!app.pages.system_keyboard_up(), "the text after Back must not put the keyboard back up");
+
+        // The next OK on the address row raises it again, as it does for a field that was never disturbed.
+        hud_keys(&mut app, &mut fr, &mut now, "ok");
+        assert!(app.pages.system_keyboard_up(), "OK on the row raises the television keyboard again");
+        assert!(hud_address_editing(&app), "and the field is editing");
+        assert!(!super::super::bridge::text_panel_edge(&app.pages, true),
+            "a page that is not Search never takes the adoption edge, whatever the panel's support");
     }
 
     #[test]
@@ -8604,6 +8784,155 @@ mod lifecycle_regression_tests {
         assert!(worst < 0.04, "no frame jumps the card (biggest step {worst}); the dip is 0.082 deep");
         assert!(!app.pages.input.press.is_active(), "…and the spring comes to rest under the menu");
         assert_eq!(app.pages.input.press.scale(), 1.0);
+    }
+
+    /// **`[Down, press:<card>@<rk>]` across Home's hero/grid door, through the real dispatcher.** The
+    /// Down crosses the door and leaves the picture on the hero for a few frames (a human's quick OK
+    /// there lands on the hero's Play); the by-id press of the card the Down landed on moves no focus
+    /// (it is already there), so nothing clears that remap. Home projects its focused element not
+    /// loaded while the picture lags, and the dispatcher, asking with the focus the Down left (not
+    /// the one its drain began with), refuses the press as `unloaded`: nothing plays and nothing
+    /// opens. Once the picture has settled the same press opens the card's title.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_by_id_press_in_the_batch_of_the_key_that_crossed_homes_door_is_refused_until_the_picture_settles() {
+        use plx_machine::machine::{InputEvent, InputKind, Key, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let mut app = app();
+            let mut t = 0u32;
+            super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+            app.runtime.bridge(&mut app.bridge).seed_hub_grid_for_test(3, 4);
+            settle(&mut app, &mut t);
+            let home = app.pages.nav.top_page().unwrap().id;
+            let at = |t: u32| Tick { ms: t + 16, dt_us: 16_000 };
+            let by_id = |id: &str, press: Option<&str>, t: u32| InputEvent {
+                at: at(t),
+                source: Source::RemoteFifo,
+                kind: InputKind::ById {
+                    id: id.into(),
+                    press: press.map(|_| OkTap { sym: 0x0d, wcode: 0 }),
+                    expect: press.map(std::sync::Arc::<str>::from),
+                },
+            };
+            let snapshot = |app: &mut App| app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+            let refused = || std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+                .lines().filter(|line| line.contains("a11y: refused")).map(str::to_owned).collect::<Vec<_>>();
+            let hero = "home.hero.play";
+
+            // the card a Down from the hero's Play lands on, and its title (a dry run)
+            let tokens = |app: &mut App, t: &mut u32, id: &str| {
+                let now = *t;
+                step(app, t, vec![by_id(id, None, now)]);
+                settle(app, t);
+            };
+            tokens(&mut app, &mut t, hero);
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(hero), "premise: the hero's Play is focused");
+            let now = t;
+            step(&mut app, &mut t, vec![plx_ui::fixture::key(Key::Down, at(now))]);
+            settle(&mut app, &mut t);
+            let after = snapshot(&mut app);
+            let card = after.focused.clone().expect("a Down from the hero lands somewhere");
+            let rk = after.elems.iter().find(|e| e.id == card).and_then(|e| e.subject.clone())
+                .expect("the card carries the ratingKey its press acts on");
+            assert!(card.starts_with("home.") && card != hero, "premise: the Down crossed the door onto a card: {card}");
+
+            // back to the hero, then ONE batch: the Down and the press naming the card it lands on
+            tokens(&mut app, &mut t, hero);
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(hero));
+            assert!(refused().is_empty(), "premise: nothing refused so far: {:?}", refused());
+            let now = t;
+            step(&mut app, &mut t, vec![plx_ui::fixture::key(Key::Down, at(now)), by_id(&card, Some(&rk), now)]);
+            for _ in 0..24 { step(&mut app, &mut t, vec![]); }
+            let lines = refused();
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].ends_with(&format!("a11y: refused press {card} unloaded owner=home")), "{lines:?}");
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(card.as_str()), "the Down moved focus");
+            assert_eq!(app.pages.nav.top_page().unwrap().id, home, "nothing opened");
+            assert!(!plx_media::route::play_pending(), "and nothing played");
+
+            // the picture has caught up: the same press opens the card's title
+            let now = t;
+            step(&mut app, &mut t, vec![by_id(&card, Some(&rk), now)]);
+            for _ in 0..24 { step(&mut app, &mut t, vec![]); }
+            assert_eq!(refused().len(), 1, "no second refusal: {:?}", refused());
+            assert_ne!(app.pages.nav.top_page().unwrap().id, home, "the card's title opened");
+        });
+    }
+
+    /// **A press accepted against one hero is played against it, even in the frame the carousel turns**
+    /// (PR #1442, round 7). A hero control's press commits a dip (about 200 ms) after OK and plays the
+    /// title the billboard shows AT THE COMMIT; the press of the control that already has focus moves
+    /// nothing, so the 8 s countdown ran on, and a countdown that ran out inside the dip turned the page:
+    /// `press home.hero.play --rk X`, accepted against X, played the next page's title. The hardest frame
+    /// is the one the press ARMS in: the dispatcher built that frame's press read before its drain, so
+    /// the frame's own Tick, delivered after the arm, read a press that was not live, and the carousel
+    /// turned there. A dry run finds the frame the page turns on; the press is then delivered in that
+    /// frame's batch.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_hero_press_accepted_in_the_frame_the_carousel_turns_plays_the_title_it_was_accepted_against() {
+        use plx_machine::machine::{InputEvent, InputKind, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        // One run: Home on the hero's Play, then frames until the page has turned (or, with
+        // `press_in`, that many frames and ONE batch carrying the press). Returns the frame the page
+        // turned on (a dry run only), the title the press named, and the titles Home asked to play.
+        let run = |press_in: Option<usize>| -> (Option<usize>, String, Vec<String>) {
+            plx_base::eventlog::with_private_log(|| {
+                let mut app = app();
+                let mut t = 0u32;
+                super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+                app.runtime.bridge(&mut app.bridge).seed_hubs_for_test(3, plx_data::pms::HubState::Ready);
+                settle(&mut app, &mut t);
+                let at = |t: u32| Tick { ms: t + 16, dt_us: 16_000 };
+                let by_id = |press: Option<&str>, t: u32| InputEvent {
+                    at: at(t),
+                    source: Source::RemoteFifo,
+                    kind: InputKind::ById {
+                        id: "home.hero.play".into(),
+                        press: press.map(|_| OkTap { sym: 0x0d, wcode: 0 }),
+                        expect: press.map(std::sync::Arc::<str>::from),
+                    },
+                };
+                let shown = |app: &mut App| {
+                    let snapshot = app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+                    assert_eq!(snapshot.focused.as_deref(), Some("home.hero.play"), "premise: Play is focused");
+                    snapshot.elems.iter().find(|e| e.id == "home.hero.play").and_then(|e| e.subject.clone())
+                        .expect("the hero's Play carries the ratingKey it acts on")
+                };
+                let now = t;
+                step(&mut app, &mut t, vec![by_id(None, now)]);
+                settle(&mut app, &mut t);
+                let named = shown(&mut app);
+                let mut turned = None;
+                // the countdown restarts at the focus move: 8 s is 500 frames, then some
+                for frame in 0..560usize {
+                    if press_in == Some(frame) {
+                        let now = t;
+                        step(&mut app, &mut t, vec![by_id(Some(&named), now)]);
+                        // the dip, the commit and the spring-back
+                        for _ in 0..40 { step(&mut app, &mut t, vec![]); }
+                        break;
+                    }
+                    step(&mut app, &mut t, vec![]);
+                    if press_in.is_none() && shown(&mut app) != named {
+                        turned = Some(frame);
+                        break;
+                    }
+                }
+                let played = app.runtime.bridge(&mut app.bridge).take_observed_home_commands().into_iter()
+                    .filter_map(|(_, request, _)| match request { plx_screens::registry::HomeReq::Play { rk, .. } => Some(rk), _ => None })
+                    .collect();
+                (turned, named, played)
+            })
+        };
+        let (turned, named, _) = run(None);
+        let frame = turned.expect("premise: the countdown turns the page within 560 frames");
+        assert!(frame > 400, "premise: the turn is the 8 s countdown's, frame {frame}");
+        let (_, named_again, played) = run(Some(frame));
+        assert_eq!(named_again, named, "premise: the same hero is shown when the press arrives");
+        assert_eq!(played, vec![named.clone()],
+            "the press named {named} in the frame the page turned on and must play it, not the next page's");
     }
 
     /// What `hold_bench_tick` put on the input queue in one frame: `(ok_down, ok_up, back, direction)`

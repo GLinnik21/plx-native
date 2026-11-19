@@ -1,0 +1,31 @@
+{
+  "kind": "episode",
+  "title": "Pilot",
+  "ids": {
+    "imdb": "tt0959621",
+    "tvdb": "349232"
+  },
+  "series": {
+    "title": "Breaking Bad",
+    "year": 2008,
+    "ids": {
+      "imdb": "tt0903747",
+      "tmdb": "1396",
+      "tvdb": "81189"
+    }
+  },
+  "season": 1,
+  "episode": 1,
+  "durationMs": 3487000,
+  "file": {
+    "sizeBytes": 2147483648,
+    "oshash": "8e245d9679d31e12",
+    "name": "Breaking.Bad.S01E01.1080p.mkv"
+  },
+  "ext": {
+    "com.example": {
+      "server": "1a2b3c",
+      "item": "4711"
+    }
+  }
+}

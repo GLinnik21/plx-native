@@ -218,7 +218,7 @@ Error monitoring for PlxNative is sponsored by [Sentry](https://sentry.io/for/go
 
 ## Licence
 
-[GPL-3.0-or-later](LICENSE), © 2026 Gleb Linnik. The PlxNative name and its brand artwork are excluded — see
+[GPL-3.0-or-later](LICENSE), © 2026 Gleb Linnik; `rust-modules/owp/` is Apache-2.0 ([`LICENSING.md`](LICENSING.md)). The PlxNative name and its brand artwork are excluded — see
 [`TRADEMARKS.md`](TRADEMARKS.md), which also carries the Plex and LG non-affiliation statements.
 Third-party components and their licences are in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and `licenses/` — notably the app ships its own

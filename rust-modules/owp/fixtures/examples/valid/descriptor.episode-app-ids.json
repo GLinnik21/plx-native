@@ -1,0 +1,21 @@
+{
+  "kind": "episode",
+  "title": "The Woman in Red",
+  "series": {
+    "title": "Cowboy Bebop",
+    "year": 1998,
+    "ids": {
+      "kitsu": "123",
+      "imdb": "tt0213338"
+    }
+  },
+  "season": 1,
+  "episode": 5,
+  "durationMs": 1460000,
+  "ext": {
+    "org.example": {
+      "series": "kitsu:123",
+      "video": "kitsu:123:5"
+    }
+  }
+}

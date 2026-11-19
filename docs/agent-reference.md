@@ -221,10 +221,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   what the user can reach, which is the only class that is tracked rather than accepted; `--sites` lists every hit with its class.
   CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
-  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens`
+  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp`
   **on the default feature set, and again with `--features hostsim` for the crates that declare it
   (`HOSTSIM_SUITE`: all of `UNIT_SUITE` except `plx_net`, `plx_ui`, `plx_appkit`, `plx_screens`,
-  `plx_media_codecs`, `plx_play_uri` and `plx_playback_contract`, which have no `hostsim` cfg and run the
+  `plx_media_codecs`, `plx_play_uri`, `plx_playback_contract` and `plx_owp`, which have no `hostsim` cfg and run the
   same test names in both passes; `ci/test_test_crate.py` fails if one gains the feature or a cfg)**,
   which is not a duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
@@ -267,7 +267,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   SDL event loop where no host test can see it. Needs the **clippy component of the pinned toolchain** (`make setup-rust` installs it with
   `--profile minimal --component clippy`).
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
-  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
+  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
   is the test-name filter, handed to every one of the per-crate test binaries; each prints its own libtest
   `test result:` line (the counts are per crate, never one total), followed by the wrapper's summary line. Use it for a long series of
@@ -338,8 +338,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `bundle_read`, `archive_read` (the 1.0 ZIP container), `svg_check` (the SVG gate in front of nanosvg),
   `address_parse`, `catalog_parse` (the registry index), `catalog_verify` (the signed index: no input is accepted
   under the shipped keys; the fuzzer's bytes are also signed with the data layer's TEST ONLY keys to reach what
-  follows the signature check), `catalog_cache` (its cache record, verified again) and `ws_frame` (the
-  WebSocket codec, `plx_net::ws`: the server's upgrade answer and frames, split at any byte). Each target
+  follows the signature check), `catalog_cache` (its cache record, verified again), `ws_frame` (the
+  WebSocket codec, `plx_net::ws`: the server's upgrade answer and frames, split at any byte) and `owp_json`
+  (the Open Watch Party reader, `plx_owp::json`: the scan keeps the length, and the visitor marks the same strings
+  and numbers as the scan). Each target
   asserts only what its code promises (no panic, the documented bounds, round trips) and a crash fails the
   run, with the input in `fuzz/artifacts/<target>/`. The package is a top-level `fuzz/` with its own
   `[workspace]`, so no shipped `Cargo.toml` names it and no shipped build changes; it depends on the layer
@@ -349,7 +351,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (the shared crates are exactly the shipped versions), builds with the nightly named by `FUZZ_TOOLCHAIN`
   (default `nightly`; CI names a dated one; `cargo install cargo-fuzz --locked` once) in
   `rust-modules/target-fuzz` (3.1 GiB after a cold build of the first eight targets, plus 83 MiB for
-  `ws_frame`; `make disk` lists it), generates the seeds from
+  `ws_frame` and 49 MiB for `owp_json`; `make disk` lists it), generates the seeds from
   the fixtures, the examples and the icons the repository already has plus a dictionary from the published
   schemas, and runs the targets one after another. A corpus is thousands of tiny files read and written all
   run long: on a slow or shared disk (the external one a lane may sit on) set `FUZZ_WORK=<dir>` to move seeds,
@@ -381,12 +383,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
-    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --no-run --timings`, then `make check-cargo-unit-default` runs against what that
+    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp --no-run --timings`, then `make check-cargo-unit-default` runs against what that
     built (`--timings` is not part of cargo's fingerprint: checked 2026-10-02 by building with and
     without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
     rather than adding one). Download `cargo-timings-host-unit-default` from the run page
     ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
-    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --no-run --timings` writes
+    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp --no-run --timings` writes
     `target/cargo-timings/cargo-timing.html`.
   - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
     `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
@@ -462,7 +464,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
   min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
   a machine-readable document (git sha, `rustc -V` of the pinned toolchain, host, per-run load and swap). Rows:
-  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --no-run`; it reports from cargo's JSON `fresh`
+  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
   leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, `plx_platform`'s `devcaps.rs`, `plx_gfx`'s `overdraw.rs`, `plx_net`'s `stream_redirect.rs`, `plx_ui`'s `dwell.rs`, `plx_plex`'s `retry.rs`, `plx_telemetry`'s `window.rs`, `plx_data`'s `tape.rs`, `plx_session`'s `scripted.rs`, `plx_media`'s `units.rs`, `plx_appkit`'s `skip_pill.rs`, `plx_screens`'s `clock_readout.rs`, the application's `coldstart.rs`) and to a hub (`plx_ui`'s `lib.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
@@ -942,7 +944,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   else's checkout. It type-checks the bare `--no-default-features` set, which drops `play-uri` and `play-feed` too (a build with
   no playback backend), so it does not replace `make check-nodef`, which passes the Makefile's `RUST_BACKEND_FEATURES`. It type-checks after
   every edit to a `rust-modules/src/**.rs` or one of the thirteen layer crates it lists (it does not watch `playback-contract`, `media-codecs`,
-  `play-feed` or `play-uri`; `make check-nodef` is the only gate that compiles them in the shipping set); it costs well under a second warm, because cargo keys
+  `play-feed` or `play-uri`, for which `make check-nodef` is the only gate that compiles them in the shipping set, nor `owp`, which the application does not link yet); it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
   swallows a neighbour's attribute — `devtrig::latched_flag!` exists to avoid most of them.
@@ -1948,7 +1950,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`) runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs the crates that declare `hostsim`
 (`HOSTSIM_SUITE`, a subset of that list) a SECOND time under `--features hostsim`, because the host
 feed seam only exists there and the tests that need it are compiled out of the first pass (the build
@@ -1958,7 +1960,7 @@ documented 59 before that, which was five times stale before anyone noticed — 
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
 batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
 count worth having is the one you take yourself, with
-`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -- --list | grep -c ': test'`. **The per-module counts
+`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
 — several were written when the module was a third its present size, and two bullets have now
 outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
@@ -2704,7 +2706,24 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   in authored 1920x1080 coords, and they replay through the real key/pointer handlers. `ok` is a
   TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
-  item context menu;
+  item context menu; a debug build also takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
+  `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
+  via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`. A press of an element that ACTS ON a title it
+  names (it plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, or opens that
+  title's own page or menu where the title can change under the press, as a card, a credit or the Home
+  carousel's Info do) names the title: `--rk <ratingKey>` on `tv-session.sh press`, `--subject <ratingKey>` on
+  `a11y.py press` (`send press:<id>@<ratingKey>`), the ratingKey of the title the press acts on, which `state`
+  prints as the element's subject. Those THREE command lines refuse the unnamed press (exit 2, nothing sent); only
+  a control whose target the page fixes (Go to Show, Also available, the Play Version opener, More, a panel
+  opener, a seek) is pressed bare, and `SUBJECT_BEARING` in `tools/a11y.py` is the one list of the ids. The
+  guard is on the command lines only: the library functions `a11y.press()` and `a11y.press_token()` are
+  unguarded on purpose, for scripts that drive the mock, so a script that imports them against a real server has
+  no check at all.
+  `tv-session.sh key` and `a11y.py send` are not a way round that: `key` refuses a `focus:`, `press:` or
+  `state:` word (the three verbs are the one door for them), and both refuse a word with whitespace in it
+  (the app cuts the FIFO at any whitespace, so `back press:<card>` would be a second, unchecked token).
+  Prefer them over a key walk to a
+  target; walks remain for tests whose subject is travel (fps walks, focus fingerprints);
   With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
   `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
   5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.

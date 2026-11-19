@@ -85,7 +85,7 @@ to the correct cropped-texture UV offset.
 
 ## Cache and refresh policy
 
-(Historical: DS6 later put popover glass back, `popover_glass`; since 2026-10-17 it stands on the frozen host and the latched field, not on this chain.) Popover panels stopped using the chain on 2026-09-19 (they stand on the latched underlay field,
+(Historical: DS6 later put popover glass back, `popover_glass`; since 2026-10-17 it stands on the frozen host, not on this chain: its body is a frost of the host snapshot built once per snapshot by its own chain, `FrameCache::frost_passes`, and the latched field is the fallback body.) Popover panels stopped using the chain on 2026-09-19 (they stand on the latched underlay field,
 `widgets::panel_ground`); the cached popover preset `Glass::CACHED`, which reused the blurred `mid`
 texture until explicit page invalidation or a region containment miss, went with them.
 `Glass::DYNAMIC_BACKDROP` (the chrome) keeps drawing the glass material

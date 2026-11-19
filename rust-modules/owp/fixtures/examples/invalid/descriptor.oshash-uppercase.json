@@ -1,0 +1,13 @@
+{
+  "kind": "movie",
+  "title": "Arrival",
+  "year": 2016,
+  "ids": {
+    "imdb": "tt2543164",
+    "tmdb": "329865"
+  },
+  "durationMs": 6960000,
+  "file": {
+    "oshash": "0F1E2D3C4B5A6978"
+  }
+}
