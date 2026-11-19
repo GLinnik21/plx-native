@@ -5323,6 +5323,17 @@ pub(crate) fn text_owner(d: &Dispatcher<AppHost>) -> bool {
     d.system_keyboard_up() || search_owns_input(d)
 }
 
+/// **Does a typed commit carry the `SystemKeyboard(true)` adoption edge?** `app::events::text_inputs` pushes it
+/// ahead of the `Text` when its `panel` argument is true, and every text ingress (`txt:`, `SDL_TEXTINPUT`) passes
+/// this instead of `textinput::available()`. Adoption is Search's rule alone: a panel the OS raised or kept behind
+/// Search's back must not eat real typing. Any other owner takes text only while `Dispatcher::system_keyboard_up`
+/// is already true (`text_owner`), so an edge there can only re-raise a keyboard that a key in the same drain
+/// closed: the gate is read at ingest and the edge acts at delivery. `available` is `textinput::available()`,
+/// a parameter so a host test can drive the TV's answer.
+pub(crate) fn text_panel_edge(d: &Dispatcher<AppHost>, available: bool) -> bool {
+    available && search_owns_input(d)
+}
+
 /// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
 /// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
 pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {

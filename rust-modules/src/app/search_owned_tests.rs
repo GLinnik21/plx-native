@@ -430,6 +430,25 @@ fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
     assert!(rig.retained.keyboard_calls.is_empty());
 }
 
+/// The `SystemKeyboard(true)` adoption edge a typed commit carries is Search's rule, and only on a set whose
+/// keyboard can be a panel at all: `run::ingest_text`'s `panel` comes from `text_panel_edge`, not from
+/// `textinput::available()` alone. Another page's half (an edge there would re-raise a keyboard a key in the
+/// same drain closed) is `run::lifecycle_regression_tests`' Player HUD test.
+#[test]
+fn text_panel_edge_is_sent_for_search_on_a_set_with_a_panel_only() {
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("owned-search-panel-edge");
+    session.watching("synthetic-panel-edge");
+    plx_plex::plex::reset_servers_for_test();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
+    frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
+    assert!(search_owns_input(&d), "premise: Search is on top");
+    assert!(text_panel_edge(&d, true), "Search adopts a panel the OS raised");
+    assert!(!text_panel_edge(&d, false), "a set with no panel has no edge to send");
+}
+
 #[test]
 fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
     let _serial = plx_base::testlock::serial();

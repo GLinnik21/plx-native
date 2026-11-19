@@ -1091,8 +1091,8 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
         // commits frames after it opened.
         if !drained && super::bridge::text_owner(&app.pages) { drain_sdl(app, fr); }
         if super::bridge::text_owner(&app.pages) {
-            ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
-                plx_machine::machine::Source::RemoteFifo);
+            let panel = super::bridge::text_panel_edge(&app.pages, crate::textinput::available());
+            ingest_text(app, &text.replace('+', " "), panel, plx_machine::machine::Source::RemoteFifo);
             return true;
         }
     }
@@ -1915,7 +1915,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // and the gate is deliberate. Search on top takes every commit whatever our own
         // record of the panel says: a panel the OS raised or kept behind our back must
         // not eat REAL typing, so Search adopts it (`textinput::adopt`, via
-        // `Bridge::adopt_system_keyboard`). Any other page takes text only while
+        // `Bridge::adopt_system_keyboard`), and only Search's commit carries that
+        // adoption edge (`bridge::text_panel_edge`). Any other page takes text only while
         // `Dispatcher::system_keyboard_up()` says it raised the keyboard. Everything
         // else goes to `textinput::on_event`, which queues without checking and which
         // nothing drains, so for a non-Search field our own flag decides: text that
@@ -1925,7 +1926,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // `MAX_PENDING` bounds a queue nobody drains.
         if super::bridge::text_owner(&app.pages) {
             let text = crate::textinput::decode(&app.ev);
-            ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl);
+            let panel = super::bridge::text_panel_edge(&app.pages, crate::textinput::available());
+            ingest_text(app, &text, panel, plx_machine::machine::Source::Sdl);
         } else {
             crate::textinput::on_event(&app.ev);
         }
@@ -4839,6 +4841,70 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// The loop's prepare window ticks the HUD driver (`huds_tick`, as `run::refresh_hud` does); `app_frame` alone does not.
+    fn hud_frames(app: &mut App, now: &mut u32, n: u32) {
+        for _ in 0..n {
+            *now += 16;
+            frame(app, *now);
+            let _ = app.runtime.bridge(&mut app.bridge).huds_tick(false);
+        }
+    }
+
+    /// One remote token through the real ingress, its SDL edges drained, and the frame that delivers them.
+    fn hud_keys(app: &mut App, fr: &mut Frame, now: &mut u32, token: &str) {
+        assert!(unsafe { ingress_token(app, fr, token) }, "{token}");
+        unsafe { drain_sdl(app, fr); }
+        let inputs = std::mem::take(&mut app.inputs);
+        *now += 16;
+        super::super::bridge::app_frame(app, plx_machine::machine::Tick { ms: *now, dt_us: 16_000 }, inputs);
+    }
+
+    /// Whether the Player HUD page's address field is editing, read off the page's probe.
+    fn hud_address_editing(app: &App) -> bool {
+        let mut probe = String::new();
+        app.pages.nav.modals.top().expect("Settings is up").entry.inst.as_ref().unwrap().screen.state().probe(&mut probe);
+        probe.rsplit_once("player-hud ").expect("the Player HUD page is the top page").1.contains("editing=true")
+    }
+
+    /// A scratch HUD directory, removed with the guard.
+    struct HudDir(std::path::PathBuf);
+    impl HudDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("plx-hud-typed-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for HudDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    /// The real App on Settings > Player HUD with its Install from address field editing and the television keyboard
+    /// up (`hud_settings::ADDRESS_KEY` focused, then OK through the FIFO), the HUD driver dialling `network`.
+    fn hud_address_field_up(dir: &std::path::Path,
+        network: fn(&str, usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure>) -> (App, Frame, u32) {
+        let mut app = app();
+        let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::english(),
+            &plx_base::fontcov::advances::ShippedMeasure);
+        app.runtime.hud.driver = super::super::adapters::huds::HudDriver::started_on_network(dir.to_path_buf(), classic,
+            "0.10.0", super::super::adapters::huds::HudRunner::inline("0.10.0").on_network(network));
+        super::super::bridge::open_settings_at(&mut app.pages, plx_screens::family::SettingsPage::PlayerHud);
+        let mut now = 0;
+        hud_frames(&mut app, &mut now, 60);
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        for _ in 0..8 {
+            if app.pages.focus().is_some_and(|key| key.elem == plx_screens::hud_settings::ADDRESS_KEY) { break; }
+            hud_keys(&mut app, &mut fr, &mut now, "down");
+        }
+        assert_eq!(app.pages.focus().map(|key| key.elem), Some(plx_screens::hud_settings::ADDRESS_KEY), "premise: the address row has focus");
+        hud_keys(&mut app, &mut fr, &mut now, "ok");
+        assert!(app.pages.system_keyboard_up(), "premise: OK on the row raised the television keyboard");
+        assert!(hud_address_editing(&app), "premise: the field is editing");
+        assert!(!super::super::bridge::search_owns_input(&app.pages), "premise: Search is not the recipient");
+        (app, fr, now)
+    }
+
     /// **Typed text reaches a field that is not Search's: Settings > Player HUD > Install from address.** Every text
     /// ingress was gated on `search_owns_input`, a downcast to `SearchScreen`, since Search was the only field (UI
     /// restructure phase 8). The HUD page raised the keyboard, the television committed text, and the text went to
@@ -4863,54 +4929,10 @@ mod lifecycle_regression_tests {
             fn drop(&mut self) { unsafe { SDL_Quit(); } }
         }
         let _events = Events;
-        let editing = |app: &App| {
-            let mut probe = String::new();
-            app.pages.nav.modals.top().expect("Settings is up").entry.inst.as_ref().unwrap().screen.state().probe(&mut probe);
-            probe.rsplit_once("player-hud ").expect("the Player HUD page is the top page").1.contains("editing=true")
-        };
-        // The loop's prepare window ticks the HUD driver (`huds_tick`, as `run::refresh_hud` does); `app_frame` alone does not.
-        fn frames(app: &mut App, now: &mut u32, n: u32) {
-            for _ in 0..n {
-                *now += 16;
-                frame(app, *now);
-                let _ = app.runtime.bridge(&mut app.bridge).huds_tick(false);
-            }
-        }
-        // One remote token through the real ingress, its SDL edges drained, and the frame that delivers them.
-        fn keys(app: &mut App, fr: &mut Frame, now: &mut u32, token: &str) {
-            assert!(unsafe { ingress_token(app, fr, token) }, "{token}");
-            unsafe { drain_sdl(app, fr); }
-            let inputs = std::mem::take(&mut app.inputs);
-            *now += 16;
-            super::super::bridge::app_frame(app, Tick { ms: *now, dt_us: 16_000 }, inputs);
-        }
         for fifo in [true, false] {
             DIALLED.lock().unwrap().clear();
-            let dir = std::env::temp_dir().join(format!("plx-hud-typed-{}-{fifo}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            struct Cleanup(std::path::PathBuf);
-            impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-            let _cleanup = Cleanup(dir.clone());
-            let mut app = app();
-            let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::english(),
-                &plx_base::fontcov::advances::ShippedMeasure);
-            app.runtime.hud.driver = super::super::adapters::huds::HudDriver::started_on_network(dir.clone(), classic,
-                "0.10.0", super::super::adapters::huds::HudRunner::inline("0.10.0").on_network(record));
-            super::super::bridge::open_settings_at(&mut app.pages, plx_screens::family::SettingsPage::PlayerHud);
-            let mut now = 0;
-            frames(&mut app, &mut now, 60);
-            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
-            // Focus the Install from address row (`hud_settings::ADDRESS_KEY`), then OK raises the keyboard.
-            for _ in 0..8 {
-                if app.pages.focus().is_some_and(|key| key.elem == plx_screens::hud_settings::ADDRESS_KEY) { break; }
-                keys(&mut app, &mut fr, &mut now, "down");
-            }
-            assert_eq!(app.pages.focus().map(|key| key.elem), Some(plx_screens::hud_settings::ADDRESS_KEY), "premise: the address row has focus");
-            keys(&mut app, &mut fr, &mut now, "ok");
-            assert!(app.pages.system_keyboard_up(), "premise: OK on the row raised the television keyboard");
-            assert!(editing(&app), "premise: the field is editing");
-            assert!(!super::super::bridge::search_owns_input(&app.pages), "premise: Search is not the recipient");
+            let dir = HudDir::new(&fifo.to_string());
+            let (mut app, mut fr, mut now) = hud_address_field_up(&dir.0, record);
 
             // Type it as each door delivers it: the FIFO in one token, the television's keyboard one key, one commit.
             // (A multi-character commit at the end of the field is an LG word prediction, which REPLACES the word being
@@ -4932,11 +4954,56 @@ mod lifecycle_regression_tests {
                 super::super::bridge::app_frame(&mut app, Tick { ms: now, dt_us: 16_000 }, inputs);
             }
             assert_eq!(crate::textinput::pending(), pending, "nothing went to the unread queue (fifo={fifo})");
-            assert!(editing(&app), "typing keeps the field open");
-            keys(&mut app, &mut fr, &mut now, "ok");
-            frames(&mut app, &mut now, 8);
+            assert!(hud_address_editing(&app), "typing keeps the field open");
+            hud_keys(&mut app, &mut fr, &mut now, "ok");
+            hud_frames(&mut app, &mut now, 8);
             assert_eq!(*DIALLED.lock().unwrap(), vec![ADDRESS.to_owned()], "the typed address is the one fetched (fifo={fifo})");
         }
+    }
+
+    /// **Text that follows the key which closed the field in one drain must not put the keyboard back up.** The text
+    /// gate (`bridge::text_owner`) is read at ingest and the `SystemKeyboard(true)` adoption edge acts at delivery:
+    /// with the address field editing, a FIFO batch `back txt:x` finds the keyboard up at ingest, delivers Back
+    /// (`leave_field`, the keyboard goes down and `textinput::stop` runs), and then the edge, if sent, raised
+    /// `input.keyboard` again and latched `textinput`'s `STARTED` with no field editing. With the flag up, Press arms,
+    /// focus travel and Press delivery are off, the next OK's `start()` returns early on `STARTED`, and nothing on the
+    /// page clears it. Adoption is Search's rule alone (`bridge::text_panel_edge`). `available` is the argument, since
+    /// `textinput::available()` is false on the host.
+    #[test]
+    fn text_after_the_key_that_closes_the_hud_field_does_not_re_raise_the_keyboard() {
+        use plx_machine::machine::Tick;
+        fn dial(_: &str, _: usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+            Err(plx_net::net::RequestError::Transport.into())
+        }
+        let _serial = plx_base::testlock::serial();
+        // SDL's event subsystem only: no window, renderer, native playback or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        let dir = HudDir::new("close-then-text");
+        let (mut app, mut fr, mut now) = hud_address_field_up(&dir.0, dial);
+
+        // The FIFO batch `back txt:x`, as `ingress_token` walks it: the key, then SDL drained ahead of the text.
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "back") });
+        unsafe { drain_sdl(&mut app, &mut fr); }
+        assert!(super::super::bridge::text_owner(&app.pages), "premise: the keyboard is still up when the text is ingested");
+        let panel = super::super::bridge::text_panel_edge(&app.pages, true);
+        ingest_text(&mut app, "x", panel, plx_machine::machine::Source::RemoteFifo);
+        let inputs = std::mem::take(&mut app.inputs);
+        now += 16;
+        super::super::bridge::app_frame(&mut app, Tick { ms: now, dt_us: 16_000 }, inputs);
+        assert!(!hud_address_editing(&app), "Back closed the field");
+        assert!(!app.pages.system_keyboard_up(), "the text after Back must not put the keyboard back up");
+
+        // The next OK on the address row raises it again, as it does for a field that was never disturbed.
+        hud_keys(&mut app, &mut fr, &mut now, "ok");
+        assert!(app.pages.system_keyboard_up(), "OK on the row raises the television keyboard again");
+        assert!(hud_address_editing(&app), "and the field is editing");
+        assert!(!super::super::bridge::text_panel_edge(&app.pages, true),
+            "a page that is not Search never takes the adoption edge, whatever the panel's support");
     }
 
     #[test]
