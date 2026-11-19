@@ -332,7 +332,7 @@ fn unknown_members_of_a_descriptor_are_not_sent() {
 fn a_message_over_8192_bytes_is_not_sent() {
     let media = read(&format!(r#"{{"kind":"video","title":"{}","durationMs":1}}"#, "x".repeat(4000))).unwrap().value;
     assert!(Outgoing::SetMedia { media, position_ms: None }.encode().is_ok());
-    let padded = Outgoing::Kick { peer_id: "p".repeat(9000) };
+    let padded = Outgoing::Ping { id: PingId::Text("p".repeat(9000)) };
     assert_eq!(padded.encode(), Err(InvalidMessage("message size")));
 }
 
@@ -426,6 +426,20 @@ fn a_joined_descriptor_keeps_only_its_known_members() {
     let joined = JOINED.replace(r#""media":null"#, &format!(r#""media":{media}"#));
     let Received::Message(Incoming::Joined { media: Some(kept), .. }) = decode(&joined) else { panic!("not a joined with media: {joined}") };
     assert_eq!(kept, read(known).unwrap().value);
+}
+
+#[test]
+fn a_peer_id_or_token_off_its_pattern_is_not_sent() {
+    let token = "q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E";
+    let resume = |peer_id: &str, token: &str| Outgoing::Resume { code: "D4XN7P".into(), peer_id: peer_id.into(), token: token.into() }.encode();
+    assert!(resume("p_1-A", token).is_ok());
+    assert_eq!(resume("", token), Err(InvalidMessage("peerId")));
+    assert_eq!(resume("p 1", token), Err(InvalidMessage("peerId")));
+    assert_eq!(resume("p1", &token[1..]), Err(InvalidMessage("token")));
+    assert_eq!(resume("p1", &format!("{}!", &token[1..])), Err(InvalidMessage("token")));
+    assert_eq!(Outgoing::TransferHost { peer_id: "p".repeat(17) }.encode(), Err(InvalidMessage("peerId")));
+    assert_eq!(Outgoing::Kick { peer_id: "p/1".into() }.encode(), Err(InvalidMessage("peerId")));
+    assert!(Outgoing::Kick { peer_id: "p".repeat(16) }.encode().is_ok());
 }
 
 #[test]

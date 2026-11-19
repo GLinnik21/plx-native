@@ -164,7 +164,9 @@ impl Outgoing {
                 }
                 members
             }
-            Outgoing::Resume { code: room, peer_id, token } => vec![("code", code(room)?), ("peerId", text(peer_id)), ("token", text(token))],
+            Outgoing::Resume { code: room, peer_id, token } => {
+                vec![("code", code(room)?), ("peerId", checked(peer_id, is_peer_id, "peerId")?), ("token", checked(token, is_token, "token")?)]
+            }
             Outgoing::Ping { id: PingId::Text(id) } => vec![("id", text(id))],
             Outgoing::Ping { id: PingId::Number(id) } => vec![("id", int_in(*id, -MAX_SAFE_INT, MAX_SAFE_INT, "id")?)],
             Outgoing::Status { epoch, player, report: match_report, offset_ms, rtt_ms } => {
@@ -195,7 +197,7 @@ impl Outgoing {
             }
             Outgoing::SetControl { mode: Control::Host } => vec![("mode", text("host"))],
             Outgoing::SetControl { mode: Control::Everyone } => vec![("mode", text("everyone"))],
-            Outgoing::TransferHost { peer_id } | Outgoing::Kick { peer_id } => vec![("peerId", text(peer_id))],
+            Outgoing::TransferHost { peer_id } | Outgoing::Kick { peer_id } => vec![("peerId", checked(peer_id, is_peer_id, "peerId")?)],
             Outgoing::Lock { locked } => vec![("locked", Json::Bool(*locked))],
             Outgoing::Pause { position_ms: None } | Outgoing::Play | Outgoing::ClearMedia | Outgoing::Leave | Outgoing::End => Vec::new(),
         })
@@ -245,8 +247,8 @@ fn server_time(message: &Json) -> Option<i64> {
     message.get("serverTime").and_then(Json::as_int).filter(|time| *time >= 0)
 }
 
-fn is_token(value: &str) -> bool {
-    value.len() == TOKEN_LENGTH && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+fn is_token(value: &Json) -> bool {
+    value.as_text().is_some_and(|text| text.value.len() == TOKEN_LENGTH && text.value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
 }
 
 fn joined_media(value: &Json) -> Option<Option<Json>> {
@@ -261,7 +263,7 @@ fn decode_joined(message: &Json) -> Received {
     let code = plain_string(message.get("code")).filter(|code| is_room_code(code));
     let you = message.get("you");
     let peer_id = you.and_then(|you| you.get("peerId")).filter(|id| is_peer_id(id)).and_then(|id| plain_string(Some(id)));
-    let token = plain_string(you.and_then(|you| you.get("token"))).filter(|token| is_token(token));
+    let token = you.and_then(|you| you.get("token")).filter(|token| is_token(token)).and_then(|token| plain_string(Some(token)));
     let room = message.get("room").filter(|room| valid_snapshot(room, Snapshot::Joined));
     let media = message.get("media").and_then(joined_media);
     match (code, peer_id, token, room, media, server_time(message)) {
