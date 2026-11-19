@@ -10,13 +10,22 @@ name: Claude
 #
 # Who can start it: the `if:` below lets only an owner, member or collaborator through, so a stranger's
 # `@claude` on this public repository does not even start a runner; the action then checks again that
-# the commenter has write access, and refuses bot actors. A comment on a pull request from a fork
-# works: `issue_comment` and the review events run this file from the default branch with its
-# secrets, never the fork's copy of it.
+# the commenter has write access, and refuses bot actors.
 #
-# Claude reads CLAUDE.md / AGENTS.md from the checkout like any session, so the repository's rules
-# apply to what it writes. It can push a branch and open a pull request for an issue; it cannot push
-# to a fork's branch, and `main` stays protected by the same rules as for anyone else.
+# Pull requests from forks: only a comment in the conversation (`issue_comment`) works there. It runs
+# this file from the default branch with its secrets. GitHub gives a fork's review and inline review
+# comment events no secrets, so `@claude` in a review on a fork's pull request fails for want of a token.
+#
+# Project hooks are OFF in this job (`disableAllHooks` below). On a pull request the action checks out
+# the pull request's head and restores only `.claude/`, CLAUDE.md, AGENTS.md and a few config files from
+# the base, so a hook that calls a repository script (the SessionEnd hook runs `tools/build-gc.sh`)
+# would run a fork's copy of that script with the subscription token in its environment. Every hook in
+# `.claude/settings.json` is tooling for the maintainer's Mac anyway. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
+# also keeps the credentials out of the commands Claude runs.
+#
+# Claude reads CLAUDE.md / AGENTS.md from the base like any session, so the repository's rules apply to
+# what it writes. It can push a branch and open a pull request for an issue; it cannot push to a fork's
+# branch, and `main` stays protected by the same rules as for anyone else.
 
 on:
   issue_comment:
@@ -26,7 +35,7 @@ on:
   pull_request_review:
     types: [submitted]
   issues:
-    types: [opened, assigned]
+    types: [opened]
 
 concurrency:
   group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
@@ -59,6 +68,9 @@ jobs:
           fetch-depth: 1
 
       - name: Run Claude Code
+        env:
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         uses: anthropics/claude-code-action@f431adaf77e0fecf918431e75a2b5b45b85af002 # v1.0.283
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: --settings '{"disableAllHooks":true}'
