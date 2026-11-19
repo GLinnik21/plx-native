@@ -1,4 +1,4 @@
-{"updated":"2026-11-19T12:29:57Z",
+{"updated":"2026-11-19T12:33:31Z",
 "ci":[
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
@@ -5465,6 +5465,7 @@
 {"id":44439799631,"at":"2026-11-19T01:49:37Z","sha":"983e2fb73","title":"Check plural coverage against each language's declared categories","pr":1466,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":130,"macOS simulator build + launch":125,"Linux simulator build + launch":330}},
 {"id":44440364420,"at":"2026-11-19T02:57:48Z","sha":"379004493","title":"Media: the window-reread test times its wait from before the stop's sleep","pr":1467,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":163,"Linux simulator build + launch":387,"Windows launcher syntax":19,"macOS simulator build + launch":244},"wall":4204},
 {"id":44492943045,"at":"2026-11-19T09:03:39Z","sha":"fa9a246c7","title":"api: adapt the verbs to the turn-scoped bridge","pr":1387,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":122,"Linux simulator build + launch":517,"macOS tests against bundled FFmpeg and ASS":270}},
+{"id":44523276476,"at":"2026-11-19T12:22:26Z","sha":"b650e4ff9","title":"Playback: Dolby Vision found in the RPUs of a stream with no record is declared","pr":1472,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":252,"macOS tests against bundled FFmpeg and ASS":261,"Linux simulator build + launch":651}},
 {"id":44523445808,"at":"2026-11-19T12:23:33Z","sha":"07eb32426","title":"Item menu: Go to Movie keeps the card's focus while the menu closes","pr":1473,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":23,"macOS tests against bundled FFmpeg and ASS":222,"macOS simulator build + launch":254,"Linux simulator build + launch":344}}
 ],
 "nightly":[
