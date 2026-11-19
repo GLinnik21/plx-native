@@ -5324,12 +5324,12 @@ pub(crate) fn text_owner(d: &Dispatcher<AppHost>) -> bool {
 }
 
 /// **Does a typed commit carry the `SystemKeyboard(true)` adoption edge?** `app::events::text_inputs` pushes it
-/// ahead of the `Text` when its `panel` argument is true, and every text ingress (`txt:`, `SDL_TEXTINPUT`) passes
-/// this instead of `textinput::available()`. Adoption is Search's rule alone: a panel the OS raised or kept behind
-/// Search's back must not eat real typing. Any other owner takes text only while `Dispatcher::system_keyboard_up`
-/// is already true (`text_owner`), so an edge there can only re-raise a keyboard that a key in the same drain
-/// closed: the gate is read at ingest and the edge acts at delivery. `available` is `textinput::available()`,
-/// a parameter so a host test can drive the TV's answer.
+/// ahead of the `Text` when its `panel` argument is true, and both live text ingresses (`txt:`, `SDL_TEXTINPUT`) pass
+/// this instead of `textinput::available()`; replay delivers the answer that was recorded. Adoption is Search's rule
+/// alone: a panel the OS raised or kept behind Search's back must not eat real typing. Any other owner takes text only
+/// while `Dispatcher::system_keyboard_up` is already true (`text_owner`), so an edge there can only re-raise a keyboard
+/// that a key in the same drain closed: the gate is read at ingest and the edge acts at delivery. `available` is
+/// `textinput::available()`, a parameter so a host test can drive the TV's answer.
 pub(crate) fn text_panel_edge(d: &Dispatcher<AppHost>, available: bool) -> bool {
     available && search_owns_input(d)
 }
