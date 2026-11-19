@@ -1,0 +1,6 @@
+# Signing material and keys never enter git, wherever they sit under tizen/ (a Samsung certificate
+# profile is an author .p12 and a distributor .p12; their passwords go in the environment, not in files).
+*.p12
+*.pfx
+*.pem
+*.key

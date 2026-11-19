@@ -119,11 +119,13 @@ fn cstr_arg(p: *const c_char) -> Option<String> {
 
 /// Create the window, EGL surface, key handlers and render thread. MAIN thread, once, from
 /// `OnCreate`. `data_dir` is the app's writable data directory (the host's `DirectoryInfo.Data`);
-/// `<data_dir>/plx-hello.log` is the log. Returns 0 or one of [`code`].
+/// `<data_dir>/plx-hello.log` is the log. `log_host` is `a.b.c.d:port` (the host read it from the
+/// package's `res/log-host.txt`) to mirror every log line to over UDP, or null/empty for no network
+/// log. Returns 0 or one of [`code`].
 #[no_mangle]
-pub extern "C" fn plx_tizen_create(data_dir: *const c_char) -> i32 {
+pub extern "C" fn plx_tizen_create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
     guard("plx_tizen_create", code::PANIC, || {
-        let rc = create(data_dir);
+        let rc = create(data_dir, log_host);
         if rc == 0 {
             plog!("plx_tizen_create -> 0 (OK)");
         } else {
@@ -168,12 +170,13 @@ pub extern "C" fn plx_tizen_locale(loc: *const c_char) {
     });
 }
 
-fn create(data_dir: *const c_char) -> i32 {
+fn create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
     let Some(dir) = cstr_arg(data_dir) else {
         log::to_stderr("plx: plx_tizen_create called with a null data_dir\n");
         return code::BAD_ARGS;
     };
-    let (path, opened) = log::init(&dir);
+    let log_host = cstr_arg(log_host);
+    let (path, opened) = log::init(&dir, log_host.as_deref());
     std::panic::set_hook(Box::new(|info| plog!("panic: {info}")));
     sysinfo::log_environment(&dir);
     plog!("log file {path} opened={opened}");
@@ -360,4 +363,43 @@ fn terminate() {
     render::teardown(&rt.egl, &rt.egl_ctx);
     rt.window.destroy(&rt.ecore);
     plog!("terminate: done");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+    use std::net::UdpSocket;
+
+    /// The whole path a TV tester relies on: the host's two arguments reach the log, and every line
+    /// of the file also arrives as a numbered datagram. On a development machine `create` stops at
+    /// the missing Ecore libraries (DLOPEN); the lines before that are what is compared. This is the
+    /// only test that calls `log::init`, which is process-global and first-call-wins.
+    #[test]
+    fn create_mirrors_every_log_line_to_the_log_host() {
+        let rx = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        rx.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let host = CString::new(format!("127.0.0.1:{}", rx.local_addr().unwrap().port())).unwrap();
+        let dir = std::env::temp_dir().join(format!("plx-hello-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_c = CString::new(dir.to_str().unwrap()).unwrap();
+
+        let rc = plx_tizen_create(dir_c.as_ptr(), host.as_ptr());
+        assert_ne!(rc, code::BAD_ARGS);
+
+        let mut got = Vec::new();
+        let mut buf = [0u8; 2048];
+        while let Ok(n) = rx.recv(&mut buf) {
+            got.push(String::from_utf8(buf[..n].to_vec()).unwrap());
+        }
+        let file = std::fs::read_to_string(dir.join("plx-hello.log")).unwrap();
+        let lines: Vec<&str> = file.lines().collect();
+        assert!(lines.len() > 5, "the log has its header lines: {lines:?}");
+        assert_eq!(got.len(), lines.len(), "one datagram per file line");
+        for (i, (d, l)) in got.iter().zip(&lines).enumerate() {
+            assert_eq!(d, &format!("{i:06} {l}\n"), "datagram {i}");
+        }
+        assert!(lines[0].contains("network log: UDP -> 127.0.0.1:"), "{}", lines[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

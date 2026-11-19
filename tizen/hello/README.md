@@ -26,7 +26,8 @@ and a separate Rust thread owns the EGL context and draws.
 tizen/hello/
   plx/                  Rust crate -> libplx.so (own [workspace], only dependency: libc)
   host/PlxHello/        C# host + tizen-manifest.xml (package and app id: plxnhello0)
-  build.sh              builds the .so and the .tpk
+  build.sh              builds the .so and the .tpk (signed; --log-host adds the network log)
+  log-receiver.py       UDP receiver for the network log (`nc -klu PORT` also works)
   out/                  build output (gitignored): out/<arch>/libplx.so, out/PlxHello-<arch>.tpk
 ```
 
@@ -42,10 +43,12 @@ tizen/hello/
 | `i686` | the older 32-bit 9.0 emulator image | emulator | Linux, with `gcc-i686-linux-gnu` |
 
 ```sh
+# The .tpk needs the signing variables ("Signing", below); without them these stop before building.
 tizen/hello/build.sh                    # arm: out/arm/libplx.so, out/PlxHello-arm.tpk
 tizen/hello/build.sh --arch x86_64      # in WSL2: out/PlxHello-x86_64.tpk
 tizen/hello/build.sh --arch i686        # in WSL2, for the 9.0 emulator image
-tizen/hello/build.sh --arch x86_64 --so-only    # no .NET (then --tpk-only elsewhere)
+tizen/hello/build.sh --arch x86_64 --log-host 10.0.2.2:9999   # + network log ("The log", below)
+tizen/hello/build.sh --arch x86_64 --so-only    # no .NET, no certificates (then --tpk-only elsewhere)
 ```
 
 Prerequisites, all user-local, nothing system-wide:
@@ -62,20 +65,56 @@ DT_NEEDED, highest glibc symbol version, exports, `unzip -l`) and fails on a sur
 needing a newer glibc than the target has (`PLX_MAX_GLIBC`) is a failure: on a WSL2 distro newer than
 the emulator, see `X86_SYSROOT` in the script header.
 
-The `.tpk` is signed with the SDK's default developer certificate. Re-sign it per TV with
-Apps2Samsung (below). No certificate is ever committed.
+## Signing
+
+The `.tpk` must be signed with a **Samsung certificate profile**, and `build.sh` refuses to build it
+without one (it names the missing variables). It never falls back to the SDK's bundled certificates:
+Tizen.NET.Sdk 1.1.9's author certificate expired 2019-01-01 and its distributor ("Tizen Public
+Distributor Signer") 2022-10-27, and a TV image trusts only Samsung "VD" distributor roots for
+public/partner packages, so install fails with `Check certificate error` (118,-12) on any other
+certificate. `--so-only` needs none of this.
+
+1. Create the profile with the Samsung Certificate Extension (Tizen Studio's Certificate Manager, or
+   the Tizen extension for VS Code). It needs a Samsung Developer login. Ask for a Samsung author
+   certificate and a **Public** distributor certificate, and add the **DUID of every device** you will
+   install on, the emulator and the TV (a device missing from the profile refuses the package). Where
+   the extension leaves the files, and where it records the distributor password, is not verified here.
+2. DUIDs: emulator `sdb shell 0 getduid` (plain `sdb shell` prints nothing on TV 10.0, see below). A
+   retail TV has no sdb shell; the extension's device list reads its DUID over `sdb connect <tv-ip>`
+   (not verified for a retail set).
+3. Build with the profile's two `.p12` files and their passwords. Passwords are environment-only (no
+   flag: shell history and `ps`), go to MSBuild as environment properties and are never printed;
+   `*.p12`, `*.pfx`, `*.pem` and `*.key` are gitignored under `tizen/`:
+
+```sh
+export PLX_TIZEN_AUTHOR_P12=/path/author.p12      PLX_TIZEN_DIST_P12=/path/distributor.p12
+read -rs PLX_TIZEN_AUTHOR_PASS; read -rs PLX_TIZEN_DIST_PASS   # no echo, not in history
+export PLX_TIZEN_AUTHOR_PASS PLX_TIZEN_DIST_PASS
+tizen/hello/build.sh --arch x86_64 --log-host 10.0.2.2:9999
+```
+
+The paths may be given as `--author-p12 FILE` / `--dist-p12 FILE` instead. A new device means a new
+profile (with its DUID) and a repackage: `build.sh --arch X --tpk-only`, no recompiling.
+
+Measured with throwaway self-made certificates on the Mac (no device): the SDK's signer reads a
+`.p12` made with OpenSSL 3+ defaults (AES-256, SHA-256 MAC) as `PKCS12 key store MAC invalid - wrong
+password or corrupted file` whatever the password; the same certificate re-exported with
+`-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1` signs. A Samsung-issued file that gives
+that error with the right password needs the same re-export. Passwords with `% ; $ @ ( ) * ? '` are
+escaped for MSBuild by `build.sh` and sign correctly.
 
 ## Install and run
 
-**Real TV (Developer Mode on):** sideload `out/PlxHello-arm.tpk` with Apps2Samsung, which re-signs it
-for the TV. Launch "PlxHello" from the TV's apps.
+**Real TV (Developer Mode on, its DUID in the profile):** `sdb connect <tv-ip>`, then
+`sdb install out/PlxHello-arm.tpk` (Apps2Samsung also sideloads; not tried with a signed package).
+Launch "PlxHello" from the TV's apps.
 
 **Emulator:** the Tizen SDK 10.0 CLI installer plus `package-manager-cli` with **TV Extension 10.0**
 (Tizen Studio, the IDE, is deprecated). Then, with the emulator running:
 
 ```sh
 sdb install out/PlxHello-x86_64.tpk       # i686 for the 9.0 image
-sdb shell app_launcher -s plxnhello0      # unverified command; or launch it from the app list
+sdb shell 0 execute plxnhello0            # or launch it from the app list
 ```
 
 The emulator cannot test `Tizen.Multimedia` playback; this step does not need it.
@@ -86,16 +125,30 @@ The file is `<app data dir>/plx-hello.log`, appended and flushed per line, writt
 (`[host ...]`) and the library (`[plx +secs tTID]`). The data dir is the host's `DirectoryInfo.Data`
 (its path is the first host line); typically `/opt/usr/home/owner/apps_rw/plxnhello0/data/`.
 
-- Emulator: `sdb pull /opt/usr/home/owner/apps_rw/plxnhello0/data/plx-hello.log`, or
-  `sdb shell cat` it. Host lines also go to dlog: `sdb dlog PLXHELLO`.
-- Retail TV: there is no `sdb shell`. `sdb connect <tv-ip>` works in Developer Mode and
-  `sdb pull` of that file may or may not be allowed (not verified). If it is not, report what you saw
-  on screen (below); that alone answers questions 1 to 4.
+**That file cannot be read from the device.** On the TV 10.0 emulator `sdb shell <cmd>` prints nothing
+(only `sdb shell 0 <cmd>` works), `sdb dlog` is empty and `sdb pull` of the app's data dir is
+refused; a retail TV has no sdb shell and no dlog at all. So the log leaves the device over the
+network: `--log-host IPV4:PORT` writes the address into the package (`res/log-host.txt`, generated,
+gitignored) and the app sends **every log line as one UDP datagram** to it: the library's lines as
+`<seq> <line>`, the C# host's own lines (so a failed .so load still shows) as `h<seq> <line>`. `seq`
+counts per sender and per line, so a gap is a lost datagram. Sends are non-blocking and failures are
+ignored; without `--log-host` nothing is sent. IPv4 literal only (no name lookup).
+
+Receive on the machine named in the address, before launching the app:
+
+```sh
+nc -klu 9999                       # raw lines; or: python3 tizen/hello/log-receiver.py 9999 (marks gaps)
+```
+
+From the emulator the host machine is usually `10.0.2.2` (QEMU's user-mode network); from a real TV use
+the LAN address of the receiving machine, on the same network, with inbound UDP allowed through its
+firewall. The first lines say `network log: UDP -> ...` or why it is off. If nothing arrives, the
+screen colour (below) still answers questions 1 to 4.
 
 ## What to report
 
-1. How you launched it (Apps2Samsung, or the TV's own app menu), whether the app started (host) and
-   whether anything appeared. Did the log get written?
+1. How you launched it (`sdb`, Apps2Samsung, or the TV's own app menu), whether the app started (host)
+   and whether anything appeared. Did datagrams arrive at the receiver? Paste its output (it is the log).
 2. Did the .so load? If not, paste the `[host ...]` lines (`DllNotFoundException`, the `preload dlopen
    ... FAILED:` text is the loader's own reason).
 3. Did the window turn orange? Did it stay on screen?
@@ -111,8 +164,13 @@ The file is `<app data dir>/plx-hello.log`, appended and flushed per line, writt
    6 to 11 Ecore/window/key handlers, 12 to 16 EGL, 17 to 19 the render thread. Host-side: -1 .so not
    found, -2 export missing, -3 other.
 
-## Unverified (nothing here has run on a device)
+## Unverified (the app has not run yet: the first emulator install stopped at signing)
 
+- The network log on a device: that the host finds `res/log-host.txt` through `DirectoryInfo.Resource`
+  (the build verifies the file is in the package, nothing more), that the `internet` privilege lets a
+  UDP `sendto` through, and that a TV's network path reaches the receiver. On the Mac only: the sender
+  against a loopback receiver (`cargo test` in `plx/`), the signing path with throwaway certificates,
+  and that the C# host compiles.
 - The `Ecore_Event_Key` layout. `keyname`, `key` and `keycode` are read from the upstream EFL header's
   offsets; Samsung's fork may differ, so the first events are also hex-dumped.
 - Every Ecore/EGL symbol name and signature is copied from flutter-tizen's embedder, not checked

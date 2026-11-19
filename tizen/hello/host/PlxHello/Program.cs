@@ -8,9 +8,17 @@
 // Everything the host learns is also written to <data>/plx-hello.log (the native side appends to
 // the same file), because on a retail TV the log is the only instrument: if the .so never loads,
 // the [host] lines below are the only evidence of why.
+//
+// Nothing can read that file or dlog off a retail TV (and on the TV 10.0 emulator `sdb pull` of it is
+// refused), so when the package carries res/log-host.txt (build.sh --log-host IPV4:PORT) every line is
+// also sent as one UDP datagram to that address, and the address is handed to the library so it does
+// the same for its own lines. Host datagrams are "h<seq> <line>", the library's "<seq> <line>".
 
 using System;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text;
 using Tizen.Applications;
 
 namespace PlxHello
@@ -23,8 +31,11 @@ namespace PlxHello
         // has SONAME libplx.so, so the bare-name probe then matches the loaded object).
         private const string Lib = "plx";
 
+        // logHost: "a.b.c.d:port" to mirror the library's log over UDP, or null for no network log.
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern int plx_tizen_create([MarshalAs(UnmanagedType.LPStr)] string dataDir);
+        internal static extern int plx_tizen_create(
+            [MarshalAs(UnmanagedType.LPStr)] string dataDir,
+            [MarshalAs(UnmanagedType.LPStr)] string logHost);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void plx_tizen_pause();
@@ -51,6 +62,63 @@ namespace PlxHello
         internal static extern IntPtr dlerror();
     }
 
+    // The host's UDP mirror of its own log lines. Non-blocking; every failure is ignored.
+    internal static class NetLog
+    {
+        private static readonly object Gate = new object();
+        private static Socket sock;
+        private static IPEndPoint to;
+        private static long seq;
+
+        // "a.b.c.d:port" (IPv4). Returns null when the sink is on, else the reason it is not.
+        internal static string Start(string hostPort)
+        {
+            try
+            {
+                int colon = hostPort.LastIndexOf(':');
+                IPAddress ip;
+                int port;
+                if (colon <= 0
+                    || !IPAddress.TryParse(hostPort.Substring(0, colon), out ip)
+                    || ip.AddressFamily != AddressFamily.InterNetwork
+                    || !int.TryParse(hostPort.Substring(colon + 1), out port)
+                    || port < 1 || port > 65535)
+                {
+                    return "expected IPV4:PORT, got \"" + hostPort + "\"";
+                }
+                var s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                s.Blocking = false;
+                lock (Gate)
+                {
+                    to = new IPEndPoint(ip, port);
+                    sock = s;
+                }
+                return null;
+            }
+            catch (Exception e)
+            {
+                return e.GetType().Name + ": " + e.Message;
+            }
+        }
+
+        internal static void Send(string line)
+        {
+            try
+            {
+                lock (Gate)
+                {
+                    if (sock == null) return;
+                    // Counted per attempt, so a failed send still leaves a visible gap.
+                    string text = "h" + (seq++).ToString("D6") + " " + line + "\n";
+                    byte[] bytes = Encoding.UTF8.GetBytes(text);
+                    if (bytes.Length > 1400) Array.Resize(ref bytes, 1400);
+                    sock.SendTo(bytes, SocketFlags.None, to);
+                }
+            }
+            catch (Exception) { }
+        }
+    }
+
     internal class PlxApp : CoreUIApplication
     {
         // Host-side failure codes (native codes are positive; see plx/src/lib.rs).
@@ -61,10 +129,12 @@ namespace PlxHello
         private static string logPath;
         private bool nativeUp;
 
-        // Lines are mirrored to dlog (`sdb dlog PLXHELLO`) and to the shared log file.
+        // Lines are mirrored to dlog (`sdb dlog PLXHELLO`), to the shared log file and, when the
+        // package names a log host, over UDP.
         internal static void Log(string msg)
         {
             string line = "[host " + DateTime.Now.ToString("HH:mm:ss.fff") + "] " + msg;
+            NetLog.Send(line);
             try { Tizen.Log.Info("PLXHELLO", line); } catch (Exception) { }
             try
             {
@@ -82,10 +152,12 @@ namespace PlxHello
 
             string dataDir = this.DirectoryInfo.Data;
             logPath = System.IO.Path.Combine(dataDir, "plx-hello.log");
+            string logHost = StartNetLog(out string netNote);
             Log("host started: OnCreate on the main thread; data dir " + dataDir);
+            Log(netNote);
             LogEnvironment();
 
-            int rc = CreateNative(dataDir);
+            int rc = CreateNative(dataDir, logHost);
             if (rc != 0)
             {
                 Log("native create FAILED rc=" + rc + " (native codes: plx/src/lib.rs; host: -1 dll not found, -2 entry point, -3 other). Exiting.");
@@ -128,12 +200,42 @@ namespace PlxHello
             if (nativeUp) Native.plx_tizen_locale(e.Locale);
         }
 
+        // <app>/res/log-host.txt, written by build.sh --log-host, holds "a.b.c.d:port". Returns the
+        // address when the host's UDP log started (null when there is no file or it is unusable), and
+        // a one-line note for the log either way.
+        private string StartNetLog(out string note)
+        {
+            string path = System.IO.Path.Combine(this.DirectoryInfo.Resource, "log-host.txt");
+            try
+            {
+                if (!System.IO.File.Exists(path))
+                {
+                    note = "network log: off (no " + path + ")";
+                    return null;
+                }
+                string hostPort = System.IO.File.ReadAllText(path).Trim();
+                string err = NetLog.Start(hostPort);
+                if (err != null)
+                {
+                    note = "network log: OFF, unusable log host in " + path + ": " + err;
+                    return null;
+                }
+                note = "network log: UDP -> " + hostPort + " from " + path + " (host lines h<seq>, library lines <seq>)";
+                return hostPort;
+            }
+            catch (Exception e)
+            {
+                note = "network log: OFF, " + e.GetType().Name + ": " + e.Message;
+                return null;
+            }
+        }
+
         // The one P/Invoke that matters, with every way it can fail on a device recorded.
-        private int CreateNative(string dataDir)
+        private int CreateNative(string dataDir, string logHost)
         {
             try
             {
-                return Native.plx_tizen_create(dataDir);
+                return Native.plx_tizen_create(dataDir, logHost);
             }
             catch (DllNotFoundException e)
             {
@@ -142,7 +244,7 @@ namespace PlxHello
                 try
                 {
                     Log("retrying plx_tizen_create after preload");
-                    return Native.plx_tizen_create(dataDir);
+                    return Native.plx_tizen_create(dataDir, logHost);
                 }
                 catch (DllNotFoundException e2)
                 {
