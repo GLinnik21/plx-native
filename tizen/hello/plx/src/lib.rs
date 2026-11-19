@@ -170,7 +170,7 @@ pub extern "C" fn plx_tizen_locale(loc: *const c_char) {
 
 fn create(data_dir: *const c_char) -> i32 {
     let Some(dir) = cstr_arg(data_dir) else {
-        eprintln!("plx: plx_tizen_create called with a null data_dir");
+        log::to_stderr("plx: plx_tizen_create called with a null data_dir\n");
         return code::BAD_ARGS;
     };
     let (path, opened) = log::init(&dir);

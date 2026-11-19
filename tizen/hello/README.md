@@ -94,15 +94,19 @@ The file is `<app data dir>/plx-hello.log`, appended and flushed per line, writt
 
 ## What to report
 
-1. Did the app start (host) and did anything appear? Did the log get written?
+1. How you launched it (Apps2Samsung, or the TV's own app menu), whether the app started (host) and
+   whether anything appeared. Did the log get written?
 2. Did the .so load? If not, paste the `[host ...]` lines (`DllNotFoundException`, the `preload dlopen
    ... FAILED:` text is the loader's own reason).
 3. Did the window turn orange? Did it stay on screen?
 4. Do keys arrive? Press arrows, OK, Back, colour buttons, media keys: does the colour change?
    Paste the `key ...` lines, the `key raw event` lines and any `window focus` lines.
-5. These lines, always: `uname machine=`, `arch(compile-time)`, `glibc`, the `platform.version` and
+5. The `OnPause`, `OnResume`, `OnTerminate` and `lifecycle:` lines. Nuvio's notes record Tizen 8/9
+   pausing an app about 3 s after a launch from the TV menu (not from Apps2Samsung); a pause freezes the
+   colour and looks like a failed draw.
+6. These lines, always: `uname machine=`, `arch(compile-time)`, `glibc`, the `platform.version` and
    `model_name` host lines, `cpuinfo`, `EGL vendor=`, `GL vendor=/renderer=`, `screen size`.
-6. If it failed: the `plx_tizen_create FAILED -> N (NAME)` line. Codes are in `plx/src/lib.rs`
+7. If it failed: the `plx_tizen_create FAILED -> N (NAME)` line. Codes are in `plx/src/lib.rs`
    (`code`): 4 a library did not open, 5 a symbol is missing (the `MISSING (required)` lines name it),
    6 to 11 Ecore/window/key handlers, 12 to 16 EGL, 17 to 19 the render thread. Host-side: -1 .so not
    found, -2 export missing, -3 other.

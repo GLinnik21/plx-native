@@ -62,7 +62,6 @@ esac
 TRIPLE_ENV="$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')"   # for CARGO_TARGET_<TRIPLE>_LINKER
 SO="$OUT/$ARCH/libplx.so"
 TPK="$OUT/PlxHello-$ARCH.tpk"
-mkdir -p "$OUT/$ARCH"
 
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "build.sh: $*" >&2; exit 1; }
@@ -116,6 +115,7 @@ build_so() {
   say "cargo ${plus} build --release --target $TRIPLE"
   # shellcheck disable=SC2086
   cargo $plus build --release --manifest-path "$PLX/Cargo.toml" --target "$TRIPLE"
+  mkdir -p "$OUT/$ARCH"
   cp "$PLX/target/$TRIPLE/release/libplx.so" "$SO"
 
   verify_so "$bin_prefix"
@@ -183,6 +183,7 @@ build_tpk() {
   (cd "$HOST" && dotnet build PlxHello.csproj -c Release -nologo)
   local built; built="$(ls "$HOST"/bin/Release/tizen80/*.tpk 2>/dev/null | head -1 || true)"
   [ -n "$built" ] || die "dotnet produced no .tpk"
+  mkdir -p "$OUT"
   cp "$built" "$TPK"
 
   say "verify $TPK"

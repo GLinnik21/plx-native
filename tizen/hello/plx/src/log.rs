@@ -19,6 +19,12 @@ struct Sink {
 
 static SINK: OnceLock<Mutex<Sink>> = OnceLock::new();
 
+/// Mirror to stderr WITHOUT `eprint!`: that panics when the write fails (a closed stderr), and
+/// logging also runs inside the panic hook, where a second panic aborts the process with no evidence.
+pub fn to_stderr(text: &str) {
+    let _ = std::io::stderr().write_all(text.as_bytes());
+}
+
 /// Open (append) `<dir>/plx-hello.log`. Idempotent; the first call wins. Returns the path and
 /// whether the file opened.
 pub fn init(dir: &str) -> (String, bool) {
@@ -26,7 +32,7 @@ pub fn init(dir: &str) -> (String, bool) {
     let file = OpenOptions::new().create(true).append(true).open(&path);
     let ok = file.is_ok();
     if let Err(e) = &file {
-        eprintln!("plx: cannot open log {path}: {e}");
+        to_stderr(&format!("plx: cannot open log {path}: {e}\n"));
     }
     let _ = SINK.set(Mutex::new(Sink {
         file: file.ok(),
@@ -50,7 +56,7 @@ fn tid() -> i64 {
 /// Write one line. Never panics, never blocks on anything but the file.
 pub fn line(msg: &str) {
     let Some(m) = SINK.get() else {
-        eprintln!("plx: {msg}");
+        to_stderr(&format!("plx: {msg}\n"));
         return;
     };
     let mut s = m.lock().unwrap_or_else(|e| e.into_inner());
@@ -60,7 +66,7 @@ pub fn line(msg: &str) {
         let _ = f.write_all(text.as_bytes());
         let _ = f.flush();
     }
-    eprint!("{text}");
+    to_stderr(&text);
 }
 
 /// Seconds since the Unix epoch, for the header line (the host's clock may be unset on a TV).

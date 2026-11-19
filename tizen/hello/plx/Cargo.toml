@@ -14,7 +14,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The only dependency. Every Tizen library (Ecore, wayland-egl, EGL, GLES) is dlopen'd at runtime,
-# so the .so's DT_NEEDED stays libc/libdl/libpthread/libm/libgcc_s.
+# so the .so's DT_NEEDED is only the C runtime. Measured on the ARM build: libgcc_s, librt, libpthread,
+# libdl, libc and ld-linux (the TLS resolver); no Tizen library.
 libc = "0.2"
 
 [workspace]

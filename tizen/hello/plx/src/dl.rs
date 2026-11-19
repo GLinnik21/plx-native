@@ -1,7 +1,8 @@
 //! Runtime library binding: `dlopen` a short list of SONAME candidates, then resolve symbols by
-//! name. No Tizen library is linked, so `libplx.so`'s DT_NEEDED stays libc/libdl/libpthread/libm/
-//! libgcc_s whatever the firmware ships. (House style: `rust-modules/base/src/dynlib.rs`; this file
-//! shares no code with it, because the crate is a standalone throwaway.)
+//! name. No Tizen library is linked, so `libplx.so`'s DT_NEEDED is only the C runtime (libgcc_s,
+//! librt, libpthread, libdl, libc and ld-linux on the ARM build) whatever the firmware ships.
+//! (House style: `rust-modules/base/src/dynlib.rs`; this file shares no code with it, because the
+//! crate is a standalone throwaway.)
 //!
 //! Every dlopen attempt and every symbol resolution is logged: on a television the log is the only
 //! instrument there is.
