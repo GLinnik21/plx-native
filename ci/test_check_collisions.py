@@ -75,9 +75,10 @@ class ConcurrentSteps(unittest.TestCase):
         # so a test that writes `plxnative-<trigger>` there is visible to every other test process
         # on the machine. Two of them did, and a second checkout's player test read the armed
         # `plxnative-failtest` ("left: []  right: [Transport(None)]", 119 of 150 side-by-side runs).
-        # Tests arm triggers through `plx_base::devtrig::with_private_triggers` instead. The one
-        # production use below is the remote FIFO's path, which is not a test.
-        allowed = {'rust-modules/src/remote.rs'}
+        # Tests arm triggers through `plx_base::devtrig::with_private_triggers` instead. The two
+        # production uses below are the remote FIFO's and the typed control socket's paths, neither
+        # a test (the socket's tests never call `start()`; its bind is runtime-gated on devtrig).
+        allowed = {'rust-modules/src/remote.rs', 'rust-modules/src/api_sock.rs'}
         hits = []
         for path in (ROOT / 'rust-modules').rglob('*.rs'):
             rel = path.relative_to(ROOT).as_posix()

@@ -134,9 +134,11 @@ enum What {
     /// reaches `playing`; `play_failed` on the engine's verdict, a supersession, a
     /// staging failure, or the deadline.
     Play { rk: String },
-    /// `seek:<ms>` — answers `seek_landed` when the position settles within 3 s of the
-    /// target; `seek_failed` when the session leaves playback or on the deadline.
-    Seek { ms: u64 },
+    /// `seek:<ms>` — answers `seek_landed` once the engine has ACTUALLY sought
+    /// (`seen_seeking` — it enters `seeking` on the frame `request_seek` runs) AND the
+    /// position settles within 3 s of the target; `seek_failed` when the session leaves
+    /// playback or on the deadline.
+    Seek { ms: u64, seen_seeking: bool },
     /// `profile:<index>` — the switch is `profiles → switching → ready|error`, so the
     /// entry waits OUT the `switching` leg: `ready` is the seated profile (with its
     /// title), `error` is the flow's error line, a return to the roster after the switch
@@ -269,7 +271,14 @@ unsafe fn resolve_awaiting(app: &mut crate::app::App, st: plx_media::player::Pla
     while let Some(mut f) = guard.pop_front() {
         let r = match &mut f.what {
             What::Play { rk } => {
-                if st == plx_media::player::PlaybackState::Playing {
+                // `play_started` must be THIS request's item: the seated item's own rk (the
+                // metadata view's, not the request's echo) has to match the rk that was asked
+                // for — otherwise a play for B parked while A is still on screen answers on
+                // the very next frame, before B is even staged.
+                let seated_rk = views.metadata.playing().map(|p| p.rk.clone());
+                if st == plx_media::player::PlaybackState::Playing
+                    && play_started_gates(seated_rk, rk)
+                {
                     let title = views
                         .metadata
                         .now_playing()
@@ -300,7 +309,12 @@ unsafe fn resolve_awaiting(app: &mut crate::app::App, st: plx_media::player::Pla
                     None
                 }
             }
-            What::Seek { ms } => {
+            What::Seek { ms, mut seen_seeking } => {
+                // The engine's own `seeking` state gates the landing: `request_seek` leaves
+                // the engine in `seeking` (observable on the frame it runs), so the 3 s
+                // position window alone — which could already hold for the target BEFORE any
+                // seek runs — answers only for a seek that actually ran and then settled.
+                seen_seeking |= st == plx_media::player::PlaybackState::Seeking;
                 if !is_seated(st) {
                     Some(crate::api_sock::Reply::ok(
                         crate::api_sock::Outcome::SeekFailed {
@@ -308,7 +322,7 @@ unsafe fn resolve_awaiting(app: &mut crate::app::App, st: plx_media::player::Pla
                             reason: format!("the session left playback (state {state_name})"),
                         },
                     ))
-                } else if pos_ms.abs_diff(*ms as i64) <= 3_000 {
+                } else if seek_landed(seen_seeking, pos_ms, *ms) {
                     Some(crate::api_sock::Reply::ok(crate::api_sock::Outcome::SeekLanded {
                         ms: *ms,
                         pos_ms,
@@ -416,7 +430,9 @@ unsafe fn resolve_awaiting(app: &mut crate::app::App, st: plx_media::player::Pla
             }
         };
         if let Some(r) = r {
-            crate::api_sock::reply(f.id, r);
+            // Every outcome this frame judges is stamped with THIS frame's playback state —
+            // the state the result belongs to.
+            crate::api_sock::reply(f.id, r.with_state(state_name));
         } else {
             keep.push_back(f);
         }
@@ -434,6 +450,12 @@ static UP_SINCE: OnceLock<Instant> = OnceLock::new();
 /// Boot init: the surface is the FIFO itself, so there is nothing to start — this line is
 /// the boot-log answer to "which door does this build have".
 pub(crate) fn init() {
+    // The frame thread's door: the socket (crate::api_sock) and the shot capture
+    // (crate::shot) report through the leaf crate::api_wire and never name this module —
+    // the module-cycle ratchet. Installed before the socket can accept anything, so the
+    // door's own pre-install buffer stays empty in production (it exists for the socket's
+    // round-trip test, which runs without boot).
+    crate::api_wire::install(push_req, shot_landed, shot_failed);
     log("api: FIFO-only surface (devtrig builds) — tokens `api:*`, `state`, `shot`; no HTTP listener");
 }
 
@@ -616,7 +638,11 @@ pub(crate) unsafe fn execute_request(
     use crate::api_sock::{ApiError, Outcome, Reply, Verb};
     let id = req.id;
     let st = plx_media::player::state(&app.player.session);
-    let no_engine = Reply::err(ApiError::NoEngine { state: state_str(st) });
+    let st_name = state_str(st);
+    let no_engine = Reply::err(ApiError::NoEngine { state: st_name });
+    // Every reply this frame produces is stamped with THIS frame's playback state — the
+    // state the result belongs to (a reply is a judgment, not an acknowledgement).
+    let answer = |id: u64, r: Reply| crate::api_sock::reply(id, r.with_state(st_name));
     match req.verb {
         Verb::Play { rk } => {
             // Commit, then park: the response is the OUTCOME — the first playing frame,
@@ -627,7 +653,7 @@ pub(crate) unsafe fn execute_request(
             if accepted {
                 arm_awaiting(id, What::Play { rk: rk.clone() });
             } else {
-                crate::api_sock::reply(id, Reply::err(ApiError::WorkerRefused));
+                answer(id, Reply::err(ApiError::WorkerRefused));
             }
         }
         Verb::Seek { ms } => {
@@ -644,19 +670,19 @@ pub(crate) unsafe fn execute_request(
                     );
                     // Parked: the response is the LANDING (the position within 3 s of
                     // the target), not this commit.
-                    arm_awaiting(id, What::Seek { ms });
+                    arm_awaiting(id, What::Seek { ms, seen_seeking: false });
                 } else {
-                    crate::api_sock::reply(id, Reply::err(ApiError::Internal {
+                    answer(id, Reply::err(ApiError::Internal {
                         reason: "the seek target overflows nanoseconds".to_string(),
                     }));
                 }
             } else {
-                crate::api_sock::reply(id, no_engine);
+                answer(id, no_engine);
             }
         }
         Verb::Audio { sid } => {
             let ok = handle_track(app, fr, &sid.to_string(), true);
-            crate::api_sock::reply(
+            answer(
                 id,
                 if ok {
                     Reply::ok(Outcome::TrackCommitted { track: "audio", sid })
@@ -667,7 +693,7 @@ pub(crate) unsafe fn execute_request(
         }
         Verb::Sub { sid } => {
             let ok = handle_track(app, fr, &sid.to_string(), false);
-            crate::api_sock::reply(
+            answer(
                 id,
                 if ok {
                     Reply::ok(Outcome::TrackCommitted { track: "sub", sid })
@@ -678,7 +704,7 @@ pub(crate) unsafe fn execute_request(
         }
         Verb::Quality { rung } => {
             let ok = handle_quality(app, fr, &rung);
-            crate::api_sock::reply(
+            answer(
                 id,
                 if ok {
                     Reply::ok(Outcome::QualityCommitted { rung })
@@ -697,14 +723,14 @@ pub(crate) unsafe fn execute_request(
                 (views.auth.0.phase, views.auth.0.users.len())
             };
             if auth_phase != plx_session::auth::Phase::Profiles {
-                crate::api_sock::reply(
+                answer(
                     id,
                     Reply::err(ApiError::NotOnRoster {
                         phase: format!("{auth_phase:?}").to_lowercase(),
                     }),
                 );
             } else if index >= user_count {
-                crate::api_sock::reply(
+                answer(
                     id,
                     Reply::err(ApiError::NoProfile { index, count: user_count }),
                 );
@@ -722,14 +748,14 @@ pub(crate) unsafe fn execute_request(
         }
         Verb::Pause => {
             let ok = handle_transport(app, fr, false);
-            crate::api_sock::reply(
+            answer(
                 id,
                 if ok { Reply::ok(Outcome::Paused) } else { no_engine },
             );
         }
         Verb::Resume => {
             let ok = handle_transport(app, fr, true);
-            crate::api_sock::reply(
+            answer(
                 id,
                 if ok { Reply::ok(Outcome::Resumed) } else { no_engine },
             );
@@ -738,7 +764,7 @@ pub(crate) unsafe fn execute_request(
             // Idempotent: an idle session has nothing to leave, and "stopped" is still
             // the true answer to "is it playing".
             handle_stop(app, fr);
-            crate::api_sock::reply(id, Reply::ok(Outcome::Stopped));
+            answer(id, Reply::ok(Outcome::Stopped));
         }
         Verb::State => {
             let snap = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -748,7 +774,7 @@ pub(crate) unsafe fn execute_request(
                 Some(snapshot) => Reply::ok(Outcome::State { snapshot }),
                 None => Reply::err(ApiError::NoSnapshot),
             };
-            crate::api_sock::reply(id, r);
+            answer(id, r);
         }
         Verb::Shot => {
             // Parked: the response is the CAPTURE (the numbered PNG, written on the
@@ -786,6 +812,22 @@ fn is_seated(st: plx_media::player::PlaybackState) -> bool {
             | plx_media::player::PlaybackState::Seeking
             | plx_media::player::PlaybackState::Playing
     )
+}
+
+/// The `play_started` gate: the seated item's own rk (the metadata view's, not the
+/// request's echo) must match the rk that was asked for — a parked play answers on a
+/// `playing` frame of ITS OWN item only.
+fn play_started_gates(seated_rk: Option<String>, wanted: &str) -> bool {
+    seated_rk.is_some_and(|r| r == wanted)
+}
+
+/// The `seek_landed` gate: the engine must have actually sought (`seen_seeking` — it
+/// passes through `seeking` on the frame `request_seek` runs) AND the position must
+/// have settled within 3 s of the target. The position window alone answered a no-op
+/// seek on the very next frame, because the target can sit inside the window before
+/// any seek runs.
+fn seek_landed(seen_seeking: bool, pos_ms: i64, ms: u64) -> bool {
+    seen_seeking && pos_ms.abs_diff(ms as i64) <= 3_000
 }
 
 /// A FRESH `api:play` request: bump the play-intent generation (a stop, or a later play,
@@ -941,15 +983,11 @@ unsafe fn handle_transport(
 /// even an idle stop: an in-flight PMS fetch for a play request may land after this stop,
 /// and the stale check in [`handle_play_staged`] drops it then.
 unsafe fn handle_stop(app: &mut crate::app::App, _fr: &mut crate::app::run::Frame) -> bool {
-    {
-        let mut intent = PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
-        intent.0 = intent.0.saturating_add(1);
-        intent.1 = true;
-    }
-    // A stop supersedes every play still waiting for its first frame — answer the parked
-    // typed ones now, before the exit ritual tears the session down.
-    drop_plays("superseded by a stop");
-    PENDING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()).take();
+    // Supersede FIRST — even an idle stop: an in-flight PMS fetch for a play request may
+    // land after this stop, and the stale check in [`handle_play_staged`] drops it then.
+    // (The exit ritual also reaches [`exit_supersedes`] through `exit_player`; the extra
+    // bump there is harmless — the generation is monotone.)
+    exit_supersedes();
     let st = plx_media::player::state(&app.player.session);
     if matches!(st, plx_media::player::PlaybackState::Idle) {
         log("api: stop: nothing to leave (state Idle)");
@@ -963,6 +1001,23 @@ unsafe fn handle_stop(app: &mut crate::app::App, _fr: &mut crate::app::run::Fram
         &mut app.pages,
     );
     true
+}
+
+/// Supersede the play intent the way a stop does: bump the generation, record the last
+/// intent as a stop, answer every parked typed play, clear the staging table. Shared by
+/// the typed stop ([`handle_stop`]) and the app-side exits, which all land in
+/// [`crate::app::playback::exit_player`] and reach this through it — without that half,
+/// a PMS fetch still in flight when the player leaves (BACK, the end-of-stream, the STOP
+/// key's own path) would stage and seat an engine afterwards, because the stale check in
+/// [`handle_play_staged`] compares against generations only a typed play or stop bumps.
+pub(crate) fn exit_supersedes() {
+    let mut intent = PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
+    intent.0 = intent.0.saturating_add(1);
+    intent.1 = true;
+    // A supersession retires every play still waiting for its first frame — the parked
+    // typed ones answer now, before the exit ritual tears the session down.
+    drop_plays("superseded by a stop or an app exit");
+    PENDING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 /// `api:audio:<sid>` / `api:sub:<sid>` — find the `playing()` item's track row by PMS
@@ -1004,6 +1059,10 @@ unsafe fn handle_track(
         // remembers nothing, the ladder's raw commit path).
         let ridx = plx_data::metadata::sub_render_ordinal(&item.subs, i);
         let sidecar = s.sidecar_renderable().then(|| (s.key.clone(), s.codec.clone()));
+        // The commit itself is infallible (its own docs): the pick is validated above —
+        // the sid is one of the seated item's sub rows, so the ordinal is in range — and
+        // the sidecar is fetched by `player::sidecar` when the stream loads. So `true`
+        // here is the truthful report: "committed", not "confirmed on screen".
         plx_media::route::commit_subtitle_and_sidecar(
             &mut app.player.session,
             ridx,
@@ -1174,4 +1233,84 @@ pub(crate) unsafe fn publish(app: &mut crate::app::App, fr: &mut crate::app::run
     let json = obj.to_string();
     *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(json);
     let _ = UP_SINCE.get_or_init(Instant::now);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `play_started` gate: the seated item's own rk has to be the one that was
+    /// asked for. `Playing` alone is not enough — a play for B parked while A is still
+    /// on screen must not answer until B is the seated item.
+    #[test]
+    fn play_started_gates_on_the_seated_rk() {
+        assert!(!play_started_gates(None, "r1"), "nothing seated: no answer");
+        assert!(play_started_gates(Some("r1".into()), "r1"), "the seated item IS the request's item");
+        assert!(!play_started_gates(Some("r1".into()), "r2"), "another item is seated: not this request's start");
+    }
+
+    /// The `seek_landed` gate: the 3 s position window alone could ALREADY hold for the
+    /// target before any seek runs (a target within 3 s of the current position), so a
+    /// landing additionally requires the engine to have actually passed through
+    /// `seeking`.
+    #[test]
+    fn seek_landed_requires_a_real_seek() {
+        // Inside the window, but no seek ran: not a landing.
+        assert!(!seek_landed(false, 1_000, 1_000));
+        assert!(!seek_landed(false, 2_900, 0));
+        // The seek ran and the position settled inside the window: a landing.
+        assert!(seek_landed(true, 2_900, 0));
+        assert!(seek_landed(true, 0, 2_900));
+        assert!(seek_landed(true, 3_000, 0));
+        // The seek ran but the position has not settled inside the window yet.
+        assert!(!seek_landed(true, 3_001, 0));
+        assert!(!seek_landed(true, 0, 3_001));
+    }
+
+    /// An app exit supersedes an in-flight typed play the way a typed stop does: the
+    /// parked play is retired (answered `play_failed`), the staged table is cleared,
+    /// the play-intent generation is bumped and recorded as a stop — so a PMS fetch
+    /// still in flight when the player leaves can no longer seat an engine afterwards.
+    /// A parked seek is NOT a play: its own resolution answers it when the frame side
+    /// sees the session leave playback. (This is the only test that touches the
+    /// AWAITING / PLAY_INTENT / PENDING_PLAYS statics, so it runs the sequence alone.)
+    #[test]
+    fn exit_supersedes_retires_parked_plays() {
+        AWAITING.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        *PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner()) = (7, false);
+
+        arm_awaiting(1, What::Play { rk: "r1".into() });
+        arm_awaiting(2, What::Seek { ms: 1_000, seen_seeking: false });
+
+        exit_supersedes();
+
+        let (gen, last_stop) = *PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(gen, 8, "the exit bumps the generation");
+        assert!(last_stop, "the exit records a stop");
+        assert!(
+            PENDING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+            "the staged table is cleared"
+        );
+
+        let parked: Vec<u64> = AWAITING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(parked, vec![2], "the play is retired, the seek stays parked for its own resolution");
+
+        // The parked table is bounded the way the command queue is: a flood evicts the
+        // OLDEST entry (answered `queue_full` — dropped here, there is no socket in a
+        // unit test) instead of growing without limit.
+        for id in 3..=100 {
+            arm_awaiting(id, What::Shot);
+        }
+        let table = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(table.len(), AWAITING_MAX, "the table holds at its cap");
+        assert_eq!(table.front().expect("capped table is non-empty").id, 100u64 - AWAITING_MAX as u64 + 1,
+            "the evicted entries are the oldest ones");
+        drop(table);
+        AWAITING.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
 }

@@ -1833,7 +1833,9 @@ pub(crate) unsafe fn construct(
         super::adapters::poster::init();
         crate::capture::init(); // dev live UI capture stream
     }
+    #[cfg(feature = "devtriggers")]
     crate::api::init(); // command API — both transports are devtrig-only; a release build has no door at all (see api.rs's doc)
+    #[cfg(feature = "devtriggers")]
     crate::api_sock::start(); // the typed control surface — the UDS socket beside the FIFO (see api_sock.rs's doc)
 
     // Any dev trigger under /tmp marks the boot as automated (the harness token override,

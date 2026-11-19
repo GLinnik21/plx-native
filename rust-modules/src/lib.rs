@@ -14,8 +14,16 @@
 #[cfg(all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"),
     not(any(feature = "play-uri", feature = "play-feed"))))]
 compile_error!("native playback requires play-uri or play-feed");
+// The command API surface is a devtrig door: like `a11y_state` and `anim_diagnostics`, the
+// modules compile only into devtriggers builds — a stable (non-devtriggers) build links none of
+// it and pays none of its per-frame cost. The declarations stay unconditional where they are
+// the app itself; only the doors are gated.
+#[cfg(feature = "devtriggers")]
 mod api; // command API: a FIFO-only surface for an agent (an LLM over SSH, a test harness) — see the module doc
+#[cfg(feature = "devtriggers")]
 mod api_sock; // the typed control surface: a UDS socket beside the FIFO — typed requests, structured outcomes and errors — see the module doc
+#[cfg(feature = "devtriggers")]
+mod api_wire; // the typed surface's request types + the frame thread's single intake — a leaf the socket and the shot report through, so neither routes back into `api` (the module-cycle ratchet); see the module doc
 mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
@@ -38,6 +46,7 @@ mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound comm
 #[cfg(test)]
 mod release_line;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
+#[cfg(feature = "devtriggers")]
 mod shot; // screenshots: read the frame back as a PNG — the simulator's file capture, and on
 // the television the command API's shot door (`shot-<N>.png` in the instance root); see the module doc
 mod system;

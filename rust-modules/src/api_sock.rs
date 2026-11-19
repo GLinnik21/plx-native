@@ -56,41 +56,11 @@ use std::time::Duration;
 
 use plx_base::eventlog::log;
 
-/// A request on the typed protocol: the client's id + the verb.
-#[derive(Debug)]
-pub struct Request {
-    /// The client's own correlation id; echoed unchanged on the response.
-    pub id: u64,
-    pub verb: Verb,
-}
-
-/// The typed request vocabulary — the FIFO's `api:*` verbs with their argument shapes.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Verb {
-    /// `api:play:<rk>` — the headless play ritual (resolve from PMS, seat the engine).
-    Play { rk: String },
-    /// `api:seek:<ms>` — an absolute engine seek (milliseconds).
-    Seek { ms: u64 },
-    /// `api:audio:<sid>` — the track menu's audio commit for the stream with this id.
-    Audio { sid: i64 },
-    /// `api:sub:<sid>` — the track menu's subtitle commit for the stream with this id.
-    Sub { sid: i64 },
-    /// `api:quality:<rung>` — the `…` menu's quality commit for this rung.
-    Quality { rung: String },
-    /// `api:profile:<index>` — the session machine's profile commit.
-    Profile { index: usize },
-    /// `api:pause` — the PAUSE key.
-    Pause,
-    /// `api:resume` — the PLAY key.
-    Resume,
-    /// `api:stop` — the STOP key's leave-playback ritual.
-    Stop,
-    /// Read: the frame thread's snapshot (the value `state.json` holds).
-    State,
-    /// Read: a capture of the next frame (a numbered PNG beside the state file).
-    Shot,
-}
+// The request types live in the leaf `crate::api_wire`, re-exported here for the wire
+// code's own use: the module-cycle ratchet forbids this module from routing back through
+// `crate::api` (the frame thread's queue) and `crate::shot` from doing so either, so what
+// both name sits below them — a leaf they may report into but which reports into no one.
+pub use crate::api_wire::{Request, Verb};
 
 /// A structured outcome: what actually happened, in the action's own vocabulary — never
 /// an acknowledgement. The synchronous verbs (audio, sub, quality, pause, resume, stop)
@@ -173,14 +143,24 @@ pub struct Reply {
     pub ok: bool,
     pub outcome: Option<Outcome>,
     pub error: Option<ApiError>,
+    /// The playback state of the frame this reply was judged on — which state the result
+    /// belongs to. The frame thread stamps it on every reply it produces ([`Reply::with_state`]);
+    /// protocol answers that need no frame (a malformed line, a full queue, a drain) leave
+    /// it unset, and the field then does not appear on the wire.
+    pub state: Option<&'static str>,
 }
 
 impl Reply {
     pub fn ok(outcome: Outcome) -> Self {
-        Reply { ok: true, outcome: Some(outcome), error: None }
+        Reply { ok: true, outcome: Some(outcome), error: None, state: None }
     }
     pub fn err(error: ApiError) -> Self {
-        Reply { ok: false, outcome: None, error: Some(error) }
+        Reply { ok: false, outcome: None, error: Some(error), state: None }
+    }
+    /// Stamp the frame's playback state onto the reply (the frame-thread producers).
+    pub fn with_state(mut self, st: &'static str) -> Self {
+        self.state = Some(st);
+        self
     }
 }
 
@@ -238,6 +218,11 @@ pub fn start() {
 fn serve(mut conn: UnixStream, rx: &mpsc::Receiver<(Option<u64>, Reply)>) {
     let _ = conn.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = conn.set_write_timeout(Some(Duration::from_secs(1)));
+    // This channel is this connection's: whatever the frame thread produced for a PREVIOUS,
+    // now-gone connection was that connection's to read. Drain it before the first frame so
+    // a new client never inherits a dead one's stale replies (its own replies all come after
+    // its own requests — the order the protocol promises).
+    while rx.try_recv().is_ok() {}
     let mut line = String::new();
     let mut pending: VecDeque<(Option<u64>, Reply)> = VecDeque::new();
     loop {
@@ -314,7 +299,7 @@ fn handle_line(line: &str, pending: &mut VecDeque<(Option<u64>, Reply)>) {
             return;
         }
     };
-    if !crate::api::push_req(Request { id, verb }) {
+    if !crate::api_wire::push_req(Request { id, verb }) {
         pending.push_back((Some(id), Reply::err(ApiError::QueueFull)));
     }
     // No on-the-spot answer to a well-formed request: it sits on the frame
@@ -331,12 +316,15 @@ fn wire(id: Option<u64>, r: &Reply) -> String {
         outcome: Option<&'a Outcome>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<&'a ApiError>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<&'a str>,
     }
     let f = F {
         id,
         ok: r.ok,
         outcome: r.outcome.as_ref(),
         error: r.error.as_ref(),
+        state: r.state,
     };
     serde_json::to_string(&f).unwrap_or_else(|_| {
         r#"{"id":null,"ok":false,"error":{"code":"internal","reason":"response serialization failed"}}"#
@@ -405,7 +393,7 @@ mod tests {
     fn the_outcome_vocabulary_is_wire_pinned() {
         let o = |o: Outcome| {
             let id: Option<u64> = Some(7);
-            let r = Reply { ok: true, outcome: Some(o), error: None };
+            let r = Reply::ok(o);
             wire(id, &r)
         };
         // The state snapshot is the app's own snapshot JSON, passed through
@@ -441,7 +429,7 @@ mod tests {
     fn the_error_vocabulary_is_wire_pinned() {
         let e = |e: ApiError| {
             let id: Option<u64> = Some(3);
-            let r = Reply { ok: false, outcome: None, error: Some(e) };
+            let r = Reply::err(e);
             wire(id, &r)
         };
         assert_eq!(e(ApiError::Malformed { reason: "the line is not a request object".into() }),
@@ -465,7 +453,7 @@ mod tests {
         // The id-less door: a malformed line's reply carries no id.
         assert_eq!(
             {
-                let r = Reply { ok: false, outcome: None, error: Some(ApiError::Malformed { reason: "x".into() }) };
+                let r = Reply::err(ApiError::Malformed { reason: "x".into() });
                 wire(None, &r)
             },
             r#"{"id":null,"ok":false,"error":{"code":"malformed","reason":"x"}}"#
@@ -522,18 +510,14 @@ mod tests {
         //    connection.
         tx.send((
             Some(7),
-            Reply {
-                ok: true,
-                outcome: Some(Outcome::State {
-                    snapshot: serde_json::json!({
-                        "state": "playing",
-                        "pos_ms": 354_000,
-                        "title": "Akira",
-                        "up_ms": 90_000
-                    }),
+            Reply::ok(Outcome::State {
+                snapshot: serde_json::json!({
+                    "state": "playing",
+                    "pos_ms": 354_000,
+                    "title": "Akira",
+                    "up_ms": 90_000
                 }),
-                error: None,
-            },
+            }),
         ))
         .unwrap();
         let line = read_line(&conn);

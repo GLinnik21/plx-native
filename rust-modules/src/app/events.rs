@@ -576,11 +576,13 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &plx_media::route::PlaybackSe
         // predicted from outside. This makes `down down right ok shot` a single composable
         // line, and the same token works on the television. `shot.rs` writes `shot-<N>.png`
         // in the instance root for the agent to fetch.
+        #[cfg(feature = "devtriggers")]
         crate::shot::request();
         true
     } else if tok == "state" && plx_base::devtrig::ENABLED {
         // The command API's snapshot door (api.rs): the last frame's JSON snapshot, written to
         // `state.json` in the instance root for the agent to read back over SSH.
+        #[cfg(feature = "devtriggers")]
         crate::api::state_file();
         true
     } else if tok == "okdown" || tok == "okup" {

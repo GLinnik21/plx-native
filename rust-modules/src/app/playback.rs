@@ -950,6 +950,13 @@ pub(crate) fn exit_player(
     refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
+    // Every app-side exit supersedes a typed play the way a typed stop does: without
+    // this, a PMS fetch still in flight when the player leaves would stage and seat an
+    // engine afterwards (the typed surface only bumps its generation on typed play/stop).
+    // The typed stop path superseded already in `handle_stop`; the extra bump here is
+    // harmless — the generation is monotone.
+    #[cfg(feature = "devtriggers")]
+    crate::api::exit_supersedes();
     // The foreground machine hears the exit FIRST: a restore parked or refused behind this exit
     // is retired here (`Superseded(Exit)`), not left standing for the next play to release.
     let _ = drive_foreground(
