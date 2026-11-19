@@ -691,7 +691,14 @@ impl HudDriver {
     /// Bridge test puts in place of [`off`](Self::off) to see the commands the Settings page sends reach the store.
     #[cfg(test)]
     pub(crate) fn started_in(dir: PathBuf, classic: LoadedHud, app_version: &str) -> Self {
-        let mut driver = Self::new(HudRunner::inline(app_version));
+        Self::started_on_network(dir, classic, app_version, HudRunner::inline(app_version))
+    }
+
+    /// [`started_in`](Self::started_in) on `runner` (an inline runner with a fake network, `HudRunner::on_network`),
+    /// for a test that grades which address a fetch the page sent actually dialled.
+    #[cfg(test)]
+    pub(crate) fn started_on_network(dir: PathBuf, classic: LoadedHud, app_version: &str, runner: HudRunner) -> Self {
+        let mut driver = Self::new(runner);
         driver.setup = Some(Setup { candidates: vec![Candidate { dir, volatile: false }], max_pack_bytes: MAX_ARTIFACT_BYTES });
         driver.start(classic, app_version);
         driver
