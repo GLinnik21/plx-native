@@ -21,8 +21,10 @@ name: Claude
 # The action checks out the pull request's HEAD and restores only `.claude/`, CLAUDE.md, AGENTS.md and a
 # few config files from the default branch. `.claude/skills` and `.claude/agents/*.md` are links into
 # `.agents/`, and the nested module guides are not restored, so on a fork those come from the
-# contributor. The job is therefore built so that nothing in the checkout runs and nothing Claude is
-# talked into can publish:
+# contributor. The job is therefore built so that the checkout's tooling does not run on its own, and
+# whatever Claude is talked into, the token it holds cannot publish. The command rules below are
+# prefix rules, not a boundary (an absolute path or another program gets past them); the real limits
+# are the token's scope and the credential scrub:
 #
 # - The GitHub token is the job's own GITHUB_TOKEN (`github_token:` below), bounded by `permissions:`:
 #   it can comment on issues and pull requests and read CI, and it cannot push a commit, a branch or a
@@ -36,9 +38,12 @@ name: Claude
 #   Mac anyway.
 # - Skills and subagents are off (`Skill`, `Agent`, `Task` disallowed, `disableSkillShellExecution`): on
 #   a fork they are the contributor's, and a skill can grant itself tools.
-# - Commands that reach the network or publish are disallowed (`curl`, `wget`, `gh`, `git push`,
-#   `git tag`); Claude comments through the action's own tools. For an author without write access the
-#   action also denies interpreters, shells, package managers and build tools, and turns git hooks off.
+# - The obvious network and publishing commands are disallowed (`curl`, `wget`, `gh`, `git push`,
+#   `git tag`), and so are the repository's `tools/` scripts, which `.claude/settings.json` allows and
+#   which on a fork are the contributor's. Claude comments through the action's own tools, inline
+#   review comments included. For an author without write access the action also denies interpreters,
+#   shells, package managers and build tools, and turns git hooks off.
+# - `Read` may not open /proc, where Claude's own environment (the subscription token) is readable.
 # - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` strips the Anthropic credentials from the commands Claude runs, and
 #   the sandbox step installs bubblewrap so those commands run in their own PID namespace and cannot read
 #   Claude's environment from /proc. GH_TOKEN stays in the environment; it is the short-lived job token.
@@ -73,8 +78,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      pull-requests: write   # review comments and the progress comment
-      issues: write          # comments on issues and on a pull request's conversation
+      pull-requests: write   # inline review comments
+      issues: write          # the progress comment, on an issue or a pull request's conversation
       actions: read          # lets Claude read a pull request's CI results
     steps:
       - name: Checkout repository
@@ -106,4 +111,5 @@ jobs:
           claude_args: >-
             --settings '{"disableAllHooks":true,"disableSkillShellExecution":true}'
             --disallowedTools "Skill" "Agent" "Task" "Bash(curl:*)" "Bash(wget:*)" "Bash(gh:*)"
-            "Bash(git push:*)" "Bash(git tag:*)"
+            "Bash(git push:*)" "Bash(git tag:*)" "Bash(tools/:*)" "Bash(./tools/:*)" "Read(//proc/**)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
