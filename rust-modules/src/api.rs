@@ -253,12 +253,13 @@ fn resolve_shot(r: crate::api_sock::Reply) {
 /// title together, which is exactly the data every parked request's answer needs. An
 /// entry resolves when the frame it waited for has arrived; the response goes over the
 /// socket under the entry's id.
-unsafe fn resolve_awaiting(app: &crate::app::App, st: plx_media::player::PlaybackState) {
+unsafe fn resolve_awaiting(app: &mut crate::app::App, st: plx_media::player::PlaybackState) {
     let mut guard = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_empty() {
         return;
     }
-    let views = app.bridge.views();
+    let bridge = app.runtime.bridge(&mut app.bridge);
+    let views = bridge.views();
     let ps = &app.player.session;
     let auth = views.auth.0;
     let state_name = state_str(st);
@@ -442,14 +443,15 @@ pub(crate) fn init() {
 /// The debug-flavour roster default is posted HERE, on the command path — not from
 /// [`publish`], the snapshot's construction, which stays a pure read: profile selection
 /// is an explicit commit, not a side effect of the state file's publication.
-pub(crate) unsafe fn take_pending(app: &crate::app::App) -> Vec<IngestToken> {
+pub(crate) unsafe fn take_pending(app: &mut crate::app::App) -> Vec<IngestToken> {
     // The debug-flavour roster default (the user's rule): the "who's watching" screen is
     // answered with the FIRST user — this household's admin — exactly once per app launch,
     // so a debug install never sits on the picker. The flow's own phase change (Profiles →
     // Switching) ends the condition; the flag keeps a refused pick from re-posting every
     // frame. An explicit `api:profile:<index>` token still reaches every other user.
     if plx_base::paths::flavour() == Some("debug") {
-        let snap = app.bridge.views().auth.0;
+        let bridge = app.runtime.bridge(&mut app.bridge);
+        let snap = bridge.views().auth.0;
         if snap.phase == plx_session::auth::Phase::Profiles
             && !snap.users.is_empty()
             && !PROFILE_DEFAULTED.swap(true, Ordering::Relaxed)
@@ -690,7 +692,8 @@ pub(crate) unsafe fn execute_request(
             // silently drops a pick made outside the roster phase — say so — and the
             // roster must have that index.
             let (auth_phase, user_count) = {
-                let views = app.bridge.views();
+                let bridge = app.runtime.bridge(&mut app.bridge);
+                let views = bridge.views();
                 (views.auth.0.phase, views.auth.0.users.len())
             };
             if auth_phase != plx_session::auth::Phase::Profiles {
@@ -838,16 +841,20 @@ unsafe fn handle_play_staged(
         ));
         return false;
     }
-    let requested = plx_media::route::request_play_movie(
-        &mut app.player.session,
-        app.bridge.metadata_mut(),
-        crate::app::playback::start_caps(),
-        &pmm,
-        &crate::app::playback::movie_ctx(&pmm),
-        None,
-    );
+    let requested = {
+        let mut bridge = app.runtime.bridge(&mut app.bridge);
+        plx_media::route::request_play_movie(
+            &mut app.player.session,
+            bridge.metadata_mut(),
+            crate::app::playback::start_caps(),
+            &pmm,
+            &crate::app::playback::movie_ctx(&pmm),
+            None,
+        )
+    };
     if requested {
-        app.bridge.metadata_mut().run(
+        let mut bridge = app.runtime.bridge(&mut app.bridge);
+        bridge.metadata_run(
             plx_data::stores::metadata::MetadataCmd::RequestDetail {
                 sid: pmm.sid,
                 rk: pmm.rk.clone(),
@@ -861,7 +868,7 @@ unsafe fn handle_play_staged(
             plx_screens::player::input::HUD_HEADLESS_MS,
             None,
             &mut app.pages,
-            &mut app.bridge,
+            &mut bridge,
         );
     } else {
         // The routing question refused the item: a typed play request parked for this
@@ -913,10 +920,17 @@ unsafe fn handle_transport(
     if !ok {
         log(&format!("api: {verb}: transport commit refused"));
     }
-    if let Some(player) = crate::app::bridge::player_mut(&mut app.pages) {
-        player.hud.extend(fr.now, plx_screens::player::input::HUD_LINGER_MS);
-        player.publish();
-    }
+    // The transport commit bypasses the player page's own input path, so the page never
+    // re-lits its controls; pin them for a beat the way a keypress would (the message is
+    // delivered to the mounted player during this frame's step).
+    crate::app::bridge::send_player_message(
+        &mut app.pages,
+        plx_screens::registry::AppMsg::PlayerPinHud {
+            now: fr.now,
+            duration_ms: plx_screens::player::input::HUD_LINGER_MS,
+            tab: None,
+        },
+    );
     ok
 }
 
@@ -964,7 +978,8 @@ unsafe fn handle_track(
     let Ok(sid) = arg.parse::<i64>() else {
         return false;
     };
-    let views = app.bridge.views();
+    let bridge = app.runtime.bridge(&mut app.bridge);
+    let views = bridge.views();
     let Some(item) = views.metadata.playing() else {
         return false;
     };
@@ -1015,10 +1030,11 @@ unsafe fn handle_quality(
         log(&format!("api: quality: unknown rung {arg}"));
         return false;
     };
+    let mut bridge = app.runtime.bridge(&mut app.bridge);
     crate::app::playback::apply_more_action(
         &mut app.player.session,
         &mut app.adapters.player,
-        &mut app.bridge,
+        &mut bridge,
         plx_appkit::more_menu::Action::SetQuality(q),
         &mut app.pages.present,
     );
@@ -1064,11 +1080,18 @@ unsafe fn commit_profile(app: &mut crate::app::App, index: usize, pin: Option<St
 /// what the `state` FIFO token dumps verbatim to `state.json`; building it here (frame
 /// thread) means no other thread ever borrows the app.
 pub(crate) unsafe fn publish(app: &mut crate::app::App, fr: &mut crate::app::run::Frame) {
-    let ps = &app.player.session;
-    let st = plx_media::player::state(ps);
+    // The state name is sampled BEFORE `resolve_awaiting` reborrows the whole app
+    // mutably; the session lens is re-borrowed after it, disjoint from the bridge's
+    // own (runtime/retained) fields.
+    let st = {
+        let ps = &app.player.session;
+        plx_media::player::state(ps)
+    };
     resolve_awaiting(app, st);
     let state_name = state_str(st);
-    let views = app.bridge.views();
+    let bridge = app.runtime.bridge(&mut app.bridge);
+    let views = bridge.views();
+    let ps = &app.player.session;
     // This frame's auth section: the sign-in flow's phase, the offered "who's watching"
     // roster (title, PIN flag, admin flag) and the flow's error line — the state file's
     // `auth` section.
