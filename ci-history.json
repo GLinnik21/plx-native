@@ -1,6 +1,5 @@
-{"updated":"2026-11-18T23:29:46Z",
+{"updated":"2026-11-19T00:23:18Z",
 "ci":[
-{"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564709752,"at":"2026-08-22T09:21:07Z","sha":"aa578b180","title":"release: 0.4.0's note, rewritten for the 132 commits it predated","jobs":{"host checks (NOT a device gate)":90,"cross-build (armv7) + artifact assertions":86},"pr":null,"conclusion":"success","attempt":1},
@@ -5435,7 +5434,8 @@
 {"id":44358831049,"at":"2026-11-18T17:27:11Z","sha":"63f2ba5cd","title":"Merge origin/main into fix/text-input-owner","pr":1428,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS simulator build + launch":238,"Windows launcher syntax":23,"Linux simulator build + launch":371}},
 {"id":44402252617,"at":"2026-11-18T21:30:55Z","sha":"59a0bc690","title":"Merge upstream main (dab26adb) into feat/owp-protocol","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":222,"macOS tests against bundled FFmpeg and ASS":212,"Linux simulator build + launch":377,"Windows launcher syntax":20}},
 {"id":44417131421,"at":"2026-11-18T23:02:13Z","sha":"31349b00c","title":"URI: a Dolby Vision MKV before webOS 10 stays on Standard","pr":1399,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":338,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":217}},
-{"id":44419024457,"at":"2026-11-18T23:14:39Z","sha":"d8c959902","title":"OWP: media::check names the first rule a descriptor breaks","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":893,"macOS simulator build + launch":217,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":268}}
+{"id":44419024457,"at":"2026-11-18T23:14:39Z","sha":"d8c959902","title":"OWP: media::check names the first rule a descriptor breaks","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":893,"macOS simulator build + launch":217,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":268}},
+{"id":44427732981,"at":"2026-11-19T00:16:55Z","sha":"e49383210","title":"Record the on-set check of typing into Install from address","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":257,"macOS simulator build + launch":158,"Windows launcher syntax":25,"Linux simulator build + launch":367}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -5717,7 +5717,8 @@
 {"day":"2026-08-14","wf":"ci","event":"pull_request","runs":17,"failed":2,"jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":77},"longest":89},
 {"day":"2026-08-14","wf":"ci","event":"push","runs":3,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":80,"host checks (NOT a device gate)":75},"longest":80},
 {"day":"2026-08-15","wf":"ci","event":"pull_request","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":84},"longest":90},
-{"day":"2026-08-15","wf":"ci","event":"push","runs":2,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":87,"host checks (NOT a device gate)":99},"longest":100}
+{"day":"2026-08-15","wf":"ci","event":"push","runs":2,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":87,"host checks (NOT a device gate)":99},"longest":100},
+{"day":"2026-08-20","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"longest":100}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
