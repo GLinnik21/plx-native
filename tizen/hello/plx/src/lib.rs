@@ -12,6 +12,10 @@
 //! 3. does the window draw (the orange clear colour),
 //! 4. do keys arrive (every `key down/up` line, and the colour changing on each press).
 //!
+//! H5 (static SDL2 + SDL2_ttf inside this .so; text label drawn on the same frame) rides along: its
+//! SDL/TTF half runs first thing in [`plx_tizen_create`], its GL half on the render thread, and a
+//! failure in it never changes step 1's behaviour. See `h5.rs`.
+//!
 //! Threads: Ecore is not thread-safe and its main loop runs on the host's main thread, so window and
 //! key handlers are created there, inside `plx_tizen_create`. A Rust render thread owns the EGL
 //! context (made current there) and draws.
@@ -20,9 +24,13 @@
 //! device: see the README for what is verified and what is guessed.
 
 mod dl;
+mod h5;
 mod keys;
+mod label_gl;
 mod log;
 mod render;
+#[cfg(plx_sdl)]
+mod sdl;
 mod sym;
 mod sysinfo;
 mod window;
@@ -121,15 +129,19 @@ fn cstr_arg(p: *const c_char) -> Option<String> {
 /// `OnCreate`. `data_dir` is the app's writable data directory (the host's `DirectoryInfo.Data`);
 /// `<data_dir>/plx-hello.log` is the log. `log_host` is `a.b.c.d:port` (the host read it from the
 /// package's `res/log-host.txt`) to mirror every log line to over UDP, or null/empty for no network
-/// log. Returns 0 or one of [`code`].
+/// log. `res_dir` is the package's read-only `res/` directory (the host's `DirectoryInfo.Resource`),
+/// where `build.sh` put the bundled font (`appfont.ttf`) for the H5 probe; null/empty makes the probe
+/// report that. Returns 0 or one of [`code`].
 #[no_mangle]
-pub extern "C" fn plx_tizen_create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
+pub extern "C" fn plx_tizen_create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_char) -> i32 {
     guard("plx_tizen_create", code::PANIC, || {
-        let rc = create(data_dir, log_host);
+        let rc = create(data_dir, log_host, res_dir);
         if rc == 0 {
             plog!("plx_tizen_create -> 0 (OK)");
         } else {
             plog!("plx_tizen_create FAILED -> {rc} ({})", code::describe(rc));
+            // The render thread never started, so the GL half of the H5 probe cannot report.
+            h5::incomplete(&format!("plx_tizen_create failed with {rc} ({})", code::describe(rc)));
         }
         rc
     })
@@ -170,7 +182,7 @@ pub extern "C" fn plx_tizen_locale(loc: *const c_char) {
     });
 }
 
-fn create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
+fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_char) -> i32 {
     let Some(dir) = cstr_arg(data_dir) else {
         log::to_stderr("plx: plx_tizen_create called with a null data_dir\n");
         return code::BAD_ARGS;
@@ -200,6 +212,15 @@ fn create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
         std::env::var("LC_ALL").ok()
     );
 
+    // --- H5: static SDL2 + SDL2_ttf, before any window work -----------------------------------
+    // Needs no window, so it runs (and logs its answers) even where Ecore or EGL then fail. Never
+    // fatal: step 1 below does not depend on it.
+    let res = cstr_arg(res_dir);
+    let label = h5::run(res.as_deref());
+    if label.is_none() {
+        h5::incomplete("the SDL/TTF stage produced no label");
+    }
+
     // --- libraries -----------------------------------------------------------------------
     let ecore_wl2 = dl::open_first("ecore_wl2", &["libecore_wl2.so.1", "libecore_wl2.so"]);
     let ecore_lib = dl::open_first("ecore", &["libecore.so.1", "libecore.so"]);
@@ -224,6 +245,15 @@ fn create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
         plog!("required symbols missing (see the `MISSING (required)` lines above)");
         return code::SYMBOLS;
     };
+    // H5's own GL table: a missing entry point only switches the label off.
+    let label_job = label.and_then(|l| match label_gl::load_syms(&gles_lib) {
+        Ok(syms) => Some((syms, l)),
+        Err(e) => {
+            h5::fail("gl-symbols", &e);
+            h5::incomplete("the label's GL entry points are missing");
+            None
+        }
+    });
 
     // --- window + key handlers (main thread, as the embedder does) -------------------------
     let mut window = match Window::create(&ecore, wl_egl) {
@@ -248,7 +278,7 @@ fn create(data_dir: *const c_char, log_host: *const c_char) -> i32 {
         }
     };
     let (tx, rx) = mpsc::channel();
-    let render = match render::spawn(egl, gles, egl_ctx, window.width, window.height, tx) {
+    let render = match render::spawn(egl, gles, egl_ctx, window.width, window.height, label_job, tx) {
         Ok(h) => h,
         Err(e) => {
             plog!("cannot spawn the render thread: {e}");
@@ -340,6 +370,12 @@ fn abort_partial(ecore: &Ecore, handlers: &[Ptr], window: &mut Window) {
 }
 
 fn terminate() {
+    release();
+    // SDL and SDL_ttf were started on the main thread by the H5 probe; stop them there.
+    h5::shutdown();
+}
+
+fn release() {
     plog!("lifecycle: terminate");
     render::RUNNING.store(false, Ordering::Release);
     let Some(mut rt) = runtime().take() else {
@@ -377,6 +413,7 @@ mod tests {
     /// only test that calls `log::init`, which is process-global and first-call-wins.
     #[test]
     fn create_mirrors_every_log_line_to_the_log_host() {
+        let _g = h5::test_guard();
         let rx = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
         rx.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         let host = CString::new(format!("127.0.0.1:{}", rx.local_addr().unwrap().port())).unwrap();
@@ -384,7 +421,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir_c = CString::new(dir.to_str().unwrap()).unwrap();
 
-        let rc = plx_tizen_create(dir_c.as_ptr(), host.as_ptr());
+        let rc = plx_tizen_create(dir_c.as_ptr(), host.as_ptr(), std::ptr::null());
         assert_ne!(rc, code::BAD_ARGS);
 
         let mut got = Vec::new();
@@ -400,6 +437,9 @@ mod tests {
             assert_eq!(d, &format!("{i:06} {l}\n"), "datagram {i}");
         }
         assert!(lines[0].contains("network log: UDP -> 127.0.0.1:"), "{}", lines[0]);
+        assert!(lines.iter().any(|l| l.contains("H5 RESULT:")), "the H5 probe closes with one RESULT line: {lines:?}");
+        assert_eq!(lines.iter().filter(|l| l.contains("H5 RESULT:")).count(), 1);
+        h5::shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

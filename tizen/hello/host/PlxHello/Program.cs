@@ -32,10 +32,13 @@ namespace PlxHello
         private const string Lib = "plx";
 
         // logHost: "a.b.c.d:port" to mirror the library's log over UDP, or null for no network log.
+        // resDir: the package's res/ directory (DirectoryInfo.Resource), where the H5 probe finds the
+        // bundled font (appfont.ttf).
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int plx_tizen_create(
             [MarshalAs(UnmanagedType.LPStr)] string dataDir,
-            [MarshalAs(UnmanagedType.LPStr)] string logHost);
+            [MarshalAs(UnmanagedType.LPStr)] string logHost,
+            [MarshalAs(UnmanagedType.LPStr)] string resDir);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void plx_tizen_pause();
@@ -157,7 +160,7 @@ namespace PlxHello
             Log(netNote);
             LogEnvironment();
 
-            int rc = CreateNative(dataDir, logHost);
+            int rc = CreateNative(dataDir, logHost, this.DirectoryInfo.Resource);
             if (rc != 0)
             {
                 Log("native create FAILED rc=" + rc + " (native codes: plx/src/lib.rs; host: -1 dll not found, -2 entry point, -3 other). Exiting.");
@@ -231,11 +234,11 @@ namespace PlxHello
         }
 
         // The one P/Invoke that matters, with every way it can fail on a device recorded.
-        private int CreateNative(string dataDir, string logHost)
+        private int CreateNative(string dataDir, string logHost, string resDir)
         {
             try
             {
-                return Native.plx_tizen_create(dataDir, logHost);
+                return Native.plx_tizen_create(dataDir, logHost, resDir);
             }
             catch (DllNotFoundException e)
             {
@@ -244,7 +247,7 @@ namespace PlxHello
                 try
                 {
                     Log("retrying plx_tizen_create after preload");
-                    return Native.plx_tizen_create(dataDir, logHost);
+                    return Native.plx_tizen_create(dataDir, logHost, resDir);
                 }
                 catch (DllNotFoundException e2)
                 {

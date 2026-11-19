@@ -1,5 +1,7 @@
 # Throwaway test build: everything generated stays out of git. Never commit a certificate or a .tpk.
 /out/
+# Cache of the static SDL2 + SDL2_ttf build (sdl/build-sdl.sh): tarballs, build trees, archives.
+/sdl-build/
 /plx/target/
 /host/PlxHello/bin/
 /host/PlxHello/obj/

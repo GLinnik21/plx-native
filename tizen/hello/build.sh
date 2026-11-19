@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Build the step-1 Samsung Tizen "hello world": libplx.so (Rust) and the .NET .tpk that carries it.
+# Build the step-1 Samsung Tizen "hello world" (+ the H5 static-SDL probe): libplx.so (Rust, with SDL2
+# and SDL2_ttf linked in statically) and the .NET .tpk that carries it.
 #
 #   tizen/hello/build.sh [--arch arm|x86_64|i686] [--so-only | --tpk-only]
 #                        [--log-host IPV4:PORT] [--author-p12 FILE] [--dist-p12 FILE]
+#   tizen/hello/build.sh --host-test       # the H5 unit test on this machine (macOS or Linux), no TV
 #
 #   --arch arm      (default) real TVs, 32-bit ARMv7 softfp. Built on this Mac with the webOS NDK's
 #                   gcc and glibc-2.12 sysroot (the same NDK the app uses).
@@ -12,6 +14,10 @@
 #                   `apt install gcc-i686-linux-gnu` (or gcc-multilib).
 #   --so-only       build libplx.so and verify it; skip the .NET step (WSL without dotnet).
 #   --tpk-only      package an existing out/<arch>/libplx.so (build the .so elsewhere first).
+#   --host-test     build the static SDL2 + SDL2_ttf for THIS machine (sdl/build-sdl.sh host), then run
+#                   `cargo test` with them linked, so the H5 test renders the label's text to an SDL_Surface
+#                   from the shipped font (no GL, no window, no TV). Plain `cargo test` in plx/ also works but
+#                   skips that test (no SDL linked). Takes no other flag.
 #   --log-host IPV4:PORT   ship the address in the package (res/log-host.txt); the app then sends every
 #                   log line, host and library, as a UDP datagram to it (retail TVs have no way to read
 #                   the log file). From the emulator the build machine is usually 10.0.2.2. Receive with
@@ -30,9 +36,17 @@
 # printed. No certificate or password is ever committed (*.p12 and *.pfx are gitignored). --so-only
 # needs none of this. README: "Signing".
 #
+# H5 (static SDL2 + SDL2_ttf): the library statically links SDL2 2.32.10 and SDL2_ttf 2.24.0, built from
+# the sha256-pinned upstream tarballs by sdl/build-sdl.sh (run for you, once per arch, cached in
+# tizen/hello/sdl-build/; needs curl, make and the arch's C compiler, nothing else). The package also
+# carries res/appfont.ttf (a copy of the repository's pkg/appfont.ttf, Inter, SIL OFL) and res/OFL.txt.
+# Verified after the build: no DT_NEEDED outside the C runtime (no libSDL2), the SDL/TTF code present
+# inside the object but not exported.
+#
 # Output (all gitignored):
 #   tizen/hello/out/<arch>/libplx.so       the library
 #   tizen/hello/out/PlxHello-<arch>.tpk    the package, signed with the certificates above
+#   tizen/hello/sdl-build/<arch>/          the static SDL2/SDL2_ttf archives and headers (a cache)
 #
 # Environment (all optional unless the .tpk is built; see Signing):
 #   RUST_TOOLCHAIN       cargo toolchain. Default: arm = the repo's pin (rust-modules/rust-toolchain.toml,
@@ -47,17 +61,20 @@
 #                        (the Tizen 10 emulator image). Both numbers are from those notes, not measured.
 #   PLX_ALLOW_NEW_GLIBC  1 = report instead of fail.
 #   X86_SYSROOT          for x86_64/i686 on a host whose glibc is newer than the TV's: a sysroot with an
-#                        older glibc (Debian buster, or a Tizen rootstrap). Passed as --sysroot. UNTESTED.
+#                        older glibc (Debian buster, or a Tizen rootstrap). Passed as --sysroot (also to the
+#                        SDL build). UNTESTED.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PLX="$HERE/plx"
 HOST="$HERE/host/PlxHello"
 OUT="$HERE/out"
+REPO="$(cd "$HERE/../.." && pwd)"
 
 ARCH=arm
 DO_SO=1
 DO_TPK=1
+HOST_TEST=0
 LOG_HOST=""
 AUTHOR_P12="${PLX_TIZEN_AUTHOR_P12:-}"
 DIST_P12="${PLX_TIZEN_DIST_P12:-}"
@@ -67,6 +84,7 @@ while [ $# -gt 0 ]; do
     --arch=*) ARCH="${1#--arch=}"; shift ;;
     --so-only) DO_TPK=0; shift ;;
     --tpk-only) DO_SO=0; shift ;;
+    --host-test) HOST_TEST=1; shift ;;
     --log-host) LOG_HOST="${2:?--log-host needs IPV4:PORT}"; shift 2 ;;
     --log-host=*) LOG_HOST="${1#--log-host=}"; shift ;;
     --author-p12) AUTHOR_P12="${2:?--author-p12 needs a file}"; shift 2 ;;
@@ -90,6 +108,21 @@ TPK="$OUT/PlxHello-$ARCH.tpk"
 
 say() { printf '\n== %s\n' "$*"; }
 die() { echo "build.sh: $*" >&2; exit 1; }
+
+# --- --host-test: the H5 unit test on this machine, with the static SDL linked --------------------
+if [ "$HOST_TEST" = 1 ]; then
+  [ "$DO_SO" = 1 ] && [ "$DO_TPK" = 1 ] && [ -z "$LOG_HOST" ] || die "--host-test takes no other flag"
+  export PATH="$HOME/.cargo/bin:$PATH" CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$PLX/target"
+  say "static SDL2 + SDL2_ttf for this machine (sdl/build-sdl.sh host; cached)"
+  "$HERE/sdl/build-sdl.sh" host
+  say "cargo test (PLX_SDL_PREFIX=$HERE/sdl-build/host): the H5 label test renders to an SDL_Surface, no GL"
+  # shellcheck disable=SC2086
+  PLX_SDL_PREFIX="$HERE/sdl-build/host" cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" 2>&1 \
+    | grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' || true
+  [ "${PIPESTATUS[0]}" = 0 ] || die "cargo test failed"
+  echo "(PLX_H5_DUMP=/path/label.bmp also writes the rendered label; add -- --nocapture to read the H5 log lines)"
+  exit 0
+fi
 
 # --- the log host and the signing material (checked before any long build) ------------------
 if [ -n "$LOG_HOST" ]; then
@@ -176,6 +209,14 @@ build_so() {
   fi
   export RUSTFLAGS="$flags"
 
+  # H5: the static SDL2 + SDL2_ttf for this arch (cached; its own toolchain setup mirrors the above).
+  # build.rs links them from PLX_SDL_PREFIX by absolute path; set it unconditionally so a .so can never
+  # silently ship without the probe.
+  say "static SDL2 + SDL2_ttf for $ARCH (sdl/build-sdl.sh; cached in sdl-build/)"
+  if [ "$ARCH" = arm ]; then export WEBOS_SDK="$sdk"; fi
+  "$HERE/sdl/build-sdl.sh" "$ARCH"
+  export PLX_SDL_PREFIX="$HERE/sdl-build/$ARCH"
+
   local plus=""; [ -z "$toolchain" ] || plus="+$toolchain"
   # shellcheck disable=SC2086
   if ! rustup $plus target list --installed 2>/dev/null | grep -qx "$TRIPLE"; then
@@ -206,6 +247,29 @@ verify_so() {
   fi
   echo "-- DT_NEEDED / SONAME:"
   "$readelf" -d "$SO" | grep -E "NEEDED|SONAME" || true
+  # An allowlist, not a deny-list: the C runtime only. A libSDL2 here would mean the static link did not
+  # happen; anything else (libudev, libdbus, libX11, libwayland-*, libasound ...) would mean the SDL
+  # configure picked a library up from the build machine that the TV may not have.
+  local needed bad
+  needed="$("$readelf" -d "$SO" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
+  bad="$(grep -Ev '^(libgcc_s\.so\.1|librt\.so\.1|libpthread\.so\.0|libdl\.so\.2|libc\.so\.6|libm\.so\.6|ld-linux[A-Za-z0-9_.-]*\.so\.[0-9]+)$' <<<"$needed" || true)"
+  [ -z "$bad" ] || die "DT_NEEDED outside the C-runtime allowlist: $(echo $bad)"
+  if "$readelf" -d "$SO" | grep -q TEXTREL; then die "the library has text relocations (a non-PIC object was linked in)"; fi
+  echo "-- size: $(wc -c < "$SO" | tr -d ' ') bytes"
+  # The probe's SDL/TTF/FreeType must be INSIDE the object (present as local symbols) and NOT exported or
+  # imported. Checked for presence too: "no libSDL2 in DT_NEEDED" also passes on a library with no SDL.
+  if [ -n "${PLX_SDL_PREFIX:-}" ]; then
+    local all dyn probe
+    all="$("$nm" "$SO" 2>/dev/null || true)"
+    dyn="$("$nm" -D "$SO" 2>/dev/null || true)"
+    for probe in SDL_Init SDL_UpperBlit TTF_Init TTF_RenderUTF8_Blended FT_Init_FreeType; do
+      grep -Eq " t $probe\$" <<<"$all" || die "$probe is not a LOCAL symbol of $SO: the static SDL/SDL_ttf is missing or exported"
+    done
+    if grep -Eq ' (SDL_|TTF_|FT_)[A-Za-z0-9_]+$' <<<"$dyn"; then
+      die "SDL/TTF/FreeType names in the dynamic symbol table: $(grep -E ' (SDL_|TTF_|FT_)[A-Za-z0-9_]+$' <<<"$dyn" | head -3 | tr '\n' ' ')"
+    fi
+    echo "-- static SDL2 + SDL2_ttf + FreeType are inside the object as local symbols; none exported or imported"
+  fi
   echo "-- highest versioned glibc symbol:"
   local max; max="$("$objdump" -T "$SO" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1 || true)"
   echo "   ${max:-none}"
@@ -249,14 +313,18 @@ build_tpk() {
   mkdir -p "$HOST/lib"
   cp "$SO" "$HOST/lib/libplx.so"
 
-  # res/log-host.txt is generated (gitignored). A stale one, or a stale copy in the SDK's staging
-  # directory, would silently switch the network log on (or leave an old address in), so both go first.
-  rm -f "$HOST/res/log-host.txt"
-  rmdir "$HOST/res" 2>/dev/null || true
-  rm -rf "$HOST/bin/Release/tizen80/tpkroot"
+  # res/ is generated (gitignored): the H5 probe's font with its licence and, with --log-host,
+  # log-host.txt. A stale res/ or a stale copy in the SDK's staging directory would silently switch the
+  # network log on (or leave an old address in), so both go first. The font is the app's own Inter
+  # (SIL OFL); the licence travels with it. Copied here, not in build_so, so --tpk-only works on a
+  # machine that never built the library.
+  rm -rf "$HOST/res" "$HOST/bin/Release/tizen80/tpkroot"
+  mkdir -p "$HOST/res"
+  [ -f "$REPO/pkg/appfont.ttf" ] && [ -f "$REPO/pkg/OFL.txt" ] || die "pkg/appfont.ttf or pkg/OFL.txt missing from the checkout"
+  cp "$REPO/pkg/appfont.ttf" "$HOST/res/appfont.ttf"
+  cp "$REPO/pkg/OFL.txt" "$HOST/res/OFL.txt"
   if [ -n "$LOG_HOST" ]; then
     say "log host $LOG_HOST -> res/log-host.txt (the app mirrors its log to it over UDP)"
-    mkdir -p "$HOST/res"
     printf '%s\n' "$LOG_HOST" > "$HOST/res/log-host.txt"
   fi
 
@@ -283,7 +351,7 @@ build_tpk() {
   say "verify $TPK"
   local listing; listing="$(unzip -l "$TPK")"
   echo "$listing"
-  for need in 'tizen-manifest.xml' 'bin/PlxHello.dll' 'lib/libplx.so' 'author-signature.xml' 'signature1.xml'; do
+  for need in 'tizen-manifest.xml' 'bin/PlxHello.dll' 'lib/libplx.so' 'res/appfont.ttf' 'res/OFL.txt' 'author-signature.xml' 'signature1.xml'; do
     grep -q " $need\$" <<<"$listing" || die "$TPK lacks $need"
   done
   # The log host is in the package exactly when it was asked for, and is the address that was asked for.
@@ -297,6 +365,8 @@ build_tpk() {
   local tmp; tmp="$(mktemp -d)"
   unzip -qo "$TPK" lib/libplx.so -d "$tmp"
   cmp -s "$tmp/lib/libplx.so" "$SO" || { rm -rf "$tmp"; die "packaged libplx.so differs from $SO"; }
+  unzip -qo "$TPK" res/appfont.ttf -d "$tmp"
+  cmp -s "$tmp/res/appfont.ttf" "$REPO/pkg/appfont.ttf" || { rm -rf "$tmp"; die "packaged res/appfont.ttf differs from pkg/appfont.ttf"; }
   rm -rf "$tmp"
   echo "package: $TPK ($(du -h "$TPK" | cut -f1))"
 }

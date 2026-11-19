@@ -8,7 +8,9 @@
 
 use crate::code;
 use crate::dl::Ptr;
+use crate::h5::{self, Label};
 use crate::keys;
+use crate::label_gl::{GlLabel, LabelSyms};
 use crate::log::plog;
 use crate::sym::*;
 use crate::window::Window;
@@ -188,22 +190,24 @@ fn gl_str(gles: &Gles, name: u32) -> String {
     }
 }
 
-/// Start the render thread. `ready` receives `Ok(())` after the first frame was presented, or the
-/// error code that stopped it.
+/// Start the render thread. `label` is the H5 probe's finished label with its GL entry points (None:
+/// no label is drawn, step 1's colour test is unchanged). `ready` receives `Ok(())` after the first
+/// frame was presented, or the error code that stopped it.
 pub fn spawn(
     egl: Egl,
     gles: Gles,
     ctx: EglCtx,
     width: i32,
     height: i32,
+    label: Option<(LabelSyms, Label)>,
     ready: Sender<Result<(), i32>>,
 ) -> std::io::Result<JoinHandle<()>> {
     RUNNING.store(true, Ordering::Release);
-    let args = SendBox((egl, gles, ctx, ready));
+    let args = SendBox((egl, gles, ctx, ready, label));
     std::thread::Builder::new().name("plx-render".into()).spawn(move || {
         let args = args;
-        let (egl, gles, ctx, ready) = args.0;
-        let result = catch_unwind(AssertUnwindSafe(|| body(&egl, &gles, &ctx, width, height, &ready)));
+        let (egl, gles, ctx, ready, label) = args.0;
+        let result = catch_unwind(AssertUnwindSafe(|| body(&egl, &gles, &ctx, width, height, label, &ready)));
         if result.is_err() {
             plog!("PANIC in render thread; thread stops");
             let _ = ready.send(Err(code::PANIC));
@@ -212,7 +216,15 @@ pub fn spawn(
     })
 }
 
-fn body(egl: &Egl, gles: &Gles, ctx: &EglCtx, width: i32, height: i32, ready: &Sender<Result<(), i32>>) {
+fn body(
+    egl: &Egl,
+    gles: &Gles,
+    ctx: &EglCtx,
+    width: i32,
+    height: i32,
+    label: Option<(LabelSyms, Label)>,
+    ready: &Sender<Result<(), i32>>,
+) {
     // SAFETY (whole function): this thread now owns the context; handles come from setup().
     let ok = unsafe { (egl.make_current)(ctx.display, ctx.surface, ctx.surface, ctx.context) };
     if ok == 0 {
@@ -234,6 +246,17 @@ fn body(egl: &Egl, gles: &Gles, ctx: &EglCtx, width: i32, height: i32, ready: &S
         unsafe { vp(0, 0, width, height) };
     }
 
+    // H5, GL half: shaders and the label texture, on this thread with the context current. A failure
+    // is reported and the label is simply not drawn; the colour test below is untouched.
+    let label_gl: Option<GlLabel> = label.and_then(|(syms, l)| match GlLabel::create(syms, &l) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            h5::gl_done(Err(e));
+            None
+        }
+    });
+    let mut label_reported = false;
+
     let mut idx = 0usize;
     let mut frames = 0u64;
     let mut swap_failures = 0u64;
@@ -250,11 +273,12 @@ fn body(egl: &Egl, gles: &Gles, ctx: &EglCtx, width: i32, height: i32, ready: &S
             continue;
         }
         let (_, r, g, b) = PALETTE[idx];
-        let swapped = unsafe {
+        unsafe {
             (gles.clear_color)(r, g, b, 1.0);
             (gles.clear)(GL_COLOR_BUFFER_BIT);
-            (egl.swap_buffers)(ctx.display, ctx.surface)
-        };
+        }
+        let label_err = label_gl.as_ref().map(|g| g.draw(width, height));
+        let swapped = unsafe { (egl.swap_buffers)(ctx.display, ctx.surface) };
         if swapped == 0 {
             if swap_failures % 60 == 0 {
                 plog!("eglSwapBuffers FAILED (#{swap_failures}) error {}", egl_error(egl));
@@ -270,12 +294,20 @@ fn body(egl: &Egl, gles: &Gles, ctx: &EglCtx, width: i32, height: i32, ready: &S
                 plog!("first frame presented (glGetError=0x{gl:04x})");
                 let _ = ready.send(Ok(()));
             }
+            if let (Some(err), false) = (label_err, label_reported) {
+                label_reported = true;
+                plog!("H5 gl: first frame presented with the label drawn (glGetError=0x{err:04x})");
+                h5::gl_done(if err == 0 { Ok(()) } else { Err(format!("drawing the label raised glError 0x{err:04x}")) });
+            }
             frames += 1;
             if frames % 60 == 0 {
                 plog!("frames={frames} colour=#{idx} {}", PALETTE[idx].0);
             }
         }
         std::thread::sleep(Duration::from_millis(16));
+    }
+    if let Some(g) = &label_gl {
+        g.destroy();
     }
     unsafe { (egl.make_current)(ctx.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) };
     plog!("render loop stopped after {frames} frames");
