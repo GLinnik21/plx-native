@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 pub const CLOCK_WINDOW: usize = 8;
 pub const LARGEST_RTT_MS: i64 = 1000;
 pub const CLOCK_STEP_SLACK_MS: i64 = 100;
+pub const FORGET_PING_AFTER_MS: i64 = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sample {
@@ -61,6 +62,7 @@ impl ClockSync {
     fn transition(&mut self, event: ClockEvent, outcomes: &mut Vec<PongOutcome>) {
         match event {
             ClockEvent::PingSent { id, at_ms } => {
+                self.sent.retain(|_, sent_at| at_ms - *sent_at <= FORGET_PING_AFTER_MS);
                 self.sent.insert(id, at_ms);
             }
             ClockEvent::PongReceived { id, server_time, at_ms } => {
@@ -93,5 +95,23 @@ impl ClockSync {
                 outcomes.push(if stepped { PongOutcome::Stepped } else { PongOutcome::Accepted });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ping_unanswered_for_longer_than_the_forget_time_is_dropped() {
+        let mut clock = ClockSync::new();
+        let mut outcomes = Vec::new();
+        clock.step(ClockEvent::PingSent { id: 1, at_ms: 0 }, &mut outcomes);
+        clock.step(ClockEvent::PingSent { id: 2, at_ms: FORGET_PING_AFTER_MS }, &mut outcomes);
+        assert_eq!(clock.sent.keys().copied().collect::<Vec<_>>(), [1, 2]);
+        clock.step(ClockEvent::PingSent { id: 3, at_ms: FORGET_PING_AFTER_MS + 1 }, &mut outcomes);
+        assert_eq!(clock.sent.keys().copied().collect::<Vec<_>>(), [2, 3]);
+        clock.step(ClockEvent::PongReceived { id: 1, server_time: 0, at_ms: FORGET_PING_AFTER_MS + 2 }, &mut outcomes);
+        assert_eq!(outcomes, [PongOutcome::Ignored]);
     }
 }
