@@ -1,0 +1,64 @@
+name: Claude
+
+# Answers `@claude` in an issue, a pull request comment, an inline review comment or a review body,
+# with the Claude Code GitHub Action (https://code.claude.com/docs/en/github-actions).
+#
+# It signs in with the maintainer's Claude SUBSCRIPTION, not an API key: the repository secret
+# CLAUDE_CODE_OAUTH_TOKEN holds the long-lived token `claude setup-token` prints, and every run counts
+# against that subscription's usage. To rotate it, run `claude setup-token` again and
+# `gh secret set CLAUDE_CODE_OAUTH_TOKEN`; deleting the secret turns this workflow off (the job fails).
+#
+# Who can start it: the `if:` below lets only an owner, member or collaborator through, so a stranger's
+# `@claude` on this public repository does not even start a runner; the action then checks again that
+# the commenter has write access, and refuses bot actors. A comment on a pull request from a fork
+# works: `issue_comment` and the review events run this file from the default branch with its
+# secrets, never the fork's copy of it.
+#
+# Claude reads CLAUDE.md / AGENTS.md from the checkout like any session, so the repository's rules
+# apply to what it writes. It can push a branch and open a pull request for an issue; it cannot push
+# to a fork's branch, and `main` stays protected by the same rules as for anyone else.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'issues' &&
+        (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write   # the action's GitHub App token exchange
+      actions: read     # lets Claude read a pull request's CI results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@f431adaf77e0fecf918431e75a2b5b45b85af002 # v1.0.283
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
