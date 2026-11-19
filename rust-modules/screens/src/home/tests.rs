@@ -3018,6 +3018,81 @@ fn up_from_any_collection_card_reaches_the_heading_and_down_returns_to_that_card
 }
 
 #[test]
+fn down_from_a_collection_heading_recovers_a_pruned_slot() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let target_row = 17;
+    let ids: Vec<_> = (0..48).map(|i| format!("test.home.{i}")).collect();
+    let mut rows: Vec<_> = ids.iter().map(|id| (id.as_str(), "", "Movie row")).collect();
+    rows[target_row] = COLLECTION_ROWS[1];
+
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 12, &rows);
+    assert!(plx_data::pms::hold_for_test(&mut state, 0, 7));
+    let first = plx_data::pms::hubs_snapshot(&state);
+    let mut home = screen(first.view());
+    on_grid(&mut home);
+    let owner = InputOwner::Entry(home.entry);
+    let mut engine = FocusEngine::new();
+    let heading = heading_key(&home, target_row);
+    let shelf_group = home.rows[target_row].group;
+    let heading_group = heading_group(shelf_group);
+    engine.set(owner, heading, Some(heading_group), By::Restore);
+    assert!(home.rows[target_row].placeholders);
+
+    let Outcome::Moved { to: slot, by: By::Dir, .. } =
+        move_from(&home, first.view(), &mut engine, Dir::Down)
+    else { panic!("Down must focus the released collection's first slot") };
+    assert_eq!(home.locate(slot.elem), Some(Located::Item(target_row, 0)));
+    let Outcome::Moved { to: slot, .. } =
+        move_from(&home, first.view(), &mut engine, Dir::Right)
+    else { panic!("Right must focus another slot in the released row") };
+    assert_eq!(home.locate(slot.elem), Some(Located::Item(target_row, 1)));
+    assert!(matches!(move_from(&home, first.view(), &mut engine, Dir::Up),
+        Outcome::Moved { to, .. } if to == heading));
+
+    // The first landing still knows which row and column the old slot named.
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 12, &rows);
+    let loaded = plx_data::pms::hubs_snapshot(&state);
+    home.sync_catalog(&Cx { focus: engine.read(owner), ..cx(loaded.view(), None) });
+    let recovered = home.rows[target_row].elems[1];
+    assert_ne!(slot.elem, recovered);
+    assert!(home.items.iter().any(|item| item.elem == slot.elem), "slot still has row/column history");
+    let mut before_sweep = FocusEngine::new();
+    before_sweep.restore_remembered(home.entry, &engine.remembered_for(home.entry));
+    before_sweep.set(owner, heading, Some(heading_group), By::Restore);
+    assert!(matches!(move_from(&home, loaded.view(), &mut before_sweep, Dir::Down),
+        Outcome::Moved { to, by: By::Dir, .. } if to.elem == recovered),
+        "a recoverable key keeps its original column before pruning");
+    // Enough keys leave on the next hold to sweep the old slot out of Home's registry.
+    assert!(plx_data::pms::hold_for_test(&mut state, 16, 26));
+    let settled = plx_data::pms::hubs_snapshot(&state);
+    home.sync_catalog(&Cx { focus: engine.read(owner), ..cx(settled.view(), None) });
+    assert_eq!(home.locate(slot.elem), None);
+    assert!(home.items.iter().all(|item| item.elem != slot.elem),
+        "the old slot has been pruned, including the information needed to recover its row");
+    assert_eq!(engine.read(owner).remembered(shelf_group), Some(slot.elem));
+    assert_eq!(home.locate(heading.elem), Some(Located::Heading(target_row)));
+    assert!(!home.rows[target_row].placeholders);
+
+    let Outcome::Moved { to, by: By::Dir, .. } =
+        move_from(&home, settled.view(), &mut engine, Dir::Down)
+    else { panic!("Down should enter the collection") };
+    assert_eq!(home.locate(to.elem), Some(Located::Item(target_row, 0)),
+        "the first directional move stays in the destination shelf");
+    assert_eq!(engine.read(owner).remembered(shelf_group), Some(to.elem),
+        "the move replaces the expired memory for the shelf");
+    let context = Cx { focus: engine.read(owner), ..cx(settled.view(), None) };
+    assert_eq!(engine.reconcile(owner, &home, &context), Outcome::Nothing,
+        "the following frame has no invalid cursor to repair");
+    assert!(matches!(move_from(&home, settled.view(), &mut engine, Dir::Up),
+        Outcome::Moved { to, .. } if to == heading));
+    assert!(matches!(move_from(&home, settled.view(), &mut engine, Dir::Down),
+        Outcome::Moved { to: next, by: By::Dir, .. } if next == to),
+        "re-entering uses the corrected remembered position");
+}
+
+#[test]
 fn down_from_the_shelf_above_stops_on_the_heading_and_plain_shelves_keep_projection() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
