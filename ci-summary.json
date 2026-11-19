@@ -1,6 +1,20 @@
 {
  "flaky": [
   {
+   "count": 3,
+   "first_seen": "2026-11-12T17:23:43Z",
+   "job": "host unit tests (hostsim)",
+   "last": {
+    "pr": 1465,
+    "run": 44438412922,
+    "sha": "26edd116a"
+   },
+   "last_seen": "2026-11-19T01:54:18Z",
+   "new": false,
+   "status": "Active",
+   "test": "plx_media::route::decision::queue_predecessor_tests::the_window_reread_waits_for_the_outgoing_stop_within_its_bound"
+  },
+  {
    "count": 1,
    "first_seen": "2026-11-17T23:16:34Z",
    "job": "host unit tests (default features)",
@@ -10,20 +24,6 @@
     "sha": "67e550e77"
    },
    "last_seen": "2026-11-17T23:16:34Z",
-   "new": false,
-   "status": "Active",
-   "test": "plx_media::route::decision::queue_predecessor_tests::the_window_reread_waits_for_the_outgoing_stop_within_its_bound"
-  },
-  {
-   "count": 2,
-   "first_seen": "2026-11-12T17:23:43Z",
-   "job": "host unit tests (hostsim)",
-   "last": {
-    "pr": 1380,
-    "run": 43551876055,
-    "sha": "2c98ca3ba"
-   },
-   "last_seen": "2026-11-14T03:37:54Z",
    "new": false,
    "status": "Active",
    "test": "plx_media::route::decision::queue_predecessor_tests::the_window_reread_waits_for_the_outgoing_stop_within_its_bound"
@@ -113,7 +113,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-19T01:57:07Z",
+ "generated": "2026-11-19T02:14:04Z",
  "metrics": [
   {
    "change30_pct": -12.0,
@@ -125,9 +125,9 @@
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 143,
+   "n_now": 144,
    "n_prev": 172,
-   "now": 428,
+   "now": 428.0,
    "prev7": 489.0,
    "shown": true,
    "state": "flat",
