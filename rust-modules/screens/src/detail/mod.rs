@@ -3122,13 +3122,15 @@ impl DetailScreen {
             parts.push(&d.rating);
         }
         if !d.edition.is_empty() { parts.insert(0, &d.edition); }
-        let resolution = plx_media::route::detail_played_video(d)
-            .and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
-        let chips: Vec<&str> = [
+        let played = plx_media::route::detail_played_video(d);
+        let resolution = played.as_ref().and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
+        let range = played.as_ref().and_then(|f| plx_ui::fmt::dynamic_range(f.range()));
+        let access = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
-        ].into_iter().filter_map(|(present, label)| present.then_some(label)).collect();
+        ].into_iter().filter_map(|(present, label)| present.then_some(label));
+        let chips: Vec<&str> = range.into_iter().chain(access).collect();
         let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);
         plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure);
     }

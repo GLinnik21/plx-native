@@ -1806,7 +1806,8 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 }
 
 /// The identity band shared by both full-bleed heroes. The text run yields room to the
-/// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+/// outlined resolution, dynamic-range and accessibility chips, and overlong metadata elides within
+/// its column.
 /// Returns the width drawn, from `r.x` to the last chip's edge.
 pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
     identity_row(Some(p), r, parts, resolution, chips, theme::TEXT_SECONDARY, measure)
@@ -1819,10 +1820,10 @@ pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips:
 }
 
 /// Home's metadata band uses brighter reading ink over the hero art and reserves room for the rating.
-pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
+pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, range: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
     let rating = (!rating.is_empty() && keyline_chip_w(rating, measure) <= r.w * 0.5).then_some(rating);
-    let chips = rating.as_ref().map_or(&[][..], std::slice::from_ref);
-    identity_row(Some(p), r, parts, quality, chips, theme::TEXT_READING, measure);
+    let chips: Vec<&str> = range.into_iter().chain(rating).collect();
+    identity_row(Some(p), r, parts, quality, &chips, theme::TEXT_READING, measure);
 }
 
 /// The one layout of the identity band, painted with `paint` or only measured without it.
