@@ -1,5 +1,5 @@
 # A cargo workspace with this package as its ROOT; the other members are the storage helper and the
-# layer crates split out of the application (everything under `rust-modules/*/` with a `[package.metadata.plx] mount`: base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, play-feed/, appkit/, screens/ and the contract and codec crates;
+# layer crates split out of the application (everything under `rust-modules/*/` with a `[package.metadata.plx] mount`: base/, machine/, net/, platform/, gfx/, ui/, plex/, telemetry/, data/, session/, media/, play-feed/, appkit/, screens/, owp/ and the contract and codec crates;
 # docs/module-layers.md).
 # The root keeps the literal `version` below (release tooling reads it), `make`/CI run their usual
 # commands from this directory against this package (a bare `cargo test`/`check`/`build` here still
@@ -25,6 +25,7 @@ members = [
     "media-codecs",
     "appkit",
     "screens",
+    "owp",
     "storage",
 ]
 resolver = "2"

@@ -1,0 +1,11 @@
+{
+  "kind": "movie",
+  "title": "Arrival",
+  "durationMs": 6960000,
+  "ext": {
+    "com.example": {
+      "server": "1a2b3c",
+      "server": "9z8y7x"
+    }
+  }
+}

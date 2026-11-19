@@ -1,7 +1,7 @@
 # Contributing
 
 New contributions to PlxNative's own code are offered under GPL-3.0-or-later, without copyright
-assignment. Retain existing third-party notices and identify external code, its source revision,
+assignment; to `rust-modules/owp/` (`plx_owp`), under Apache-2.0, as `LICENSING.md` says. Retain existing third-party notices and identify external code, its source revision,
 license and modifications. Do not submit code whose redistribution rights you cannot establish.
 
 Please include a `Signed-off-by: Your Name <email>` trailer certifying the

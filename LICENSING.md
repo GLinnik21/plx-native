@@ -3,6 +3,8 @@
 Copyright (c) 2026 Gleb Linnik and contributors.
 PlxNative's own code is licensed under the GNU General Public License, version 3 or
 (at your option) any later version: **GPL-3.0-or-later**. The complete license is in `LICENSE`.
+The `plx_owp` crate (`rust-modules/owp/`) is the exception: it is licensed under **Apache-2.0**, like
+Open Watch Party, so it can be used on its own. That license is in `licenses/Apache-2.0.txt`.
 There is no warranty, to the extent permitted by applicable law.
 
 You may use, modify and redistribute this software, including selling copies, under those terms.

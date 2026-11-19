@@ -861,6 +861,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_owp"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plx_platform"
 version = "0.0.0"
 dependencies = [

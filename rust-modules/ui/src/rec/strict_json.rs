@@ -5,7 +5,8 @@
 //! same visitor and the same budget charges, but an object keeps DOCUMENT ORDER and KEEPS DUPLICATES,
 //! so the HUD package parser can name the duplicate key's own JSON pointer, and can honour "the first
 //! condition in document order wins" for a state-keyed value. (`serde_json::Map` is a `BTreeMap` in
-//! this build, so a `Value` loses both.) There is no second duplicate-key reader in the tree.
+//! this build, so a `Value` loses both.) The only other reader that keeps duplicates is `plx_owp::json`, a layer
+//! below `ui`, which also has to read the unpaired surrogates and overflowing numbers serde_json refuses.
 use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::marker::PhantomData;
 

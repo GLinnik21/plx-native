@@ -1,6 +1,7 @@
 # Trademarks, brand assets, and non-affiliation
 
-The [GPL-3.0-or-later grant](LICENSE) covers this project's own source code. This file covers the things a
+The [GPL-3.0-or-later grant](LICENSE) covers this project's own source code, except the `plx_owp` crate,
+which is Apache-2.0 ([`LICENSING.md`](LICENSING.md)). This file covers the things a
 licence grant does not: the marks that identify the project, and whose software this interoperates
 with.
 
