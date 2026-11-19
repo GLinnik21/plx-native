@@ -1,31 +1,47 @@
 name: Claude
 
 # Answers `@claude` in an issue, a pull request comment, an inline review comment or a review body,
-# with the Claude Code GitHub Action (https://code.claude.com/docs/en/github-actions).
+# with the Claude Code GitHub Action (https://code.claude.com/docs/en/github-actions). Its main job is
+# reviewing pull requests, including ones from outside contributors' forks.
 #
 # It signs in with the maintainer's Claude SUBSCRIPTION, not an API key: the repository secret
 # CLAUDE_CODE_OAUTH_TOKEN holds the long-lived token `claude setup-token` prints, and every run counts
 # against that subscription's usage. To rotate it, run `claude setup-token` again and
 # `gh secret set CLAUDE_CODE_OAUTH_TOKEN`; deleting the secret turns this workflow off (the job fails).
 #
-# Who can start it: the `if:` below lets only an owner, member or collaborator through, so a stranger's
-# `@claude` on this public repository does not even start a runner; the action then checks again that
-# the commenter has write access, and refuses bot actors.
+# WHO CAN START IT. The `if:` lets only an owner, member or collaborator through, so a stranger's
+# `@claude` on this public repository does not start a runner; the action then checks again that the
+# commenter has write access, and refuses bot actors. What Claude READS is another matter: the issue or
+# pull request text, every comment on it and, on a pull request, the contributor's whole tree. Mention
+# `@claude` on an outsider's thread only after reading what is there.
 #
-# Pull requests from forks: only a comment in the conversation (`issue_comment`) works there. It runs
+# PULL REQUESTS FROM FORKS. Only a comment in the conversation (`issue_comment`) works there: it runs
 # this file from the default branch with its secrets. GitHub gives a fork's review and inline review
 # comment events no secrets, so `@claude` in a review on a fork's pull request fails for want of a token.
+# The action checks out the pull request's HEAD and restores only `.claude/`, CLAUDE.md, AGENTS.md and a
+# few config files from the default branch. `.claude/skills` and `.claude/agents/*.md` are links into
+# `.agents/`, and the nested module guides are not restored, so on a fork those come from the
+# contributor. The job is therefore built so that nothing in the checkout runs and nothing Claude is
+# talked into can publish:
 #
-# Project hooks are OFF in this job (`disableAllHooks` below). On a pull request the action checks out
-# the pull request's head and restores only `.claude/`, CLAUDE.md, AGENTS.md and a few config files from
-# the base, so a hook that calls a repository script (the SessionEnd hook runs `tools/build-gc.sh`)
-# would run a fork's copy of that script with the subscription token in its environment. Every hook in
-# `.claude/settings.json` is tooling for the maintainer's Mac anyway. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
-# also keeps the credentials out of the commands Claude runs.
-#
-# Claude reads CLAUDE.md / AGENTS.md from the base like any session, so the repository's rules apply to
-# what it writes. It can push a branch and open a pull request for an issue; it cannot push to a fork's
-# branch, and `main` stays protected by the same rules as for anyone else.
+# - The GitHub token is the job's own GITHUB_TOKEN (`github_token:` below), bounded by `permissions:`:
+#   it can comment on issues and pull requests and read CI, and it cannot push a commit, a branch or a
+#   tag. (The Claude GitHub App's token, the action's default, can write every repository in the
+#   organization, and release.yml publishes whatever `v*` tag is pushed.) Its comments are signed
+#   github-actions[bot], and it cannot push the `pr-N` branch the action would otherwise make of a fork.
+#   No `id-token: write`: with a token passed in, the action does not need OIDC, and an OIDC token from
+#   the default branch would satisfy this repository's Anthropic federation rule (issue-labels.yml).
+# - Project hooks are off (`disableAllHooks`): the SessionEnd hook runs `tools/build-gc.sh`, which on a
+#   fork is the contributor's copy. Every hook in `.claude/settings.json` is tooling for the maintainer's
+#   Mac anyway.
+# - Skills and subagents are off (`Skill`, `Agent`, `Task` disallowed, `disableSkillShellExecution`): on
+#   a fork they are the contributor's, and a skill can grant itself tools.
+# - Commands that reach the network or publish are disallowed (`curl`, `wget`, `gh`, `git push`,
+#   `git tag`); Claude comments through the action's own tools. For an author without write access the
+#   action also denies interpreters, shells, package managers and build tools, and turns git hooks off.
+# - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` strips the Anthropic credentials from the commands Claude runs, and
+#   the sandbox step installs bubblewrap so those commands run in their own PID namespace and cannot read
+#   Claude's environment from /proc. GH_TOKEN stays in the environment; it is the short-lived job token.
 
 on:
   issue_comment:
@@ -56,16 +72,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write   # the action's GitHub App token exchange
-      actions: read     # lets Claude read a pull request's CI results
+      contents: read
+      pull-requests: write   # review comments and the progress comment
+      issues: write          # comments on issues and on a pull request's conversation
+      actions: read          # lets Claude read a pull request's CI results
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false
+
+      # The same setup the action runs for `allowed_non_write_users`: bubblewrap gives the scrubbed
+      # commands their own PID namespace, and Ubuntu 24.04 needs unprivileged user namespaces allowed.
+      - name: Sandbox for Claude's commands
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat && break
+            echo "apt-get attempt $i failed, retrying..."
+            sleep 5
+          done
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: Run Claude Code
         env:
@@ -73,4 +102,8 @@ jobs:
         uses: anthropics/claude-code-action@f431adaf77e0fecf918431e75a2b5b45b85af002 # v1.0.283
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: --settings '{"disableAllHooks":true}'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --settings '{"disableAllHooks":true,"disableSkillShellExecution":true}'
+            --disallowedTools "Skill" "Agent" "Task" "Bash(curl:*)" "Bash(wget:*)" "Bash(gh:*)"
+            "Bash(git push:*)" "Bash(git tag:*)"
