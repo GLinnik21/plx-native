@@ -1,4 +1,4 @@
-{"updated":"2026-11-19T19:28:02Z",
+{"updated":"2026-11-19T23:47:19Z",
 "ci":[
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
@@ -5477,7 +5477,8 @@
 {"id":44542983922,"at":"2026-11-19T14:22:13Z","sha":"bccf03e72","title":"Open Watch Party: the protocol crate, its checks and eight conformance tables","pr":1462,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":199,"Windows launcher syntax":21,"macOS simulator build + launch":333,"Linux simulator build + launch":665}},
 {"id":44551063360,"at":"2026-11-19T18:59:12Z","sha":"69ec73c0f","title":"Hero identity: its doc names the dynamic-range chip","pr":1348,"event":"pull_request","conclusion":"success","attempt":3,"jobs":{"macOS simulator build + launch":135,"macOS tests against bundled FFmpeg and ASS":190,"Linux simulator build + launch":376,"Windows launcher syntax":22},"wall":14101},
 {"id":44593596268,"at":"2026-11-19T18:59:33Z","sha":"546999d1f","title":"Detail and Home hero: name HDR and Dolby Vision beside the resolution","pr":1348,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":122,"Linux simulator build + launch":397,"Windows launcher syntax":21,"macOS simulator build + launch":234}},
-{"id":44597331455,"at":"2026-11-19T19:20:43Z","sha":"d3cebf1d2","title":"Merge main (#1348 landed)","pr":1412,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":242,"macOS simulator build + launch":343,"Linux simulator build + launch":326,"Windows launcher syntax":17}}
+{"id":44597331455,"at":"2026-11-19T19:20:43Z","sha":"d3cebf1d2","title":"Merge main (#1348 landed)","pr":1412,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":242,"macOS simulator build + launch":343,"Linux simulator build + launch":326,"Windows launcher syntax":17}},
+{"id":44639771056,"at":"2026-11-19T23:41:32Z","sha":"af6fb2615","title":"test: keep the submit handshake when the storage worker wins the race","pr":1387,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":335,"macOS simulator build + launch":305,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":128}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
