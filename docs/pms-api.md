@@ -1732,13 +1732,21 @@ What a hint does for the Watchlist: a session on a matched title that the page h
 any held card. A `timeline` create or delete does not read the item: it owes the Watchlist store ONE re-match
 of that server and kind (a delete of the item a tile is matched to asks again about that guid, a create asks
 again about the kind's titles the server was not seen to hold, `/library/all?type=T&guid=…` at 40 guids to a
-request), deduplicated per pump, at most once per quiet-refetch spacing (5 s) per server and kind, only once
-the Watchlist has loaded and only when `reread_allowed`; it stays queued otherwise. A feed that came back
+request), deduplicated per server and kind, only once the Watchlist has loaded and only when `reread_allowed`
+(it stays queued otherwise). A feed that came back
 after a gap re-asks the server's titles whole. The tile flips when the answer lands (`docs/watchlist.md`,
 *Live-update gaps*). The same create or delete also moves that server's lists: one quiet Home refetch
-and one section-shelf invalidate (spaced like a `stopped`'s), and one `BrowseCmd::ListingsChanged` for its
-library listings, at most once per quiet-refetch spacing per server (a change inside it stays owed and is
-spent when due). PMS sends the same `finished` frame for a refreshed item as for a new one, so the open grid
+and one section-shelf invalidate (coalesced like a `stopped`'s), and one `BrowseCmd::ListingsChanged` for its
+library listings. **None of these four (the re-match, the refetch, the invalidate and the re-list) is made
+when the entry arrives.** A scan delivers about one finished entry a second for minutes, and over a remote
+link one row read takes seconds, so re-reading on each entry kept every read the viewer scrolled to stuck in
+a queue (#1458). A server's entries wait for ITS feed to go quiet: the four are made once, when no library
+entry for that server has arrived for 10 s (`LIBRARY_QUIET_FRAMES`) or when 60 s
+(`LIBRARY_LONGEST_WAIT_FRAMES`) have passed since the oldest entry not yet spent, so a feed that never goes
+quiet still refreshes about once a minute; the next entry starts a new wait. The wait is counted in pumped frames and holds only library entries: a `stopped` session's
+refetch and invalidate, a feed gap's sweep and the read-backs above are not waited on, and the spacings
+downstream (5 s per quiet refetch, per section shelf, per re-match and per server's re-list) still apply.
+PMS sends the same `finished` frame for a refreshed item as for a new one, so the open grid
 is never listed again while it is visible: it is marked stale, as a read-back that moves a row's membership
 marks it, and re-queried keeping the reader's place when a page covers it (at once when no Library page is
 on the navigation stack). The server's other sections forget their pages and fetch afresh on their next
