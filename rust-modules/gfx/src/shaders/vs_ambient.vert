@@ -26,10 +26,10 @@ attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
 // One name per declaration, here and in every shader. The four corners below were one
-// `uniform vec4 a, b, c, d;` statement, the only multi-declarator in `shaders/`, when the Samsung
-// TV 10.0 emulator (YaGL over Mesa) rejected this program; a host test in `gfx.rs` keeps the sources
-// one-per-statement. The uniforms are found by name, so a driver that reads either spelling sees the
-// same program.
+// `uniform vec4 a, b, c, d;` statement, the only multi-declarator in `shaders/`. The Samsung TV 10.0
+// emulator (YaGL over Mesa) rejected this program with that statement and compiles it with the split
+// (measured there; a host test in `gfx.rs` keeps the sources one-per-statement). The uniforms are found
+// by name, so a driver that reads either spelling sees the same program.
 uniform vec4 u_atl;
 uniform vec4 u_atr;
 uniform vec4 u_abr;

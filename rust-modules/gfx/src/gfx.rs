@@ -9735,14 +9735,20 @@ mod tests {
     }
 
     /// **A shader declares one name per `uniform` / `varying` / `attribute` statement.** The Samsung
-    /// TV 10.0 emulator (YaGL over Mesa llvmpipe) rejects `VS_AMBIENT_DITHERED` at
-    /// `varying highp vec2 v_dither_nc;` ("syntax error, unexpected NEW_IDENTIFIER"), and
-    /// `gfx_compile` exits the process on a required shader's rejection. `vs_ambient.vert`'s
-    /// `uniform vec4 u_atl, u_atr, u_abr, u_abl;` was the only multi-declarator in `shaders/`, which
-    /// makes it the suspected cause; that it is the cause is not yet confirmed on the emulator.
-    /// Every other source already spelled one name per statement, and a driver that reads either
-    /// spelling sees the same program, so the sources keep to the spelling the other drivers have
-    /// read. It lists the directory, so a new shader is covered by being added.
+    /// TV 10.0 emulator (YaGL over Mesa llvmpipe) rejected `VS_AMBIENT_DITHERED` at
+    /// `varying highp vec2 v_dither_nc;` ("syntax error, unexpected NEW_IDENTIFIER"), and a required
+    /// shader's rejection stops the app from starting. `vs_ambient.vert`'s
+    /// `uniform vec4 u_atl, u_atr, u_abr, u_abl;` was the only multi-declarator in `shaders/`, and
+    /// splitting it is what made the program compile there. Measured on that emulator with the Tizen
+    /// hello-world probe (`samsung/hello-tpk` at `e8da14ce6`): the unsplit source failed, the split
+    /// source compiled, a cut-down variant did the same, and with the split all 14 required programs
+    /// compiled and linked and `plx_gfx` drew. Why YaGL rejects the statement is not established (the
+    /// message is the one Mesa gives for raw desktop GLSL 1.10, where `highp` is an ordinary
+    /// identifier), and an optional program, the straighten copy variant, still fails there with the
+    /// same kind of error and no multi-declarator, its cause also not established. Every other source
+    /// already spelled one name per statement, and a driver that reads either spelling sees the same
+    /// program, so the sources keep to the spelling the other drivers have read. It lists the
+    /// directory, so a new shader is covered by being added.
     #[test]
     fn every_shader_keeps_one_name_per_declaration_in_a_uniform_varying_or_attribute_statement() {
         let mut found = Vec::new();
@@ -9753,9 +9759,9 @@ mod tests {
         }
         assert!(
             found.is_empty(),
-            "a multi-declarator is the suspected cause of the TV 10.0 emulator (YaGL) rejecting \
-             `vs_ambient.vert`, so a `uniform` / `varying` / `attribute` statement names one \
-             variable; split these:\n{}",
+            "a multi-declarator made the TV 10.0 emulator (YaGL) reject `vs_ambient.vert` until it \
+             was split, so a `uniform` / `varying` / `attribute` statement names one variable; \
+             split these:\n{}",
             found.join("\n")
         );
     }
