@@ -125,7 +125,7 @@ copy a tile opens is chosen current server first, then owned, then shared, Reach
 **The other direction.** A `PmsMovie` carries `guid` and `show_guid` (an episode's `grandparentGuid`, a season's `parentGuid`: the server sends a season no `grandparentGuid`),
 each decoded once to `[u8; 12]`. The Detail and Home hero discs and the hold-menu rows use them to name the catalog
 id. `resolve_catalog_hex(known, fetch)` (`plex/models.rs`) is the helper for a row that lacks one: it
-fetches `client.metadata(rk or show_rk).guid` only when the id is not already known. A hold-menu card
+fetches `client.metadata_background(rk or show_rk).guid` only when the id is not already known. A hold-menu card
 whose row carries no guid asks for it (`WatchlistStore::want_hex`, a worker reading the item's own
 server record, an episode's SHOW record): the menu being opened omits the row, the next one offers it
 once the record named a portable id (tests in `app/watchlist_press_tests.rs`). The Detail disc reads

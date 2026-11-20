@@ -487,7 +487,7 @@ fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
 }
 
 /// A card row that carries no catalog id is resolved through its own server record
-/// (`client.metadata(rk or show_rk).guid`): the menu opened first omits the row and asks, the next
+/// (`client.metadata_background(rk or show_rk).guid`): the menu opened first omits the row and asks, the next
 /// one offers it, and its press ends in the write for the RESOLVED id.
     #[test]
     fn watchlist_write_live_and_held_finish_in_the_emitting_drain_and_cancel_queued() {

@@ -1236,7 +1236,8 @@ fn fan_out(
 
 /// WORKER. The guid to fan out on: the one the press carried, or — when it carried none, which is
 /// every press from a Home / Library / Search card menu, since a catalog row (`pms::PmsMovie`) does
-/// not hold one — the item's own record, read off its own server.
+/// not hold one — the item's own record, read off its own server (`Client::metadata_background`: the
+/// press needs a guid, not a refreshed record).
 ///
 /// The lookup is what makes the "resolve at write time" rule hold: the fan-out must not require a
 /// prior detail-page visit, because a card menu is a place no cross-source resolve has ever run. It
@@ -1247,7 +1248,7 @@ fn resolved_guid(c: &plx_plex::plex::Client, rk: &str, given: &str) -> Option<St
     if !given.is_empty() {
         return Some(given.to_string()); // the press knew it; no round trip at all
     }
-    let guid = c.metadata(rk).map(|m| m.guid).unwrap_or_default();
+    let guid = c.metadata_background(rk).map(|m| m.guid).unwrap_or_default();
     (!guid.is_empty()).then_some(guid)
 }
 

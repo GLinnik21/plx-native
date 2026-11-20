@@ -149,7 +149,7 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   | name | in | required | type | note |
   |---|---|---|---|---|
   | `ids` | path | yes | **array** (CSV) | app passes a single id — a valid singleton |
-  | `checkFiles`, `skipRefresh`, `asyncCheckFiles`, `includeElements`, … | query | no | integer(0/1) | optional; app sends none |
+  | `checkFiles`, `skipRefresh`, `asyncCheckFiles`, `includeElements`, … | query | no | integer(0/1) | optional; the detail read sends none (background reads by key send `skipRefresh=1`: `docs/pms-api.md`, "Reads by key") |
 
 - **Response:** `mediaContainerWithMetadata` → `MediaContainer.Metadata[]` (app reads `[0]`).
 - **App reads (detail):** title/year/contentRating/summary/tagline/studio/

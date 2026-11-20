@@ -444,7 +444,7 @@ impl Bridge<'_> {
     /// show (`from_episode` makes the labels say "Show").
     ///
     /// A row that carries no catalog id is resolved through its own server record
-    /// (`client.metadata(rk or show_rk).guid`, `WatchlistStore::want_hex`): the read is asked for
+    /// (`client.metadata_background(rk or show_rk).guid`, `WatchlistStore::want_hex`): the read is asked for
     /// here and runs on a worker, so the menu being opened now omits the row and the next one
     /// offers it. A server that did not answer, or an item with no portable id, never does.
     pub(crate) fn watchlist_card_face(

@@ -240,13 +240,21 @@ impl Client {
     /// only show-level answer to "what's next": the client otherwise holds ONE season's episodes at a
     /// time, so anything it computed itself would change with the selected season tab. Verified live
     /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
+    ///
+    /// This is the DETAIL read, the one a viewer asked for by opening an item, so it sends no
+    /// `skipRefresh` and PMS runs its usual synchronous refresh of the item. A read the viewer did
+    /// not ask for goes through [`Client::metadata_background`] instead.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
-        let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
-            .int("includeChapters", 1)
-            .int("includeMarkers", 1)
-            .int("includeOnDeck", 1)
-            .build();
-        self.get_json(&path)?.metadata.into_iter().next()
+        self.get_json(&metadata_path(rating_key, false))?.metadata.into_iter().next()
+    }
+
+    /// [`Client::metadata`]'s read for a caller the viewer did not ask for: a guid looked up while a
+    /// press is being served, an item read again to find out what it carries. The same parameters, plus
+    /// `skipRefresh=1`: the spec's default (false) has PMS run its synchronous local media agent and
+    /// analysis refresh on every `GET /library/metadata/{id}`, and a read that wants only the record
+    /// as the server holds it should not pay for that on a remote link (`docs/pms-api.md`, "skipRefresh").
+    pub fn metadata_background(&self, rating_key: &str) -> Option<Metadata> {
+        self.get_json(&metadata_path(rating_key, true))?.metadata.into_iter().next()
     }
 
     /// GET /library/metadata/{rating_key}/extras → clip rows (`subtype` trailer / behindTheScenes / …).
@@ -274,15 +282,14 @@ impl Client {
     /// module passes in. (The server silently KEEPS `Image`, `UltraBlurColors` and `Field` whatever
     /// you ask, so they are not listed — naming them would just read as if they went.)
     ///
+    /// **Always `skipRefresh=1`.** Every caller reads keys a listing already named, on a worker the
+    /// viewer is not waiting behind, and the spec's default (false) has PMS run its synchronous local
+    /// media agent and analysis refresh on a `GET /library/metadata/{ids}`, which a field log on a
+    /// remote link read as 4 to 9 s per Home row (`docs/pms-api.md`, "skipRefresh").
+    ///
     /// Absent from `docs/plex-openapi.json`, which documents only the single-key form.
     pub fn metadata_many(&self, rating_keys: &[&str]) -> Option<MediaContainer> {
-        const EXCLUDE_ELEMENTS: &str =
-            "Media,Genre,Country,Collection,Director,Writer,Producer,Similar,Chapter,Marker,Guid,Rating,Review,Extras";
-        let path = QueryBuilder::new(format!("/library/metadata/{}", rating_keys.join(",")))
-            .str("excludeElements", EXCLUDE_ELEMENTS)
-            .str("excludeFields", "summary,tagline")
-            .build();
-        self.get_json(&path)
+        self.get_json(&metadata_many_path(rating_keys))
     }
 
     /// GET /library/metadata/{rating_key}/children (D-5 undocumented but real) → `.metadata[]`.
@@ -422,6 +429,30 @@ impl Client {
     }
 }
 
+/// The path of [`Client::metadata`] (`skip_refresh` false, the detail read) and of
+/// [`Client::metadata_background`] (`skip_refresh` true): one item with its chapters, markers and
+/// on-deck episode. `skipRefresh=1` is the only difference between the two.
+fn metadata_path(rating_key: &str, skip_refresh: bool) -> String {
+    QueryBuilder::new(format!("/library/metadata/{rating_key}"))
+        .int("includeChapters", 1)
+        .int("includeMarkers", 1)
+        .int("includeOnDeck", 1)
+        .opt_int("skipRefresh", i64::from(skip_refresh))
+        .build()
+}
+
+/// The path of [`Client::metadata_many`]: the CSV of keys, trimmed to the tag arrays. Every caller is a
+/// background read of keys a listing already named, so it always carries `skipRefresh=1`.
+fn metadata_many_path(rating_keys: &[&str]) -> String {
+    const EXCLUDE_ELEMENTS: &str =
+        "Media,Genre,Country,Collection,Director,Writer,Producer,Similar,Chapter,Marker,Guid,Rating,Review,Extras";
+    QueryBuilder::new(format!("/library/metadata/{}", rating_keys.join(",")))
+        .str("excludeElements", EXCLUDE_ELEMENTS)
+        .str("excludeFields", "summary,tagline")
+        .int("skipRefresh", 1)
+        .build()
+}
+
 /// The request paths `find_by_guids` issues: only `plex://` guids, de-duplicated in order, in
 /// chunks of at most [`GUIDS_PER_REQUEST`]. Each guid is percent-encoded on its own and the chunk is
 /// joined with a literal `,` — the one separator PMS splits the `guid` param on (measured,
@@ -557,6 +588,31 @@ mod tests {
 
     fn terms(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    /// `skipRefresh` is how a background read tells PMS not to run its synchronous refresh (the spec's
+    /// default does), so the batched read of many keys and the background single-key read both carry
+    /// it, with the batched read's trims kept; the detail read, which a viewer asked for, does not.
+    #[test]
+    fn skip_refresh_a_batched_read_asks_the_server_not_to_refresh() {
+        assert_eq!(
+            metadata_many_path(&["12", "34"]),
+            "/library/metadata/12,34\
+             ?excludeElements=Media%2CGenre%2CCountry%2CCollection%2CDirector%2CWriter%2CProducer%2CSimilar\
+             %2CChapter%2CMarker%2CGuid%2CRating%2CReview%2CExtras\
+             &excludeFields=summary%2Ctagline&skipRefresh=1");
+    }
+
+    #[test]
+    fn skip_refresh_a_background_single_read_asks_the_server_not_to_refresh() {
+        assert_eq!(
+            metadata_path("12", true),
+            "/library/metadata/12?includeChapters=1&includeMarkers=1&includeOnDeck=1&skipRefresh=1");
+    }
+
+    #[test]
+    fn skip_refresh_the_detail_read_does_not_carry_it() {
+        assert_eq!(metadata_path("12", false), "/library/metadata/12?includeChapters=1&includeMarkers=1&includeOnDeck=1");
     }
 
     /// A directory read without terms is byte-identical to what it always was, and the terms
