@@ -9,8 +9,10 @@
 //! the desktop, a host test and a platform with no helper). Every dispatcher here reads it once per
 //! call, in its public form, and hands it to a `*_via(authority, helper, ..)` form that takes the
 //! authority and the helper's transport as parameters, so a host test grades the helper arm with a
-//! fake transport and the files arm with a transport that fails the test if it is touched. The
-//! helper's real transport (`NativeTransport`) is named by the dispatchers' public forms and by
+//! fake transport and the files arm with a transport that fails the test if it is touched. The one
+//! exception is `cleanup_temporaries`, which dispatches through `cleanup_temporaries_for(authority)`
+//! with no transport, because the helper arm sweeps nothing. The helper's real transport
+//! (`NativeTransport`) is named by the other dispatchers' public forms and by
 //! two helpers that have no `_via` seam: `reset_cleared_language()`, which `clear_for_erase` calls
 //! under `Helper` (device-only), and `helper_commit`, which has no caller in this crate.
 

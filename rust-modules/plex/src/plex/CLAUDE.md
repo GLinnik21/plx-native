@@ -631,9 +631,11 @@ a dead source is **absent** from Home and states itself in its own library secti
   (`Helper`: the LS2/DB8 storage helper, webOS; `Files`: the 0600 record files, the desktop, a host test and
   any platform with no helper), never the build's CPU or OS. `session/persistence.rs` reads it once per
   public call (`load`, `commit_data`, `commit_cleared`, `write_session`, `migrate_session`, `bootstrap`,
-  `cleanup_after_confirmed_clear`, `cleanup_temporaries`) and hands it to the `*_via(authority, helper, ..)`
+  `cleanup_after_confirmed_clear`) and hands it to the `*_via(authority, helper, ..)`
   form, so a test passes the authority it grades and, for `Helper`, a transport of its own (an in-memory
-  `Backend` or a closure); the real `NativeTransport` is named by those public forms and by two helpers
+  `Backend` or a closure); `cleanup_temporaries` also reads it once but dispatches through
+  `cleanup_temporaries_for(authority)`, which takes no transport, because the `Helper` arm sweeps nothing (DB8
+  has no app-owned rename temporaries); the real `NativeTransport` is named by those seven public forms and by two helpers
   with no `_via` seam (`reset_cleared_language()`, which `clear_for_erase` calls under `Helper` and which is
   device-only, and `helper_commit`, which has no caller here), because on a Linux host it waits out a 12 s
   start deadline with no helper behind it. There is no process-global override.
