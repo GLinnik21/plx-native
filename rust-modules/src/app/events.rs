@@ -36,8 +36,9 @@ pub(crate) use plx_shell_sdl::inject::{
     synth_key_repeat as remote_synth_key_repeat, synth_lifecycle as remote_synth_lifecycle,
     synth_pointer as remote_synth_pointer, synth_ptr as remote_synth_ptr, synth_wheel as remote_synth_wheel,
 };
-// The byte writers and two readers are the loop tests' (they write the bytes a platform would deliver).
-#[cfg(test)]
+// The byte writers are the loop tests' (they write the bytes a platform would deliver), and the two
+// readers are the hostsim wheel test's (the stock layout's float).
+#[cfg(all(test, feature = "hostsim"))]
 pub(crate) use plx_shell_sdl::event::{rd_f32, rd_i32};
 #[cfg(test)]
 pub(crate) use plx_shell_sdl::inject::{encode_key, encode_key_repeat, encode_pointer};
