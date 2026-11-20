@@ -19,12 +19,16 @@ together" for how those two were combined). **The split is finished.** What is l
 loop, its adapters, every dev and diagnostic surface, and the application's side of the port
 (`port`, `system`, and the other `[platform webos]` members that are not in a layer crate). They are
 the one `staticlib` the Makefile links and the one place that may name every other layer, so there
-is nothing below it to split off. **Decision: the `[platform webos]` members stay where they are**
+is nothing below it to split off. **Decision, revised 2026-11-20: the `[platform webos]` members stay where they are
+until the simulator is its own platform, and then leave for crates of their own on top.**
 (`webos`, `keymanager` and `system` are modules of `plx_os` (the Starfish sink is
-`webos::video_sink`), and `port` of the top crate) **until a second TV OS exists.** A port crate now would have one
-customer and a boundary drawn from guesses about the second; the fence in `ci/check-module-layers.py`
-(a reference from outside `[platform webos]` to a member of it fails) already holds the line a crate
-would, and L15b is where the port's OS-neutral shape is worked out.
+`webos::video_sink`), and `port` of the top crate.) The earlier decision was to wait **until a second TV OS exists**:
+a port crate would have had one customer and a boundary drawn from guesses about the second. The desktop platform, the
+simulator and `PlxNative.app` as a platform of their own (L15d), is a second implementation of the same interfaces,
+which is what the wait was for, so the crates are extracted (L15f) after it and no second TV OS has to exist first
+(`docs/platform-ports.md`, Decision 3; "L15c to L15h" below maps its workstreams to steps). Until then the fence
+in `ci/check-module-layers.py` (a reference from outside `[platform webos]` to a member of it fails) already holds
+the line a crate would, and L15b is where the port's OS-neutral shape is worked out.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
 The gate also checks each extracted crate's local Cargo declarations, including build, dev,
@@ -324,6 +328,12 @@ proves the references are gone and nothing more; L15b is open.
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
 | **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[platform webos]` reaches the television through the `tv` interfaces in `os` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `plx_os::webos::video_sink::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
 | **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it, the simulator as its own port, and the webOS facts the gate cannot see. See below. |
+| **L15c** the platform value and the three contracts — **planned** | — | Wave R (the rename that gives this page `os` and `[platform webos]`), W2 (`tv::Port` becomes `tv::Services`; the shell and the frame probes move to `app::Platform`) and W3a to W3c: who may persist credentials, what evidence admits a URI player, who ends the process. See "L15c to L15h" below. |
+| **L15d** neutral types and the simulator as its own platform (L15b item 2) — **planned** | — | W3d (the opaque `Backend` tag, `sandbox` to `native_video`, identity publishes a platform name and version, `device::Info` loses its webOS fields) and W4 (a second fence section, `[platform desktop]`, with its own value; the `hostsim` arms leave `webos`, `keymanager`, `system` and `port`). The desktop platform is the second implementation. |
+| **L15e** events, the shell and composition — **planned** | — | W5 (`HostEvent` with `Option<Action>`), W6b (platform-supplied composition in two boot phases), W6 (`plx_shell_sdl`, a `[shell_sdl]` layer) and W6c (a URI-only and a two-driver composition play an ordinary title). |
+| **L15f** extract the platform crates — **planned** | — | W7: a narrow public `host` module in the application crate, `rust-modules/platform-webos` and `platform-desktop` as crates above `app`, and the gate learning "a platform is a crate above `app`". After L15d, before L15g and L15h. |
+| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **planned** | — | W8: the `target_arch = "arm"` and `target_os = "linux"` sites sorted into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays), then the library name lists, `paths`, the packaging and the 363 `hostsim` arms outside the fence. |
+| **L15h** the OS-neutral Feed sink (L15b item 1) — **planned** | — | W11: `plx_acb` (an `[acb]` layer) takes the ACB plane owner and the URI media verbs out of `os`, the Feed-side ACB results become neutral, and the bind sequence moves behind a neutral sink. Needs the television. |
 
 ### L15: the webOS port
 
@@ -441,10 +451,31 @@ still webOS's. Three things are left:
      and `.ipk` packaging.
 
 L15b is done when the sink is OS-neutral, the simulator is its own port, and these facts are the
-port's. The port can then leave its layers for a crate of its own on top: it names `app` to start
-it, and nothing names it. `plxnative-modules` stays the staticlib the Makefile links, now holding
-the port. Another TV OS is another port in that position. The simulator binary, `src/bin/sim.rs`,
-is already a separate crate there, and enters through `port::plex_run`.
+port's. The port does not wait for all three before it leaves its layers. The order, amended 2026-11-20, is item 2
+(the simulator as its own port), then the extraction, then item 3 and item 1 ("L15c to L15h" below). Extracted, the
+port is a crate of its own on top: it names `app` to start it, and nothing names it. The webOS platform crate
+produces the staticlib the Makefile links, and `plxnative-modules` stays the application crate beneath it. Another TV
+OS is another platform in that position. The simulator binary, `src/bin/sim.rs`, is already a separate crate there,
+and enters through `port::plex_run` until W4 gives it its own platform value.
+
+### L15c to L15h: the platform plan
+
+`docs/platform-ports.md` plans making the application run and plug in on several platforms: webOS, the desktop
+simulator and `PlxNative.app`, and Samsung Tizen. It carries the design, the facts behind it and the workstreams W0 to
+W13; the six steps below are its layer-graph side, and the lettering L15c to L15h is introduced by this amendment so
+the migration table can carry them (L15b's three items keep their meaning and are L15d for item 2, L15g for item 3
+and L15h for item 1). Prose on this page written before Wave R says "port" where the plan says platform; the fence
+section is `[platform X]`, and the plan calls its crates `plx_platform_webos`, `plx_platform_desktop` and
+`plx_platform_tizen`. Where L15b above speaks of a second `Port` table, the plan's shape is `tv::Services` plus
+`app::Platform` (W2).
+
+The order is L15c; then L15d and L15e, which overlap (W3d then W4 runs beside W5, and W6b, W6 and W6c wait for both);
+then L15f; then L15g and L15h. So the extraction (L15f, W7) follows item 2 (L15d, W4), and item 3 (L15g, W8) and
+item 1 (L15h, W11) come afterwards. The earlier order put the extraction after all of L15b, which would have made W7
+wait for the neutral sink: item 1 needs the television and gates nothing the other platforms need, and W8 follows W7.
+Some workstreams are not steps of this table because they change no layer rule: W0 (the record of the plan, this
+amendment), W1 (the `PLATFORM` build axis), and W9, W10, W12 and W13 (the Tizen platform, its URI and Feed drivers and
+the desktop products), which each add a platform crate to the arrangement L15f creates.
 
 ### Then the split
 
