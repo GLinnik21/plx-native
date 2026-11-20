@@ -59,15 +59,28 @@ pub(super) fn read_locked() -> ReadState {
 /// fresh sign-in ends a revocation.
 pub(super) fn save_locked(s: &Session, authority: SaveAuthority, generation: u64) -> async_persistence::LiveWrite {
     let install_kept = install_preferences::save_v2(Retained::of(s), &s.client_id);
+    // A sign-in writes more than once (discovery, then the final commit): the log says so once, when
+    // the cell first takes this account, not once per write.
+    let first_for_this_account = authority == SaveAuthority::FreshReauthentication
+        && !s.account_token.is_empty()
+        && !holds_account(&s.account_token);
     install_write_locked(std::sync::Arc::new(ReadState::Ready {
         session: std::sync::Arc::new(s.clone()),
         plaintext: false,
         retry_canonical: false,
     }), authority, generation);
-    if authority == SaveAuthority::FreshReauthentication && !s.account_token.is_empty() {
+    if first_for_this_account {
         plx_base::eventlog::log("session: signed in for this run only; this platform keeps no login across launches");
     }
     async_persistence::LiveWrite::memory(install_kept)
+}
+
+/// Whether the cell already holds a session of this account.
+fn holds_account(account_token: &str) -> bool {
+    match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
+        Cached::Settled(state) | Cached::Transient { state } => session_from_read(state).account_token == account_token,
+        Cached::Unloaded | Cached::Revoked => false,
+    }
 }
 
 /// Sign-out (`all_local == false`) forgets the session and keeps the install's file, with the

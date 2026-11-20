@@ -142,6 +142,29 @@ fn a_memory_only_sign_in_leaves_no_credential_byte_in_the_data_directory() {
     assert_eq!(install.file_names(), ["auth.language.json"], "the install's own file is the one thing written");
 }
 
+/// The event log says "memory only" once per sign-in, though a sign-in writes twice (discovery, then
+/// the final commit), and again for the next account the cell takes.
+#[test]
+fn a_memory_only_sign_in_logs_one_line_however_many_writes_it_takes() {
+    let _serial = plx_base::testlock::serial();
+    let _install = Install::new("one-log-line", StoreMode::MemoryOnly);
+    let said = |log: &str| log.matches("signed in for this run only").count();
+    let read_log = || std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+    let log = plx_base::eventlog::with_private_log(|| {
+        assert_ephemeral(&sign_in("install-1"));
+        save_fresh_reauthentication(&signed_in_with("install-1"));
+        read_log()
+    });
+    assert_eq!(said(&log), 1, "{log}");
+    let log = plx_base::eventlog::with_private_log(|| {
+        clear_for_erase(false, None);
+        save_fresh_reauthentication(&signed_in_with("install-1"));
+        save_fresh_reauthentication(&signed_in_with("install-1"));
+        read_log()
+    });
+    assert_eq!(said(&log), 1, "a new sign-in after a sign-out says it again, once: {log}");
+}
+
 #[test]
 fn the_same_sign_in_on_a_durable_platform_does_write_the_credential() {
     let _serial = plx_base::testlock::serial();
