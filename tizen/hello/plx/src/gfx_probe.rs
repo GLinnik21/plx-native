@@ -8,8 +8,9 @@
 //! The panel's `8 gfx` lines are the result: the init result, how many shader pairs compiled and linked
 //! (and, for the first that did not, the driver's first error line in full), `glGetError` after init,
 //! after the frame and after the swap, every GL extension the renderer wants that this GL does not list
-//! (in full, wrapped, never cut at a column count), and [`crate::shader_bisect`]'s one-line summary of
-//! which variants of the failing vertex source compile. The UDP log carries all of it whole.
+//! (in full, wrapped, never cut at a column count), and [`crate::shader_bisect`]'s two one-line summaries: of
+//! which variants of the failing vertex source compile and of which vertex+fragment variants link. The UDP
+//! log carries all of it whole.
 //!
 //! **Three things this has to get around, none of them in `rust-modules/`:**
 //!
@@ -36,7 +37,7 @@
 use crate::dl::symtable;
 use crate::log::{plog, plog_full};
 use crate::panel::{self, Step};
-use crate::shader_bisect::{self, BisectReport};
+use crate::shader_bisect::{self, BisectReport, LinkReport};
 use std::ffi::{c_char, c_void, CString};
 #[cfg(feature = "gfx")]
 use std::ffi::c_int;
@@ -71,20 +72,19 @@ pub const START_FRAME: u64 = 2;
 /// (no GL error, no unbound call) the settled report replaces the first on the panel, with the count. About
 /// two seconds at the 30 fps the emulator ran at.
 pub const STEADY_FRAMES: u64 = 60;
-/// What `plx_gfx` hands GL ahead of every shader source on an ES context (`gfx.rs` `glsl_preamble`): a
-/// `#version 100` line, as its OWN source string (`glShaderSource(s, 2, [preamble, source], NULL)`). The
-/// probe compiles the same way, so the preflight tests the call the renderer makes. A test reads `gfx.rs`
-/// and fails if this drifts from its ES branch.
+/// What `plx_gfx` hands GL ahead of every shader source on an ES context (`gfx.rs` `glsl_preamble`): the
+/// EMPTY string, as its OWN source string (`glShaderSource(s, 2, [preamble, source], NULL)`). The probe
+/// compiles the same way, so the preflight tests the call the renderer makes. A test reads `gfx.rs` and
+/// fails if this drifts from its ES branch.
 ///
-/// It was the empty string until the first emulator run: YaGL's GLSL compiler (Mesa's, "OpenGL ES GLSL ES
-/// 1.4") rejected `varying highp vec2 v_dither_nc;` in `vs_ambient.vert` when the source began with no
-/// `#version` line (the bisect's variants `a`, `m`; `g`, with a `#version 100` first, compiled), which is
-/// why the line is there now. The bisect still compiles its variants after [`BISECT_PREAMBLE`], the old
-/// empty string, so its matrix stays comparable with that run and `g` is the new baseline.
-pub const ES_PREAMBLE: &str = "#version 100\n";
-/// The first source string of the bisect's variants (all but `p`): what `plx_gfx` handed GL BEFORE the
-/// `#version 100` line was added, an empty string.
-pub const BISECT_PREAMBLE: &str = "";
+/// (A `#version 100` line was tried here for one run and reverted: it made `vs_ambient.vert` compile on
+/// YaGL but not LINK, "all shaders must use same shading language version". The link variants of
+/// [`crate::shader_bisect`] still hand it over, as [`VERSION_100`], to keep that evidence.)
+pub const ES_PREAMBLE: &str = "";
+/// A `#version 100` line as the first source string, for the bisect and link variants that test it. It is
+/// NOT what `plx_gfx` sends ([`ES_PREAMBLE`]); it is a literal, so a later change of that constant cannot
+/// silently turn those variants into copies of the baseline.
+pub const VERSION_100: &str = "#version 100\n";
 
 symtable! {
     /// The core GLES2 entry points the probe itself calls, loaded from the opened libGLESv2. These are
@@ -181,8 +181,28 @@ const VS_AMBIENT_DITHERED: (&str, (&str, &str)) = (
         r##"glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n")"##,
     ),
 );
+/// `VS_AMBIENT_DITHERED` as it was BEFORE `vs_ambient.vert`'s `uniform vec4 u_atl, u_atr, u_abr, u_abl;`
+/// was split into four declarations: the same three defines in front of a frozen copy of the file
+/// (`probe_shaders/vs_ambient_unsplit.vert`, taken from git, byte for byte). The shader bisect and the
+/// link variants keep it for the before-and-after evidence; a test proves the copy is the repository's
+/// file with the one statement joined again.
+const VS_AMBIENT_DITHERED_UNSPLIT: &str = concat!(
+    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n",
+    include_str!("probe_shaders/vs_ambient_unsplit.vert"),
+    "\0"
+);
 const FS_AMBIENT: (&str, (&str, &str)) =
     (sh!(dithered "fs_ambient.frag"), ("FS_AMBIENT", r#"glsl_dithered!("shaders/fs_ambient.frag")"#));
+
+/// The texts the bisect and the link variants are built from.
+fn bisect_sources() -> shader_bisect::Sources<'static> {
+    shader_bisect::Sources {
+        full: VS_AMBIENT_DITHERED.0,
+        original: VS_AMBIENT_DITHERED_UNSPLIT,
+        control: VS_SRC_DITHERED.0,
+        fs: FS_AMBIENT.0,
+    }
+}
 const VS_SCRIM_LAYER: (&str, (&str, &str)) = (
     sh!(prefix "#define PLX_SCRIM\n#define PLX_SCRIM_LAYER\n", "vs_ambient.vert"),
     ("VS_SCRIM_LAYER", r##"glsl!("shaders/vs_ambient.vert", "#define PLX_SCRIM\n#define PLX_SCRIM_LAYER\n")"##),
@@ -260,6 +280,51 @@ pub trait ShaderGl {
     /// Compile `parts` (one `glShaderSource` string each) for the bisect and delete the shader again: never
     /// linked, never kept. Reports the driver's whole answer and what it kept of the text.
     fn trial(&mut self, fragment: bool, parts: &[&str]) -> Trial;
+    /// Compile a vertex source (`vs`, the strings one `glShaderSource` takes) and a fragment source (`fs`)
+    /// and LINK them with `a_pos` bound to attribute 0, as `link_shaders` does; reports every stage's status
+    /// and whole info log (read on success too: a driver's warnings live there) and deletes every object it
+    /// made on every path. A stage that does not compile does not stop the other from compiling; with
+    /// either one failed nothing is linked ([`LinkTrial::link`] is `None`).
+    fn link_trial(&mut self, vs: &[&str], fs: &[&str]) -> LinkTrial;
+}
+
+/// One stage's (or the link's) status and the driver's whole info log, trailing blanks trimmed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    pub ok: bool,
+    pub log: String,
+}
+
+/// What [`ShaderGl::link_trial`] saw.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkTrial {
+    pub vs: Status,
+    pub fs: Status,
+    /// `None`: a stage did not compile, so no link was attempted.
+    pub link: Option<Status>,
+}
+
+/// How a [`LinkTrial`] ended, in the order the stages run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkVerdict {
+    Linked,
+    VertexFailed,
+    FragmentFailed,
+    /// Both stages failed to compile.
+    BothFailed,
+    LinkFailed,
+}
+
+impl LinkTrial {
+    pub fn verdict(&self) -> LinkVerdict {
+        match (self.vs.ok, self.fs.ok) {
+            (false, false) => LinkVerdict::BothFailed,
+            (false, true) => LinkVerdict::VertexFailed,
+            (true, false) => LinkVerdict::FragmentFailed,
+            (true, true) if self.link.as_ref().is_some_and(|l| l.ok) => LinkVerdict::Linked,
+            (true, true) => LinkVerdict::LinkFailed,
+        }
+    }
 }
 
 /// What `glGetShaderSource` gave back for a shader, against the text it was handed.
@@ -446,6 +511,31 @@ impl RealShaderGl<'_> {
     }
 }
 
+impl RealShaderGl<'_> {
+    /// Attach both, bind `a_pos` to attribute 0, link, and read the program's whole info log whether or not
+    /// it linked (a driver's warnings are there). The program is the caller's to delete.
+    fn link_raw(&self, vs: u32, fs: u32) -> Result<(u32, Status), String> {
+        let s = self.0;
+        // SAFETY (whole function): the render thread's context is current; the log buffer's size is passed.
+        let program = unsafe { (s.create_program)() };
+        if program == 0 {
+            return Err("glCreateProgram returned 0".to_string());
+        }
+        let mut ok = 0i32;
+        let mut buf = vec![0 as c_char; INFO_LOG_MAX];
+        let mut n = 0i32;
+        unsafe {
+            (s.attach_shader)(program, vs);
+            (s.attach_shader)(program, fs);
+            (s.bind_attrib_location)(program, 0, c"a_pos".as_ptr());
+            (s.link_program)(program);
+            (s.get_programiv)(program, GL_LINK_STATUS, &mut ok);
+            (s.get_program_info_log)(program, buf.len() as i32, &mut n, buf.as_mut_ptr());
+        }
+        Ok((program, Status { ok: ok != 0, log: Self::log_text(&buf, n) }))
+    }
+}
+
 impl ShaderGl for RealShaderGl<'_> {
     fn compile(&mut self, fragment: bool, src: &str) -> Result<u32, String> {
         let c = self.compile_parts(fragment, &[ES_PREAMBLE, src])?;
@@ -485,31 +575,43 @@ impl ShaderGl for RealShaderGl<'_> {
     }
 
     fn link(&mut self, vs: u32, fs: u32) -> Result<u32, String> {
+        let (program, status) = self.link_raw(vs, fs)?;
+        if status.ok {
+            return Ok(program);
+        }
+        // SAFETY: the program name made by `link_raw` on this context just now.
+        unsafe { (self.0.delete_program)(program) };
+        Err(if status.log.is_empty() { "(the driver gave no info log)".to_string() } else { status.log })
+    }
+
+    fn link_trial(&mut self, vs: &[&str], fs: &[&str]) -> LinkTrial {
         let s = self.0;
-        // SAFETY: as `compile_parts`.
-        let program = unsafe { (s.create_program)() };
-        if program == 0 {
-            return Err("glCreateProgram returned 0".to_string());
-        }
-        let mut ok = 0i32;
-        unsafe {
-            (s.attach_shader)(program, vs);
-            (s.attach_shader)(program, fs);
-            (s.bind_attrib_location)(program, 0, c"a_pos".as_ptr());
-            (s.link_program)(program);
-            (s.get_programiv)(program, GL_LINK_STATUS, &mut ok);
-        }
-        if ok == 0 {
-            let mut buf = vec![0 as c_char; INFO_LOG_MAX];
-            let mut n = 0i32;
-            unsafe {
-                (s.get_program_info_log)(program, buf.len() as i32, &mut n, buf.as_mut_ptr());
-                (s.delete_program)(program);
+        let mut out = LinkTrial::default();
+        let stage = |c: &Result<Compiled, String>| match c {
+            Ok(c) => Status { ok: c.ok, log: c.log.clone() },
+            Err(why) => Status { ok: false, log: why.clone() },
+        };
+        let v = self.compile_parts(false, vs);
+        let f = self.compile_parts(true, fs);
+        out.vs = stage(&v);
+        out.fs = stage(&f);
+        if let (Ok(v), Ok(f)) = (&v, &f) {
+            if v.ok && f.ok {
+                out.link = Some(match self.link_raw(v.shader, f.shader) {
+                    Ok((program, status)) => {
+                        // SAFETY: the program name made by `link_raw` on this context just now.
+                        unsafe { (s.delete_program)(program) };
+                        status
+                    }
+                    Err(why) => Status { ok: false, log: why },
+                });
             }
-            let log = Self::log_text(&buf, n);
-            return Err(if log.is_empty() { "(the driver gave no info log)".to_string() } else { log });
         }
-        Ok(program)
+        // SAFETY: shader names made on this context just now (a stage that never made one is skipped).
+        for c in [v, f].into_iter().flatten() {
+            unsafe { (s.delete_shader)(c.shader) };
+        }
+        out
     }
 
     fn delete(&mut self, vs: u32, fs: u32, program: Option<u32>) {
@@ -604,6 +706,8 @@ pub struct Report {
     pub shaders: Option<ShaderCheck>,
     /// The shader bisect ([`crate::shader_bisect`]), when it ran.
     pub bisect: Option<BisectReport>,
+    /// The link variants ([`shader_bisect::run_links`]), when they ran.
+    pub links: Option<LinkReport>,
     /// The four init calls that ran, each with how it ended (`Err` is a panic's message).
     pub stages: Vec<(&'static str, Result<(), String>)>,
     /// `glGetError` (first nonzero of up to 16, drained) after init, after the frame's draw, after the swap.
@@ -668,8 +772,9 @@ impl Report {
     /// carry, so a line is as long as its text and the renderer wraps it (the panel's own cap is
     /// `panel::STEP_LINE_MAX`, a guard against a runaway string, not a column count).
     ///
-    /// A refusal: verdict, the first shader failure, the tally with the missing extensions, the bisect.
-    /// Anything else: verdict, GL errors and faults with the missing extensions, the bisect.
+    /// A refusal: verdict, the first shader failure, the tally with the missing extensions, the bisect, the
+    /// link variants.
+    /// Anything else: verdict, GL errors and faults with the missing extensions, the bisect, the link variants.
     pub fn lines(&self) -> (bool, Vec<String>) {
         let shaders = match &self.shaders {
             Some(c) => format!("shaders {}/{} compile+link", c.passed, c.total),
@@ -745,6 +850,9 @@ impl Report {
         }
         if let Some(b) = &self.bisect {
             out.push(b.summary());
+        }
+        if let Some(l) = &self.links {
+            out.push(l.summary());
         }
         (self.is_ok(), out)
     }
@@ -969,11 +1077,18 @@ impl<E: Env> Probe<E> {
         // The bisect runs whether or not a pair failed (on a driver that accepts everything it is one short
         // line), and BEFORE the refusal, so the refusal's panel text carries it. Compile-only; a panic in
         // it must never stand in for the pair check's verdict.
-        match catch_unwind(AssertUnwindSafe(|| {
-            shader_bisect::run(self.env.shader_gl(), VS_AMBIENT_DITHERED.0, VS_SRC_DITHERED.0)
-        })) {
+        let sources = bisect_sources();
+        match catch_unwind(AssertUnwindSafe(|| shader_bisect::run(self.env.shader_gl(), &sources))) {
             Ok(b) => self.report.bisect = Some(b),
             Err(p) => plog!("H7 bisect: PANICKED: {}", panic_text(&*p)),
+        }
+        let _ = self.env.drain_errors();
+        // Then the link variants: the same sources compiled as PAIRS and linked (the driver rejected the
+        // `#version 100` twin of the ambient pair at the link, not the compile). Same rules: never exits, a
+        // panic here is only logged, and it comes before the refusal so the refusal's panel carries it.
+        match catch_unwind(AssertUnwindSafe(|| shader_bisect::run_links(self.env.shader_gl(), &sources))) {
+            Ok(l) => self.report.links = Some(l),
+            Err(p) => plog!("H7 link: PANICKED: {}", panic_text(&*p)),
         }
         let _ = self.env.drain_errors();
         if failed {
@@ -1495,6 +1610,8 @@ mod tests {
         sources: std::collections::HashMap<u32, String>,
         /// The source strings each `compile` was handed to compare with what the real one passes.
         trials: Vec<usize>,
+        /// The (vertex, fragment) source-string counts of each `link_trial`.
+        link_trials: Vec<(usize, usize)>,
     }
 
     impl ShaderGl for FakeShaderGl {
@@ -1519,6 +1636,21 @@ mod tests {
                 source_length: Some(joined.len() as i32 + 1),
                 readback: Some(Readback { returned: joined.len() as i32, same: true, first_diff: None }),
             }
+        }
+
+        fn link_trial(&mut self, vs: &[&str], fs: &[&str]) -> LinkTrial {
+            self.link_trials.push((vs.len(), fs.len()));
+            let (v, f) = (vs.concat(), fs.concat());
+            let status = |text: &str| {
+                let fail = self.fail_compile_on.is_some_and(|m| text.contains(m));
+                Status { ok: !fail, log: if fail { "0:12: 'gl_LastFragColorARM' : undeclared identifier".to_string() } else { String::new() } }
+            };
+            let (vs_status, fs_status) = (status(&v), status(&f));
+            let link = (vs_status.ok && fs_status.ok).then(|| {
+                let fail = self.fail_link_on.is_some_and(|m| f.contains(m));
+                Status { ok: !fail, log: if fail { "varying v_x not written by the vertex shader".to_string() } else { String::new() } }
+            });
+            LinkTrial { vs: vs_status, fs: fs_status, link }
         }
 
         fn link(&mut self, vs: u32, fs: u32) -> Result<u32, String> {
@@ -1668,8 +1800,9 @@ mod tests {
     }
 
     /// The preflight hands GL the preamble the renderer hands it: the ES branch of `glsl_preamble` in
-    /// `gfx.rs`, read from the source, is [`ES_PREAMBLE`]. The first emulator run's preflight passed no
-    /// preamble at all and so tested something the renderer never does.
+    /// `gfx.rs`, read from the source, is [`ES_PREAMBLE`]: the empty string again (a `#version 100` line was
+    /// tried for one run and made the ambient pair compile but not link). The first emulator run's preflight
+    /// passed no preamble STRING at all and so tested a call the renderer never makes.
     #[test]
     fn the_es_preamble_is_the_one_gfx_rs_returns_on_an_es_context() {
         let src = include_str!("../../../../rust-modules/gfx/src/gfx.rs");
@@ -1677,7 +1810,9 @@ mod tests {
         let es = &body[body.find("if gl_is_es() {").expect("the ES branch") ..];
         let literal = es.split("return c\"").nth(1).and_then(|r| r.split("\";").next()).expect("the ES branch returns a C string literal");
         assert_eq!(literal.replace("\\n", "\n"), ES_PREAMBLE, "the ES branch of glsl_preamble no longer returns the probe's ES_PREAMBLE");
-        assert!(ES_PREAMBLE.starts_with("#version 100") && ES_PREAMBLE.ends_with('\n'));
+        assert_eq!(ES_PREAMBLE, "", "plx_gfx sends an empty first string on an ES context");
+        assert_eq!(VERSION_100, "#version 100\n");
+        assert_ne!(VERSION_100, ES_PREAMBLE, "the link variants that hand over a version line test something the renderer does not send");
     }
 
     /// And the set itself: every `link_program(VS_*, FS_*)` the four init functions make (the call that
@@ -2168,20 +2303,39 @@ mod tests {
         let (ok, l) = p.report.lines();
         assert!(!ok && l[0].starts_with("FAILED, plx_gfx not entered: "), "{l:?}");
         assert!(p.report.shaders.as_ref().is_some_and(|c| c.passed < c.total && c.first_failure.is_some()));
-        // The first failure's words are whole on line 2, and the bisect ran and is the last line.
+        // The first failure's words are whole on line 2, and the bisect and the link variants ran: their
+        // summaries are the last two lines.
         assert!(l[1].starts_with("first failure init_gl ") && l[1].contains("undeclared identifier"), "{l:?}");
-        assert!(l.last().unwrap().starts_with("shader bisect"), "{l:?}");
-        assert!(p.report.bisect.is_some());
+        assert!(l[l.len() - 2].starts_with("shader bisect"), "{l:?}");
+        assert!(l.last().unwrap().starts_with("shader link"), "{l:?}");
+        assert!(p.report.bisect.is_some() && p.report.links.is_some());
     }
 
     #[test]
-    fn the_bisect_runs_on_a_healthy_driver_too_and_says_so_in_one_short_line() {
+    fn the_bisect_and_the_link_variants_run_on_a_healthy_driver_too_and_say_so_in_one_short_line_each() {
         let p = run(FakeEnv::healthy(), START_FRAME + 6);
         let (ok, l) = p.report.lines();
         assert!(ok, "{l:?}");
-        assert_eq!(l.last().unwrap(), "shader bisect: all 15 variants compile; j bytes clean");
+        assert_eq!(l[l.len() - 2], "shader bisect: all 15 variants compile; j bytes clean");
+        assert_eq!(l.last().unwrap(), "shader link: all 8 variants compile and link");
         assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 1).count(), 1, "one variant is the one-string call");
         assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 2).count(), 14, "the rest are plx_gfx's two-string call");
+        assert_eq!(p.env.shader.link_trials, vec![(2, 2); 8], "every link variant hands each stage a preamble string and the source");
+    }
+
+    /// A pair that compiles and does not link (the third emulator run: `#version 100` on both stages of the
+    /// ambient pair) is named on the panel's link line, never exits, and does not stop the probe from being
+    /// refused or entered on the strength of the PAIRS check alone.
+    #[test]
+    fn a_link_variant_that_does_not_link_is_marked_on_the_link_line_and_changes_no_verdict() {
+        let mut env = FakeEnv::healthy();
+        env.shader.fail_link_on = Some("plx_dither");
+        let p = run(env, START_FRAME + 6);
+        let (_, l) = p.report.lines();
+        // Every pair whose fragment source carries the dither prelude fails to link, so plx_gfx is refused, and
+        // every link variant shares that fragment source (FS_AMBIENT).
+        assert!(l[0].starts_with("FAILED, plx_gfx not entered: "), "{l:?}");
+        assert_eq!(l.last().unwrap(), "shader link: L1:link- L2:link- L3:link- L4:link- L5:link- L5v:link- i0:link- i2:link-");
     }
 
     #[test]
@@ -2235,9 +2389,10 @@ mod tests {
     #[test]
     fn gl_errors_are_attributed_to_the_stage_that_saw_them() {
         let mut env = FakeEnv::healthy();
-        // drain order: after the pair check, after the bisect (its failed compiles may leave an error that
-        // must not be read as init's), after init, after the draw, after the swap
-        env.errors = VecDeque::from([0, 0x0500, 0x0501, 0x0502, 0x0506]);
+        // drain order: after the pair check, after the bisect and after the link variants (their failed
+        // compiles and links may leave an error that must not be read as init's), after init, after the draw,
+        // after the swap
+        env.errors = VecDeque::from([0, 0x0500, 0x0500, 0x0501, 0x0502, 0x0506]);
         let p = run(env, START_FRAME + 6);
         assert_eq!((p.report.err_init, p.report.err_frame, p.report.err_swap), (Some(0x0501), Some(0x0502), Some(0x0506)));
     }

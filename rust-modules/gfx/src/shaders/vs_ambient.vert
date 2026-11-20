@@ -25,7 +25,10 @@
 attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
-uniform vec4 u_atl, u_atr, u_abr, u_abl;
+uniform vec4 u_atl;
+uniform vec4 u_atr;
+uniform vec4 u_abr;
+uniform vec4 u_abl;
 varying vec4 v_col;
 #ifdef PLX_DITHER_NC
 // The dither tile's coordinate (`shaders/dither.glsl`, cost rule 4): target px / NOISE_DIM, linear

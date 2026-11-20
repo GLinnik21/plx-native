@@ -1199,7 +1199,7 @@ fn gl_is_es() -> bool {
 
 fn glsl_preamble(ty: c_uint) -> &'static CStr {
     if gl_is_es() {
-        return c"#version 100\n";
+        return c"";
     }
     if ty == GL_VERTEX_SHADER {
         c"#version 410 core\n#define attribute in\n#define varying out\n#define texture2D texture\n#line 1\n"

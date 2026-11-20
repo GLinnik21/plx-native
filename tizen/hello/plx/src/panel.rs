@@ -360,19 +360,20 @@ fn compose(st: &State) -> Vec<Section> {
         cap(host(st, "cpu.x86"), 8),
         cap(host(st, "cpu.x86_64"), 8),
     ));
+    let (exe, glibc) = match &st.native {
+        Some(n) => (cap(&n.exe, 70), cap(&n.glibc, 16)),
+        None => ("?".to_string(), "?".to_string()),
+    };
+    // The process facts share a line with the runtime's (one row where they used to take two): the vertical
+    // room is what the step 8 lines of a run that goes wrong are made of.
     facts.push(format!(
-        "runtime {} | process {} | OS arch {} | IntPtr {} bytes",
+        "runtime {} | process {} | OS arch {} | IntPtr {} bytes | exe {exe} | glibc {glibc}",
         cap(host(st, "runtime"), 48),
         cap(host(st, "procarch"), 16),
         cap(host(st, "osarch"), 16),
         cap(host(st, "intptr"), 8),
     ));
     facts.push(format!("OS {}", host(st, "os")));
-    let (exe, glibc) = match &st.native {
-        Some(n) => (cap(&n.exe, 70), cap(&n.glibc, 16)),
-        None => ("?".to_string(), "?".to_string()),
-    };
-    facts.push(format!("exe {exe} | glibc {glibc}"));
     out.push(Section { tone: Tone::Fact, text: facts.join("\n") });
     out
 }

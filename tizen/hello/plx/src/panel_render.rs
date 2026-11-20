@@ -306,31 +306,34 @@ mod tests {
     /// Which step-8 result a fixture carries.
     #[derive(Clone, Copy, PartialEq)]
     enum Gfx {
-        /// A device where everything works and the GL lists neither wanted extension: the bisect says every
-        /// variant compiles (one short line), 60 frames drawn with `plx_gfx`.
+        /// A device where everything works and the GL lists neither wanted extension: the bisect and the link line say every
+        /// variant compiles and links (one short line each), 60 frames drawn with `plx_gfx`.
         Ok,
-        /// What the NEXT emulator run is expected to show, now that `plx_gfx` sends `#version 100`: all 14
+        /// What the NEXT emulator run is expected to show if the split of the corner uniforms is what matters: all 14
         /// pairs compile, `plx_gfx` is entered and draws, both extensions are missing, and the bisect shows
-        /// the matrix of the first run (a-, c+, g+, l+, o+) with its new rung p+.
+        /// the original (a0-) failing, everything split compiling, and the link line as the hypothesis predicts.
         Emulator,
         /// The longest refusal the probe can write from realistic strings: a first error that wraps onto a
         /// second row, more log lines behind it, every rung failing, and the driver's copy of the source
-        /// differing on all of them (the longest bisect line).
+        /// differing on all of them (the longest bisect line), and no variant linking (the longest link line).
         Worst,
         /// The longest result of a run that DID enter `plx_gfx` and went wrong: a panicked init with a long
         /// message, GL errors, no font, a late fault, `plx_gfx`'s own failure lines, both extensions missing
-        /// and every bisect rung failing.
+        /// and every bisect rung and link variant failing.
         WorstEntered,
     }
 
+    /// The ladder's ids, in the order the bisect runs them.
+    const LADDER: [&str; 15] = ["a0", "a", "b", "c", "d", "e", "f", "g", "h", "i", "k", "l", "m", "n", "o"];
+
     /// A bisect result where exactly the variants named in `pass` compiled.
-    fn bisect(pass: &str, copy_differs: bool) -> crate::shader_bisect::BisectReport {
+    fn bisect(pass: &[&str], copy_differs: bool) -> crate::shader_bisect::BisectReport {
         use crate::gfx_probe::{Readback, Trial};
         use crate::shader_bisect::{BisectReport, Inspection, Outcome};
-        let outcomes = "abcdefghiklmnop"
-            .chars()
+        let outcomes = LADDER
+            .iter()
             .map(|id| Outcome {
-                id,
+                id: *id,
                 trial: Trial {
                     compiled: pass.contains(id),
                     readback: copy_differs.then(|| Readback { returned: 6139, same: false, first_diff: Some(6139) }),
@@ -341,17 +344,52 @@ mod tests {
         BisectReport { outcomes, bytes: Inspection::default() }
     }
 
+    /// The ladder with only `fail` failing.
+    fn bisect_but(fail: &[&str]) -> crate::shader_bisect::BisectReport {
+        let pass: Vec<&str> = LADDER.iter().copied().filter(|id| !fail.contains(id)).collect();
+        bisect(&pass, false)
+    }
+
+    /// A link result with the given variants ending as stated.
+    fn links(ends: &[(&'static str, crate::gfx_probe::LinkVerdict)]) -> crate::shader_bisect::LinkReport {
+        use crate::gfx_probe::{LinkTrial, LinkVerdict as V, Status};
+        use crate::shader_bisect::{LinkOutcome, LinkReport};
+        let st = |ok: bool| Status { ok, log: String::new() };
+        let outcomes = ends
+            .iter()
+            .map(|(id, v)| LinkOutcome {
+                id: *id,
+                trial: match v {
+                    V::Linked => LinkTrial { vs: st(true), fs: st(true), link: Some(st(true)) },
+                    V::VertexFailed => LinkTrial { vs: st(false), fs: st(true), link: None },
+                    V::FragmentFailed => LinkTrial { vs: st(true), fs: st(false), link: None },
+                    V::BothFailed => LinkTrial { vs: st(false), fs: st(false), link: None },
+                    V::LinkFailed => LinkTrial { vs: st(true), fs: st(true), link: Some(st(false)) },
+                },
+            })
+            .collect();
+        LinkReport { outcomes }
+    }
+
+    const LINK_IDS: [&str; 8] = ["L1", "L2", "L3", "L4", "L5", "L5v", "i0", "i2"];
+
+    /// Every link variant ending the same way.
+    fn links_all(v: crate::gfx_probe::LinkVerdict) -> crate::shader_bisect::LinkReport {
+        links(&LINK_IDS.map(|id| (id, v)))
+    }
+
     /// Steps 8 and 9 as the probes really word them (`Report::lines`, `NetReport::lines`). `net_typical`: a
     /// mock that answers; otherwise the longest failure step 9 can write (a long curl version string and
     /// host name).
     fn add_probe_steps(p: &Panel, gfx: Gfx, net_typical: bool) {
-        use crate::gfx_probe::{Report, ShaderCheck, ShaderFailure, Where};
+        use crate::gfx_probe::{LinkVerdict as V, Report, ShaderCheck, ShaderFailure, Where};
         use crate::net_probe::{CurlFacts, GetResult, MockHost, NetReport};
         let ext = vec!["ARM|EXT_shader_framebuffer_fetch".to_string(), "EXT_disjoint_timer_query".to_string()];
         let gfx = match gfx {
             Gfx::Ok => Report {
                 shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
-                bisect: Some(bisect("abcdefghiklmnop", false)),
+                bisect: Some(bisect(&LADDER, false)),
+                links: Some(links_all(crate::gfx_probe::LinkVerdict::Linked)),
                 stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
                 err_init: Some(0),
                 err_frame: Some(0),
@@ -365,7 +403,8 @@ mod tests {
             },
             Gfx::Emulator => Report {
                 shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
-                bisect: Some(bisect("cglop", false)),
+                bisect: Some(bisect_but(&["a0"])),
+                links: Some(links(&[("L1", V::Linked), ("L2", V::Linked), ("L3", V::VertexFailed), ("L4", V::LinkFailed), ("L5", V::LinkFailed), ("L5v", V::Linked), ("i0", V::VertexFailed), ("i2", V::Linked)])),
                 stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
                 err_init: Some(0),
                 err_frame: Some(0),
@@ -379,7 +418,8 @@ mod tests {
             },
             Gfx::WorstEntered => Report {
                 shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
-                bisect: Some(bisect("", false)),
+                bisect: Some(bisect(&[], false)),
+                links: Some(links_all(crate::gfx_probe::LinkVerdict::BothFailed)),
                 stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
                 err_init: Some(0x0502),
                 err_frame: Some(0x0506),
@@ -407,7 +447,8 @@ mod tests {
                         more_lines: 2,
                     }),
                 }),
-                bisect: Some(bisect("", true)),
+                bisect: Some(bisect(&[], true)),
+                links: Some(links_all(crate::gfx_probe::LinkVerdict::BothFailed)),
                 missing_ext: ext,
                 ..Report::default()
             },
@@ -644,7 +685,8 @@ mod tests {
             let text: String = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
             assert!(text.contains("OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px, font from res/"), "{text}");
             assert!(text.contains("glGetError init/frame/swap 0/0/0; 60 frames drawn with plx_gfx; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query"), "{text}");
-            assert!(text.contains("shader bisect (+ compiles, - fails): a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+ p+; j bytes clean"), "{text}");
+            assert!(text.contains("shader bisect (+ compiles, - fails): a0- a+ b+ c+ d+ e+ f+ g+ h+ i+ k+ l+ m+ n+ o+; j bytes clean"), "{text}");
+            assert!(text.contains("shader link: L1+ L2+ L3:vs- L4:link- L5:link- L5v+ i0:vs- i2+"), "{text}");
             assert!(!text.contains("first failure"), "nothing was refused: {text}");
         });
     }
@@ -665,7 +707,8 @@ mod tests {
             assert!(step8.text.contains("glGetError init/frame/swap 0x0502/0x0506/0x0501; 7 frames drawn with plx_gfx; no font face, looked in /opt/usr/globalapps/plxnhello0/bin/appfont.ttf"), "{}", step8.text);
             assert!(step8.text.contains("3 unbound GL call(s), first glGetFramebufferAttachmentParameteriv"), "{}", step8.text);
             assert!(step8.text.contains("12 failure line(s) in plx_gfx's log, first: text prog link failed"), "{}", step8.text);
-            assert!(step8.text.ends_with("o- p-; j bytes clean"), "{}", step8.text);
+            assert!(step8.text.contains("o-; j bytes clean"), "{}", step8.text);
+            assert!(step8.text.ends_with("shader link: L1:both- L2:both- L3:both- L4:both- L5:both- L5v:both- i0:both- i2:both-"), "{}", step8.text);
         });
     }
 
@@ -692,7 +735,7 @@ mod tests {
             assert!(step8_rows >= 6, "the first error and the bisect line each wrapped onto a second row: {step8_rows} rows");
             // Everything in the model is in the section's text (nothing cut by the model's caps).
             assert!(step8.text.contains("'uniform' or 'varying' (+2 more log lines in the UDP log)"), "{}", step8.text);
-            assert!(step8.text.contains("the driver's copy of the source differs for a b c d e f g h i k l m n o p"), "{}", step8.text);
+            assert!(step8.text.contains("the driver's copy of the source differs for a0 a b c d e f g h i k l m n o"), "{}", step8.text);
             assert!(!step8.text.contains("..."), "{}", step8.text);
         });
     }

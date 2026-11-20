@@ -79,7 +79,7 @@ or other) and whether it asked anything.
   renderer, version), `6 SDL/TTF` (the single `H5 RESULT`), `7 UTF-8` (a Latin + check mark + Cyrillic
   sample that must read `PlxNative H5 ✓ Привет`), `8 gfx` (H7, two to four lines, never cut at a
   character count: the verdict, the first shader error whole when a shader failed, the full list of
-  missing GL extensions, and the shader-bisect line; the real renderer's own rectangle and text are also
+  missing GL extensions, the shader-bisect line and the shader-link line; the real renderer's own rectangle and text are also
   drawn in the bottom-right corner of the screen), `9 net` (H8, two lines: the GET's verdict, then which libcurl opened and its
   version);
 - device facts: Tizen platform and native API version, model, manufacturer, build string, the four CPU
@@ -96,7 +96,7 @@ and `>>` there (and says so nowhere else: it is not a failure).
 | the app never opens, or closes at once | the host or `libplx.so` failed before a window existed (the native create returned an error and the host exits). No panel is possible: a `--log-host` build, or the TV's own error text, is the next step |
 | a plain colour, no text | the window and EGL work; SDL/TTF or the panel's GL did not (H5 failed). Same next step |
 | the panel, a step in orange | the step named failed; the text after it is the reason |
-| `8 gfx` orange, "plx_gfx not entered" | the real renderer was NOT started because it would have exited the process (see "H7"); the line names the shader pair, the stage and the driver's own first error line, and the last `8 gfx` line says which of the bisect's variants compile |
+| `8 gfx` orange, "plx_gfx not entered" | the real renderer was NOT started because it would have exited the process (see "H7"); the line names the shader pair, the stage and the driver's own first error line, and the last two `8 gfx` lines say which of the bisect's variants compile and which link variants link |
 | `9 net` orange | libcurl did not load, or the GET failed; the line carries the `curl error N` text or the HTTP status |
 | keys listed, colour changes | keys arrive; the codes to read off the photo |
 | the panel frozen after Home | expected: the render loop idles while the app is in the background |
@@ -377,14 +377,15 @@ settled one as `H7 RESULT@60:`):
 OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px, font from res/
 glGetError init/frame/swap 0/0/0; 60 frames drawn with plx_gfx; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
 shader bisect: all 15 variants compile; j bytes clean
+shader link: all 8 variants compile and link
 ```
 
 Line 1 is the verdict: the four inits ran (a panicked one is named with its message), the pair tally,
 the rectangle and the text's width in pixels, and where the text's font came from. Line 2 is the three
 `glGetError` reads, the frames drawn with `plx_gfx`, anything that went wrong later (a GL error on a
 later frame, a call to a GL entry the library lacks, `plx_gfx`'s own failure lines, no font) and the
-missing extensions. The last line is the bisect. After a late fault the step turns orange at once and
-there is no settled report.
+missing extensions. The last two lines are the bisect and the link variants. After a late fault the step
+turns orange at once and there is no settled report.
 
 A refusal (a shader the driver rejects; `plx_gfx` is not entered):
 
@@ -392,7 +393,8 @@ A refusal (a shader the driver rejects; `plx_gfx` is not entered):
 FAILED, plx_gfx not entered: 1 of 14 shader pairs do not compile+link (init would exit)
 first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER
 shaders 13/14 compile+link; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
-shader bisect (+ compiles, - fails): a- b- c+ d- e- ... ; j bytes clean
+shader bisect (+ compiles, - fails): a0- a- b- c+ d- ... ; j bytes clean
+shader link: L1:both- L2+ L3:both- L4+ ...
 ```
 
 (The two samples are illustrative: the second is the shape of the first emulator run's failure, not a
@@ -413,52 +415,87 @@ compiled and linked`, or `... FAILED` and then the driver's whole info log, a li
 `H7 gfx:   info log:`). A failure reads `FAILED, plx_gfx not
 entered: <why>` and the app carries on with the colour and the panel.
 
-**The shader bisect** (`plx/src/shader_bisect.rs`). The first emulator run (YaGL GLESv2, "OpenGL ES GLSL
-ES 1.4") compiled 13 of the 14 pairs; `init_gl ambient` (`VS_AMBIENT_DITHERED` + `FS_AMBIENT`) failed in
-the vertex stage with `0:37(9): error: syntax error, unexpected NEW_IDENTIFIER` (Mesa's error format:
-source 0, line 37, column 9, which is the `highp` of `varying highp vec2 v_dither_nc;`: `varying ` is
-eight characters). The same declaration compiles in two sibling shaders. This step compiled the source
-in variants to find out what the driver needs. It runs after the preflight, whether or not the preflight
-passed, never enters `plx_gfx`, and each trial is logged before it runs, so a crash names the variant. All
-variants compile `VS_AMBIENT_DITHERED` (3 `#define` lines, then `vs_ambient.vert`) as a vertex shader,
-through `glShaderSource` with two strings like `plx_gfx` (the OLD preamble, an empty first string, then the
-source: the call `plx_gfx` made before it sent `#version 100`, kept so the matrix compares with the first
-run) except `m` (one string) and `p` (the CURRENT preamble):
+**The shader bisect and the link variants** (`plx/src/shader_bisect.rs`). The first emulator run (YaGL
+GLESv2, "OpenGL ES GLSL ES 1.4") compiled 13 of the 14 pairs; `init_gl ambient` (`VS_AMBIENT_DITHERED` +
+`FS_AMBIENT`) failed in the vertex stage with `0:37(9): error: syntax error, unexpected NEW_IDENTIFIER`
+(Mesa's error format: source 0, line 37, column 9, which is the `highp` of `varying highp vec2
+v_dither_nc;`: `varying ` is eight characters). The same declaration compiles in two sibling shaders. This
+step compiles the source in variants, and then compiles and LINKS whole pairs, to find out what the driver
+needs. It runs after the preflight, whether or not the preflight passed, never enters `plx_gfx`, and each
+trial is logged before it runs, so a crash names the variant.
 
-**Its result on the emulator** (as reported to us, the run on `e4ae272f1`):
-`a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+; j bytes clean`. So: `a` fails exactly like `m`, which means the
-failure is `plx_gfx`'s own two-string call and not the probe's one-string one; the source compiles only
-with `#version 100` first (`g`), without that `highp` (`c`), or without any precision qualifier (`o`); no
-comment, define combination or byte in the source matters (`b`, `d`, `e`, `f`, `k` fail the same, `j` is
-clean). Why the sibling `VS_SRC_DITHERED` (`l`), which declares the same line, compiles without a
-`#version` is not explained by this. What it does say is that, with no `#version` line, YaGL's compiler
-did not accept `highp` in that position, and that the line `#version 100` is what makes it accept the
-source. That is why `gfx.rs`'s `glsl_preamble` now returns `#version 100\n` on an ES context (this
-branch carries the one-line change; a separate pull request makes it on `main`) and why the probe's
-preflight hands the driver the same string (`ES_PREAMBLE`, checked against `gfx.rs` by a test). `p` is
-that call, the exact one `plx_gfx` now makes, and `g` is the same text in one string: they are the
-baseline now.
+**What the emulator said so far** (as reported to us; none of it is a claim about a TV):
+
+- *Second run, `e4ae272f1` (the bisect, `plx_gfx` sending no version line):*
+  `a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+; j bytes clean`. `a` fails exactly like `m`, so the failure is
+  `plx_gfx`'s own two-string call and not the probe's one-string one; the source compiles only with
+  `#version 100` first (`g`), without that `highp` (`c`), or without any precision qualifier (`o`); no
+  comment, define combination or byte in the source matters (`b`, `d`, `e`, `f`, `k` fail the same, `j` is
+  clean). `glGetShaderSource` returned 8 bytes for every variant: a stub.
+- *Third run, `8a5998fb0` (`plx_gfx` sending `#version 100`):* the three pairs built from `vs_ambient.vert`
+  (ambient, scrim layer, ambient plain) now COMPILE and fail to LINK with `error: all shaders must use same
+  shading language version`. 11 of 14 pairs passed, `plx_gfx` was not entered. The working hypothesis, not measured: YaGL
+  translates most sources and hands `vs_ambient.vert` to the host compiler raw (desktop GLSL 1.10 with no
+  version line, where `highp` is an identifier; ES 1.00 behind `#version 100`, next to a fragment source
+  that was translated), and Mesa's linker wants every stage at one language version.
+- *The hypothesis this build tests:* `vs_ambient.vert:28`, `uniform vec4 u_atl, u_atr, u_abr, u_abl;`, is
+  the only statement with several declarators in all of `rust-modules/gfx/src/shaders` (a test checks
+  that), and the shortest failing variant (`i`) contains it. This branch splits it into four declarations
+  (`rust-modules/gfx/src/shaders/vs_ambient.vert`, and nothing else in `rust-modules/` differs from the
+  second run's tree; a separate pull request does the same on `main`), with `plx_gfx`'s ES preamble the EMPTY
+  string again, and measures before and after in one run. The probe's `ES_PREAMBLE` is `""` once more (a
+  test reads `gfx.rs` and fails if they drift); `#version 100` lives on as the literal `VERSION_100` that the
+  variants hand over on purpose.
+
+**What is compared.** The rule: the plain-letter ladder is built from the repository's CURRENT (split)
+`vs_ambient.vert`, what `plx_gfx` compiles now; the ORIGINAL is a frozen, byte-for-byte copy
+(`plx/src/probe_shaders/vs_ambient_unsplit.vert`, taken from git before the split; a test fails unless it
+equals the repository's file with the four declarations joined into one statement again) that the original
+side of every pair below is built from. Every compile hands GL two strings like `plx_gfx` (an empty first
+string, then the source) except `m` (one string) and the variants that name a `#version 100` first string.
+
+The ladder, compile only (`X` below is the id; the source is `VS_AMBIENT_DITHERED`: 3 `#define` lines, then
+`vs_ambient.vert`), the pair `a0` / `a` being the before and after at the full-source level:
 
 | id | the source |
 |---|---|
-| a | as is, behind the OLD preamble (an empty first string): what `plx_gfx` handed over before `#version 100` |
+| a0 | BEFORE: the ORIGINAL source (the unsplit statement), behind `plx_gfx`'s own two-string call: `a` as the first two runs measured it |
+| a | AFTER: as is, the repository's split source, behind `plx_gfx`'s own two-string call: what it compiles now |
 | b | every `//` comment line removed (line numbers shift) |
 | k | the comment text blanked, every line kept (line numbers unchanged: a comment character is ruled in or out without moving the error) |
 | c | `highp` dropped from the `varying highp vec2 v_dither_nc;` line only |
 | d | only `#define PLX_DITHER_NC` (the other defines gone) |
 | e | `PLX_DITHER_NC` + `PLX_WASH_INK` |
 | f | `PLX_DITHER_NC` + `PLX_SCRIM` |
-| g | `#version 100` as the first line of the source, behind the empty first string (the baseline: what `plx_gfx` now sends, in one piece) |
+| g | `#version 100` as the first line of the source (the compile-only twin of `L2`'s vertex stage) |
 | h | the text after `#ifdef` resolution (no directive left) |
-| i | everything through the `v_dither_nc` block (its closing `#endif` included, so the text is 39 lines, not 35: cutting at 35 would leave an `#ifdef` open and fail for another reason), then `void main(){ gl_Position = vec4(a_pos,0.,1.); v_col = vec4(1.); v_dither_nc = a_pos; }` |
+| i | everything through the `v_dither_nc` block (its closing `#endif` included, so the text is 42 lines (39 on the original), not 35: cutting at 35 would leave an `#ifdef` open and fail for another reason), then `void main(){ gl_Position = vec4(a_pos,0.,1.); v_col = vec4(1.); v_dither_nc = a_pos; }` |
 | l | control: `VS_SRC_DITHERED` (the sibling that compiled in the first run) |
-| m | `a` again, but ONE source string: what the first run's preflight passed. `a` and `m` fail alike on the emulator, so the two-string form is no different |
+| m | `a` again, but ONE source string: what the first run's preflight passed |
 | n | the `v_dither_nc` declaration moved to the top of the source |
 | o | every precision qualifier removed |
-| p | the source behind the CURRENT preamble: `plx_gfx`'s own two strings, `#version 100\n` then the source (the call the renderer makes now; the text is the same as `g`'s) |
 | j | not a compile: the bytes of `a`, counted for CR, TAB, a leading BOM, NUL and non-ASCII (the log line gives all five; the panel summary says `j bytes clean`, or `j bytes: <what>` for a CR, TAB, BOM or NUL; non-ASCII alone is ordinary here, the comments have dashes) |
 
-For each compile the log has, in order (`X` is the id):
+(`p`, the variant the third run's build added for `plx_gfx`'s own call with the `#version 100` preamble, is
+gone: with the preamble empty again it is the same call as `a`.)
+
+The link variants: each compiles a vertex AND a fragment source (`FS_AMBIENT`: `dither.glsl` then
+`fs_ambient.frag`, which has a `varying highp` of its own and reads `v_col`) and links them, with `a_pos`
+bound to attribute 0 as `link_shaders` does. A stage that does not compile does not stop the other one from
+compiling; with either failed nothing is linked.
+
+| id | vertex source, first string | what it asks |
+|---|---|---|
+| L1 | the split `VS_AMBIENT_DITHERED`, empty on both stages | what `plx_gfx` does now: expected to link if the split is the cause |
+| L2 | L1, `#version 100\n` as the first string of BOTH stages | does the split source survive a version line on both stages |
+| L3 | the ORIGINAL unsplit source, empty on both stages | expected: the vertex stage does not compile (the first run) |
+| L4 | the ORIGINAL with `#version 100\n` on both stages | expected: both compile, the link fails (the third run) |
+| L5 | cross-link: `VS_SRC_DITHERED` + `FS_AMBIENT`, empty | does a vertex stage that compiles link with this fragment. `vs_src.vert` declares no `v_col`, which `fs_ambient.frag` reads, so a failure here counts only if the log names VERSIONS, not `v_col` |
+| L5v | L5 with `varying vec4 v_col;` declared and written by the vertex source | the same pair made complete: its failure is not the missing varying |
+| i0 | variant `i` cut from the ORIGINAL + `FS_AMBIENT`, empty | the shortest failing source, before |
+| i2 | variant `i` cut from the SPLIT source + `FS_AMBIENT`, empty | the shortest failing source with the split applied (a trivial `main` writes both varyings the fragment reads) |
+
+For each compile the log has, in order:
 
 ```
 H7 bisect X: compiling (two strings): <what>
@@ -473,25 +510,42 @@ variant, the compiling ones included. A read-back under 16 bytes for a source of
 logged as `glGetShaderSource UNSUPPORTED here (returned 8 bytes for N passed: a stub, so it says nothing
 about the kept text)` and is not counted as "different" (the panel summary names a read-back only when
 it is trustworthy and differs). `the log blames line n` counts in the text the driver composed from the
-strings, so with the `#version 100` preamble (variant `p`) the blamed line is the source's line plus one.
-Then `H7 bisect j: ...` (the byte checks) and last `H7 bisect: <summary>`, which is also the panel's last
-`8 gfx` line:
+strings, so with a `#version 100\n` first string the blamed line is the source's line plus one. Then
+`H7 bisect j: ...` (the byte checks) and `H7 bisect: <summary>`, which is also a panel line. For each link
+variant:
 
 ```
-shader bisect: all 15 variants compile; j bytes clean
-shader bisect (+ compiles, - fails): a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+ p+; j bytes clean
+H7 link X: compiling both stages and linking (an empty first string on both stages | `#version 100` as the first string of both stages): <what>
+H7 link X: vertex COMPILED|FAILED (<N> bytes), fragment COMPILED|FAILED (<M> bytes), link LINKED|FAILED|not attempted (a stage did not compile) => <how it ended>
+H7 link X vertex|fragment|link info log: <each line of that info log, whole; read on success too, because a driver's warnings are there; a stage or link that failed with nothing to say reads "(the driver gave no info log)">
+H7 link X vertex|fragment: the log blames line <n>: <that line of the stage's text>
 ```
 
-(`+` the variant compiled, `-` it did not; the second line is the form, the pattern the emulator gave
-plus `p+`, which is what the `#version 100` preamble is expected to give and has not been measured.)
-Reading it: `a-` with `c+` the `highp` on that line; `a-` and `b+` or `k+` a comment; `a-` with `d+`, `e+`
-or `f+` the combination of defines; `g+` or `p+` with `a-` the driver wants a `#version` line; `a-` and
-`h+` the preprocessor; `i-` the first 39 lines already fail. If every variant including the control `l`
-fails the stage itself is broken. If `p` fails, the `#version 100` line did not help in `plx_gfx`'s own
-call and the cause is not the missing line.
+and last `H7 link: <summary>`. The two panel lines (the last two of step 8):
 
-**Findings.** Nothing in them changes `rust-modules/` except one line in the last finding, which this
-test branch carries (a separate pull request makes it on `main`):
+```
+shader bisect (+ compiles, - fails): a0- a+ b+ c+ d+ e+ f+ g+ h+ i+ k+ l+ m+ n+ o+; j bytes clean
+shader link: L1+ L2+ L3:vs- L4:link- L5:link- L5v+ i0:vs- i2+
+```
+
+(`+` compiled or linked, `-` did not; on the link line `vs-` / `fs-` / `both-` mean that stage (or both) did
+not compile and `link-` that both compiled and the link failed. Everything compiling and linking reads
+`shader bisect: all 15 variants compile; j bytes clean` and `shader link: all 8 variants compile and link`.)
+Both samples are **what the split hypothesis predicts**, not a recorded panel: they are the output of the
+unit tests' model of it.
+
+Reading it, if the hypothesis holds: `a0-` with `a+` is the split being what matters at the full-source
+level, `i0:vs-` with `i2+` at the shortest-source level; `L1+` is the renderer working; `L3:vs-` and
+`L4:link-` the two failures the earlier runs saw, reproduced in this run. If instead `a-` or `L1` does not
+link, the split is not the cause: `c+`, `g+` and `o+` as before say the precision qualifier and the version
+line still matter, and the `H7 link L1 link info log:` lines say what the linker objects to. `L2-` with
+`L1+` means a version line on both stages is wrong even for a translated source and `L2+` that it is
+harmless. `L5:link-` with `L5v+` was only the missing varying; `L5v:link-` with the log naming versions
+means YaGL's stages disagree on language version even for sources it translates. If every variant
+including the control `l` fails the stage itself is broken.
+
+**Findings.** Nothing in them changes `rust-modules/` except the split declaration in the last finding,
+which this test branch carries (a separate pull request makes it on `main`):
 
 1. **`plx_gfx` has no entry that survives a failed shader.** A required shader that does not compile goes
    `link_program` -> `gfx_compile` -> `plx_base::process::exit_now(1)` (`gfx.rs:1231-1232`), and a base
@@ -501,7 +555,7 @@ test branch carries (a separate pull request makes it on `main`):
    `link_shaders`) are private. So the probe does its own **preflight**: the 14 vertex+fragment pairs the
    four init functions pass to `link_program`, composed from the very same `include_str!` shader sources
    (`gfx_probe.rs`, `PAIRS`), are compiled and linked with the probe's own non-exiting GL calls (through `glShaderSource` with the same
-   two strings `plx_gfx` passes: its preamble, `#version 100\n` on an ES context since finding 5, and the
+   two strings `plx_gfx` passes: its preamble, the empty string on an ES context, and the
    source; the first emulator run's preflight passed ONE string and no preamble), and
    `plx_gfx` is entered only if every one passes, the GLSL version string is an ES one (`plx_gfx`
    prepends a `#version` line by the GL kind it detects) and every GL function it imports exists in the
@@ -536,16 +590,18 @@ test branch carries (a separate pull request makes it on `main`):
    FAILED — exiting` just before the exit above) into `plx_base`'s event ring, which keeps records
    here because the crate is built with its `lab-diagnostics` feature; the probe forwards new ring
    records to the log as `evt +Nms ...` lines, so the renderer's own words reach the UDP receiver.
-5. **`plx_gfx` needs a `#version 100` line on an ES context** (the emulator's measurement, see "The
-   shader bisect"). `glsl_preamble` returned the empty string on an ES context ("needs no preamble
-   there": true of the television's Mali), so a source went to `glShaderSource` as `[ "", source ]`. YaGL
-   rejected `varying highp vec2 v_dither_nc;` in `vs_ambient.vert` that way and accepted it behind
-   `#version 100`. This branch changes that one line of `rust-modules/gfx/src/gfx.rs`, the ES branch of
-   `glsl_preamble`, to `return c"#version 100\n";` (the same change a separate pull request makes on `main`).
-   Nothing else in `rust-modules/` is touched. Two caveats the probe cannot settle: error line numbers
-   from an ES context now count the preamble's line (the desktop preambles end in `#line 1` to hide
-   theirs; this one has no such line), and what the television's Mali does with an explicit `#version
-   100` line is a question for that device, not this emulator.
+5. **`vs_ambient.vert` declares four uniforms in one statement, and YaGL does not take it** (the
+   emulator's measurement; see "The shader bisect and the link variants"). The renderer's shaders have
+   exactly one statement with several declarators, `uniform vec4 u_atl, u_atr, u_abr, u_abl;` (a test
+   checks that). On YaGL the vertex stage built from that file did not compile (`highp` read as an
+   identifier) unless the source began with `#version 100`, and with `#version 100` the three pairs built
+   from it compiled but did not link ("all shaders must use same shading language version"). This branch
+   splits the statement into four declarations, the only change in `rust-modules/`
+   (`gfx/src/shaders/vs_ambient.vert`; a separate pull request makes it on `main`), and keeps
+   `glsl_preamble`'s ES branch as it always was, `return c"";`. A `#version 100` preamble was tried for one
+   run (`1a7e3e3af`, `8a5998fb0`) and reverted. Whether the split is what matters is what this build
+   measures (the pairs `a0`/`a`, `L3`/`L1`, `L4`/`L2`, `i0`/`i2`). The television's own Mali compiled the
+   original; nothing here says it minds four declarations.
 
 **How the x86 link works (not built or run on the machine this was written on).** On a non-ARM target
 `plx_gfx`'s build script emits `-lSDL2 -lSDL2_ttf -lGL` and, as a link argument that does not reach
@@ -685,12 +741,14 @@ screen colour (below) still answers questions 1 to 4.
    (`code`): 4 a library did not open, 5 a symbol is missing (the `MISSING (required)` lines name it),
    6 to 11 Ecore/window/key handlers, 12 to 16 EGL, 17 to 19 the render thread. Host-side: -1 .so not
    found, -2 export missing, -3 other.
-9. H7: the panel's `8 gfx` lines (all of them, the last one is the shader-bisect summary), the log's
+9. H7: the panel's `8 gfx` lines (all of them, the last two are the shader-bisect and shader-link
+   summaries), the log's
    `H7 ...` lines (`H7 RESULT:` and its `RESULT+N:` continuations, the settled `H7 RESULT@60:` after 60
    frames, `GL_VERSION`, `GL_EXTENSIONS`, each `shader pair` and its `info log:`, `entering ...` and
    `... returned in N ms`, `H7 font: ...`, `H7 gfx: glGetError after init = ...`, `... after the draw = ...`) and, whether or not a shader failed, every
    `H7 bisect ...` line (the compile result, the info log and the read-back per variant, then the
-   `H7 bisect:` summary), and whether the PANEL STILL DRAWS after the inits (the whole panel, not just the
+   `H7 bisect:` summary) and every `H7 link ...` line (each variant's stages, link and whole info logs,
+   then the `H7 link:` summary), and whether the PANEL STILL DRAWS after the inits (the whole panel, not just the
    corner) and whether the rounded rectangle and the `plx_gfx text` line are on screen in the
    bottom-right corner. If the log stops after `H7 gfx: entering <call>`, the
    process died inside that call (no panel then): that line is the finding.
@@ -713,20 +771,28 @@ ruled out by a look; the app stayed healthy (about 31 fps, `glGetError` 0).
 printed `a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+; j bytes clean` (see "The shader bisect": the source compiles
 only with `#version 100` first, without that `highp`, or without any precision qualifier; `a` fails like `m`);
 `glGetShaderSource` returned 8 bytes for every variant, so it is a stub on YaGL; the host tests passed
-(110 and 114, with the pinned static SDL confirmed by `ldd` and `nm`) and the x86 link was clean. This
-build changes `glsl_preamble` (finding 5) and so ENTERS `plx_gfx` for the first time: nothing about
-`init_gl`, `init_text`, `init_image`, `init_blur`, the swatch or the panel after them is measured yet.
-Nothing of these runs is a claim about a TV.
+(110 and 114, with the pinned static SDL confirmed by `ldd` and `nm`) and the x86 link was clean.
 
-H5, the tester-build panel, H7, the shader bisect and H8, on the Mac (no Tizen device, no Linux), only these
-were run:
-`build.sh --host-test` (120 tests with SDL, then 124 with `--features gfx`: the label and the panel render
+**What the third emulator run reported** (`8a5998fb0`, `plx_gfx` sending `#version 100`): the pairs built
+from `vs_ambient.vert` (ambient, scrim layer, ambient plain) compile and all three fail to LINK, `error: all
+shaders must use same shading language version`; 11 of 14 pairs passed, `plx_gfx` was not entered, and the
+bisect read `a- ... o+ p+` (see "The shader bisect and the link variants"). This build reverts that
+preamble and splits `vs_ambient.vert`'s multi-declarator uniform statement (finding 5), so if all 14 pairs
+pass it ENTERS `plx_gfx` for the first time: nothing about `init_gl`, `init_text`, `init_image`,
+`init_blur`, the swatch or the panel after them is measured yet. Nothing of these runs is a claim about a TV.
+
+H5, the tester-build panel, H7, the shader bisect and link variants and H8, on the Mac (no Tizen device, no
+Linux), only these were run:
+`build.sh --host-test` (131 tests with SDL, then 135 with `--features gfx`: the label and the panel render
 to surfaces with the right pixels, the panel fits at 28 px with typical, emulator-shaped, long and
 worst-case contents including the new steps (against `CONTENT_LIMIT`, with the pinned static SDL_ttf), the key-string guard refuses unmapped and `PROT_NONE` pointers, the create path logs one
 line per fact; H7: the GL forwarders and their drift test against `plx_gfx`'s imports, the shader table
 against `gfx.rs` / `text.rs`, the state machine, the preflight and its refusals, the panel lines, the
-bisect's variants and summary against a fake driver that rejects the way the emulator did, the stub
-read-back's labelling, the ES preamble against `gfx.rs`, the GL state hand-over replayed on a model of GL's
+bisect's variants and summary against a fake driver that rejects the way the emulator did and against a
+model of the split hypothesis (the link variants' expected marks), the frozen original against the
+repository's `vs_ambient.vert`, the one-multi-declarator-statement premise against every renderer shader,
+the link log lines and summary, the stub read-back's labelling, the ES preamble against `gfx.rs`, the GL
+state hand-over replayed on a model of GL's
 state, the frame count and the settled report, the font wording, the log's no-truncation chunking, the
 first-resume wording;
 H8: the `mock-host.txt` parse, the line formats, the SONAME list against `net.rs`, a real libcurl GET
@@ -739,12 +805,15 @@ host compiles with the four-argument `plx_tizen_create`, 0 warnings, and the pac
 `res/appfont.ttf`, `res/OFL.txt` and the same `libplx.so`; that was before H7 and H8). Not verified:
 
 - **H7 and H8 on any TV, and H7 past the preflight on any GL.** Whether all 14 `plx_gfx` shaders (written
-  for the television's Mali) compile on YaGL with `#version 100` (the bisect's `p` and `g` say so; not yet
-  run), whether `init_blur` and `init_image` run there, what `glGetError` says, whether the panel still draws
+  for the television's Mali) compile and link on YaGL with the split `vs_ambient.vert` (the bisect's `a`
+  and `L1` say so; not yet run, and the fragment sources have only been compiled, never run), whether
+  `init_blur` and `init_image` run there, what `glGetError` says, whether the panel still draws
   after the inits and the frames, where the font comes from, and whether libcurl exists on a Tizen TV under
   one of the three SONAMEs (it does on the emulator, as reported), are what these probes are for.
-- **The `#version 100` preamble on the television's own driver** (finding 5): only the emulator
-  has been told about it, and this branch does not change what the application ships.
+- **The split declaration on the television's own driver** (finding 5): the television compiled the
+  unsplit source, and nothing has been run there with the split one; this branch does not change what the
+  application ships. Whether the split is what YaGL needed is a hypothesis until a run's `a0`/`a`,
+  `L3`/`L1` and `i0`/`i2` pairs say so, and the model of it in the unit tests is only a model.
 - **The `x86_64` link with `plx_gfx`** (see "H7", "How the x86 link works") was reported clean on the
   emulator's build machine; on the author's Mac only `cargo check` passes for that target.
   `--no-gfx` is the fallback.
