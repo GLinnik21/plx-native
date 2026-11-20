@@ -434,11 +434,10 @@ mod panic_log_tests {
 /// * `plex::session::install_auto_quality_ready` — `route::auto_quality_ready`, the gate a fresh
 ///   session record's default quality is seeded from (unset, `plex` reads `true`, the gate's value);
 /// * `plex::session::install_account_clear_cleanup` — `telemetry::cleanup_after_account_clear`, the
-///   telemetry/consent legacy-file sweep a durable sign-out runs. It exists only where the sweep does
-///   (ARM, not the simulator, not a test build); unset, `plex` reads it as already retired.
+///   telemetry/consent legacy-file sweep a durable sign-out runs. It is installed on every platform:
+///   the sweep retires files only where the storage helper owns them; unset, `plex` reads it as retired.
 pub(crate) fn install_plex_seams() {
     plx_plex::plex::session::install_auto_quality_ready(plx_media::route::auto_quality_ready);
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
     plx_plex::plex::session::install_account_clear_cleanup(plx_telemetry::telemetry::cleanup_after_account_clear);
 }
 

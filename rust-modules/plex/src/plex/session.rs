@@ -4282,17 +4282,16 @@ fn auto_quality_ready() -> bool {
 }
 
 /// **The telemetry/consent legacy-file sweep that follows a durable canonical clear**
-/// ([`clear_for_erase`]'s ARM arm): `telemetry` owns the files and sits above `plex`, so the app
-/// installs its `cleanup_after_account_clear` as a hook ([`install_account_clear_cleanup`];
-/// `app::boot::install_plex_seams`). It answers whether every candidate was retired. Unset there is
-/// nothing registered to retire, which reads as retired, so the "could not be retired" branch is
-/// never taken without a sweep that failed. Compiled where the sweep is: ARM, not the simulator,
-/// not a test build.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+/// ([`clear_for_erase`] where the storage helper is canonical): `telemetry` owns the files and sits
+/// above `plex`, so the app installs its `cleanup_after_account_clear` as a hook
+/// ([`install_account_clear_cleanup`]; `app::boot::install_plex_seams`). It answers whether every
+/// candidate was retired. Unset there is nothing registered to retire, which reads as retired, so
+/// the "could not be retired" branch is never taken without a sweep that failed. The sweep runs
+/// only where the platform states [`Authority::Helper`]; elsewhere the files it retires are not
+/// deferred to a sign-out, so an installed hook is never asked.
 static ACCOUNT_CLEAR_CLEANUP: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
 
 /// Install the sweep [`ACCOUNT_CLEAR_CLEANUP`] runs. Once; later calls are ignored.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub fn install_account_clear_cleanup(sweep: fn() -> bool) {
     let _ = ACCOUNT_CLEAR_CLEANUP.set(sweep);
 }
