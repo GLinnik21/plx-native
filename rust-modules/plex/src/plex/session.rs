@@ -46,6 +46,11 @@
 //!   of frame time later (per generation), rather than latching it forever.
 //! - [`clear`] (sign-out) drops the cached `Arc` immediately — it holds the very account/server
 //!   tokens sign-out means to get rid of.
+//! - **Except on a platform with no credential store** (`StoreMode::MemoryOnly` in
+//!   `plx_os::tv::secure`, see `session/memory_only.rs`): there the cache is the only authority,
+//!   writers read it and install into it, a write is `Ephemeral` rather than `Durable`, no
+//!   credential store is read or committed, and the install's own file (client id, language,
+//!   Interface resolution) is all that survives the process.
 //! - Other domains of the same record (consent) are not in this cache and their writes never
 //!   touch it. `async_persistence`'s own `CACHE`/`LOCKED_STATE` are a separate, currently-unwired
 //!   engine (see its doc) — when it is wired, its coordinator must install into and drop THIS
@@ -4032,6 +4037,7 @@ struct SecureEnvelope {
     sealed: plx_os::tv::secure::Sealed,
 }
 
+#[derive(Clone)]
 enum ReadState {
     Missing,
     Ready {
@@ -4096,6 +4102,10 @@ fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
 fn read_live_locked() -> ReadState {
     #[cfg(any(test, feature = "test-support"))]
     READS_FOR_TEST.with(|c| c.set(c.get() + 1));
+    // Above every fixture redirect below: a platform with no credential store reads no store.
+    if memory_only::active() {
+        return memory_only::read_locked();
+    }
     #[cfg(any(test, feature = "test-support"))]
     if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         // A redirected scratch path is an explicit host fixture. It is also deliberately not
@@ -4514,10 +4524,23 @@ pub fn set_language(language: plx_os::i18n::Preference) -> bool {
         let mut next = current.clone();
         next.language = language;
         Some(next)
-    }).is_some_and(|write| matches!(write.classify(),
-        async_persistence::CompletionOutcome::Durable(_)));
+    }).is_some_and(|write| kept_for_next_launch(&write));
     if saved { plx_os::i18n::set_saved_preference(language); }
     saved
+}
+
+/// Whether `write` keeps its choice for the NEXT launch: a store's confirmed commit, or, on a
+/// platform with no credential store, the install's own file ([`memory_only`]), which is where
+/// the language and the Interface resolution live there. A write held in memory alone does not.
+fn kept_for_next_launch(write: &async_persistence::LiveWrite) -> bool {
+    match write.classify() {
+        async_persistence::CompletionOutcome::Durable(_) => true,
+        async_persistence::CompletionOutcome::Ephemeral => write.install_choices_kept(),
+        async_persistence::CompletionOutcome::Uncertain { .. }
+        | async_persistence::CompletionOutcome::Failed(_)
+        | async_persistence::CompletionOutcome::ProtectionUncertain(_)
+        | async_persistence::CompletionOutcome::Superseded => false,
+    }
 }
 
 /// Blocking persistence seam for the Interface resolution picker, dispatched on the storage
@@ -4529,7 +4552,7 @@ pub fn set_ui_resolution(mode: UiResolution) -> bool {
         (!already).then(|| current.with_ui_resolution(mode))
     });
     // Already the stored choice is a pick that landed; an unreadable or refused record is not.
-    already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
+    already || write.is_some_and(|write| kept_for_next_launch(&write))
 }
 
 
@@ -4717,6 +4740,10 @@ fn save_locked_with_authority(
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
+    // Above the fixture redirect and the platform selection below: no credential store is written.
+    if memory_only::active() {
+        return memory_only::save_locked(s, authority, cache_generation);
+    }
     #[cfg(any(test, feature = "test-support"))]
     if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         let legacy = save_legacy_locked(s);
@@ -5337,6 +5364,9 @@ pub struct Erasure {
 /// replace them with the defaults after the credentials themselves have already been cleared.
 pub fn clear_for_erase(all_local: bool, retry: Option<Retained>) -> Erasure {
     let _io = io();
+    if memory_only::active() {
+        return memory_only::clear_locked(all_local, retry);
+    }
     let kept = retry.unwrap_or_else(|| Retained::of(&session_from_read(&read_live_locked())));
     let native = cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))));
     // File backends need a credential-free resource before the credential file disappears.
@@ -5904,6 +5934,9 @@ mod prefs_characterisation_tests;
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub mod async_persistence;
 mod install_preferences;
+mod memory_only;
+#[cfg(test)]
+mod memory_only_tests;
 pub use install_preferences::Retained;
 pub mod prefs;
 #[cfg(test)]

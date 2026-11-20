@@ -683,6 +683,22 @@ a dead source is **absent** from Home and states itself in its own library secti
     separate `CACHE` today; when it is wired up, it must install into/drop the cache above
     (`install_locked`/`drop_cache_locked`, under `IO`) instead of maintaining a second copy of the
     session.
+  - **Under `StoreMode::MemoryOnly` (`plx_os::tv::secure`, published once at boot; `Durable` is the
+    default and what webOS and desktop run) the cache is the ONE authority, not a write-through
+    copy** (`session/memory_only.rs`): reads, guarded edits, revocation and clear all resolve
+    against it, and no credential is committed anywhere, canonical store, sealed or plaintext
+    fallback or revocation marker. The gate sits in `read_live_locked`, `save_locked_with_authority`
+    and `clear_for_erase`, above every `TEST_FILE` and `target_arch` branch, so nothing behind them
+    is reachable. A write answers `PersistOutcome::Memory`, which classifies as
+    `CompletionOutcome::Ephemeral`: signed in for this run, so the auth owner goes on to Home, but
+    never a saved-login claim and never a warning. `drop_cache_locked` must not run in this mode
+    (a dropped cell would lose the session); tests reset the cell with `redirect_for_test(None)`.
+    What outlives the process is the install's own file (`install_preferences` version 2: the
+    client id, the language and the Interface resolution, none of which can authorize a login);
+    version 1, which webOS and desktop keep writing byte for byte, is still read. Sign-out keeps
+    that file, "Delete all local data" removes it, and a credential file a previous build left in
+    the data directory is never read, written or deleted. Tests set the mode with
+    `secure::set_mode_for_test` (a serial-lock-guarded override that clears on drop).
 - **Track selection is server-side, via `PUT /library/parts/{id}`** (set the chosen audio/subtitle
   stream + subtitle burn), **not** query params on the stream URL. The server re-selects for the next
   decision; the client re-requests the part. See `[[audio-subtitle-track-switching]]`.

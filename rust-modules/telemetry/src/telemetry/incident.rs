@@ -585,13 +585,15 @@ impl IncidentContext {
     }
 
     /// The failure class of a session persistence completion. A completion that is not a failure
-    /// (durable, or superseded by a later clear) leaves the context unchanged.
+    /// (durable, held in memory by design, or superseded by a later clear) leaves the context
+    /// unchanged.
     // The save-failure producer (`IncidentKind::SaveFailed`) is the next stage's; its evidence
     // builder lands with the schema so the body and the notice describe one closed set.
     #[allow(dead_code)]
     pub fn with_persistence(mut self, outcome: &CompletionOutcome) -> Self {
         let (class, protection) = match outcome {
             CompletionOutcome::Durable(_)
+            | CompletionOutcome::Ephemeral
             | CompletionOutcome::Superseded
             | CompletionOutcome::Failed(Failure::Superseded) => return self,
             CompletionOutcome::Uncertain { .. } => (PersistenceFailure::CommitUncertain, None),
