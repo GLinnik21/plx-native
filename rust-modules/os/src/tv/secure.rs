@@ -141,6 +141,50 @@ pub fn set_mode_for_test(mode: StoreMode) -> ModeReset {
 mod tests {
     use super::*;
 
+    /// **The sealed envelope's wire form, pinned for every backend tag a TV may have written.** The
+    /// envelope is what `plex::session` stores on disk, so a changed spelling of a tag would leave
+    /// every saved session on every TV unreadable. The literals are what this type wrote when the
+    /// test was added; a refactor of `Backend` must keep them byte for byte, in both directions.
+    /// `tests/fixtures/persistence/v0.6.*/secure-envelope-v1.json` carries the `keymanager3` tag
+    /// inside the session file's wrapper, and nothing pinned `palm_keymanager` at all.
+    #[test]
+    fn the_sealed_envelope_keeps_its_wire_form_for_every_backend_tag() {
+        let sealed = |backend| Sealed {
+            backend,
+            key: "plxnative.session.v1".into(),
+            iv: "MDEyMzQ1Njc4OWFi".into(),
+            data: "Y2lwaGVydGV4dA==".into(),
+        };
+        let cases = [
+            (
+                Backend::Keymanager3,
+                r#"{"backend":"keymanager3","key":"plxnative.session.v1","iv":"MDEyMzQ1Njc4OWFi","data":"Y2lwaGVydGV4dA=="}"#,
+            ),
+            (
+                Backend::PalmKeymanager,
+                r#"{"backend":"palm_keymanager","key":"plxnative.session.v1","iv":"MDEyMzQ1Njc4OWFi","data":"Y2lwaGVydGV4dA=="}"#,
+            ),
+        ];
+        for (backend, literal) in cases {
+            let value = sealed(backend);
+            assert_eq!(serde_json::to_string(&value).unwrap(), literal, "{value:?} serializes to its literal");
+            assert_eq!(serde_json::from_str::<Sealed>(literal).unwrap(), value, "{literal} reads back as {value:?}");
+        }
+    }
+
+    /// The 0.6.3 to 0.6.5 files carry an `identity` member the envelope has no field for: it is
+    /// ignored on read, and a rewrite no longer carries it. Pinned beside the tags above because
+    /// both are the same promise: a file an earlier build wrote still opens.
+    #[test]
+    fn an_envelope_with_a_member_this_type_no_longer_has_still_reads() {
+        let literal = r#"{"backend":"keymanager3","key":"plxnative.session.v1","iv":"MDEyMzQ1Njc4OWFi","data":"Y2lwaGVydGV4dA==","identity":"named"}"#;
+        let read: Sealed = serde_json::from_str(literal).unwrap();
+        assert_eq!(read.backend, Backend::Keymanager3);
+        assert_eq!(read.key, "plxnative.session.v1");
+        assert_eq!(read.iv, "MDEyMzQ1Njc4OWFi");
+        assert_eq!(read.data, "Y2lwaGVydGV4dA==");
+    }
+
     #[test]
     fn the_default_mode_is_durable() {
         let _serial = plx_base::testlock::serial();
