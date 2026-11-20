@@ -114,7 +114,6 @@ pub struct Client {
     pub(super) client_id: String, // X-Plex-Client-Identifier — stable device id (NEVER per-item)
     pub(super) product: String,   // "PlxNative"
     pub(super) version: String,   // "0.1.0"
-    pub(super) platform: String,  // "webOS"
     // Token generation, PER SERVER. Bumped by `set_token`; read by caches keyed on a path that
     // bakes the token in (`app::adapters::poster::built_key`'s memo). This used to be a process-global
     // `static TOKEN_GEN`, which cannot express "server B's token changed" — with a registry that
@@ -272,7 +271,6 @@ impl Client {
             client_id: client_id.to_owned(),
             product: super::identity::PRODUCT.into(),
             version: super::identity::version().into(),
-            platform: super::identity::PLATFORM.into(),
             token_gen: AtomicU32::new(generation),
             grant_epoch: AtomicU32::new(generation),
             instance_gen: generation,
@@ -304,7 +302,7 @@ impl Client {
             ("X-Plex-Client-Identifier", &self.client_id),
             ("X-Plex-Product", &self.product),
             ("X-Plex-Version", &self.version),
-            ("X-Plex-Platform", &self.platform),
+            ("X-Plex-Platform", super::identity::platform()),
             ("X-Plex-Platform-Version", super::identity::platform_version()),
             ("X-Plex-Device", DEVICE),
             ("X-Plex-Device-Name", device_name()),

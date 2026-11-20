@@ -766,7 +766,7 @@ fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
         format: SECURE_FORMAT.to_string(),
         version: 1,
         sealed: plx_os::tv::secure::Sealed {
-            backend: plx_os::tv::secure::Backend::Keymanager3,
+            backend: plx_os::tv::secure::Backend::KEYMANAGER3,
             key: "plxnative.session.v1".to_string(),
             iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
             data: "c2VjcmV0".to_string(),
@@ -828,6 +828,49 @@ fn an_unknown_secure_envelope_version_is_locked_and_never_rewritten_as_plaintext
         original,
         "a future secure envelope must shadow every plaintext replacement"
     );
+}
+
+/// A sealed envelope for `signed_in()` under `backend`, in the file format `save` writes.
+fn envelope_for_signed_in(backend: plx_os::tv::secure::Backend) -> Vec<u8> {
+    serde_json::to_vec_pretty(&SecureEnvelope {
+        format: SECURE_FORMAT.to_string(),
+        version: 1,
+        sealed: plx_os::tv::secure::Sealed {
+            backend,
+            key: "plxnative.session.v1".to_string(),
+            iv: "synthetic-iv".to_string(),
+            data: plx_base::b64::encode(&serde_json::to_vec_pretty(&signed_in()).unwrap()),
+        },
+    })
+    .unwrap()
+}
+
+/// The control for the test below: the same plaintext, sealed under the tag the synthetic
+/// platform does know, opens.
+#[test]
+fn an_envelope_with_the_platforms_own_backend_tag_opens() {
+    let _g = plx_base::testlock::serial();
+    let _keymanager = SyntheticKeymanager::new();
+    let t = TempSession::new("secure-own-tag");
+    std::fs::write(t.file(), envelope_for_signed_in(plx_os::tv::secure::Backend::KEYMANAGER3)).unwrap();
+    assert_eq!(load().account_token, "acct");
+}
+
+/// The backend tag is an opaque string, so an envelope naming a store no installed platform knows
+/// still parses. It is REFUSED on open and never reinterpreted as the platform's own store: the
+/// file stays locked ciphertext and the run signs in again.
+#[test]
+fn an_envelope_with_a_backend_tag_no_platform_knows_is_locked_and_left_as_it_was() {
+    let _g = plx_base::testlock::serial();
+    let _keymanager = SyntheticKeymanager::new();
+    let t = TempSession::new("secure-foreign-tag");
+    let foreign = envelope_for_signed_in(plx_os::tv::secure::Backend::new("host_file"));
+    std::fs::write(t.file(), &foreign).unwrap();
+
+    let loaded = load();
+    assert!(loaded.account_token.is_empty(), "a tag nobody knows opens nothing");
+    assert!(!loaded.client_id.is_empty(), "the run still gets an ephemeral id");
+    assert_eq!(std::fs::read(t.file()).unwrap(), foreign, "reading it rewrites nothing");
 }
 
 #[test]
@@ -1721,13 +1764,13 @@ fn signout_sweeps_cannot_complete_while_a_recovery_flush_is_pending() {
 struct SyntheticKeymanager;
 static STORE: plx_os::tv::secure::TestStore = plx_os::tv::secure::TestStore {
     seal: |plain| Some(plx_os::tv::secure::Sealed {
-        backend: plx_os::tv::secure::Backend::Keymanager3,
+        backend: plx_os::tv::secure::Backend::KEYMANAGER3,
         key: "plxnative.session.v1".into(),
         iv: "synthetic-iv".into(),
         data: plx_base::b64::encode(plain),
     }),
     open: |sealed| {
-        if sealed.backend == plx_os::tv::secure::Backend::Keymanager3 && sealed.key == "plxnative.session.v1" {
+        if sealed.backend == plx_os::tv::secure::Backend::KEYMANAGER3 && sealed.key == "plxnative.session.v1" {
             plx_base::b64::decode(&sealed.data)
         } else {
             None

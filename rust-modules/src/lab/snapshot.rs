@@ -276,9 +276,9 @@ fn device() -> Device {
     let d = plx_os::tv::device::device();
     Device {
         webos_release: i.release.clone(),
-        webos_codename: i.codename.clone(),
-        webos_api: i.api.clone(),
-        webos_name: i.name.clone(),
+        webos_codename: i.webos.codename.clone(),
+        webos_api: i.webos.api.clone(),
+        webos_name: i.webos.name.clone(),
         model: d.model.clone(),
         board: d.board.clone(),
         hw_revision: d.hw_revision.clone(),

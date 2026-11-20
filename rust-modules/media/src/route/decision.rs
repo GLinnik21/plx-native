@@ -196,7 +196,7 @@ pub struct PlaybackSession {
     /// and a scrobble on top would be a second view. Read and cleared by [`scrobble_stop`].
     pub finished: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
-    pub repair_status: plx_os::tv::sandbox::State,
+    pub repair_status: plx_os::tv::native_video::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
     /// Written synchronously by [`request_play`] rather than by [`apply_plan`], because the
     /// server can refuse before a playable plan exists.
@@ -1690,7 +1690,7 @@ impl PlaybackSession {
         native_start_refused: None,
         engine_failure: None,
         finished: false,
-        repair_status: plx_os::tv::sandbox::State::Idle,
+        repair_status: plx_os::tv::native_video::State::Idle,
         request: None,
         requested_resume_ns: 0,
         url: String::new(),
@@ -11540,7 +11540,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             native_start_refused: None,
             engine_failure: None,
             finished: false,
-            repair_status: plx_os::tv::sandbox::State::Idle,
+            repair_status: plx_os::tv::native_video::State::Idle,
             request,
             requested_resume_ns,
             url: plan.url,

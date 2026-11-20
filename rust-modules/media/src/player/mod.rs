@@ -998,7 +998,7 @@ pub enum FailureKind {
     TvPipeline,
     /// This device's jail is missing `/dev/rtkmem` on a SoC where that is a known cause of
     /// native A/V crashes — the Load was never attempted. Community-tier finding: see
-    /// [`plx_os::tv::sandbox::blocks_native_video`]'s doc.
+    /// [`plx_os::tv::native_video::blocked`]'s doc.
     JailMissingRtkmem,
     /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — either the native `Load` call never
     /// returned, or it returned but `loadCompleted` never arrived. Distinct from
@@ -1157,7 +1157,7 @@ pub fn failure_context_captured(ps: &crate::route::PlaybackSession, diagnostic_f
     FailureContext {
         forced: crate::route::forced_direct_play(ps) || diagnostic_forced,
         can_retry: crate::route::can_retry_current_play(ps),
-        repair_idle: ps.repair_status == plx_os::tv::sandbox::State::Idle,
+        repair_idle: ps.repair_status == plx_os::tv::native_video::State::Idle,
     }
 }
 
@@ -1227,9 +1227,9 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
 /// [`error_shape`], because it precedes route resolution entirely: it names a device finding, not
 /// a decision the server or the runtime made. Phrased as a FINDING throughout — "found... known
 /// to..." — never as a certain diagnosis, matching the community-tier evidence it is built on
-/// (see [`plx_os::tv::sandbox::blocks_native_video`]'s doc). Caption and readout are kept short for
+/// (see [`plx_os::tv::native_video::blocked`]'s doc). Caption and readout are kept short for
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
-/// in `detail`. `Player.repair` (see `tv::sandbox`) can actually attempt the Homebrew
+/// in `detail`. `Player.repair` (see `tv::native_video`) can actually attempt the Homebrew
 /// Channel service call that patches the jail profile, so the remedy text points at that confirmed
 /// in-app repair rather than at a bare reinstall.
 fn jail_error_shape() -> ErrorShape {
@@ -4754,7 +4754,7 @@ mod native_failure_regressions {
     use super::*;
     struct JailGuard;
     impl Drop for JailGuard {
-        fn drop(&mut self) { plx_os::tv::sandbox::FORCE_BLOCKED.store(false, Relaxed); }
+        fn drop(&mut self) { plx_os::tv::native_video::FORCE_BLOCKED.store(false, Relaxed); }
     }
     #[test]
     fn jail_refusal_enters_error_without_engine_and_retires_on_exit() {
@@ -4764,7 +4764,7 @@ mod native_failure_regressions {
         crate::route::reset_player_control_for_test(&ps);
         crate::player::reset_session_for_test();
         let mut pa = adapter::PlayerAdapter::new_fed(unsafe { plx_base::task::MainThread::assume() });
-        plx_os::tv::sandbox::FORCE_BLOCKED.store(true, Relaxed);
+        plx_os::tv::native_video::FORCE_BLOCKED.store(true, Relaxed);
         assert!(start_bufferfeed(&mut ps, &mut pa));
         assert!(!pa.is_live());
         assert_eq!(state(&ps), PlaybackState::Error);

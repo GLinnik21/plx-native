@@ -2,8 +2,8 @@
 pub mod device;
 pub mod home;
 pub mod launch;
+pub mod native_video;
 pub mod plane;
-pub mod sandbox;
 pub mod secure;
 pub mod sink;
 pub mod sound;
@@ -35,7 +35,12 @@ pub struct Services {
 pub struct IdentityHooks {
     pub probe_device: fn(),
     pub start_capability_probe: fn(),
-    pub repair_sandbox: fn() -> Result<(), sandbox::Failure>,
+    /// The user-confirmed repair of a blocked native video path ([`native_video::repair`]), for a
+    /// platform that has one. `None` is a platform with nothing to repair: the repair then answers
+    /// [`native_video::Failure::Unsupported`].
+    pub repair_native_video: Option<fn() -> Result<(), native_video::Failure>>,
+    /// The files the capability probe parses, read the platform's way ([`device::files`]).
+    pub device_files: device::Files,
     pub system_locale: fn() -> LocaleReply,
     pub sound_output: fn() -> sound::Reply,
 }
@@ -71,12 +76,13 @@ pub struct LegacyWebosMedia {
 fn nothing() {}
 
 impl IdentityHooks {
-    /// A platform with no identity of its own to publish: nothing is probed, the sandbox cannot be
+    /// A platform with no identity of its own to publish: nothing is probed, native video cannot be
     /// repaired and there is no settings service to ask.
     pub const NONE: Self = Self {
         probe_device: nothing,
         start_capability_probe: nothing,
-        repair_sandbox: || Err(sandbox::Failure::Unsupported),
+        repair_native_video: None,
+        device_files: device::Files::NONE,
         system_locale: || LocaleReply::NoPlatform,
         sound_output: || sound::Reply::NoPlatform,
     };
@@ -150,7 +156,7 @@ mod tests {
     #[test]
     fn the_host_test_services_answer_nothing_and_say_so() {
         let Services {
-            identity: IdentityHooks { probe_device, start_capability_probe, repair_sandbox, system_locale, sound_output },
+            identity: IdentityHooks { probe_device, start_capability_probe, repair_native_video, device_files, system_locale, sound_output },
             secure: SecureHooks { seal, open, remove, mode },
             system: SystemHooks { go_home, poll_home, deliver_toast },
             legacy_webos_media: LegacyWebosMedia { sink, display_sink, uri_media },
@@ -158,19 +164,26 @@ mod tests {
 
         probe_device();
         start_capability_probe();
-        assert_eq!(repair_sandbox(), Err(sandbox::Failure::Unsupported));
+        assert!(repair_native_video.is_none(), "a platform with nothing to repair states no hook");
+        assert_eq!(native_video::repair(), Err(native_video::Failure::Unsupported));
+        assert_eq!(
+            (device_files.read)("/etc/umediaserver/device_codec_capability_config.json").unwrap_err().kind(),
+            std::io::ErrorKind::NotFound,
+            "no files: a read fails as a missing file does"
+        );
+        assert!(!(device_files.exists)("/"), "and nothing exists");
         assert!(matches!(system_locale(), LocaleReply::NoPlatform));
         assert!(matches!(sound_output(), sound::Reply::NoPlatform));
 
         let sealed = secure::Sealed {
-            backend: secure::Backend::Keymanager3,
+            backend: secure::Backend::KEYMANAGER3,
             key: "k".into(),
             iv: "i".into(),
             data: "d".into(),
         };
         assert!(seal(b"secret").is_none());
         assert!(open(&sealed).is_none());
-        remove(&secure::Backend::PalmKeymanager, "k");
+        remove(&secure::Backend::PALM_KEYMANAGER, "k");
         assert_eq!(mode, secure::StoreMode::Durable, "no key manager is not a memory-only platform");
 
         go_home();
@@ -197,7 +210,7 @@ mod tests {
         // override another test may hold while this one runs.
         assert_eq!(services().secure.mode, secure::StoreMode::Durable);
         assert!(secure::seal(b"secret").is_none());
-        assert_eq!(sandbox::repair(), Err(sandbox::Failure::Unsupported));
+        assert_eq!(native_video::repair(), Err(native_video::Failure::Unsupported));
         assert_eq!(uri::installed().open(uri::Shape::Anon), Err("no bus".into()));
     }
 }

@@ -462,10 +462,10 @@ impl Diagnostics {
 /// no API version, and the line must not end in an `api` label with nothing after it.
 fn firmware_head(w: &plx_os::tv::device::Info) -> String {
     let release = plx_os::i18n::webos_release_line(w);
-    if w.major == 0 || w.api.is_empty() {
+    if w.major == 0 || w.webos.api.is_empty() {
         release
     } else {
-        format!("{release} · api {}", w.api)
+        format!("{release} · api {}", w.webos.api)
     }
 }
 
@@ -593,7 +593,7 @@ fn device_rows() -> Vec<Field> {
     // image somebody else can go and look at.
     v.push(Field::new(
         plx_os::i18n::msg::browse_diagnostics_field_firmware(),
-        match (i.name.as_str(), i.codename.as_str()) {
+        match (i.webos.name.as_str(), i.webos.codename.as_str()) {
             // Bare "unknown": with neither file read the head line above already carries the REASON
             // ("webOS unknown — os_info.json unreadable"). When `/usr/lib/os-release` named the
             // release instead, the head line reads `webOS 6.5.3` and this row is the codename,
@@ -3523,9 +3523,14 @@ mod tests {
     /// line must not end in an `api` label with nothing after it.
     #[test]
     fn the_firmware_text_names_the_api_only_when_it_is_known() {
-        use plx_os::tv::device::Info;
+        use plx_os::tv::device::{Info, WebosDetail};
         let _g = plx_base::testlock::serial();
-        let nyx = Info { release: "4.10.2".into(), api: "4.1.0".into(), major: 4, ..Info::default() };
+        let nyx = Info {
+            release: "4.10.2".into(),
+            major: 4,
+            webos: WebosDetail { api: "4.1.0".into(), ..WebosDetail::default() },
+            ..Info::default()
+        };
         assert_eq!(firmware_head(&nyx), "webOS 4.10.2 · api 4.1.0", "the nyx spelling is unchanged");
         let os_release = Info { release: "6.5.3".into(), major: 6, ..Info::default() };
         assert_eq!(firmware_head(&os_release), "webOS 6.5.3");

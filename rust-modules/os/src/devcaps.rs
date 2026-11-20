@@ -39,6 +39,7 @@
 //! before this module. Misreading the table must degrade to yesterday's behavior, not invent a
 //! weaker television: the issue-#22 lesson cuts both ways, and a client that suddenly transcodes
 //! everything on a healthy 4K panel is as wrong as one that direct-plays HEVC to a SoC without it.
+use crate::tv::device::Files;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
@@ -334,7 +335,7 @@ pub enum Limit {
 /// takes only an IDR first ([`Limit::DvFirstPictureIdr`]), which the player answers by withdrawing the
 /// declaration at a landing the splitter would skip.
 ///
-/// The key is the firmware codename (`tv::device::Info::codename`, nyx's `webos_release_codename`),
+/// The key is the firmware codename (`tv::device::WebosDetail::codename`, nyx's `webos_release_codename`),
 /// the one identity the app reads reliably on every set: it groups the sets that run the same
 /// build of the media stack, which is what decides the decoder's behaviour, where the retail model
 /// name (`product_id`, absent on some firmware) and the SoC class would split one stack or merge two.
@@ -1525,11 +1526,12 @@ impl Drop for AudioStackGuard {
     }
 }
 
-/// Read the table once and log what was derived. Called at boot right after `webos::probe`,
-/// before anything can fail; safe when the file does not exist (older/odd firmware → assumed).
-pub fn probe() {
+/// The device table and `gstcool.conf` through `files`, parsed and logged: the caps this set
+/// announces before the firmware exclusions, and whether they were READ ([`MEASURED`]) or are the
+/// assumed fallback. Every failure to read or parse lands on [`Caps::assumed`], with its line.
+fn read_caps(files: &Files) -> (Caps, bool) {
     let mut measured = false;
-    let caps = match std::fs::read_to_string(CAPS_TABLE) {
+    let caps = match (files.read)(CAPS_TABLE) {
         Ok(s) => match parse(&s) {
             Some(c) => {
                 measured = true;
@@ -1547,7 +1549,7 @@ pub fn probe() {
                 plx_base::eventlog::log(&format!("devcaps: table audio rows: {}", table_audio_rows(&s)));
                 c.vp9_bit_depth = vp9_bit_depth_for(crate::tv::device::info().major);
                 // Before the exclusions: a codec the conf lists as switched off is not a candidate to limit.
-                let (gst_dropped, gst_unlisted) = match std::fs::read_to_string(GST_CONF) {
+                let (gst_dropped, gst_unlisted) = match (files.read)(GST_CONF) {
                     Ok(conf) => apply_gst_decoders(&mut c, &conf),
                     Err(_) => (Vec::new(), Vec::new()),
                 };
@@ -1586,6 +1588,15 @@ pub fn probe() {
             Caps::assumed()
         }
     };
+    (caps, measured)
+}
+
+/// Read the table once and log what was derived. Called at boot right after `webos::probe`,
+/// before anything can fail; safe when the file does not exist (older/odd firmware → assumed).
+/// The files are read the platform's way (`tv::device::files`); this model only parses them.
+pub fn probe() {
+    let files = crate::tv::device::files();
+    let (caps, measured) = read_caps(&files);
     let _ = MEASURED.set(measured);
     let info = crate::tv::device::info();
     let (wide, learn, forget) = (
@@ -1600,10 +1611,10 @@ pub fn probe() {
     // the AUDIO exclusions (a row's `dv_first_picture` stays, it is not an audio fact) and the learned
     // layer (`nativeaudiolearn` beside it keeps the layer),
     // `nativeaudioforget` the record.
-    let stack = audio_stack_from(|path| std::path::Path::new(path).exists());
+    let stack = audio_stack_from(|path| (files.exists)(path));
     let _ = AUDIO_STACK.set(stack);
     let mut boot = caps.clone();
-    let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
+    let excluded = apply_exclusions(&mut boot, &info.webos.codename, wide, EXCLUSIONS);
     if plx_base::devtrig::flag("appdecodelossy") {
         boot = boot.with_app_lossy();
         #[cfg(feature = "devtriggers")]
@@ -1636,7 +1647,7 @@ pub fn probe() {
     ));
     plx_base::eventlog::log(&format!(
         "devcaps: firmware={:?} build={:?} audio stack={} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
-        info.codename,
+        info.webos.codename,
         info.build,
         stack.label(),
         caps.audio,
@@ -1649,7 +1660,7 @@ pub fn probe() {
         },
         if forget { " (nativeaudioforget: stored refusals ignored this run)" } else { "" },
     ));
-    let _ = BOOT.set(Boot::new(boot, info.codename.clone(), info.build.clone(), (wide, learn, forget)));
+    let _ = BOOT.set(Boot::new(boot, info.webos.codename.clone(), info.build.clone(), (wide, learn, forget)));
 }
 
 /// Whether [`caps`] reflects THIS set's table or the assumed profile — see [`MEASURED`].
@@ -3183,5 +3194,61 @@ mod tests {
         assert_eq!(caps.raster_bound("h264"), caps.hevc_max);
         let capped = Caps { video_ceiling: [("av1".to_owned(), (1280, 720))].into(), ..caps };
         assert_eq!(capped.raster_bound("av1"), (1280, 720));
+    }
+
+    /// A platform serving the real device table and a `gstcool.conf` with DTS switched off.
+    const SERVES_TABLE_AND_CONF: Files = Files {
+        read: |path| match path {
+            CAPS_TABLE => Ok(REAL.to_owned()),
+            GST_CONF => Ok(GST_C1.replace("dts_audiodec=290", "dts_audiodec=0")),
+            _ => Err(std::io::ErrorKind::NotFound.into()),
+        },
+        exists: |path| path == LXAUDIOSINK_PLUGIN,
+    };
+
+    /// A platform serving the table and no `gstcool.conf` (the conf is optional: a set without it keeps
+    /// every codec the table lists).
+    const SERVES_TABLE_ONLY: Files = Files {
+        read: |path| match path {
+            CAPS_TABLE => Ok(REAL.to_owned()),
+            _ => Err(std::io::ErrorKind::NotFound.into()),
+        },
+        exists: |_| false,
+    };
+
+    /// A platform whose table is not the JSON this model reads.
+    const SERVES_GARBAGE: Files = Files {
+        read: |_| Ok("not a device table".to_owned()),
+        exists: |_| false,
+    };
+
+    /// The model parses what the platform READ and performs no read of its own: a platform with no
+    /// files is the assumed profile, unmeasured, which is what a set whose table is absent answers.
+    #[test]
+    fn a_platform_with_no_device_files_gets_the_assumed_profile_unmeasured() {
+        assert_eq!(read_caps(&Files::NONE), (Caps::assumed(), false));
+    }
+
+    #[test]
+    fn a_table_the_model_cannot_parse_gets_the_assumed_profile_unmeasured() {
+        assert_eq!(read_caps(&SERVES_GARBAGE), (Caps::assumed(), false));
+    }
+
+    /// The caps are the table's, minus what the conf the platform served switches off, and measured.
+    #[test]
+    fn the_table_and_conf_the_platform_serves_are_parsed_into_measured_caps() {
+        let (caps, measured) = read_caps(&SERVES_TABLE_AND_CONF);
+        assert!(measured);
+        let mut expected = parse(REAL).unwrap();
+        expected.vp9_bit_depth = vp9_bit_depth_for(crate::tv::device::info().major);
+        let conf = GST_C1.replace("dts_audiodec=290", "dts_audiodec=0");
+        assert_eq!(apply_gst_decoders(&mut expected, &conf).0, ["dts"]);
+        assert_eq!(caps, expected);
+        assert!(!caps.audio_has("dts"), "the served conf switched DTS off");
+        assert_eq!(caps.hevc_row, (4096, 2176, 60));
+
+        let (kept, measured) = read_caps(&SERVES_TABLE_ONLY);
+        assert!(measured, "a missing gstcool.conf does not make the table any less read");
+        assert!(kept.audio_has("dts"), "without the conf nothing is dropped");
     }
 }

@@ -507,7 +507,7 @@ pub struct PlayerAdapter {
     abr_inbox: Option<(crate::route::RouteStartAttempt, crate::adaptive::AbrInbox)>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
     timeline: Option<timeline::TimelineRunner>,
-    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_os::tv::sandbox::Failure>>)>,
+    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_os::tv::native_video::Failure>>)>,
     release: super::release::NativeRelease,
     /// Effects produced by an addressed URI release while the backend poll has no session
     /// borrow. The release machine owns the sole queued transaction; these are only its IO work.
@@ -1759,11 +1759,11 @@ impl PlayerAdapter {
         let Some(token) = owner.begin(supported) else { return; };
         let (tx, rx) = std::sync::mpsc::channel();
         if plx_base::task::spawn_small("jail repair", move || {
-            let _ = tx.send(plx_os::tv::sandbox::repair());
+            let _ = tx.send(plx_os::tv::native_video::repair());
         }) {
             self.repair = Some((token, rx));
         } else {
-            owner.complete(token, Err(plx_os::tv::sandbox::Failure::StartFailed));
+            owner.complete(token, Err(plx_os::tv::native_video::Failure::StartFailed));
         }
     }
 
@@ -1773,7 +1773,7 @@ impl PlayerAdapter {
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(plx_os::tv::sandbox::Failure::StartFailed),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(plx_os::tv::native_video::Failure::StartFailed),
         };
         let changed = owner.complete(*token, result);
         self.repair = None;
@@ -2254,7 +2254,7 @@ impl PlayerAdapter {
 #[cfg(test)]
 mod repair_receipt_tests {
     use super::*;
-    use plx_os::tv::sandbox::{Failure, State};
+    use plx_os::tv::native_video::{Failure, State};
     #[test]
     fn local_metric_history_evicts_old_effects_after_real_reducer_results() {
         use super::super::attempt_metrics::{Origin, RequestOutcome, Tick, Fx};
