@@ -753,7 +753,7 @@ world-readable `/tmp` on the TV across many runs.
   crash log, but the default hook prints the raw message to stderr, so a future `unwrap()` on an
   `Err` that embeds a URL or token would still land there verbatim. Two things could not be settled without the
   television: whether LG's SDL logs committed keyboard text at `SDL_LOG_CATEGORY_INPUT` /
-  `SDL_LOG_PRIORITY_DEBUG`, which `textinput::trace_driver` enables in every build (the five
+  `SDL_LOG_PRIORITY_DEBUG`, which `plx_shell_sdl::text::trace_driver` (called from `textinput::bind`) enables in every build (the five
   message formats the driver is documented to print carry a state number, never text), and what
   the closed TV libraries (libplayerAPIs, libAcbAPI, libpf) write to fd 2.
 

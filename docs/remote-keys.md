@@ -20,7 +20,7 @@ done offline is read out of the television's own harvested `libSDL2`, which is s
 ## 1. How a press reaches the app
 
 An `SDL_KEYDOWN` / `SDL_KEYUP` from LG's SDL fork is read by raw byte offset, because the fork's
-`SDL_KeyboardEvent` is **shifted four bytes** against the headers (`app/events.rs::decode_key`, and the
+`SDL_KeyboardEvent` is **shifted four bytes** against the headers (`plx_shell_sdl::event::decode_key` in `rust-modules/shell-sdl/src/event.rs`, and the
 gotcha in `docs/agent-reference.md`):
 
 | offset | field | the app calls it |

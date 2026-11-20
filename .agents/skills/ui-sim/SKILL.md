@@ -80,7 +80,7 @@ state. Close other WSL work, run `wsl.exe --shutdown`, and retry; accept the run
 `use_gfxredir = 1`.
 
 **Ask for `SIM_W=1920 SIM_H=1080` on any shot you intend to JUDGE.** The window is otherwise sized
-to fit the display (`app::boot::plan_desktop_window`), and on a 1x screen that divisor lands on 2, so
+to fit the display (`plx_shell_sdl::window::plan_desktop_window`), and on a 1x screen that divisor lands on 2, so
 every screenshot comes back 960x540 — half the canvas the UI is authored at. A 1px edge-sheen, a
 hairline, a snapped glyph and a specular rim are exactly the things that do not survive that
 halving, which makes a shot at the default size evidence about layout and nothing else. The size is

@@ -29,8 +29,8 @@
 //! [`release_of`] that ends with `SDL_Quit()` (`NativeExit::Clean`), `Retained` is the arm that logs
 //! "SDL_Quit skipped" because a native worker is still inside firmware
 //! (`NativeExit::WorkerInFirmware`) and, for a refusal, "nothing was torn down". The executable
-//! ignores it; a hosted entry maps `Retained` to `clean = 0`. Until the shell crate lands, `SDL_Quit`
-//! IS the release of the window and the GL context, so `Complete` already means both.
+//! ignores it; a hosted entry maps `Retained` to `clean = 0`. `Complete` means `Surface::quit` ran;
+//! for the SDL shell that is `SDL_Quit`, which releases the window and the GL context.
 //!
 //! # The host doorway
 //!

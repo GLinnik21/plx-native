@@ -108,6 +108,7 @@ if "--no-run" in args:
     art('/media-codecs', 'plx_media_codecs', '0.0.0')
     art('/appkit', 'plx_appkit', '0.0.0')
     art('/screens', 'plx_screens', '0.0.0')
+    art('/shell-sdl', 'plx_shell_sdl', '0.0.0')
     art('/owp', 'plx_owp', '0.0.0')
     art('', 'plxnative-modules', '0.7.0')
 elif args[0] == "rustc":

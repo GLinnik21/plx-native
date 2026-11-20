@@ -50,7 +50,7 @@ the window and never reads the parameters. The app cannot hold that subscription
 on webOS 9.2.2, LG C2: SAM answers an anonymous client `cannot find caller id`, the app-id service
 name is already taken in the process, and `LSCallFromApplication` is refused as unprivileged).
 
-Instead, `app::boot::tap_relaunch_payloads` wraps the pointer slot LG's SDL reads each reply's
+Instead, `system::tap_relaunch_payloads` wraps the pointer slot LG's SDL reads each reply's
 payload through (`HELPER_HLunaServiceMessage`, exported by its `libSDL2` and filled in `SDL_Init`).
 A relaunch payload is passed to the link code and returned unchanged, so SDL still raises the
 window. The link then replaces wherever the app was, with Home underneath. A relaunch without a

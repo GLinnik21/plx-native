@@ -328,7 +328,7 @@ extern "C" {
     #[cfg(feature = "devtriggers")]
     fn glFlush();
     fn glGenTextures(n: c_int, textures: *mut c_uint);
-    // `#[allow(dead_code)]` — the same shape as `app/mod.rs`'s SDL text-input externs: the sole
+    // `#[allow(dead_code)]` — the same shape as `plx_shell_sdl`'s SDL text-input externs (`sys.rs`): the sole
     // caller (`delete_tex`, below) compiles its real call out under `cfg(test)`, so this
     // declaration loses its only use in the TEST build alone and warns there. It stays live on
     // device and in the simulator, where `delete_tex` still calls it for real.

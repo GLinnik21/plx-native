@@ -77,6 +77,7 @@ CASES = [
     (FIRE, "the media layer crate\\'s source", edit("/repo/rust-modules/media/src/player/mod.rs"), ROOT),
     (FIRE, "the appkit layer crate\\'s source", edit("/repo/rust-modules/appkit/src/player_hud/mod.rs"), ROOT),
     (FIRE, "the screens layer crate\\'s source", edit("/repo/rust-modules/screens/src/home/mod.rs"), ROOT),
+    (FIRE, "the shell_sdl layer crate's source", edit("/repo/rust-modules/shell-sdl/src/window.rs"), ROOT),
     (FIRE, "MultiEdit", edit("/repo/rust-modules/src/app/run.rs", tool="MultiEdit"), ROOT),
     (FIRE, "relative to root", edit("rust-modules/src/route.rs"), ROOT),
     (FIRE, "relative to a subdir", edit("src/plex/client.rs"), "/repo/rust-modules"),

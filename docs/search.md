@@ -277,7 +277,7 @@ backend is not in the webOS extension API at all — it is inside **LG's Wayland
 `Wayland_CreateDevice` writes four real hooks into `SDL_VideoDevice`
 (`WebOSHasScreenKeyboardSupport`, `Show`, `Hide`, `IsShown`), `SDL_StartTextInput` dispatches to the
 second, and `WebOSShowScreenKeyboard` is a complete `text_model` IME client. Typed text comes back
-as an ordinary **`SDL_TEXTINPUT`** event, so `app.rs`'s existing `SDL_PollEvent` loop already sees
+as an ordinary **`SDL_TEXTINPUT`** event, so the existing `SDL_PollEvent` loop (`plx_shell_sdl::event`) already sees
 it. moonlight-tv 1.5.8 shipped exactly this against the TV's own SDL.
 
 **Linking is the plain `extern "C"` case, not `dynlib!`.** Verified with
@@ -308,7 +308,7 @@ Both halves are checkable on the dev Mac without a television:
   declares `{ type, timestamp, windowID, inputSource /* webOS specific field */, text[] }` — text at
   **+16**.
 
-This is the same class of bug as the `SDL_KeyboardEvent` shift `app.rs` already reads around with
+This is the same class of bug as the `SDL_KeyboardEvent` shift `plx_shell_sdl::event` already reads around with
 raw offsets, and it has the same fix: read the bytes, do not trust the struct. Note the offset is a
 `cfg`, not a constant — under `hostsim` desktop SDL2 is stock and the offset really is +12, so a
 single hard-coded number ships garbage on one of the two platforms.
@@ -317,7 +317,7 @@ single hard-coded number ships garbage on one of the two platforms.
 
 `SDL_StartTextInput` looks for a window carrying `0x200` (`SDL_video.h` in the SDK sysroot's `usr/include/SDL2/`) before
 dispatching to the driver hook. Our window is created with
-`SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN` and nothing else — `app.rs`'s `SDL_WINDOW_FLAGS` is
+`SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN` and nothing else — `plx_shell_sdl`'s `SDL_WINDOW_FLAGS` (`shell-sdl/src/window.rs`) is
 `0x2 | 0x1` on the device — so it carries neither `SHOWN` nor a focus flag at creation. **If the flag
 is clear the panel never rises, silently and with no error return.** That is why the boot probe logs
 the flag rather than trusting it: a keyboard that does not appear and a keyboard that appeared and
@@ -339,8 +339,8 @@ Two host-side findings, recorded because both cost time today and neither is a s
 television.
 
 **The boot probe's answer on macOS is `keyboard: support=0 active=1 focus=0 winflags=0x26`.** That
-is **trap 2 observed**: `0x26` is `OPENGL | SHOWN | RESIZABLE` (`app.rs`'s `hostsim` arm asks for
-`0x2 | 0x20`; SDL adds `SHOWN`), and `0x200` — `SDL_WINDOW_INPUT_FOCUS` — is not in it. The trap is
+is **trap 2 observed**: `0x26` is `OPENGL | SHOWN | RESIZABLE` (the `hostsim` arm asked for
+`0x2 | 0x20` when this was measured, and is `plx_shell_sdl`'s `SDL_WINDOW_FLAGS` now; SDL adds `SHOWN`), and `0x200` — `SDL_WINDOW_INPUT_FOCUS` — is not in it. The trap is
 therefore reproducible without a television, which is the useful part; what it does **not** tell you
 is anything about the TV's own answer, since `support=0` here just means desktop SDL has no screen
 keyboard at all.

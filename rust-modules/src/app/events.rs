@@ -1,6 +1,7 @@
-//! SDL event decoding and the remote-FIFO token synthesis — the raw-offset reads of LG's shifted
-//! `SDL_KeyboardEvent`, the synthetic key/pointer/wheel events, and `dispatch_remote_token`.
-//! Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
+//! What the loop reads of SDL's events, and the remote-FIFO token synthesis: the `HostEvent` a decoded
+//! SDL event becomes, the `KeyPress` constructor, the token parser and `dispatch_remote_token`. The bytes
+//! themselves (the raw-offset reads of LG's shifted `SDL_KeyboardEvent`, the synthetic key, pointer and
+//! wheel events) are `plx_shell_sdl`'s, re-exported below.
 //!
 //! The one decode that yields a platform-neutral value is [`decode_host_event`]: SDL's quit,
 //! application-lifecycle, key, text, pointer and wheel events become a [`HostEvent`], which the loop
@@ -23,98 +24,38 @@ pub(crate) fn text_inputs(text: &str, panel: bool, at: plx_machine::machine::Tic
     events
 }
 
-#[inline]
-pub(crate) fn rd_u32(ev: &[u8], off: usize) -> u32 {
-    u32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
-}
+// What SDL's bytes are, and how they are written back, is the stock-SDL shell's (`plx_shell_sdl`): the
+// raw-offset readers and both layouts of the key, pointer, wheel and text events, the lifecycle codes
+// the tape is written in, and the synthetic events pushed onto SDL's queue. The application keeps what
+// needs its own vocabulary: the `HostEvent` the loop consumes, the `KeyPress` constructor, the desktop's
+// key stand-in, and the token parser. Re-exported here so the `remote_synth_*` names every call site
+// (the loop, the FIFO, the replay driver, the cursor-swap click) already uses stay what they are.
+pub(crate) use plx_shell_sdl::event::{is_input_event, rd_u32, Decoded, Lifecycle, PointerEdge};
+pub(crate) use plx_shell_sdl::inject::{
+    synth_key as remote_synth_key, synth_key_edge as remote_synth_key_edge,
+    synth_key_repeat as remote_synth_key_repeat, synth_lifecycle as remote_synth_lifecycle,
+    synth_pointer as remote_synth_pointer, synth_ptr as remote_synth_ptr, synth_wheel as remote_synth_wheel,
+};
+// The byte writers are the loop tests' (they write the bytes a platform would deliver), and the two
+// readers are the hostsim wheel test's (the stock layout's float).
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) use plx_shell_sdl::event::{rd_f32, rd_i32};
+#[cfg(test)]
+pub(crate) use plx_shell_sdl::inject::{encode_key, encode_key_repeat, encode_pointer};
 
-/// A keyboard event's `(state, wcode, sym)`, decoded from the raw event bytes.
+/// The wcode a key press is read as: the one its bytes carried, else the desktop's stand-in for it.
 ///
-/// **The two SDLs disagree about this struct, and nothing warns you.** LG's fork writes
-/// `state` (u32) at +16, the webOS keycode at +20 and the SDL sym at +24. Stock SDL2 —
-/// what the host simulator links — has `SDL_KeyboardEvent { type, timestamp, windowID,
-/// state:u8@12, repeat:u8@13, pad, pad, keysym{ scancode:u32@16, sym:i32@20, … } }`, so
-/// every field the app reads is at a different offset and there is no webOS keycode at all.
-/// Reading the fork's offsets out of a stock event yields the window id as a keystate and
-/// a scancode as a sym — plausible-looking garbage rather than a crash.
-///
-/// `cfg!` rather than `#[cfg]` deliberately: both arms stay compiled on both platforms, so
-/// the one nobody is currently building cannot rot. This is the single site that knows the
-/// layout — `rd_u32`'s callers elsewhere read pointer events, whose offsets already agree.
-///
-/// **The `wcode` this returns is LG's SCANCODE**, which is worth saying because the name suggests
-/// otherwise. Every field measured off the dev set is the SDL scancode of the key beside it —
-/// backspace 42, Clear 156, ◀/▶ 80/79, OK 40 — so the fork's shift puts an ordinary
-/// `SDL_Keysym { scancode, sym }` at +20/+24 rather than inventing a webOS keycode namespace. That
-/// is why the codes above SDL's own range (450 play, 482 back, 505 exit) carry no sym at all: they
-/// are LG-private scancodes the keymap has no keycode for. `docs/remote-keys.md` has the account.
-///
-/// # The simulator's carrier moved, because the old one was silently DEAD
-///
-/// A synthetic press from the remote FIFO has to get its wcode across `SDL_PushEvent`, and on the
-/// host that queue is not SDL2's: macOS `libSDL2` is **sdl2-compat forwarding into SDL3**, so every
-/// pushed event is converted out and back. Measured 2026-08-23 by dumping the polled bytes of a
-/// press whose every spare field carried a distinct value:
-///
-/// | field                        | offset | survives |
-/// |------------------------------|--------|----------|
-/// | `windowID`                   |  +8    | yes      |
-/// | `padding2` / `padding3`      | +14/15 | no       |
-/// | `keysym.scancode`            | +16    | **no** — comes back 0 |
-/// | `keysym.mod`                 | +24    | yes      |
-/// | `keysym.unused`              | +28    | **no** — comes back 1 |
-///
-/// It used to be `unused`, so **every wcode-ONLY token was dead**: `play`, `pause`, `stop`, `ff`,
-/// `rew`, `playpause`, `exit`, `chup`, `chdown` all decoded as wcode 1 and did nothing at all, and
-/// `tests/keytable.json` recorded three of them as `moved: false` — which reads as "that key does
-/// nothing on that screen" and actually meant the press never arrived. An instrument silent by
-/// construction: prove it can see the thing before reading its silence.
-///
-/// `scancode` would have been the honest home (it is what a wcode IS) and it is the one field the
-/// compat layer recomputes. So a synthetic press carries the value in `mod` and a MARKER in
-/// `windowID` ([`SYNTH_WINDOW`]) — two fields, because the value alone cannot say whether it is
-/// one: a real press puts its modifier bitmask in `mod`, so `mod != 0` means "shift is down" at
-/// least as often as it means "injected". The marker restores the priority the `unused` field used
-/// to express — **injected first, the desktop stand-in only as a fallback** — which is load-bearing
-/// and not a preference: `host_wcode(8)` is BACK, while `remote_token_key`'s `backspace` token is
-/// `(8, 42)`, so asking the stand-in first turns the panel's delete key into a navigation.
-/// Clobbering `windowID` is safe here and nowhere else: this arm is `hostsim`-only, the simulator
-/// has one window, and nothing in the event loop reads that field.
+/// The shell reports `None` only for a stock-SDL press that carries no injected wcode (the television's
+/// layout always has one), and the stand-in is the only way a physical Mac keyboard reaches a key the
+/// remote has and a keyboard does not (space = PAUSE). **Injected first, the stand-in only as a
+/// fallback** is load-bearing and not a preference: `host_wcode(8)` is BACK, while the `backspace` token
+/// is `(8, 42)`, so asking the stand-in first turns the panel's delete key into a navigation
+/// (`plx_shell_sdl::event::decode_key` has the measurement behind the carrier). It lives here and not in
+/// the shell because `host_wcode` is a `ui` table the shell may not name.
 #[inline]
-pub(crate) fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
-    if cfg!(feature = "hostsim") {
-        let pressed = *ev.get(12).unwrap_or(&0) as u32;
-        let repeat = *ev.get(13).unwrap_or(&0) as u32;
-        let sym = rd_u32(ev, 20);
-        // Rebuild the fork's packed state byte-for-byte: low byte pressed(1)/released(0),
-        // bit 0x100 auto-repeat. Everything downstream tests exactly those two.
-        let state = pressed | if repeat != 0 { 0x100 } else { 0 };
-        let injected = if rd_u32(ev, 8) == SYNTH_WINDOW {
-            u32::from(u16::from_ne_bytes([ev[24], ev[25]]))
-        } else {
-            0 // a real desktop press: `mod` there is the modifier bitmask, not a wcode
-        };
-        // The stand-in is the only way a physical Mac keyboard reaches a key the remote has and a
-        // keyboard does not (space = PAUSE), and it applies to real presses alone.
-        let wcode = if injected != 0 {
-            injected
-        } else {
-            host_wcode(sym)
-        };
-        (state, wcode, sym)
-    } else {
-        (rd_u32(ev, 16), rd_u32(ev, 20), rd_u32(ev, 24))
-    }
+fn wcode_of(carried: Option<u32>, sym: u32) -> u32 {
+    carried.unwrap_or_else(|| host_wcode(sym))
 }
-
-/// The `windowID` a SYNTHETIC key event carries on the host, marking it as one — see [`decode_key`]
-/// for why the wcode needs a marker beside it rather than standing on its own. Any value no real
-/// window can have; SDL numbers windows from 1.
-///
-/// Defined unconditionally, like both halves of [`decode_key`]: the arm that uses it is behind
-/// `cfg!` rather than `#[cfg]`, precisely so the configuration nobody is currently building cannot
-/// rot.
-pub(crate) const SYNTH_WINDOW: u32 = 0x504c_584b; // "PLXK"
 
 /// The Magic Remote button a desktop keyboard stands in for, or 0.
 ///
@@ -132,13 +73,6 @@ pub(crate) fn host_wcode(sym: u32) -> u32 {
         _ => 0,
     }
 }
-
-/// SDL's application events (`SDL_APP_*`), the four the loop acts on: the compositor taking the
-/// screen (WILL and DID enter background) and giving it back (WILL and DID enter foreground).
-const SDL_APP_WILLENTERBACKGROUND: u32 = 0x103;
-const SDL_APP_DIDENTERBACKGROUND: u32 = 0x104;
-const SDL_APP_WILLENTERFOREGROUND: u32 = 0x105;
-const SDL_APP_DIDENTERFOREGROUND: u32 = 0x106;
 
 /// What the platform tells the loop: a key press, a text commit, the pointer, the wheel, the window
 /// leaving or returning to the screen, and the host asking the application to end. App-private, like
@@ -167,9 +101,9 @@ pub(crate) enum HostEvent {
     /// One commit from the platform's text input (the television's own keyboard): the decoded
     /// string, possibly empty (SDL delivers a commit for the IME's own bookkeeping too, and the
     /// loop ignores an empty one as it always has). The platform's own text layout is decoded
-    /// before it gets here (`textinput::decode`, the one place that knows the offsets).
+    /// before it gets here (`plx_shell_sdl::text::decode`, the one place that knows the offsets).
     Text(String),
-    /// One pointer event, at authored 1920x1080 coordinates ([`ptr_xy`]: the window's pixels
+    /// One pointer event, at authored 1920x1080 coordinates (`plx_shell_sdl::event::ptr_xy`: the window's pixels
     /// converted exactly once, the identity while the drawable is the canvas). `edge` is what it did:
     /// moved, went down or came up. It is the event TYPE alone, for any button, as the loop has always
     /// read it. The plan's `buttons` and `shown` members are not carried, because today's SDL events
@@ -180,19 +114,8 @@ pub(crate) enum HostEvent {
     /// One tick of the wheel: its vertical count in the signed whole ticks the loop reads (a
     /// fractional trackpad tick that rounds to nothing is `0`, which the loop records and then
     /// ignores, as it always has). Decoded from whichever offset this host carries it at
-    /// ([`decode_wheel_dy`]).
+    /// (`plx_shell_sdl::event::decode_wheel_dy`).
     Wheel { dy: i32 },
-}
-
-/// What a [`HostEvent::Pointer`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PointerEdge {
-    /// `SDL_MOUSEMOTION`.
-    Move,
-    /// `SDL_MOUSEBUTTONDOWN`, any button.
-    Down,
-    /// `SDL_MOUSEBUTTONUP`, any button.
-    Up,
 }
 
 impl HostEvent {
@@ -264,11 +187,12 @@ impl KeyPress {
         Some(KeyPress { action, edge, raw })
     }
 
-    /// The press an SDL key event is: the raw pair as `decode_key` reads it, its action, and the
-    /// edge the fork's packed `state` names (low byte 1 is down, bit 0x100 is the auto-repeat; the
-    /// same reading `bridge::key_input` makes of it). A key-up never carries the repeat bit here.
-    pub(crate) fn from_sdl(ev: &[u8]) -> Option<KeyPress> {
-        let (state, wcode, sym) = decode_key(ev);
+    /// The press a decoded SDL key edge is: the raw pair (the carried wcode, else the desktop stand-in,
+    /// [`wcode_of`]), its action, and the edge the fork's packed `state` names (low byte 1 is down, bit
+    /// 0x100 is the auto-repeat; the same reading `bridge::key_input` makes of it). A key-up never
+    /// carries the repeat bit here.
+    fn from_decoded(state: u32, wcode: Option<u32>, sym: u32) -> Option<KeyPress> {
+        let wcode = wcode_of(wcode, sym);
         let edge = if (state & 0xff) != 1 {
             Edge::Up
         } else if state & 0x100 != 0 {
@@ -306,137 +230,27 @@ impl KeyPress {
     }
 }
 
-/// One edge of the window's visibility. Both background edges park the tree (the second finds
-/// nothing left to park); WILL foreground un-parks the tree, and DID foreground alone reacquires the
-/// window and restores playback. A platform that sends only DID background is enough on its own
-/// (`WindowActivity`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Lifecycle {
-    WillBackground,
-    DidBackground,
-    WillForeground,
-    DidForeground,
-}
-
-impl Lifecycle {
-    /// The SDL event type this edge arrives as, and so the code the SDL-coded readers take: the
-    /// recorder's tape (`enc_lifecycle`, whose recorded codes ARE the tape format), the window gate
-    /// and telemetry's crash steps and session. The inverse of [`decode_host_event`]'s table;
-    /// `host_event_tests` pins the four pairs.
-    pub(crate) const fn sdl_code(self) -> u32 {
-        match self {
-            Lifecycle::WillBackground => SDL_APP_WILLENTERBACKGROUND,
-            Lifecycle::DidBackground => SDL_APP_DIDENTERBACKGROUND,
-            Lifecycle::WillForeground => SDL_APP_WILLENTERFOREGROUND,
-            Lifecycle::DidForeground => SDL_APP_DIDENTERFOREGROUND,
-        }
-    }
-}
-
-/// An SDL event decoded into a [`HostEvent`]: `SDL_QUIT`, the four application lifecycle types, a
-/// key edge (`SDL_KEYDOWN`/`SDL_KEYUP`, through [`decode_key`], so both layouts), a text commit
-/// (`SDL_TEXTINPUT`, through `textinput::decode`), a pointer event (motion, button down and button up,
-/// through [`ptr_xy`]) and a wheel tick (through [`decode_wheel_dy`]). `None` for everything else,
-/// which the loop reads raw (the IME's pre-edit, and the SDL events nothing acts on). Beside
-/// [`decode_key`], the other place that knows SDL's event bytes.
+/// An SDL event decoded into a [`HostEvent`]: the shell's decode of the bytes (both layouts of every
+/// event, `plx_shell_sdl::event::decode`) mapped onto the vocabulary the loop reads. `None` for
+/// everything the shell leaves raw (the IME's pre-edit, and the SDL events nothing acts on), which the
+/// loop reads raw.
 #[inline]
 pub(crate) fn decode_host_event(ev: &[u8]) -> Option<HostEvent> {
-    Some(match rd_u32(ev, 0) {
-        SDL_QUIT => HostEvent::Quit,
-        SDL_KEYDOWN | SDL_KEYUP => HostEvent::Key(KeyPress::from_sdl(ev)?),
-        SDL_TEXTINPUT => HostEvent::Text(crate::textinput::decode(ev)),
-        SDL_MOUSEMOTION => pointer_event(ev, PointerEdge::Move),
-        SDL_MOUSEBUTTONDOWN => pointer_event(ev, PointerEdge::Down),
-        SDL_MOUSEBUTTONUP => pointer_event(ev, PointerEdge::Up),
-        SDL_MOUSEWHEEL => HostEvent::Wheel { dy: decode_wheel_dy(ev) },
-        SDL_APP_WILLENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::WillBackground),
-        SDL_APP_DIDENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::DidBackground),
-        SDL_APP_WILLENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::WillForeground),
-        SDL_APP_DIDENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::DidForeground),
-        _ => return None,
+    host_event(plx_shell_sdl::event::decode(ev)?)
+}
+
+/// One decoded SDL event as a [`HostEvent`]. The only place a [`Decoded`] becomes the application's own
+/// type, so the next platform's events arrive through a sibling of this function and not through SDL's
+/// bytes (`docs/platform-ports.md`, Target shape 8).
+fn host_event(decoded: Decoded) -> Option<HostEvent> {
+    Some(match decoded {
+        Decoded::Quit => HostEvent::Quit,
+        Decoded::Key { state, wcode, sym } => HostEvent::Key(KeyPress::from_decoded(state, wcode, sym)?),
+        Decoded::Text(text) => HostEvent::Text(text),
+        Decoded::Pointer { x, y, edge } => HostEvent::Pointer { x, y, edge },
+        Decoded::Wheel { dy } => HostEvent::Wheel { dy },
+        Decoded::Lifecycle(edge) => HostEvent::Lifecycle(edge),
     })
-}
-
-/// A pointer event's position and edge. The coordinates are read at +20 and +24 in both layouts (the
-/// pointer offsets agree, [`ptr_xy`]), and the button at +16 and its state at +17 are not read: the
-/// edge is the event type, for any button, as the loop has always taken it.
-#[inline]
-fn pointer_event(ev: &[u8], edge: PointerEdge) -> HostEvent {
-    let (x, y) = ptr_xy(ev);
-    HostEvent::Pointer { x, y, edge }
-}
-
-/// A wheel event's vertical tick count, in the signed whole ticks the loop reads.
-///
-/// **The host reads a DIFFERENT offset, and this one is not the LG-fork
-/// shift `decode_key` documents — it is macOS `libSDL2` again being
-/// sdl2-compat forwarding into SDL3.** `SDL_MouseWheelEvent` on real SDL2
-/// (what the television runs) carries a plain `Sint32 y` at +20, which is
-/// what production code always read. Measured 2026-09-02 by dumping the
-/// polled bytes of an injected -40 tick on this host: `+20` came back 0, and
-/// -40.0 arrived instead as the FLOAT `preciseY` field at `+32` — SDL2's own
-/// struct gained that field in 2.0.18 for fractional trackpad scroll, and
-/// sdl2-compat's round trip apparently only forwards it, leaving the legacy
-/// integer field zeroed for both a genuine trackpad tick and anything
-/// `SDL_PushEvent`d in this shape (item 13's `wheel:<dy>` FIFO token hit
-/// this the first time anything synthesized a wheel event at all — nothing
-/// needed one before). `cfg!`, not `#[cfg]`, so both arms keep compiling.
-#[inline]
-fn decode_wheel_dy(ev: &[u8]) -> i32 {
-    if cfg!(feature = "hostsim") {
-        rd_f32(ev, 32).round() as i32
-    } else {
-        rd_i32(ev, 20)
-    }
-}
-
-/// The bytes a synthetic key event needs, in whichever layout [`decode_key`] reads.
-///
-/// **The inverse of `decode_key`, and the pair is only correct together.** They already shipped
-/// disagreeing once: the simulator accepted every FIFO token and never moved, because this end
-/// wrote LG's fork layout while the reading end had been taught stock SDL2's. Nothing in the
-/// compiler couples them, so `key_bytes_round_trip` below is what does.
-///
-/// Pure, and separate from the `SDL_PushEvent` that consumes it, precisely so that test can run on
-/// the host — `make check` links no SDL.
-pub(crate) fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
-    let mut ev = [0u8; 128];
-    ev[0..4].copy_from_slice(&if down { SDL_KEYDOWN } else { SDL_KEYUP }.to_ne_bytes());
-    if cfg!(feature = "hostsim") {
-        ev[12] = u8::from(down); // state
-        ev[13] = 0; // repeat
-        ev[20..24].copy_from_slice(&sym.to_ne_bytes());
-        // The wcode rides `SDL_Keysym.mod` (event offset +24, a `Uint16`), under a marker in
-        // `windowID` that says this press is synthetic at all. Several tokens carry ONLY a wcode
-        // (`pause` is sym 0, wcode 72), so deriving it from the sym is not an option.
-        // `decode_key`'s doc has the measurement behind both fields — the short version is that of
-        // the spare places to put a value, these two are the ones sdl2-compat does not discard.
-        ev[8..12].copy_from_slice(&SYNTH_WINDOW.to_ne_bytes());
-        ev[24..26].copy_from_slice(&(wcode as u16).to_ne_bytes());
-    } else {
-        ev[16..20].copy_from_slice(&if down { 1u32 } else { 0 }.to_ne_bytes()); // state
-        ev[20..24].copy_from_slice(&wcode.to_ne_bytes());
-        ev[24..28].copy_from_slice(&sym.to_ne_bytes());
-    }
-    ev
-}
-
-/// The bytes a synthetic HARDWARE AUTO-REPEAT edge carries — `encode_key`'s down edge with the
-/// 0x101 shape (`state & 0x100 != 0`) the loop's repeat arm requires, in whichever layout
-/// `decode_key` reads. `encode_key` itself must never produce this (`key_bytes_round_trip` pins
-/// that a synthetic EDGE "must never look like auto-repeat"), so it is a second, deliberately
-/// separate function rather than a third argument threaded through the first — item 13's
-/// `holdrep:<name>` FIFO token is the only caller, and it exists so a script can exercise the
-/// `Edge::Repeat` a screen receives without a real remote's own repeat cadence.
-pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
-    let mut ev = encode_key(sym, wcode, true);
-    if cfg!(feature = "hostsim") {
-        ev[13] = 1; // the `repeat` byte `decode_key`'s hostsim arm folds into `state & 0x100`
-    } else {
-        let state = rd_u32(&ev, 16) | 0x100;
-        ev[16..20].copy_from_slice(&state.to_ne_bytes());
-    }
-    ev
 }
 
 /// **One native key edge as the loop hands it to the tree**, for the effect-level guards (W5b): the
@@ -452,25 +266,6 @@ pub(crate) fn native_key_input(sym: c_uint, wcode: c_uint, down: bool, at: plx_m
     };
     let RawKey { sym, wcode } = press.pair();
     (press, super::bridge::key_input(sym, wcode, press.state(), at, plx_machine::machine::Source::Sdl))
-}
-
-#[inline]
-/// An SDL pointer event's position, converted from window pixels to the authored 1920x1080 canvas.
-///
-/// THE one place event coordinates enter the UI, so the conversion cannot be forgotten at a new
-/// call site — there are nine, and patching them individually is how the tenth ends up wrong.
-/// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is 1:1 unless
-/// a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one).
-pub(crate) fn ptr_xy(ev: &[u8]) -> (f32, f32) {
-    plx_base::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
-}
-
-pub(crate) fn rd_i32(ev: &[u8], off: usize) -> i32 {
-    i32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
-}
-
-pub(crate) fn rd_f32(ev: &[u8], off: usize) -> f32 {
-    f32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 
 /// Map a remote-control token (from the `crate::remote` FIFO) to the `(sym, wcode)` a
@@ -598,57 +393,6 @@ fn remote_token_pointer(tok: &str) -> Option<(RemotePointer, i32, i32)> {
         y.parse::<i32>().ok()?.clamp(0, plx_base::surface::LOGICAL_H as i32 - 1)))
 }
 
-/// SDL pointer bytes shared by clicks, held-pointer FIFO edges and recorded-event replay.
-/// The inverse of `ptr_xy`: convert authored coordinates exactly once, including window scaling
-/// and letterboxing. Replay may carry a real off-canvas motion, so only the token parser clamps.
-/// ABI: SDL's `SDL_events.h` (stock and the NDK's) mouse-event declarations put four
-/// Uint32 fields before button@16/state@17 and Sint32 x@20/y@24. ARM32 NDK syntax-only
-/// `offsetof` assertions verified these offsets; see `docs/testing-player-pointer.md`.
-fn encode_pointer(et: u32, x: i32, y: i32) -> [u8; 128] {
-    let mut ev = [0u8; 128];
-    let (px, py) = plx_base::surface::to_physical(x as f32, y as f32);
-    ev[0..4].copy_from_slice(&et.to_ne_bytes());
-    ev[20..24].copy_from_slice(&(px.round() as i32).to_ne_bytes());
-    ev[24..28].copy_from_slice(&(py.round() as i32).to_ne_bytes());
-    if matches!(et, SDL_MOUSEBUTTONDOWN | SDL_MOUSEBUTTONUP) {
-        ev[16] = 1; // SDL_BUTTON_LEFT
-        ev[17] = u8::from(et == SDL_MOUSEBUTTONDOWN);
-    }
-    ev
-}
-
-/// Synthesize a Magic-Remote pointer click at authored 1920x1080 coords (the browser
-/// remote's click-on-the-stream): two motion events, then button down+up. The first
-/// motion is a >=120px jitter so the accumulated pointer distance defeats the
-/// D-pad-mode pointer gate (`Pointer::mot_accum < 120` swallows small motions after D-pad use);
-/// the second lands on the target. The LG SDL fork's mouse events carry x@20 / y@24
-/// (i32) — the only fields the handlers read.
-///
-/// The browser still sends clicks only: forwarding hover moved app focus on every pass of the
-/// mouse over the streamed picture. A driver can explicitly send `pm:`/`pd:`/`pu:` instead to
-/// separate HUD reveal from a press or to hold a drag across frames. Those edges add no jitter.
-pub(crate) fn remote_synth_ptr(x: i32, y: i32) {
-    let jx = if x >= 200 { x - 200 } else { x + 200 };
-    remote_synth_pointer(SDL_MOUSEMOTION, jx, y);
-    remote_synth_pointer(SDL_MOUSEMOTION, x, y);
-    remote_synth_pointer(SDL_MOUSEBUTTONDOWN, x, y);
-    remote_synth_pointer(SDL_MOUSEBUTTONUP, x, y);
-}
-
-/// ONE pointer event in authored coordinates, shared by the FIFO and replay. Unlike `ck:`,
-/// these primitives add no motion or release: `pd:` stays held until a separate `pu:` arrives.
-pub(crate) fn remote_synth_pointer(et: u32, x: i32, y: i32) {
-    let ev = encode_pointer(et, x, y);
-    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
-}
-
-/// One app lifecycle event (`0x103`–`0x106`), as the compositor would send it — the replay
-/// driver's re-injection of a recorded background/foreground edge.
-pub(crate) fn remote_synth_lifecycle(code: u32) {
-    let mut ev = [0u8; 128];
-    ev[0..4].copy_from_slice(&code.to_ne_bytes());
-    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
-}
 
 /// A remote token that acts DIRECTLY rather than by pushing SDL events — the recorder writes
 /// these as `token` records, and the replay driver re-dispatches them. It is one of four fates:
@@ -669,66 +413,6 @@ pub(crate) fn token_is_direct(tok: &str) -> bool {
         || tok.starts_with("txt:")
 }
 
-/// Synthesize a full remote-key press (key-down then key-up) and push both onto SDL's
-/// own event queue, so the existing poll loop consumes them as if they came off the
-/// wayland input path. The LG SDL fork's `SDL_KeyboardEvent` carries state@16 /
-/// wcode@20 / sym@24 (native-endian; the TV is LE), and the handler reads press vs
-/// release from `state & 0xff` — so the down carries state=1, the up state=0. Both
-/// are required: a grid-card OK arms on down and *commits on release*.
-pub(crate) fn remote_synth_key(sym: c_uint, wcode: c_uint) {
-    remote_synth_key_edge(sym, wcode, true);
-    remote_synth_key_edge(sym, wcode, false);
-}
-
-/// ONE edge of a remote key press. Split out for the `okdown`/`okup` FIFO tokens, because a
-/// **press-and-hold** is only expressible as two tokens with real time between them: the item menu
-/// opens on `press::is_long`, which measures the interval between the down and the up. The paired
-/// `remote_synth_key` above is this called twice back to back (a tap).
-pub(crate) fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
-    let ev = encode_key(sym, wcode, down);
-    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
-}
-
-/// ONE hardware auto-repeat edge — item 13's `holdrep:<name>` FIFO token, which lets a script
-/// exercise a held key's `Edge::Repeat` (the Settings family's paced focus walk, the player
-/// scrubber's continuous scrub) without a real remote's own repeat cadence. Only recognised as a
-/// repeat by the loop's key arm when `App::down_sym` already equals `sym` — i.e. after a
-/// `holddown:<name>` and before its matching `holdup:<name>`, the same split `okdown`/`okup`
-/// already uses for a press-and-hold.
-pub(crate) fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
-    let ev = encode_key_repeat(sym, wcode);
-    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
-}
-
-/// Synthesize one Magic-Remote scroll-wheel tick — item 13's `wheel:<dy>` FIFO token, so a script
-/// can drive the wheel with no mouse in the room. Encoded in the plain, real-SDL2 shape
-/// (`Sint32 y` at `+20`) unconditionally: it is the READING side that has to branch by platform
-/// now, not this one — see [`decode_wheel_dy`] on why `+20` decodes to 0 on this host and
-/// where the value actually lands after `SDL_PushEvent` round-trips it.
-pub(crate) fn remote_synth_wheel(dy: i32) {
-    let mut ev = [0u8; 128];
-    ev[0..4].copy_from_slice(&SDL_MOUSEWHEEL.to_ne_bytes());
-    ev[20..24].copy_from_slice(&dy.to_ne_bytes());
-    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
-}
-
-/// Is this SDL event type INPUT — a key, text, pointer or wheel event — as opposed to a lifecycle,
-/// window or quit event? The one classification `Dispatcher::input_scope` rests on: input under
-/// an open modal is the modal's, a lifecycle event is the app's and may change the page beneath.
-pub(crate) fn is_input_event(et: u32) -> bool {
-    matches!(
-        et,
-        SDL_KEYDOWN
-            | SDL_KEYUP
-            | SDL_TEXTINPUT
-            | SDL_TEXTEDITING
-            | SDL_MOUSEMOTION
-            | SDL_MOUSEBUTTONDOWN
-            | SDL_MOUSEBUTTONUP
-            | SDL_MOUSEWHEEL
-    )
-}
-
 #[cfg(test)]
 mod input_event_tests {
     use super::*;
@@ -745,22 +429,6 @@ mod input_event_tests {
             }
         }
         assert_eq!(remote_token_pointer("pointer:1,2"), None);
-    }
-
-    #[test]
-    fn pointer_bytes_round_trip_through_the_common_coordinate_decoder() {
-        let _serial = plx_base::testlock::serial();
-        for et in [SDL_MOUSEMOTION, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP] {
-            for (x, y) in [(0, 0), (1400, 870), (1919, 1079), (-200, 400)] {
-                let ev = encode_pointer(et, x, y);
-                assert_eq!(rd_u32(&ev, 0), et);
-                assert_eq!(ptr_xy(&ev), (x as f32, y as f32));
-                if et != SDL_MOUSEMOTION {
-                    assert_eq!(ev[16], 1, "the left button survives SDL's event queue");
-                    assert_eq!(ev[17], u8::from(et == SDL_MOUSEBUTTONDOWN));
-                }
-            }
-        }
     }
 
     #[cfg(feature = "devtriggers")]
@@ -799,27 +467,6 @@ mod input_event_tests {
         }
         // a by-id input is recorded as an input at its tap, never as a direct recorder token
         assert!(!token_is_direct("focus:home.row.2") && !token_is_direct("press:home.row.2"));
-    }
-
-    /// The boundary `Dispatcher::input_scope` rests on: every input kind is in, and the
-    /// lifecycle events (background/foreground, `0x103`–`0x106`), window events and quit are out.
-    #[test]
-    fn input_events_are_the_modals_and_lifecycle_events_are_the_apps() {
-        for et in [
-            SDL_KEYDOWN,
-            SDL_KEYUP,
-            SDL_TEXTINPUT,
-            SDL_TEXTEDITING,
-            SDL_MOUSEMOTION,
-            SDL_MOUSEBUTTONDOWN,
-            SDL_MOUSEBUTTONUP,
-            SDL_MOUSEWHEEL,
-        ] {
-            assert!(is_input_event(et), "{et:#x} is input");
-        }
-        for et in [SDL_QUIT, 0x101, 0x103, 0x104, 0x105, 0x106, 0x200] {
-            assert!(!is_input_event(et), "{et:#x} is the app's, not a modal's");
-        }
     }
 }
 
@@ -939,8 +586,17 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &plx_media::route::PlaybackSe
 
 #[cfg(test)]
 mod key_layout_tests {
-    use super::{decode_key, encode_key, encode_key_repeat};
+    use super::{encode_key, encode_key_repeat, wcode_of};
     use plx_ui::consts::{SDLK_DOWN, SDLK_RETURN, WCODE_BACK, WCODE_PAUSE};
+
+    /// What the loop reads a key's bytes as: the shell's decode with this application's desktop
+    /// stand-in applied where the bytes carry no wcode, the way `KeyPress::from_decoded` reads it.
+    /// The shell's own tests grade the byte layout; these grade the pair that reaches the loop,
+    /// stand-in priority included.
+    fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
+        let (state, wcode, sym) = plx_shell_sdl::event::decode_key(ev);
+        (state, wcode_of(wcode, sym), sym)
+    }
 
     /// `encode_key` and `decode_key` must agree, in whichever layout this build compiled.
     ///

@@ -14,8 +14,10 @@
 //! - the video sink is the Feed backend's host sink (`HOST_SINK`) when the build has one, else the
 //!   refusing `NoSink`.
 //!
-//! The shell and the frame probe are plain no-ops: SDL owns the window and its event loop, there is
-//! no compositor to hint, no bus to pump and no remote pointer to hide. The secure store is
+//! The shell's hooks and the frame probe are plain no-ops, bar the two that bring SDL up and open its
+//! window (`init` and `open`, the shell crate's, with nothing around `SDL_Init`): SDL owns the window
+//! and its event loop, there is no compositor to hint, no bus to pump and no remote pointer to hide.
+//! The secure store is
 //! `SecureHooks::NONE`: nothing seals, so a session is the 0600 plaintext file the session layer
 //! writes itself, which the simulator's harnesses plant and read.
 //! The storage group is `StorageHooks::NONE`: there is no storage helper, so the account's records
@@ -27,7 +29,8 @@
 //! made one of them reachable would fail to link for want of libwayland, glib or luna-service2, on
 //! a Mac and on Linux alike. `simulators.yml` links the shapes the simulator ships in to guard that
 //! until the platform crates split (`docs/platform-ports.md`, W7).
-use crate::app::platform::{Composition, FrameProbe, MediaBoot, Platform, Shell};
+use crate::app::platform::{sdl_init, sdl_open, Composition, FrameProbe, InitHooks, MediaBoot, OpenAsk, Platform, Shell, Surface};
+use crate::app::Exit;
 use plx_os::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use plx_os::tv::toast::{Identity, Outcome, Sent};
 use plx_os::tv::{IdentityHooks, LegacyWebosMedia, SecureHooks, Services, StorageHooks, SystemHooks};
@@ -98,12 +101,20 @@ fn deliver_toast(_message: &str, identity: Identity) -> Sent {
     Sent { reply: None, outcome: Outcome::NoBus }
 }
 
-/// The desktop shell: SDL owns the window and its event loop, so nothing is bound, grabbed, hinted
-/// or pumped, and no surface is ever held. The pointer is a mouse the application does not hide, so
-/// hiding and showing it do nothing, and a click is always a real one (the hide is not a cursor swap).
+/// The desktop shell: SDL owns the window and its event loop (`init` and `open` are the shell crate's,
+/// with no hook around `SDL_Init`), so nothing is bound, grabbed, hinted or pumped, and no surface is
+/// ever held. The pointer is a mouse the application does not hide, so hiding and showing it do
+/// nothing, and a click is always a real one (the hide is not a cursor swap).
 struct DesktopShell;
 
 impl Shell for DesktopShell {
+    fn init(&self, mt: &plx_base::task::MainThread) -> Result<(), Exit> {
+        // SAFETY: `InitHooks::NONE` calls nothing.
+        unsafe { sdl_init(mt, InitHooks::NONE) }
+    }
+    fn open(&self, mt: &plx_base::task::MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+        sdl_open(mt, ask)
+    }
     fn bind_window(&self, _win: *mut c_void) {}
     fn grab_surface(&self, _win: *mut c_void) {}
     fn release_surface(&self) -> bool {

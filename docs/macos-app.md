@@ -70,7 +70,7 @@ Four things, and three of them were bugs that had been sitting in the tree unrea
    recipe are untouched.
 
 The window changed too, though that is taste rather than a bug: it opens at an exact integer
-divisor of the 1920x1080 canvas (`app::boot::plan_desktop_window`) with ALLOW_HIGHDPI, and is not
+divisor of the 1920x1080 canvas (`plx_shell_sdl::window::plan_desktop_window`) with ALLOW_HIGHDPI, and is not
 resizable. The window's pixel density is measured from the window itself (`SDL_GetDisplayDPI` is
 unreliable on macOS), and the window is then sized in points for the drawable it should give, so a
 display of any size lands on the same result. On a Retina display that means a 960x540-point window
