@@ -3363,7 +3363,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     spot.section = 6;
     spot.col = 1;
     screen.restore(&spot, test_store().view());
-    let key = screen.restore_focus(test_store().view()).expect("extras column restores");
+    let key = screen.restore_focus(test_store().view(), false).expect("extras column restores");
     assert!(matches!(screen.locate(key, test_store().view()), Some(Located::Extras(1))));
 
     let movie = Detail {
@@ -4748,10 +4748,10 @@ fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
         seek: Default::default(),
     });
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view()), None, "episode 700's page has not landed");
+    assert_eq!(screen.restore_focus(test_store().view(), false), None, "episode 700's page has not landed");
     land_page(1000, 11);
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view()), episode_key(&screen, 700, episodes::Row::Still));
+    assert_eq!(screen.restore_focus(test_store().view(), false), episode_key(&screen, 700, episodes::Row::Still));
     clear();
 }
 
@@ -5181,7 +5181,7 @@ fn a_non_plex_guid_has_no_bookmark_disc() {
     let set = screen.hero_set(test_store().view());
     assert!(!set.watchlist);
     assert!(!hero::hero_ctls(set).0[..hero::hero_ctls(set).1].contains(&hero::HeroCtl::Watchlist));
-    assert!(!hero::visible_ctls(set, false).0[..hero::visible_ctls(set, false).1].contains(&hero::HeroCtl::Watchlist));
+    assert!(!hero::visible_ctls(set, hero::Stops::trailer(false)).0[..hero::visible_ctls(set, hero::Stops::trailer(false)).1].contains(&hero::HeroCtl::Watchlist));
     assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), None);
     let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
     assert!(item_menu_acts(&fx).is_empty());
@@ -6111,8 +6111,12 @@ pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
 #[path = "hero_shade_tests.rs"]
 mod hero_shade;
 
-/// W6c: a platform that composes no playback driver leaves Detail's Play pill focusable but inert.
-/// The same press with a driver composed starts the play, so the guard is the only difference.
+#[path = "no_driver_tests.rs"]
+mod no_driver;
+
+/// W6c: a platform that composes no playback driver leaves Detail's Play pill inert (it owns no focus
+/// stop either: `no_driver`'s tests). The same press with a driver composed starts the play, so the
+/// guard is the only difference.
 #[test]
 fn the_hero_play_is_inert_when_no_playback_driver_is_composed() {
     let sid = ServerId::UNSET;

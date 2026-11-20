@@ -82,11 +82,11 @@ fn the_elem_id_is_fresh_in_the_hero_range_and_round_trips() {
 #[test]
 fn full_trailer_mode_drops_the_disc_from_the_focus_extent() {
     for s in sets() {
-        let (v, n) = visible_ctls(s, true);
+        let (v, n) = visible_ctls(s, Stops::trailer(true));
         assert_eq!((v[0], n), (HeroCtl::Play, 1), "{s:?}");
-        assert!(!focusable(HeroCtl::Watchlist, true));
-        assert!(focusable(HeroCtl::Watchlist, false));
-        assert_eq!(visible_ctls(s, false).1, hero_ctls(s).1);
+        assert!(!focusable(HeroCtl::Watchlist, Stops::trailer(true)));
+        assert!(focusable(HeroCtl::Watchlist, Stops::trailer(false)));
+        assert_eq!(visible_ctls(s, Stops::trailer(false)).1, hero_ctls(s).1);
     }
 }
 
@@ -131,6 +131,6 @@ fn an_item_without_a_watchlist_guid_has_no_disc() {
         assert!(!v[..n].contains(&HeroCtl::Watchlist), "{s:?}");
         assert_eq!(v[0], HeroCtl::Play);
         assert_eq!(index_of(s, HeroCtl::Watchlist), None);
-        assert!(!visible_ctls(s, false).0[..visible_ctls(s, false).1].contains(&HeroCtl::Watchlist));
+        assert!(!visible_ctls(s, Stops::trailer(false)).0[..visible_ctls(s, Stops::trailer(false)).1].contains(&HeroCtl::Watchlist));
     }
 }

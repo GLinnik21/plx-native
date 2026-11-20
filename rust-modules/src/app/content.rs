@@ -645,8 +645,12 @@ fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, reques
             ContentReq::PreviewStart { sid, rk, part, vcodec, acodec, title } => {
                 #[cfg(not(feature = "play-feed"))]
                 {
-                    let _ = (sid, rk, part, vcodec, acodec, title);
-                    // Hero previews have no URI qualification.
+                    let _ = (part, vcodec, acodec, title);
+                    // Hero previews have no URI qualification. The refusal is the item's, said
+                    // once through the preview machine's own fact (`Fact::RefusedDirect`), so the
+                    // page's dwell gate (`preview::blocked`) stops asking: left unsaid, the hero
+                    // would send this request again every `DWELL_S` for as long as it holds focus.
+                    plx_media::player::preview::note_refused_direct(sid, &rk);
                     return AppCommandOutcome::Refused;
                 }
                 #[cfg(feature = "play-feed")]

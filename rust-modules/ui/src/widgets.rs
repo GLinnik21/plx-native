@@ -3283,6 +3283,9 @@ pub struct CircleButton {
     pub frame: Rect,
     pub glyph: *const c_char,
     pub icon: Option<crate::icons::Icon>, // vector glyph; overrides the text glyph when set
+    /// Whether the control can act: a disabled disc wears the disabled ink and never the focused
+    /// face, whatever order the builder ran in ([`CircleButton::enabled`]).
+    pub enabled: bool,
     pub focused: bool,
     /// Focus PROGRESS 0..1 when driven off a spring ([`CircleButton::focus_mix`]); `None` is the
     /// plain binary [`focused`](Self::focused).
@@ -3310,6 +3313,7 @@ impl CircleButton {
             glyph,
             icon: None,
             fill: None,
+            enabled: true,
             focused: false,
             focus: None,
             style: ControlStyle::Accent,
@@ -3358,6 +3362,15 @@ impl CircleButton {
         self.focused = f;
         self
     }
+    /// A disc that cannot act: the disabled ink ([`theme::INK_DISABLED`]), and never the focused
+    /// face whatever order the two are set in — [`Button::enabled`]'s and
+    /// [`TransportButton::enabled`]'s own rule, so a disabled disc reads the same on every row.
+    /// A disabled control owns no focus stop (`focus::next_enabled_index`), so the caller that
+    /// disables one also keeps focus off it. Defaults to enabled.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
     /// Draw the focus fill at progress `t` (0..1) — normally [`CtlPop::focus`], the lift spring —
     /// instead of the binary [`focused`](Self::focused); see [`ControlStyle::face_at`].
     pub fn focus_mix(mut self, t: f32) -> Self {
@@ -3367,7 +3380,15 @@ impl CircleButton {
     }
     /// The face this disc draws now.
     fn face_now(&self) -> ControlFace {
-        self.style.face_at(self.focus.unwrap_or(f32::from(self.focused)), self.ground, self.palette)
+        let mut face = self.style.face_at(
+            if self.enabled { self.focus.unwrap_or(f32::from(self.focused)) } else { 0.0 },
+            self.ground,
+            self.palette,
+        );
+        if !self.enabled {
+            face.ink = theme::INK_DISABLED;
+        }
+        face
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the control's centre — normally
     /// [`CtlPop::scale`], which already folds the press dip in. `1.0` is the resting control, which
@@ -3503,14 +3524,15 @@ impl View for CircleButton {
         // capsule, and `face_box`/`face_outline` pick that up from the shape rather than from a
         // flag — at rest both are no-ops on a circle.
         let plate = face_box(r);
-        if self.focused {
+        let focused = self.enabled && self.focused;
+        if focused {
             control_cast_at(p, plate, plate.h * 0.5, self.focus.unwrap_or(1.0));
         }
         let glass = self.ground == ControlGround::Keyed
             && glass_capsule(p, plate, 1.0, self.glass, None);
         if !glass {
-            control_rim(p, plate, plate.h * 0.5, face.top, face.body, self.focused, self.ground);
-        } else if self.focused {
+            control_rim(p, plate, plate.h * 0.5, face.top, face.body, focused, self.ground);
+        } else if focused {
             let focus = self.focus.unwrap_or(1.0);
             let bright = self.style.face_at(1.0, self.ground, self.palette);
             control_rim(p.alpha(focus), plate, plate.h * 0.5, bright.top, bright.body, true, self.ground);

@@ -82,11 +82,14 @@ pub struct VersionsPanelScreen {
 }
 
 impl VersionsPanelScreen {
-    pub fn new(entry: EntryId, arg: VersionsArg, versions: &[MediaVersion]) -> Self {
+    /// `can_play` is whether the platform composed any playback driver (`ScreenInputs::can_play`):
+    /// without one every row is disabled and says why, and presses nothing.
+    pub fn new(entry: EntryId, arg: VersionsArg, versions: &[MediaVersion], can_play: bool) -> Self {
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         // rows carry a sub-line: the track menu's size class
         form.table.compact = false;
-        form.set(Form::new().section(plx_appkit::version_list::section(versions, VersionRow, |v| v.id)), Some(&VersionRow(0)));
+        let unavailable = (!can_play).then(plx_os::i18n::msg::browse_detail_no_playback);
+        form.set(Form::new().section(plx_appkit::version_list::section(versions, VersionRow, |v| v.id, unavailable)), Some(&VersionRow(0)));
         Self { entry, arg, versions: versions.iter().map(|v| v.id).collect(), form }
     }
 
@@ -379,6 +382,7 @@ pub(crate) mod tests {
             EntryId(3),
             VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor },
             &plx_appkit::version_list::sample(),
+            true,
         )
     }
 
@@ -470,5 +474,35 @@ pub(crate) mod tests {
             _ => None,
         });
         assert_eq!(played, Some(plx_appkit::version_list::sample()[1].id), "the host page is told which version");
+    }
+
+    /// A platform that composed no playback driver opens the same list with every row disabled under
+    /// the one reason (`browse.detail.no_playback`, the Detail facts line's own word): OK closes the
+    /// panel like any menu's and reports no version, so nothing is asked of a driver that is not there.
+    #[test]
+    fn with_no_playback_driver_every_row_is_disabled_and_reports_nothing() {
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
+        let why = plx_os::i18n::msg::browse_detail_no_playback();
+        let anchor = [500.0f32, 600.0, 64.0, 64.0].map(f32::to_bits);
+        let arg = VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor };
+        for (can_play, disabled) in [(true, false), (false, true)] {
+            let mut p = VersionsPanelScreen::new(EntryId(3), arg.clone(), &plx_appkit::version_list::sample(), can_play);
+            let rows: Vec<_> = p.form.table.sections.iter().flat_map(|s| s.rows.iter()).collect();
+            assert_eq!(rows.len(), 2);
+            for row in rows {
+                assert_eq!(row.disabled, disabled, "can_play={can_play}");
+                assert_eq!(row.value.as_deref(), disabled.then_some(why), "can_play={can_play}: the reason is the value");
+            }
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut fx: Effects<'_, HostFixture> =
+                Effects::new(&mut out, MachineId::Instance(InstanceId(4)), &mut present);
+            p.commit(1, &mut fx);
+            let fx: Vec<_> = out.into_iter().map(|e| e.fx).collect();
+            assert!(matches!(fx.first(), Some(Fx::Nav(NavOp::Dismiss(EntryId(3))))), "the panel closes");
+            let reported = fx.iter().any(|f| matches!(f,
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::PlayVersion(_))))));
+            assert_eq!(reported, !disabled, "can_play={can_play}");
+        }
     }
 }

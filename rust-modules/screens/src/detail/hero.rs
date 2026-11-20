@@ -167,6 +167,13 @@ impl HeroCtl {
     pub fn is_watch(self) -> bool {
         matches!(self, HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
     }
+    /// Does pressing this control start a playback? Play and Restart play the item, Trailer plays
+    /// its extra. A platform that composed no playback driver ([`Stops::no_playback`]) can start
+    /// none of them, so none owns a focus stop there. The Play Version disc is not one: it only
+    /// opens the list, whose own rows are disabled in that state (`versions_panel`).
+    pub const fn starts_playback(self) -> bool {
+        matches!(self, HeroCtl::Play | HeroCtl::Restart | HeroCtl::Trailer)
+    }
     /// **The control's accessibility word** (`detail.hero.<word>`): one static word per variant, never
     /// derived from the label, which changes with the item (Play wears "Resume" mid-title: both are
     /// `play`) and the language. The watched toggle's two faces are two words, for what pressing each does.
@@ -265,11 +272,30 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     (v, n)
 }
 
-/// Whether `ctl` may hold — or be enumerated as holding — focus right now, given whether
-/// full-trailer mode owns the screen. The ONE predicate [`visible_ctls`] (group extent) and
-/// `DetailScreen::reconcile`/`valid` (focus legitimacy) all gate on, so the row cannot offer a
-/// control the mode has taken away — the exact class of bug this predicate replaced (two
-/// independent "what's visible" checks that had silently drifted apart).
+/// The two facts that decide which of the row's controls own a focus stop, read where the row is
+/// enumerated (never stored: a screen keeps no copy of either).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Stops {
+    /// Full-trailer mode owns the screen (`DetailScreen::full_trailer`).
+    pub full_trailer: bool,
+    /// The platform composed no playback driver at all (`ScreenInputs::can_play` is false).
+    pub no_playback: bool,
+}
+
+impl Stops {
+    /// The row of a platform that can play, with only full-trailer mode deciding: what the row was
+    /// before a platform could compose no driver.
+    pub const fn trailer(full_trailer: bool) -> Self {
+        Self { full_trailer, no_playback: false }
+    }
+}
+
+/// Whether `ctl` may hold — or be enumerated as holding — focus right now, given [`Stops`]. The
+/// ONE predicate [`visible_ctls`] (group extent), the travel, the seat and the fallback
+/// (`DetailScreen::neighbour`/`seat`/`reconcile`), `valid` (focus legitimacy) and the pointer's
+/// stops all gate on, so the row cannot offer a control the state has taken away — the exact class
+/// of bug this predicate replaced (two independent "what's visible" checks that had silently
+/// drifted apart).
 ///
 /// **Play survives as the ANCHOR, not as a reachable control.** Full-trailer mode fades the whole
 /// row out together (`DetailScreen::draw_buttons` draws every control from [`hero_ctls`]
@@ -279,30 +305,38 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
 /// EMPTY hero group would push it into the sections below, scrolling the page out from under a
 /// trailer nobody asked to leave. Keys never reach the row anyway: the mode answers them itself,
 /// before the engine.
-pub fn focusable(ctl: HeroCtl, full_trailer: bool) -> bool {
-    !full_trailer || ctl == HeroCtl::Play
+///
+/// **A disabled control owns no focus stop** (`plx_ui::focus::next_enabled_index`; the player HUD's
+/// disabled discs): with no playback driver composed, the controls that start playback
+/// ([`HeroCtl::starts_playback`]) are drawn disabled and the focus travels, seats and falls back to
+/// the first control that can act. The shared button draws no focused face for a disabled control,
+/// so a stop on one would leave a page that opens with nothing visibly focused.
+pub fn focusable(ctl: HeroCtl, stops: Stops) -> bool {
+    if stops.full_trailer {
+        return ctl == HeroCtl::Play;
+    }
+    !(stops.no_playback && ctl.starts_playback())
 }
 
-/// [`hero_ctls`], filtered through [`focusable`] for full-trailer mode's FOCUS/hit-testing extent
-/// only — the transient UI state where the row narrows to its Play anchor alone and everything
-/// else (Restart/Trailer/Alt/the watch toggle) stops being reachable the instant `full_trailer()`
-/// flips. **This is not what gets drawn.** `DetailScreen::draw_buttons` draws every control
-/// [`hero_ctls`] returns, full_trailer or not, so the row fades out together with the rest of the
+/// [`hero_ctls`], filtered through [`focusable`] for the FOCUS/hit-testing extent only: in
+/// full-trailer mode the row narrows to its Play anchor alone, and with no playback driver it
+/// drops the controls that play. **This is not what gets drawn.** `DetailScreen::draw_buttons`
+/// draws every control [`hero_ctls`] returns, so the row fades out together with the rest of the
 /// chrome instead of four pills hard-cutting a frame ahead of the one that fades (2026-09-17
-/// fix — a control losing its focus must not also lose its paint on the same frame). Deliberately
-/// NOT a flag on [`HeroSet`]: that struct describes what the ITEM offers, not a screen's transient
-/// presentation mode. Every call site that enumerates the row for focus/hit-testing extent must go
-/// through this rather than `hero_ctls` directly, or the two can disagree about which controls
-/// exist right now.
-pub fn visible_ctls(set: HeroSet, full_trailer: bool) -> ([HeroCtl; MAX_CTLS], usize) {
+/// fix — a control losing its focus must not also lose its paint on the same frame), and a
+/// disabled Play is still drawn, as disabled. Deliberately NOT a flag on [`HeroSet`]: that struct
+/// describes what the ITEM offers, not a screen's transient presentation mode or the platform.
+/// Every call site that enumerates the row for focus/hit-testing extent must go through this
+/// rather than `hero_ctls` directly, or the two can disagree about which controls exist right now.
+///
+/// The result is a SUBSET in drawn order, not a prefix: its positions are not drawn indices. A
+/// control's drawn index is [`index_of`] over [`hero_ctls`].
+pub fn visible_ctls(set: HeroSet, stops: Stops) -> ([HeroCtl; MAX_CTLS], usize) {
     let (all, n) = hero_ctls(set);
-    if !full_trailer {
-        return (all, n);
-    }
     let mut v = [HeroCtl::Play; MAX_CTLS];
     let mut count = 0;
     for &c in &all[..n] {
-        if focusable(c, full_trailer) {
+        if focusable(c, stops) {
             v[count] = c;
             count += 1;
         }
@@ -310,7 +344,42 @@ pub fn visible_ctls(set: HeroSet, full_trailer: bool) -> ([HeroCtl; MAX_CTLS], u
     (v, count)
 }
 
-/// The control at index `i` in `set`, or `None` for an index the set does not have.
+/// The control the row's focus lands on when nothing says which: its first stop. Play with a
+/// playback driver composed (it is always first), the first control that can act without one. The
+/// one default the seat, the fallback and a restore all take, so none names Play itself. The row
+/// always has a stop (the watched toggle is unconditional and plays nothing, and Play anchors
+/// full-trailer mode), so the answer needs no `Option`; were that ever false it is the array's
+/// own fill, Play.
+pub fn first_stop(set: HeroSet, stops: Stops) -> HeroCtl {
+    visible_ctls(set, stops).0[0]
+}
+
+/// The drawn indices of the row's first and last stop, for the group's extent: the row's
+/// controls are placed by drawn index, so a stop's place is `hero_btn_rect_at` of its
+/// [`index_of`], never of its position among the stops.
+pub fn stop_span(set: HeroSet, stops: Stops) -> Option<(usize, usize)> {
+    let (v, n) = hero_ctls(set);
+    let mut stops_at = (0..n).filter(|&i| focusable(v[i], stops));
+    let first = stops_at.next()?;
+    Some((first, stops_at.last().unwrap_or(first)))
+}
+
+/// The row's stop nearest drawn index `col` (a restored spot's column, which a platform that
+/// cannot play may name a control it no longer stops on): `col` itself when that control is a
+/// stop, else the nearest, the later of two equally near so a disabled Play at the head resolves
+/// onto the control after it.
+pub fn stop_near(set: HeroSet, stops: Stops, col: usize) -> Option<HeroCtl> {
+    let (v, n) = hero_ctls(set);
+    (0..n)
+        .filter(|&i| focusable(v[i], stops))
+        .min_by_key(|&i| (i.abs_diff(col), std::cmp::Reverse(i)))
+        .map(|i| v[i])
+}
+
+/// The control at index `i` in `set`, or `None` for an index the set does not have. The pages
+/// resolve a column through [`stop_near`] (a column may name a control that is not a stop); this
+/// is the plain inverse of [`index_of`] the tests pin the row's identities with.
+#[cfg(test)]
 pub fn ctl_at(set: HeroSet, i: usize) -> Option<HeroCtl> {
     let (v, n) = hero_ctls(set);
     (i < n).then(|| v[i])
@@ -1038,12 +1107,12 @@ mod tests {
                 for alt in [false, true] {
                     for trailer in [false, true] {
                         let s = set_full(restart, alt, mark, trailer);
-                        let (v, n) = visible_ctls(s, true);
+                        let (v, n) = visible_ctls(s, Stops::trailer(true));
                         assert_eq!(n, 1, "set={s:?}");
                         assert_eq!(v[0], HeroCtl::Play, "set={s:?}");
                         // And the non-full-trailer path must be byte-identical to `hero_ctls` —
                         // `visible_ctls` is a strict narrowing, never a second row model.
-                        assert_eq!(visible_ctls(s, false), hero_ctls(s), "set={s:?}");
+                        assert_eq!(visible_ctls(s, Stops::trailer(false)), hero_ctls(s), "set={s:?}");
                         // Drawing does not narrow with `visible_ctls` — `draw_buttons` iterates
                         // `hero_ctls` directly — so drawing always sees strictly more than
                         // full-trailer mode makes focusable/pointer-reachable: the watch toggle

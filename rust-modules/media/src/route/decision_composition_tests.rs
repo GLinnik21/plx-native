@@ -173,7 +173,8 @@ fn a_source_the_only_driver_declines_becomes_a_uri_pms_conversion_when_one_is_ce
 }
 
 /// (c) Zero drivers: the set the adapter forms is `NONE`, no resolver is published, and the
-/// planner refuses an ordinary title with the typed verdict before any server work.
+/// planner refuses an ordinary title with the typed verdict before any PMS decision or encoder
+/// request (the PlayQueue request precedes the refusal, `plan.rs`'s `NoQualifiedBackend`).
 #[test]
 fn a_composition_with_no_driver_refuses_an_ordinary_title_with_a_typed_verdict() {
     let mut ps = crate::route::PlaybackSession::IDLE;

@@ -2483,7 +2483,7 @@ where
             ),
             AppArg::VersionsPanel(arg) => {
                 let versions = versions_page(H::metadata(cx), arg).map_or(&[][..], crate::detail::hero_versions);
-                Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
+                Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions, H::screen_inputs(cx).can_play()))
             }
             AppArg::TracksPanel(arg) => Box::new(
                 crate::tracks_panel::TracksPanelScreen::new(entry, *arg),

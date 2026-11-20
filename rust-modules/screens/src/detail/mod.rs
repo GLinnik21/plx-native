@@ -1389,7 +1389,9 @@ impl DetailScreen {
         self.engine_key(related::elem(Self::related_nearest(d, position))?)
     }
 
-    fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
+    /// `no_playback` is [`hero::Stops::no_playback`]: a restored hero spot lands on a control the row
+    /// still stops on. Full-trailer mode is not read here, it is `reconcile`'s own first check.
+    fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>, no_playback: bool) -> Option<u32> {
         if self.return_pending { return None; }
         let intent = self.restore_intent.as_ref()?;
         let d = self.detail(meta)?;
@@ -1407,7 +1409,8 @@ impl DetailScreen {
             0 => {
                 let set = self.hero_set(meta);
                 let (_, n) = hero::hero_ctls(set);
-                hero::ctl_at(set, clamp(intent.spot.col, n)).map(hero::HeroCtl::elem)
+                hero::stop_near(set, hero::Stops { full_trailer: false, no_playback }, clamp(intent.spot.col, n))
+                    .map(hero::HeroCtl::elem)
             }
             1 if !d.seasons.is_empty() => season::elem(d.cur_season.min(d.seasons.len() - 1)),
             2 if !d.episodes.is_empty() => {
@@ -1444,7 +1447,7 @@ impl DetailScreen {
                     about::CARD_ELEM
                 },
             ),
-            _ => Some(hero::ELEM_PLAY),
+            _ => Some(hero::first_stop(self.hero_set(meta), hero::Stops { full_trailer: false, no_playback }).elem()),
         }?;
         self.engine_key(local)
     }
@@ -1462,9 +1465,14 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
             self.disc_unfurl.map(|s| s.pos),
             self.named_episode(meta),
         );
-        let (_, hero_n) = hero::visible_ctls(set, self.full_trailer());
+        let stops = self.stops(cx);
+        let (_, hero_n) = hero::visible_ctls(set, stops);
         let hero_y = self.hero_chain(measure, meta).btn_y;
-        let hero_last = hero::hero_btn_rect_at(set, hero_n.saturating_sub(1), hero_y, widths);
+        // The extent spans the row's stops, which are placed by DRAWN index: with no driver the
+        // head (Play) is not one, so neither its index nor its place is the extent's.
+        let (hero_first, hero_last) = hero::stop_span(set, stops).unwrap_or((0, 0));
+        let hero_first = hero::hero_btn_rect_at(set, hero_first, hero_y, widths);
+        let hero_last = hero::hero_btn_rect_at(set, hero_last, hero_y, widths);
         out.push(GroupSpec {
             id: hero::HERO_GROUP,
             kind: GroupKind::Row { wrap: false },
@@ -1477,9 +1485,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 EdgeRule::Stop,
             ],
             extent: Rect::new(
-                plx_ui::consts::MARGIN_X,
+                hero_first.x,
                 hero_y - self.scroll_target,
-                hero_last.x + hero_last.w - plx_ui::consts::MARGIN_X,
+                hero_last.x + hero_last.w - hero_first.x,
                 hero::CD,
             ),
             len: hero_n,
@@ -1626,12 +1634,13 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         let meta = H::metadata(cx);
         let located = self.locate(*key, meta)?;
-        self.valid(located, meta).then(|| located.group())
+        self.valid(located, meta, self.stops(cx)).then(|| located.group())
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let meta = H::metadata(cx);
-        let Some(located) = self.locate(key.elem, meta).filter(|l| self.valid(*l, meta)) else {
+        let stops = self.stops(cx);
+        let Some(located) = self.locate(key.elem, meta).filter(|l| self.valid(*l, meta, stops)) else {
             return Step::Edge;
         };
         let moved = match located {
@@ -1641,9 +1650,12 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                     return Step::Edge;
                 };
                 let (controls, n) = hero::hero_ctls(set);
+                // The neighbour is the next control that owns a stop, skipping a disabled one
+                // (`next_enabled_index`: the shared linear-group rule), never merely the next drawn.
+                let step = |forward| plx_ui::focus::next_enabled_index(i, n, forward, |j| hero::focusable(controls[j], stops));
                 match dir {
-                    Dir::Left if i > 0 => Some(controls[i - 1].elem()),
-                    Dir::Right if i + 1 < n => Some(controls[i + 1].elem()),
+                    Dir::Left => step(false).map(|j| controls[j].elem()),
+                    Dir::Right => step(true).map(|j| controls[j].elem()),
                     _ => None,
                 }
             }
@@ -1698,7 +1710,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let meta = H::metadata(cx);
         let measure = cx.measure;
-        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta, self.stops(cx)))?;
         let d = self.detail(meta);
         let vertical = if at == At::Drawn {
             self.scroll.pos
@@ -1821,7 +1833,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // return-pending focus land on a control the row no longer offers.
         if self.full_trailer() {
             if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
-                if !hero::focusable(ctl, true) {
+                if !hero::focusable(ctl, hero::Stops::trailer(true)) {
                     return FocusKey {
                         entry: want.entry,
                         elem: hero::HeroCtl::Play.elem(),
@@ -1867,7 +1879,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 }
             }
         }
-        if let Some(elem) = self.restore_focus(meta) {
+        let stops = self.stops(cx);
+        if let Some(elem) = self.restore_focus(meta, stops.no_playback) {
             return FocusKey {
                 entry: want.entry,
                 elem,
@@ -1878,7 +1891,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // itself here just because the ITEM's facts still offer it. `hero::focusable` is the same
         // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
         if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
-            if hero::focusable(ctl, self.full_trailer()) {
+            if hero::focusable(ctl, stops) {
                 let set = self.hero_set(meta);
                 if hero::index_of(set, ctl).is_some() {
                     return want;
@@ -1894,7 +1907,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         }
         if self
             .locate(want.elem, meta)
-            .is_some_and(|located| self.valid(located, meta))
+            .is_some_and(|located| self.valid(located, meta, stops))
         {
             return want;
         }
@@ -1906,9 +1919,10 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         if let Some(elem) = self.shelf_recovery(want.elem, meta) {
             return FocusKey { entry: want.entry, elem };
         }
+        // Nothing else holds: the row's first stop, which is Play unless no driver is composed.
         FocusKey {
             entry: want.entry,
-            elem: hero::HeroCtl::Play.elem(),
+            elem: hero::first_stop(self.hero_set(meta), stops).elem(),
         }
     }
 
@@ -1917,8 +1931,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         let meta = H::metadata(cx);
         let d = self.detail(meta);
         let from_i = from.index.unwrap_or(0) as usize;
+        let first_stop = hero::first_stop(self.hero_set(meta), self.stops(cx)).elem();
         let elem = if group == hero::HERO_GROUP {
-            hero::HeroCtl::Play.elem()
+            first_stop
         } else if group == season::SEASON_GROUP {
             // Land on the SELECTED season, not whichever tab happens to be geometrically nearest
             // `from`: `Placed` carries no source group, so this fires from every entry into the
@@ -1977,7 +1992,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
             entry: self.entry,
             elem: Self::locate_local(elem, self.tracks_available(meta))
                 .and_then(|located| self.key_of(located))
-                .unwrap_or(hero::ELEM_PLAY),
+                .unwrap_or(first_stop),
         }
     }
 
@@ -1993,7 +2008,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     /// a menu) has none.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let meta = H::metadata(cx);
-        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta, self.stops(cx)))?;
         let d = self.detail(meta);
         let named = |section: &'static str| A11yPath::new().name(section);
         // the text is the page's own words as the data layer published them: cloned, since the
@@ -2041,7 +2056,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
         let meta = H::metadata(cx);
         if g == hero::HERO_GROUP {
-            let (ctls, n) = hero::visible_ctls(self.hero_set(meta), self.full_trailer());
+            let (ctls, n) = hero::visible_ctls(self.hero_set(meta), self.stops(cx));
             out.extend(ctls[..n].iter().map(|ctl| ctl.elem()));
             return;
         }
@@ -2112,14 +2127,15 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
 }
 
 impl DetailScreen {
-    fn valid(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+    fn valid(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>, stops: hero::Stops) -> bool {
         let d = self.detail(meta);
         match located {
             // A control other than Play is never valid while full-trailer mode has narrowed the
-            // row to its anchor — `hero::focusable` is the same predicate `reconcile` and
+            // row to its anchor, and a control that plays is never valid while no driver is
+            // composed — `hero::focusable` is the same predicate `reconcile` and
             // `hero::visible_ctls` gate on.
             Located::Hero(c) => {
-                hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
+                hero::focusable(c, stops) && hero::index_of(self.hero_set(meta), c).is_some()
             }
             Located::Season(i) => d.is_some_and(|d| i < d.seasons.len()),
             Located::Episode(i, _) => d.is_some_and(|d| d.episodes.get(i).is_some()),
@@ -2523,7 +2539,11 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
             // The *Play Version* surface committed a row: this page plays that version as its
             // Play pill would.
             ScreenEvent::App(AppMsg::PlayVersion(media)) => {
-                self.play_hero(false, Some(*media), fx, H::metadata(cx));
+                // The panel's rows are disabled with no driver composed (`versions_panel`) and send
+                // nothing; a message that arrives anyway starts nothing.
+                if H::screen_inputs(cx).can_play() {
+                    self.play_hero(false, Some(*media), fx, H::metadata(cx));
+                }
                 Handled::Yes
             }
             // Dismissed: the page under this surface has just been entered again, and it decided
@@ -2635,8 +2655,8 @@ impl DetailScreen {
         }
     }
 
-    fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
-        self.restore_focus(meta).and_then(|elem| self.locate(elem, meta)) == Some(located)
+    fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>, no_playback: bool) -> bool {
+        self.restore_focus(meta, no_playback).and_then(|elem| self.locate(elem, meta)) == Some(located)
     }
 }
 
@@ -3190,6 +3210,10 @@ impl DetailScreen {
         // fades every button through `chrome`'s `preview_chrome` alpha (`draw_hero`), and cutting
         // four of the five pills here a frame early defeats that fade before it can be seen.
         let (controls, n) = hero::hero_ctls(set);
+        // Drawing never narrows with full-trailer mode (the row fades with the chrome), but a
+        // control that plays is drawn disabled while no driver is composed: the same predicate that
+        // takes its focus stop away (`hero::focusable`), so the two cannot disagree.
+        let drawn = hero::Stops { full_trailer: false, no_playback: !H::screen_inputs(cx).can_play() };
         let row = hero::hero_row_rect(set, y, widths);
         let row = [row.x, row.y - self.scroll.pos, row.w, row.h];
         let picture = plx_media::player::preview::view().picture;
@@ -3223,7 +3247,7 @@ impl DetailScreen {
                 .icon(plx_ui::icons::Icon::Play)
                 // No playback driver composed: the shared button's own disabled look. The reason
                 // is the facts line's clause (`hero::draw_facts`).
-                .enabled(H::screen_inputs(cx).can_play())
+                .enabled(hero::focusable(ctl, drawn))
                 .focus_mix(fill)
                 .palette(palette)
                 .ground(ground)
@@ -3254,6 +3278,7 @@ impl DetailScreen {
                     let mut button = CircleButton::new(c"".as_ptr())
                         .icon(icon)
                         .frame(rect)
+                        .enabled(hero::focusable(ctl, drawn))
                         .focus_mix(fill)
                         .palette(palette)
                         .ground(ground)
@@ -3323,9 +3348,12 @@ impl DetailScreen {
         // land on a pill nobody can see and start the FEATURE from a screen showing only a
         // trailer. Skip the whole hero group rather than filtering by `valid()`/`focusable`, so
         // hover and click both go away together.
-        if !self.full_trailer() {
+        let stops = self.stops(f.cx);
+        if !stops.full_trailer {
+            // A control that plays registers no stop while no driver is composed: hovering a
+            // disabled pill must not park focus on it, nor a click reach it.
             let (controls, n) = hero::hero_ctls(set);
-            elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
+            elems.extend(controls[..n].iter().filter(|c| hero::focusable(**c, stops)).map(|c| (c.elem(), Activate::Press)));
         }
         if let Some(d) = self.detail(meta) {
             // Only the tabs on the axis register a stop, as the strip paints only those, so the
@@ -4077,7 +4105,7 @@ impl DetailScreen {
             || watchlist_moving;
         if !meta.detail_loading()
             && !meta.season_loading()
-            && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, meta))
+            && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, meta, !H::screen_inputs(cx).can_play()))
         {
             self.restore_intent = None;
             self.return_pending = false;
@@ -4354,6 +4382,13 @@ impl DetailScreen {
         self.preview_promoted && plx_media::player::preview::view().picture
     }
 
+    /// What decides which hero controls own a focus stop right now ([`hero::Stops`]): the mode
+    /// above and whether the platform composed any playback driver. Read from `cx` where the row is
+    /// enumerated, never kept on the page.
+    fn stops<H: ContentLike>(&self, cx: &Cx<'_, H>) -> hero::Stops {
+        hero::Stops { full_trailer: self.full_trailer(), no_playback: !H::screen_inputs(cx).can_play() }
+    }
+
     /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
     /// by the mode's own key ladder ([`Self::trailer_act`]), so the collapse itself has exactly one
     /// body. Returns whether it fired, so a caller can decide whether to also consume the key.
@@ -4617,11 +4652,12 @@ impl DetailScreen {
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let measure = cx.measure;
+        // Play, Restart and Trailer start a playback; with no driver composed they are drawn
+        // disabled, own no focus stop (`hero::focusable`), and a press that reaches them anyway (a
+        // by-id press, a stale click) does nothing.
+        if ctl.starts_playback() && !H::screen_inputs(cx).can_play() { return; }
         match ctl {
             hero::HeroCtl::Play => {
-                // Focusable but inert while no driver is composed (the disabled-row convention);
-                // the pill reads disabled and the facts line says why.
-                if !H::screen_inputs(cx).can_play() { return; }
                 self.play_hero(false, None, fx, meta);
             }
             hero::HeroCtl::Restart => {
