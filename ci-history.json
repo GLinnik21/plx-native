@@ -1,6 +1,5 @@
-{"updated":"2026-11-19T23:48:46Z",
+{"updated":"2026-11-20T00:19:28Z",
 "ci":[
-{"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564709752,"at":"2026-08-22T09:21:07Z","sha":"aa578b180","title":"release: 0.4.0's note, rewritten for the 132 commits it predated","jobs":{"host checks (NOT a device gate)":90,"cross-build (armv7) + artifact assertions":86},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564933361,"at":"2026-08-22T09:26:10Z","sha":"e7a0dae24","title":"ci: two env blocks in one step \u2014 GitHub refuses what PyYAML accepts","jobs":{"cross-build (armv7) + artifact assertions":96,"host checks (NOT a device gate)":97},"pr":null,"conclusion":"success","attempt":1},
@@ -5479,7 +5478,8 @@
 {"id":44551063360,"at":"2026-11-19T18:59:12Z","sha":"69ec73c0f","title":"Hero identity: its doc names the dynamic-range chip","pr":1348,"event":"pull_request","conclusion":"success","attempt":3,"jobs":{"macOS simulator build + launch":135,"macOS tests against bundled FFmpeg and ASS":190,"Linux simulator build + launch":376,"Windows launcher syntax":22},"wall":14101},
 {"id":44593596268,"at":"2026-11-19T18:59:33Z","sha":"546999d1f","title":"Detail and Home hero: name HDR and Dolby Vision beside the resolution","pr":1348,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":122,"Linux simulator build + launch":397,"Windows launcher syntax":21,"macOS simulator build + launch":234}},
 {"id":44597331455,"at":"2026-11-19T19:20:43Z","sha":"d3cebf1d2","title":"Merge main (#1348 landed)","pr":1412,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":242,"macOS simulator build + launch":343,"Linux simulator build + launch":326,"Windows launcher syntax":17}},
-{"id":44639771056,"at":"2026-11-19T23:41:32Z","sha":"af6fb2615","title":"test: keep the submit handshake when the storage worker wins the race","pr":1387,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":335,"macOS simulator build + launch":305,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":128}}
+{"id":44639771056,"at":"2026-11-19T23:41:32Z","sha":"af6fb2615","title":"test: keep the submit handshake when the storage worker wins the race","pr":1387,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":335,"macOS simulator build + launch":305,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":128}},
+{"id":44644043188,"at":"2026-11-20T00:13:02Z","sha":"506564556","title":"fix: gate the sim arm-wait term on devtriggers, not hostsim alone","pr":1387,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":23,"macOS simulator build + launch":269,"macOS tests against bundled FFmpeg and ASS":207,"Linux simulator build + launch":374}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -5762,7 +5762,8 @@
 {"day":"2026-08-14","wf":"ci","event":"push","runs":3,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":80,"host checks (NOT a device gate)":75},"longest":80},
 {"day":"2026-08-15","wf":"ci","event":"pull_request","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":84},"longest":90},
 {"day":"2026-08-15","wf":"ci","event":"push","runs":2,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":87,"host checks (NOT a device gate)":99},"longest":100},
-{"day":"2026-08-20","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"longest":100}
+{"day":"2026-08-20","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"longest":100},
+{"day":"2026-08-21","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":96,"host checks (NOT a device gate)":107},"longest":107}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
