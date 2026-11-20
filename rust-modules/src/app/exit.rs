@@ -9,7 +9,7 @@
 //! under the detached curl workers (#1115), and a host would be killed under its own runtime. No
 //! exit a hosted process can reach remains in the tree: the graphics boot returns a
 //! [`GfxFault`](plx_gfx::gfx::GfxFault) ([`Exit::from`]) where it used to call `exit_now(1)`, and
-//! `boot::seam_order_tests` scans the production source for any `exit_now(` outside the entries.
+//! `lifecycle_tests` below scans the production source for any `exit_now(` outside the entries.
 //!
 //! # What is leaked, and why
 //!
@@ -125,7 +125,9 @@ pub(crate) struct DropProbe(std::sync::Arc<AtomicUsize>);
 
 #[cfg(test)]
 impl DropProbe {
-    /// The counter, to be read after the `App` has gone wherever the test sent it.
+    /// The counter, to be read after the `App` has gone wherever the test sent it. Only the
+    /// hostsim lifecycle tests build an `App` to read it from.
+    #[cfg_attr(not(all(feature = "hostsim", feature = "play-feed")), allow(dead_code))]
     pub(crate) fn counter(&self) -> std::sync::Arc<AtomicUsize> {
         std::sync::Arc::clone(&self.0)
     }
@@ -260,8 +262,11 @@ mod lifecycle_tests {
     use super::*;
     use std::sync::{mpsc, Mutex};
 
-    /// A host: the gate and the once-guard its table shares, and what `on_stopped` received.
+    /// A host: the gate and the once-guard its table shares, and what `on_stopped` received. It
+    /// holds the process-global test lock for its whole life: `Completion::deliver` disarms the
+    /// process watchdog, which a test that arms it and reads it back must not race.
     struct FakeHost {
+        _serial: plx_base::testlock::Serial,
         gate: HostGate,
         completion: Completion,
         /// Each delivery, with whether the watchdog was still armed when the callback ran.
@@ -270,7 +275,12 @@ mod lifecycle_tests {
 
     impl FakeHost {
         fn new() -> Self {
-            Self { gate: HostGate::new(), completion: Completion::new(), received: Mutex::new(Vec::new()) }
+            Self {
+                _serial: plx_base::testlock::serial(),
+                gate: HostGate::new(),
+                completion: Completion::new(),
+                received: Mutex::new(Vec::new()),
+            }
         }
 
         fn on_stopped(&self, stopped: Stopped) {
@@ -425,7 +435,7 @@ mod lifecycle_tests {
 
     #[test]
     fn pause_then_stop_leaves_the_watchdog_disarmed_when_on_stopped_runs() {
-        let _serial = plx_base::testlock::serial();
+        let host = FakeHost::new();
         plx_base::task::watchdog::arm();
         // OnPause: nothing may signal the loop thread while the host is parked.
         plx_base::task::watchdog::disarm();
@@ -434,7 +444,6 @@ mod lifecycle_tests {
         plx_base::task::watchdog::arm();
         assert!(plx_base::task::watchdog::is_armed());
         // Stop: the report disarms before the callback runs.
-        let host = FakeHost::new();
         assert!(host.loop_returned(&quit()));
         let received = host.received.lock().unwrap();
         assert_eq!(received.len(), 1);
@@ -507,7 +516,10 @@ mod lifecycle_tests {
                 continue;
             }
             let text = std::fs::read_to_string(&f).expect("read");
-            let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+            let prod = production_prefix(&text);
+            if path.ends_with("src/app/mod.rs") {
+                assert!(prod.contains("fn run_application"), "the scan must still reach run_application");
+            }
             for (n, line) in prod.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or("");
                 if code.contains(libc_exit)
@@ -523,6 +535,22 @@ mod lifecycle_tests {
             "exit through plx_base::process::exit_now from an entry that owns the process end, \
              never libc exit (#1115) and never from library code a host runs: {hits:?}"
         );
+    }
+
+    /// The text above the file's first `#[cfg(test)]` MODULE. A `#[cfg(test)]` import or field on the
+    /// way (`app/mod.rs` has both, above `run_application`) must not hide the production code under it.
+    fn production_prefix(text: &str) -> &str {
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let mut offset = 0;
+        for pair in lines.windows(2) {
+            let attr = pair[0].trim();
+            let test_only = attr == "#[cfg(test)]" || attr.starts_with("#[cfg(all(test");
+            if test_only && pair[1].contains("mod ") && pair[1].trim_end().ends_with('{') {
+                return &text[..offset];
+            }
+            offset += pair[0].len();
+        }
+        text
     }
 
     fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
