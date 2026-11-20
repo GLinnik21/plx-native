@@ -1183,6 +1183,76 @@ mod key_event_tests {
         }
     }
 
+    /// **A native key decodes to the action it means.** Every pair here is what a television or the
+    /// simulator sends, written out as a LITERAL (no `raw_pair`, no constant), so a wrong `action_of`
+    /// reading cannot agree with itself: PLAY is not PAUSE, REWIND is not a plain LEFT, PAGE UP and
+    /// CH+ are not PAGE DOWN and CH-, the number keys read from the sym alone, and a wcode-only
+    /// number press is no action (the PIN pad reads it through `pin_digit` instead). No production
+    /// reader of the loop reads the action before W5d, so nothing but this table sees `action_of` go
+    /// wrong today; `native_key_effect_*` in `run.rs` grade what the consumers do with the pair.
+    #[test]
+    fn native_key_effect_the_native_pairs_decode_to_the_actions_they_mean() {
+        let table: &[(u32, u32, Option<Action>)] = &[
+            (0x4000_0052, 0, Some(Action::Up)),
+            (0x4000_0051, 0, Some(Action::Down)),
+            (0x4000_0050, 0, Some(Action::Left)),
+            (0x4000_004f, 0, Some(Action::Right)),
+            (13, 0, Some(Action::Ok)),
+            (0, 482, Some(Action::Back)),
+            (27, 0, Some(Action::Back)),
+            (8, 482, Some(Action::Back)),
+            (0, 450, Some(Action::Play)),
+            (0, 72, Some(Action::Pause)),
+            (0, 261, Some(Action::PlayPause)),
+            (415, 0, Some(Action::Pause)),
+            (0, 415, Some(Action::Pause)),
+            (19, 0, Some(Action::Play)),
+            (0, 402, Some(Action::Play)),
+            (0, 413, Some(Action::Stop)),
+            (0, 505, Some(Action::Exit)),
+            (0, 452, Some(Action::Rewind)),
+            (0, 451, Some(Action::FastForward)),
+            (0x4000_004b, 0, Some(Action::PageUp)),
+            (0, 300, Some(Action::PageUp)),
+            (0x4000_004e, 0, Some(Action::PageDown)),
+            (0, 301, Some(Action::PageDown)),
+            (8, 42, Some(Action::Backspace)),
+            (0x4000_009c, 156, Some(Action::ClearAll)),
+            (0, 0x1e4, Some(Action::PointerHidden)),
+            (48, 0, Some(Action::Digit(0))),
+            (49, 0, Some(Action::Digit(1))),
+            (50, 0, Some(Action::Digit(2))),
+            (51, 0, Some(Action::Digit(3))),
+            (52, 0, Some(Action::Digit(4))),
+            (53, 0, Some(Action::Digit(5))),
+            (54, 0, Some(Action::Digit(6))),
+            (55, 0, Some(Action::Digit(7))),
+            (56, 0, Some(Action::Digit(8))),
+            (57, 0, Some(Action::Digit(9))),
+            (57, 33, Some(Action::Digit(9))),
+            (0, 48, None),
+            (0, 53, None),
+            (0, 57, None),
+            (47, 0, None),
+            (58, 0, None),
+            (0, 504, None),
+            (0, 269, None),
+            (0, 270, None),
+            (97, 4, None),
+            (0, 0, None),
+            (0, 299, None),
+            (0, 302, None),
+            (0x4000_004c, 0, None),
+        ];
+        for &(sym, wcode, action) in table {
+            let Some(HostEvent::Key(press)) = decode_host_event(&encode_key(sym, wcode, true)) else {
+                panic!("({sym}, {wcode}) decodes to a key press");
+            };
+            assert_eq!(press.action(), action, "({sym}, {wcode}) means {action:?}");
+            assert_eq!(press.pair(), RawKey { sym, wcode }, "({sym}, {wcode}) keeps the pair it arrived as");
+        }
+    }
+
     /// **The pairs the FIFO's named tokens press are the ones they have always pressed**, written out
     /// as literals: they are what `tests/keytable.json` and the recorded tapes carry, and the fold
     /// through `raw_pair` must not move one. The rocker's two tokens and `k:` are not actions' pairs
