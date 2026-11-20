@@ -4,7 +4,8 @@ Status: approved 2026-11-20 and recorded here (workstream W0). This is a plan, n
 workstream is done when its PR has landed. The owner's decisions are at the end of the page and the body follows
 them; no owner question is open. The waves, each lane's files, its bounded tests and its television and
 build-bench flags are in "Workstreams". The layer-graph side of the plan is `docs/module-layers.md`, steps L15c to
-L15h.
+L15h. Unprefixed ids are this page's own: F facts, T Tizen research, E emulator evidence, H hello-world questions and
+W workstreams.
 
 The sections "Verified facts" (F1-F52), "Tizen research" (T1-T8) and "Emulator run, 2026-11-20" (E1-E12) quote the
 tree at `e9924f0f9`, before the bottom-layer rename (Wave R), so they keep the old names and the old line numbers;
@@ -16,12 +17,10 @@ replaces), and "today", "now" and "as today" anywhere on the page mean that tree
 ## History
 
 The plan was written by a planner and revised over six rounds with a critic and after two independent reviews of its
-drafts; the critic approved it on 2026-11-20. Finding ids in the body: review B1-B3, M4-M11 and C1-C10 (the two
-independent reviews); critic M1-M12, F1-F12, G1-G8 and N1-N5 (the critic's passes, in order); "critic round N, point
-M" (the earlier rounds). Unprefixed ids are this page's own: F1-F52 facts, T1-T8 Tizen research, E1-E12 emulator
-evidence, H1-H6 hello-world questions, W0-W13 workstreams. Every finding was accepted unless an owner decision of
-2026-11-20 overrode it, and the body says where it landed; the changelog and the review texts are not kept here, and
-no section depends on a revision number.
+drafts; the critic approved it on 2026-11-20. Finding ids in the body: review B1-B3, M4-M11, C1-C10 (the two reviews);
+critic M1-M12, F1-F12, G1-G8, N1-N5 (its passes, in order); "critic round N, point M" (earlier rounds). Every finding
+was accepted unless an owner decision of 2026-11-20 overrode it, and the body says where it landed; the changelog and
+review texts are not kept, and no section depends on a revision number.
 
 ## Names and paths
 
@@ -752,8 +751,8 @@ E10-E12 are later runs on the same emulator. Measured on the emulator only; no r
   - All seven steps green on the panel: the `.so` loaded (x86_64); six libraries `dlopen`ed; Ecore_Wl2 1920x1080
     with four of four handlers (key down and up, focus in and out); EGL 1.4 Samsung, ES2; GL renderer YaGL GLESv2
     "OpenGL ES 2.0"; SDL2 2.32.10 and SDL2_ttf 2.24.0; the UTF-8 sample string (Latin, a check mark, Cyrillic).
-  - Keys: the panel listed 31 distinct keys. The one new beyond E7's table is the remote's colour-key button,
-    `XF86Color` = 385. `Shift_L` = 50 came after Home and is most likely the host keyboard (the screenshot
+  - Keys: the panel listed 31 distinct keys. The one new beyond the earlier emulator key table (not reproduced here)
+    is the remote's colour-key button, `XF86Color` = 385. `Shift_L` = 50 came after Home and is most likely the host keyboard (the screenshot
     shortcut), not a remote key. The other codes were not relayed, so none is recorded here.
   - Home round trip: pause at +181.7 s together with focus OUT; resume at +191.6 s after 9.9 s paused; focus IN
     at +191.7 s. The panel redrew after the resume, so the window and the EGL surface survive a Home pause and
@@ -879,8 +878,8 @@ Ecore names to `remote_token_key` pairs".
   included. The review's example, a Tizen table that swaps Play and Pause and still passes `is_bound`, fails it.
 - Measured so far (E7): Right is keycode 114, Left 113, Up 111, Down 116 and Return 36, as Ecore key names. They
   seed the table's first rows; `Return` (36) is the candidate for Ok, not for Back. E11 adds the remote's colour
-  button, `XF86Color` = 385 (its panel listed 31 distinct keys; this is the one new beyond E7's table). Everything
-  else waits for a key dump from a retail set.
+  button, `XF86Color` = 385 (its panel listed 31 distinct keys; this is the one new beyond the earlier emulator key
+  table, which is not reproduced here). Everything else waits for a key dump from a retail set.
 - Raw SDL stays where it is: `decode_key`/`rd_u32`, the `TEXTINPUT` offset, both wheel offsets and the
   sdl2-compat injected-key carrier (`app/events.rs:40-70`) move into the SDL decoders unchanged.
 - Exit step (critic M7): the machine's own key type carries the full `Action`: a certificate review of
@@ -905,7 +904,7 @@ Ecore names to `remote_token_key` pairs".
   `secure::set_mode_for_test(StoreMode) -> ModeReset` calls `plx_base::testlock::assert_held(..)` first and its
   guard restores `Durable` on drop, so a failing test cannot leave `MemoryOnly` behind for the next one. Every test
   that sets it begins with `let _serial = plx_base::testlock::serial();` (the session persistence tests already do),
-  and no test sets it without that. `platform/` is in neither `MACHINES` nor `FORK_SCOPE`, so the override adds no
+  and no test sets it without that. `os/` is in neither `MACHINES` nor `FORK_SCOPE`, so the override adds no
   ledger line.
 - Globals (G6; F44, F50). Reading `secure::mode()` from the session code adds NO line to `ci/allow/globals/`: the
   gate's pattern is a fixed list of spellings that does not name `secure::`, and `session.rs` already makes four
@@ -1575,7 +1574,7 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
     deadlock. ANSWERED, yes, emulator only (E8).
   - H1: armv7 or aarch64 (T3). H2: whether the NDK-linked `.so` loads under a Public cert (T2, T4). OPEN.
     They gate a retail set, not the emulator MVP (Decision 8) and not W7 (Decision 3, A): both need a retail set
-    (E9). The tester build with an on-screen diagnostics and key-code panel has run on the emulator (E10, E11); its
+    (E9). The tester build with an on-screen diagnostics and key-code panel has run on the emulator (E11); its
     run on a retail set would answer H1 and H2 and return a retail key table, which replaces E7's and E11's
     emulator codes as the table W5b and W9 build from. The tester request on #1460 covering H1, H2 and H6 is
     posted only with the owner's approval (Decision 5).
