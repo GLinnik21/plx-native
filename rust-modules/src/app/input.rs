@@ -1296,9 +1296,9 @@ pub(crate) fn note_global_press(
     // Release and cancellation are owned by the dispatcher's InputMachine.
 }
 
-/// **The unsupported-key invariant, graded.** `tools/keytable.py` grades the other half — that an
-/// unbound press moves no focus on any screen — and cannot see either of these two, because neither
-/// appears in a focus fingerprint.
+/// **The unsupported-key invariant, graded.** `tools/keytable.py` grades one half — that an unbound
+/// press moves no focus on any screen — and cannot see the HUD wake this module grades, because it
+/// appears in no focus fingerprint. The press half is graded on the real press, in the loop's tests.
 #[cfg(test)]
 mod unsupported_key_tests {
     use super::*;
@@ -1312,7 +1312,7 @@ mod unsupported_key_tests {
     /// that local `Press` was never reachable from the code under test and the `armed` assertions
     /// could not fail. They are gone, and what they meant to guard is observed on the real press, armed
     /// by a click and left alone by an unbound key through the loop's key ingress:
-    /// `run::lifecycle_regression_tests::an_unbound_key_leaves_the_press_a_click_armed_in_flight`.
+    /// `run::lifecycle_regression_tests::an_unbound_key_leaves_the_press_a_click_armed_live_and_a_direction_key_abandons_it`.
     fn press(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> bool {
         let mut hud = HudState::IDLE;
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)

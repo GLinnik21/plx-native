@@ -324,10 +324,13 @@ un-dismisses the HUD. Narrowing that means making the predicate route-aware, i.e
 the ladder's own order — the duplication `page_dir` exists to have ended. A number key is also,
 unlike a colour button, a key this app really does bind, so calling it bound is honest.
 
-Graded twice, because neither half implies the other: `app/input.rs`'s `unsupported_key_tests` covers the
-two global effects (invisible to any focus fingerprint), and `tools/keytable.py` covers "moves
+Graded in three places, because no one of them implies the others: `app/input.rs`'s
+`unsupported_key_tests` covers the HUD wake (invisible to any focus fingerprint); the press half is
+observed on the dispatcher's real press in `run.rs`'s `lifecycle_regression_tests` (an unbound key
+leaves a click armed and live, a direction key abandons it); and `tools/keytable.py` covers "moves
 nothing on any screen" — its `k:0,269` (HOME) and `k:53,34` (the digit 5) rows are inert on Home,
-Library and Search in `tests/keytable.json`.
+Library and Search in `tests/keytable.json`. The trap to avoid is an `armed` assertion beside
+`note_global_press`: that function holds no press, so such an assertion cannot fail.
 
 **What neither covers**: the player route. The simulator has no video path, so no fingerprint in
 that table was taken with a HUD on screen. The HUD half of this invariant has been graded as a unit

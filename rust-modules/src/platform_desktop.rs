@@ -15,9 +15,9 @@
 //!   refusing `NoSink`.
 //!
 //! The shell and the frame probe are plain no-ops: SDL owns the window and its event loop, there is
-//! no compositor to hint, no bus to pump and no remote pointer to hide. The secure store is `SecureHooks::NONE`: nothing seals,
-//! so a session is the 0600 plaintext file the session layer writes itself, which the simulator's
-//! harnesses plant and read.
+//! no compositor to hint, no bus to pump and no remote pointer to hide. The secure store is
+//! `SecureHooks::NONE`: nothing seals, so a session is the 0600 plaintext file the session layer
+//! writes itself, which the simulator's harnesses plant and read.
 //!
 //! This module never names `port`, `system`, `webos` or `keymanager`, so a desktop executable
 //! references none of the television's code. It still COMPILES it (the television arms of those

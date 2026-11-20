@@ -103,7 +103,8 @@ impl Frame {
     }
 }
 
-/// The loop. `plex_run` calls this once, after `boot`, and `shutdown` after it returns.
+/// The loop. `run_and_shutdown` (`app/mod.rs`) calls this once, after `boot`, and `shutdown` after it
+/// returns.
 ///
 /// **No `mt: &MainThread` parameter since phase 9.** The token is a FIELD now
 /// (`app.adapters.player`, see `player::adapter`), so the proof travels with `&mut App` — every

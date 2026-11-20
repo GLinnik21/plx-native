@@ -773,8 +773,9 @@ unsafe fn update_wayland_info(ok: c_int, info: &[u8; 512]) {
 // The Magic Remote's pointer: hide it when the D-pad takes over, show it again on motion
 // ------------------------------------------------------------------------------------------
 //
-// Moved here from `app/boot.rs` verbatim (platform plan, W5c): the pointer's visibility is the
-// platform's, so the loop reaches it through `Shell::{hide_pointer, show_pointer_after_motion,
+// Moved here from `app/boot.rs` (platform plan, W5c) with its hostsim arms removed, the desktop's
+// `Shell` stating the no-op instead, and its three entry points made safe: the pointer's visibility is
+// the platform's, so the loop reaches it through `Shell::{hide_pointer, show_pointer_after_motion,
 // hide_is_cursor_swap}` and `port::WebosShell` is the table over these three. A desktop's pointer is
 // a mouse the application does not hide, so `platform_desktop`'s shell states no-ops.
 

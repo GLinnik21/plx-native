@@ -1046,7 +1046,7 @@ pub(crate) fn direct_trigger_server() -> Result<plx_plex::plex::ServerId, String
 }
 
 // ---- boot, and the loop's own between-frame state ---------------------------------------------
-/// Which screen the boot gate landed on — see the gate itself in `plex_run`, which is where the
+/// Which screen the boot gate landed on — see the gate itself in `boot`, which is where the
 /// order of its four cases is argued.
 pub(crate) enum BootTo {
     Home,
