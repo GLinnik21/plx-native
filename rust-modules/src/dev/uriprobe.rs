@@ -64,7 +64,7 @@ impl ProbeLaunch for Launch {
 /// boundary so the machine under it stays pure. All-empty (printed as `-`) when the boot probe
 /// could not read it.
 fn running_firmware() -> Firmware {
-    let info = plx_platform::tv::device::info();
+    let info = plx_os::tv::device::info();
     Firmware { release: info.release.clone(), build: info.build.clone() }
 }
 

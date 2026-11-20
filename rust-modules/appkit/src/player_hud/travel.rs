@@ -194,7 +194,7 @@ mod tests {
     use plx_ui::fixture::FixtureMeasure;
 
     fn fixture(text: &str) -> std::sync::Arc<Compiled> {
-        load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure).expect("the fixture loads").compiled
+        load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_os::i18n::english(), &FixtureMeasure).expect("the fixture loads").compiled
     }
 
     fn reference() -> std::sync::Arc<Compiled> {

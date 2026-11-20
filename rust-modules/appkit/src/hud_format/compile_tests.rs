@@ -14,7 +14,7 @@ use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::metadata::{Marker, MarkerKind};
 use plx_machine::machine::Measure;
 use plx_media::player::text_style::HudBand;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::consts::{MARGIN_X, SCR_H, SCR_W};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::{theme, Rect};
@@ -47,7 +47,7 @@ fn labels() -> AppLabels {
         tab_info: msg::widgets_player_info().to_owned(),
         tab_chapters: msg::widgets_player_chapters().to_owned(),
         next_episode: msg::widgets_next_episode().to_owned(),
-        next_seconds: AppLabels::in_language(plx_platform::i18n::current()).next_seconds,
+        next_seconds: AppLabels::in_language(plx_os::i18n::current()).next_seconds,
         watch_credits: msg::widgets_next_credits().to_owned(),
         skip_intro: msg::widgets_skip_intro().to_owned(),
         watch_intro: msg::widgets_watch_intro().to_owned(),
@@ -55,7 +55,7 @@ fn labels() -> AppLabels {
         from_beginning: msg::widgets_info_from_beginning().to_owned(),
         go_to_show: msg::widgets_info_go_show().to_owned(),
         go_to_movie: msg::widgets_info_go_movie().to_owned(),
-        commands: AppLabels::in_language(plx_platform::i18n::current()).commands,
+        commands: AppLabels::in_language(plx_os::i18n::current()).commands,
     }
 }
 

@@ -3,7 +3,7 @@
 use super::*;
 use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy, DetailPart, DetailParts};
 use plx_base::fontcov::advances::ShippedMeasure;
-use plx_platform::i18n::{self, language_on_this_thread_for_test, Language, Preference};
+use plx_os::i18n::{self, language_on_this_thread_for_test, Language, Preference};
 use plx_ui::page_header::{self, HeaderLayout, ItemRect, PageHeader, Slot};
 use plx_machine::machine::Measure;
 

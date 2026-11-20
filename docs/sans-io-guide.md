@@ -66,12 +66,12 @@ seal, not a broad `Copy` bound. See "Machine shape" in `docs/sans-io.md`.
   `media/src/route/{backend_policy,plan,plan_memory}.rs`;
 - `rust-modules/playback-contract/src` and the extracted pure
   `play-uri/src/{uriprobe,uri_protocol,uri_lifecycle,register_ladder,acb_bind,picture_gate}.rs` modules;
-- `rust-modules/platform/src/tv/plane.rs`, the ACB plane's pure `Plane` (its runner `PlaneOwner` is in
+- `rust-modules/os/src/tv/plane.rs`, the ACB plane's pure `Plane` (its runner `PlaneOwner` is in
   the same file, so the scan covers it too).
 
 `forks` reads every machine crate whole (`FORK_SCOPE`): all of `data/`, `plex/`, `media/`,
 `session/`, `screens/`, `ui/`, `appkit/`, `machine/`, `playback-contract/`, `play-uri/`,
-`play-feed/` and `media-codecs/`. `platform/` is not in it: it holds forks that are not ledgered, so
+`play-feed/` and `media-codecs/`. `os/` is not in it: it holds forks that are not ledgered, so
 `plane.rs` is scanned for workers and globals only.
 
 The scan is by file; an entry is a site to classify, not proof that its enclosing function is a

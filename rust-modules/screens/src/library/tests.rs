@@ -481,7 +481,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         let mut page = fixture.screen();
         tick(&mut page, &fixture, None);
         let (shown, glyph, plain_row, caption) = read(&page, &fixture);
-        let shared = plx_platform::i18n::msg::browse_library_shared_unreachable("friend");
+        let shared = plx_os::i18n::msg::browse_library_shared_unreachable("friend");
         assert_eq!(shown.as_ref().and_then(|r| r.to_str().ok()), (!owner.is_empty()).then_some(shared.as_str()),
             "no fact: today's read-out");
         assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
@@ -491,7 +491,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert_eq!(stale, shown, "the held fact does not change between ticks");
         assert!(tick(&mut page, &fixture, Some(Blocked::NoKey)), "a fact appearing under a static read-out damages the frame");
         let (shown, glyph, row, clock_caption) = read(&page, &fixture);
-        assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
+        assert_eq!(shown.as_deref(), Some(plx_os::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
         assert_eq!(glyph, Some(Icon::ClockBadgeAlert));
         assert_eq!(clock_caption, caption, "the verdict is unchanged");
         assert!(row.y >= plain_row.y);
@@ -503,7 +503,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert!(tick(&mut page, &fixture, Some(Blocked::KeyChanged)));
         assert_eq!(page.clock.blocked(), Some(Blocked::KeyChanged));
         let (shown, ..) = read(&page, &fixture);
-        assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
+        assert_eq!(shown.as_deref(), Some(plx_os::i18n::msg::browse_clock_key_changed_c()));
 
         assert!(tick(&mut page, &fixture, None), "…and one clearing does too");
         let (shown, glyph, ..) = read(&page, &fixture);
@@ -556,7 +556,7 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
     assert_eq!(page.clock.blocked(), None, "another server's fact is not this source's");
     assert_eq!(shown(&page), (None, Some(Icon::ServerBadgeMinus)));
     tick_with_clock(&mut page, &fixture, &facts(Some(Blocked::NoKey)));
-    assert_eq!(shown(&page), (Some(plx_platform::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
+    assert_eq!(shown(&page), (Some(plx_os::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
 }
 
 /// **A failed Library section and a failed Home stand on ONE line** (owner, 2026-09-19: the

@@ -13,7 +13,7 @@
 use super::*;
 use super::test_support::{signed_in, STAMP};
 use super::v0;
-use plx_platform::storage::{client, state, wire::*};
+use plx_os::storage::{client, state, wire::*};
 
 // ---- a signed-in session with every preference at a non-default value -----------------------
 
@@ -44,7 +44,7 @@ fn rich() -> Session {
         "auto_sign_in": true, "trailer_autoplay": false,
         "last_hero_blur": [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
     })).unwrap();
-    session.language = plx_platform::i18n::Preference::Be;
+    session.language = plx_os::i18n::Preference::Be;
     session.prefs.playback_quality = Some(PlaybackQuality::P1080High);
     session.prefs.direct_play_mode = DirectPlayMode::Forced;
     session.prefs.subtitle_tone = SubtitleTone::Grey;
@@ -74,7 +74,7 @@ struct Db8 {
     record: Option<Value>,
     puts: usize,
 }
-impl plx_platform::storage::keymanager::Rpc for Db8 {
+impl plx_os::storage::keymanager::Rpc for Db8 {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         match uri {
             "luna://com.palm.db/get" => Ok(
@@ -94,8 +94,8 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
     }
 }
 
-fn helper() -> plx_platform::storage::backend::Backend<Db8> {
-    plx_platform::storage::backend::Backend::new(
+fn helper() -> plx_os::storage::backend::Backend<Db8> {
+    plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
 }
 

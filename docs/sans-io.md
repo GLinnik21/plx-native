@@ -170,7 +170,7 @@ dropped.
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
 `plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
 (the failed-open ladder machine), `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
-`net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
+`net/`, `os/`) are where those calls belong, so they are not scanned. `forks` reads the whole
 of every crate that holds a machine (`FORK_SCOPE` in `ci/check-deps.sh` names them: `data/`, `plex/`, `media/`,
 `play-feed/`, `session/`, `screens/`, `ui/`, `appkit/` and `machine/` among them), because a fork anywhere in them is a test that does not run the
 product's code. It read only the first four until the scope was widened to the rest; the

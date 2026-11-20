@@ -92,7 +92,7 @@ pub(super) fn clear(terms: usize, scroll: f32, measure: &dyn plx_machine::machin
 /// The Clear control under a recents block whose last row ends at `list_end`.
 pub(super) fn clear_below(list_end: f32, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let width = plx_ui::widgets::Button::pill_w_measured(
-        plx_platform::i18n::msg::browse_search_clear_c(),
+        plx_os::i18n::msg::browse_search_clear_c(),
         plx_ui::theme::size::BODY,
         false,
         None,

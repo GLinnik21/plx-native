@@ -264,7 +264,7 @@ enum OpenRecoveryRun {
 /// What the ladder decides on, read at the moment of a failure ([`super::recovery::OpenFacts`]).
 /// `native_audio` is what the caller's failure names ([`native_audio_fact`]); the branches which
 /// are not a pipeline refusal pass `None`.
-fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platform::devcaps::Facet>) -> super::recovery::OpenFacts {
+fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_os::devcaps::Facet>) -> super::recovery::OpenFacts {
     super::recovery::OpenFacts {
         pending_original: crate::route::original_recovery_pending(),
         auto_original: crate::route::auto_original_watch(ps).is_some(),
@@ -303,7 +303,7 @@ fn load_refusal(ps: &crate::route::PlaybackSession) -> super::recovery::LoadRefu
 /// fed natively) or the stall watchdog raised, and the audio the demuxer is feeding. Peeks the flag,
 /// which [`confirm_refusal`] consumes when the ladder asks for the write (the facet itself travels
 /// on the effect); a flag raised with nothing fed natively is dropped here, as it always was.
-fn native_audio_fact(ps: &mut crate::route::PlaybackSession) -> Option<plx_platform::devcaps::Facet> {
+fn native_audio_fact(ps: &mut crate::route::PlaybackSession) -> Option<plx_os::devcaps::Facet> {
     if !ps.readout().native_audio_refused() {
         return None;
     }
@@ -346,7 +346,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
         for effect in fx {
             let dispatched = match effect {
                 RecoveryEffect::ConfirmRefusal { facet, evidence } => {
-                    let record: fn(&plx_platform::devcaps::Facet) -> bool = match evidence {
+                    let record: fn(&plx_os::devcaps::Facet) -> bool = match evidence {
                         Evidence::Named => plx_plex::plex::session::record_named_refusal,
                         Evidence::Proof => plx_plex::plex::session::record_refusal_proof,
                     };
@@ -381,8 +381,8 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     // refused audio keeps the route as planned (an Original remux still copies the
                     // video).
                     let lane = match facet {
-                        plx_platform::devcaps::Facet::Audio { .. } => crate::route::VideoLane::AsPlanned,
-                        plx_platform::devcaps::Facet::Video { .. } => crate::route::VideoLane::Encode,
+                        plx_os::devcaps::Facet::Audio { .. } => crate::route::VideoLane::AsPlanned,
+                        plx_os::devcaps::Facet::Video { .. } => crate::route::VideoLane::Encode,
                     };
                     crate::route::dispatch_refusal_conversion(ps, secs, lane)
                 }
@@ -407,7 +407,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     crate::route::dispatch_unopened_auto_hls(ps, secs)
                 }
                 RecoveryEffect::DecodeInApp { audio, refusal } => {
-                    if let plx_platform::devcaps::Facet::Audio { codec, .. } = &audio {
+                    if let plx_os::devcaps::Facet::Audio { codec, .. } = &audio {
                         super::log(&format!("open recovery: decoding {codec} in the app (stereo) after {refusal}"));
                     }
                     run = OpenRecoveryRun::DecodeInApp { offset_ns: ps.readout().raw().playpos_ns };
@@ -462,7 +462,7 @@ fn recover_failed_open(
     ps: &mut crate::route::PlaybackSession,
     loading: bool,
     refusal: super::recovery::LoadRefusal,
-    native_audio: Option<plx_platform::devcaps::Facet>,
+    native_audio: Option<plx_os::devcaps::Facet>,
     why: &str,
 ) -> OpenRecoveryRun {
     let facts = open_facts(ps, native_audio);
@@ -496,9 +496,9 @@ fn decode_in_app(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
 
 /// The native audio the demuxer is feeding, as the capability facet the pipeline's refusal of it
 /// removes from an attempt (`Caps::without`). `None` when nothing is fed natively.
-fn refused_native_audio(ps: &crate::route::PlaybackSession) -> Option<plx_platform::devcaps::Facet> {
+fn refused_native_audio(ps: &crate::route::PlaybackSession) -> Option<plx_os::devcaps::Facet> {
     let fed = ps.readout().raw().native_audio?;
-    Some(plx_platform::devcaps::Facet::Audio { codec: fed.codec.into(), channels: fed.channels })
+    Some(plx_os::devcaps::Facet::Audio { codec: fed.codec.into(), channels: fed.channels })
 }
 
 /// The machine asked for `facet` to be recorded as refused on this firmware (`record`, which is
@@ -511,10 +511,10 @@ fn refused_native_audio(ps: &crate::route::PlaybackSession) -> Option<plx_platfo
 /// absent from the attempt, gets no second conversion; the answer only words nothing today.
 fn confirm_refusal(
     ps: &mut crate::route::PlaybackSession,
-    facet: &plx_platform::devcaps::Facet,
+    facet: &plx_os::devcaps::Facet,
     evidence: super::recovery::Evidence,
     why: &str,
-    record: impl FnOnce(&plx_platform::devcaps::Facet) -> bool,
+    record: impl FnOnce(&plx_os::devcaps::Facet) -> bool,
 ) -> bool {
     match evidence {
         super::recovery::Evidence::Named => {
@@ -1873,15 +1873,15 @@ mod tests {
     #[test]
     fn confirm_refusal_writes_only_through_the_injected_recorder() {
         use super::super::recovery::Evidence;
-        use plx_platform::devcaps::Facet;
+        use plx_os::devcaps::Facet;
         let _guard = plx_base::testlock::serial();
-        let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+        let _set = plx_os::devcaps::firmware_on_this_thread_for_test(
             "fw",
             "B",
-            plx_platform::devcaps::Caps { audio: "aac,ac3,eac3,opus".into(), ..plx_platform::devcaps::Caps::assumed() },
+            plx_os::devcaps::Caps { audio: "aac,ac3,eac3,opus".into(), ..plx_os::devcaps::Caps::assumed() },
         );
         let _session = plx_plex::plex::session::TempSession::new("confirm-refusal-recorder");
-        let before = plx_platform::devcaps::caps();
+        let before = plx_os::devcaps::caps();
         let recorded = std::cell::RefCell::new(Vec::new());
         let recorder = |facet: &Facet| {
             recorded.borrow_mut().push(facet.clone());
@@ -1929,14 +1929,14 @@ mod tests {
         FEED_SHARED.raise_native_audio_refused();
         ingest(&mut ps);
         assert!(super::confirm_refusal(&mut ps, &opus6, Evidence::Named, "test", plx_plex::plex::session::record_named_refusal));
-        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "queueing the write moved no global");
+        assert!(std::sync::Arc::ptr_eq(&before, &plx_os::devcaps::caps()), "queueing the write moved no global");
         plx_base::storage_worker::drain_for_test();
         assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the real recorder wrote the row");
         // Installing the record moves nothing either; the play-start edge is what reads it, and a named row applies at once.
         assert!(before.audio_supports("opus", 6), "sanity: announced before the record is read");
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
-        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "installing the record moves no global");
-        let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+        assert!(std::sync::Arc::ptr_eq(&before, &plx_os::devcaps::caps()), "installing the record moves no global");
+        let start = plx_os::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
         assert!(!start.audio_supports("opus", 6), "the start value lacks the named row's Opus 5.1");
         assert!(start.audio_supports("opus", 2), "a surround refusal keeps the codec to stereo");
         crate::player::reset_session_for_test();
@@ -3627,13 +3627,13 @@ mod flight_tests {
 
     /// This thread plays a set whose pipeline announces Opus, on a firmware the learned refusals key
     /// on (the process-wide answer is write-once; see `devcaps::firmware_on_this_thread_for_test`).
-    fn firmware_announcing_opus() -> plx_platform::devcaps::CapsGuard {
-        plx_platform::devcaps::firmware_on_this_thread_for_test(
+    fn firmware_announcing_opus() -> plx_os::devcaps::CapsGuard {
+        plx_os::devcaps::firmware_on_this_thread_for_test(
             "kisscurl-koli",
             "6.5.3-47",
-            plx_platform::devcaps::Caps {
+            plx_os::devcaps::Caps {
                 audio: "aac,ac3,eac3,opus".into(),
-                ..plx_platform::devcaps::Caps::assumed()
+                ..plx_os::devcaps::Caps::assumed()
             },
         )
     }
@@ -3652,12 +3652,12 @@ mod flight_tests {
         rig.flight.begin_attempt(&rig.ps);
         // The route was planned before the refusal, from the capability value read then: Opus at
         // any channel count. The attempt holds that value, not the process-wide answer.
-        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::plan_on(&mut rig.ps, plx_os::devcaps::caps());
         FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         rig.frame();
         let answered = rig.flight.answered();
         let epoch = engine_epoch(&mut rig);
-        let opus_channels = || plx_platform::devcaps::caps().audio_channels.get("opus").copied();
+        let opus_channels = || plx_os::devcaps::caps().audio_channels.get("opus").copied();
         assert_eq!(opus_channels(), None, "the set announces Opus at any channel count until it is refused");
 
         plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
@@ -3712,7 +3712,7 @@ mod flight_tests {
         plx_base::storage_worker::drain_for_test();
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
         assert_eq!(opus_channels(), None, "the landed record moved the process-wide answer");
-        let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+        let start = plx_os::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
         assert_eq!(start.audio_channels.get("opus").copied(), Some(2), "the landed record gives the next start the ceiling");
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
@@ -3729,7 +3729,7 @@ mod flight_tests {
         let mut rig = Rig::new(150);
         let _set = firmware_announcing_opus();
         // The play began on the value the set announced: Opus at any channel count.
-        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::plan_on(&mut rig.ps, plx_os::devcaps::caps());
         FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         land_original_trial(&mut rig);
         let decisions = rig.flight.decisions();
@@ -3766,7 +3766,7 @@ mod flight_tests {
         let _set = firmware_announcing_opus();
         // The play began on the value the set announced (Opus at any width), as in the tests above:
         // an attempt which never announced Opus has nothing to narrow, so it gets no conversion.
-        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::plan_on(&mut rig.ps, plx_os::devcaps::caps());
         FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         rig.flight.refuse_decisions(1);
         rig.frame();
@@ -3804,14 +3804,14 @@ mod flight_tests {
         // and the play start derives its value from the record, so the attempt already lacks it.
         let _session = plx_plex::plex::session::TempSession::new("known-stall");
         let known = plx_plex::plex::session::NativeAudioRefusal::of_facet(
-            &plx_platform::devcaps::Facet::Audio { codec: "opus".into(), channels: 6 },
+            &plx_os::devcaps::Facet::Audio { codec: "opus".into(), channels: 6 },
             "kisscurl-koli",
             "6.5.3-47",
             None,
         )
         .expect("a named row");
         plx_plex::plex::session::save(&plx_plex::plex::session::peek().with_native_audio_refusal(&known).expect("news"));
-        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()));
+        FlightRig::plan_on(&mut rig.ps, plx_os::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()));
         assert!(!crate::route::audio_track_direct_plays(&rig.ps, "opus", 6, 48_000), "sanity: the attempt lacks the stored refusal");
         plx_play_feed::native_audio::publish_fed(plx_play_feed::native_audio::Kind::Opus, 6);
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
@@ -3861,11 +3861,11 @@ mod flight_tests {
     /// The set the attempt started on: its pipeline announces DTS at six channels (the shape of
     /// `plan_track_selection_tests`' DTS row), so taking `dts:6` out of the attempt is a real
     /// narrowing and the facet rung has something to convert.
-    fn dts_announcing_start() -> std::sync::Arc<plx_platform::devcaps::Caps> {
-        std::sync::Arc::new(plx_platform::devcaps::Caps {
+    fn dts_announcing_start() -> std::sync::Arc<plx_os::devcaps::Caps> {
+        std::sync::Arc::new(plx_os::devcaps::Caps {
             audio: "aac,ac3,eac3,dts".into(),
             audio_channels: [("dts".into(), 6)].into(),
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         })
     }
 
@@ -4253,8 +4253,8 @@ mod flight_tests {
     // ---- S2a: a refusal is learned only from a facet-clean proof ---------------------------------
 
     /// This thread plays the DTS set of [`dts_announcing_start`] on firmware `fw`, build `B`.
-    fn firmware_announcing_dts() -> plx_platform::devcaps::CapsGuard {
-        plx_platform::devcaps::firmware_on_this_thread_for_test("fw", "B", (*dts_announcing_start()).clone())
+    fn firmware_announcing_dts() -> plx_os::devcaps::CapsGuard {
+        plx_os::devcaps::firmware_on_this_thread_for_test("fw", "B", (*dts_announcing_start()).clone())
     }
 
     /// The rows the install's record holds, after the queued writes landed.
@@ -4264,7 +4264,7 @@ mod flight_tests {
     }
 
     fn dts_row(proofs: u32) -> plx_plex::plex::session::NativeAudioRefusal {
-        let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
+        let dts6 = plx_os::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
         plx_plex::plex::session::NativeAudioRefusal::of_facet(&dts6, "fw", "B", Some(proofs)).expect("a counted row")
     }
 
@@ -4299,12 +4299,12 @@ mod flight_tests {
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
         assert!(
             std::sync::Arc::ptr_eq(
-                &plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()),
-                &plx_platform::devcaps::caps()
+                &plx_os::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()),
+                &plx_os::devcaps::caps()
             ),
             "a once-proved row leaves the next start alone"
         );
-        assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "one proof changes no capability answer");
+        assert!(plx_os::devcaps::caps().audio_supports("dts", 6), "one proof changes no capability answer");
     }
 
     /// A second rescued play persists the refusal; the next play's start value no longer announces
@@ -4340,11 +4340,11 @@ mod flight_tests {
         assert!(rows[0].applies());
 
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
-        let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
-        let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+        let dts6 = plx_os::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
+        let start = plx_os::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
         assert!(!start.audio_supports("dts", 6), "the next start bounds DTS: {:?}", start.audio_channels);
         assert_eq!(start.without(&dts6), *start, "nothing left to take out");
-        assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot snapshot is untouched");
+        assert!(plx_os::devcaps::caps().audio_supports("dts", 6), "the boot snapshot is untouched");
     }
 
     /// An HLS rescue (the both-facets rung) records nothing, however clean the verdicts.
@@ -4418,7 +4418,7 @@ mod flight_tests {
         let _session = plx_plex::plex::session::TempSession::new("s2a-named");
         let _set = firmware_announcing_opus();
         rig.flight.begin_attempt(&rig.ps);
-        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::plan_on(&mut rig.ps, plx_os::devcaps::caps());
         FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         rig.frame();
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
@@ -4475,7 +4475,7 @@ mod flight_tests {
         let mut rig = Rig::new(150);
         let _set = firmware_announcing_opus();
         rig.flight.begin_attempt(&rig.ps);
-        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::plan_on(&mut rig.ps, plx_os::devcaps::caps());
         FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         FEED_SHARED.frames.store(1, Relaxed);
         rig.frame();
@@ -4696,9 +4696,9 @@ mod flight_tests {
     // ---- S4 enable: the app decodes what the pipeline refused --------------------------------------
 
     /// [`dts_announcing_start`] on a table that was read: the lossy policy admits DTS (it is measured).
-    fn measured_dts_start() -> std::sync::Arc<plx_platform::devcaps::Caps> {
-        std::sync::Arc::new(plx_platform::devcaps::Caps {
-            app_lossy: plx_platform::devcaps::AppLossy::Measured,
+    fn measured_dts_start() -> std::sync::Arc<plx_os::devcaps::Caps> {
+        std::sync::Arc::new(plx_os::devcaps::Caps {
+            app_lossy: plx_os::devcaps::AppLossy::Measured,
             ..(*dts_announcing_start()).clone()
         })
     }
@@ -4826,7 +4826,7 @@ mod flight_tests {
     /// stack that has none).
     #[test]
     fn the_app_decode_rungs_pcm_load_is_planned_its_stacks_lead() {
-        use plx_platform::devcaps::{audio_stack_on_this_thread_for_test, AudioStack};
+        use plx_os::devcaps::{audio_stack_on_this_thread_for_test, AudioStack};
         for (stack, pending, lead_once_read) in
             [(AudioStack::Liblxa, true, 400_000_000), (AudioStack::Other, false, 0)]
         {
@@ -6072,7 +6072,7 @@ mod native_seek_pump_tests {
         assert!(at("play") < at("pause"), "{verbs:?}");
         // No getVolume is bound (it returns an int on 4.5, not the header's string), so the restore
         // is the pipeline default by construction, not a value read back.
-        let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
+        let default = plx_os::tv::sink::PIPELINE_DEFAULT_VOLUME;
         assert_eq!(default, 100, "libpf CustomPipeline::getVolume's default");
         assert!(at("pause") < at(&format!("volume:{default}")), "restored after the re-pause: {verbs:?}");
         assert_eq!(ffi_host::host_volume_for_test(), default);
@@ -6174,7 +6174,7 @@ mod native_seek_pump_tests {
     impl AcbGuard {
         fn arm() -> AcbGuard {
             crate::player::plane().reset_for_test();
-            crate::player::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+            crate::player::plane().boot(plx_os::tv::plane::PlaneFacts { handle: true, player_type: 10 });
             ffi_host::reset_acb_for_test(true);
             AcbGuard
         }
@@ -6582,7 +6582,7 @@ mod end_of_film_tests {
             for _ in 0..80 {
                 rig.step();
                 let epoch = rig.eng().native_epoch;
-                let ty = plx_play_feed::sf_event::displayed_counter_type(plx_platform::tv::device::info().major);
+                let ty = plx_play_feed::sf_event::displayed_counter_type(plx_os::tv::device::info().major);
                 plx_play_feed::sf_event::sf_on_event(epoch, ty, 5, std::ptr::null());
             }
         });

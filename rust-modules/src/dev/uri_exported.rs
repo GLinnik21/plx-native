@@ -26,7 +26,7 @@
 //! about the boot, so a stale file must not move a later boot off the who's-watching picker.
 
 use plx_play_uri::backend::{Binding, EXPORTED_CANVAS};
-use plx_platform::tv::sink::VP_EXPORTED;
+use plx_os::tv::sink::VP_EXPORTED;
 use std::os::raw::c_int;
 
 /// Is the override armed? One `stat` of the trigger, taken by the composition at boot.
@@ -53,7 +53,7 @@ pub(crate) fn compose(binding: Binding, display_mode: c_int, armed: bool) -> Bin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::sink::{VP_ACB, VP_NONE};
+    use plx_os::tv::sink::{VP_ACB, VP_NONE};
 
     /// The binding `compose` yields for a production `binding` on a display in `mode`, and what it
     /// logged.

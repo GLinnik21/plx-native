@@ -28,7 +28,7 @@ class GeneratedProofTests(unittest.TestCase):
             out = self.root / relative
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / 'rust-modules' / relative, out)
-        self.module = self.root / 'platform/src/i18n/mod.rs'
+        self.module = self.root / 'os/src/i18n/mod.rs'
         self.catalogue = self.root.parent / 'locales/languages.json'
 
     def evidence(self):
@@ -99,7 +99,7 @@ class GeneratedProofTests(unittest.TestCase):
                 forged.write_text(json.dumps(changed), encoding='utf-8')
                 with patch.object(generated, 'CERTIFICATE_PATH', forged):
                     self.assertIsNone(self.evidence())
-        for relative in ('machine/Cargo.toml', 'platform/Cargo.toml', 'Cargo.lock'):
+        for relative in ('machine/Cargo.toml', 'os/Cargo.toml', 'Cargo.lock'):
             with self.subTest(path=relative):
                 path = self.root / relative
                 original = path.read_bytes()
@@ -118,27 +118,27 @@ class GeneratedProofTests(unittest.TestCase):
         self.assertIsNotNone(self.evidence())  # Rust Debug-escaped string, never a source slot.
 
     def test_wrong_module_and_same_name_are_not_certified(self):
-        wrong = self.root / 'platform/src/wrong.rs'
+        wrong = self.root / 'os/src/wrong.rs'
         wrong.write_text('pub enum Preference { Payload(std::cell::Cell<u32>) }', encoding='utf-8')
         self.assertIsNone(generated.provenance(self.root, wrong))
         self.assertFalse(Proof(self.root, gate).inert(wrong, ['Preference']))
         consumer = self.root / 'session/src/shadow.rs'
         consumer.parent.mkdir(parents=True, exist_ok=True)
-        consumer.write_text('#[path="../../platform/src/i18n/mod.rs"] mod language;', encoding='utf-8')
+        consumer.write_text('#[path="../../os/src/i18n/mod.rs"] mod language;', encoding='utf-8')
         self.assertFalse(Proof(self.root, gate).inert(consumer, ['language', ':', ':', 'Preference']))
 
     def test_all_producer_namespace_and_feature_mutations_fail_closed(self):
         mutations = [
-            ('platform/src/i18n/mod.rs', '/languages.rs', '/other.rs'),
-            ('platform/src/i18n/mod.rs', 'include!', '#[cfg(feature="rogue")] include!'),
-            ('platform/src/i18n/mod.rs', 'include!', 'pub enum Preference { Payload(std::cell::Cell<u32>) } include!'),
-            ('platform/src/lib.rs', 'pub mod i18n;', '#[path="other.rs"] pub mod i18n;'),
-            ('platform/build.rs', 'catalog::build', 'other::build'),
-            ('platform/build_support/catalog.rs', 'System,\\n', 'System(std::cell::Cell<u32>),\\n'),
-            ('platform/build_support/catalog.rs', 's.variant', 'callback()'),
-            ('platform/build_support/catalog.rs', 'write("languages.rs"', 'write("rogue.rs"'),
+            ('os/src/i18n/mod.rs', '/languages.rs', '/other.rs'),
+            ('os/src/i18n/mod.rs', 'include!', '#[cfg(feature="rogue")] include!'),
+            ('os/src/i18n/mod.rs', 'include!', 'pub enum Preference { Payload(std::cell::Cell<u32>) } include!'),
+            ('os/src/lib.rs', 'pub mod i18n;', '#[path="other.rs"] pub mod i18n;'),
+            ('os/build.rs', 'catalog::build', 'other::build'),
+            ('os/build_support/catalog.rs', 'System,\\n', 'System(std::cell::Cell<u32>),\\n'),
+            ('os/build_support/catalog.rs', 's.variant', 'callback()'),
+            ('os/build_support/catalog.rs', 'write("languages.rs"', 'write("rogue.rs"'),
             ('build_support/install_identities.rs', 'pub fn emit', '#[cfg(feature="rogue")] pub fn emit'),
-            ('platform/Cargo.toml', '[package]', '[features]\nrogue = []\n[package]'),
+            ('os/Cargo.toml', '[package]', '[features]\nrogue = []\n[package]'),
         ]
         for relative, old, new in mutations:
             with self.subTest(path=relative, mutation=new):
@@ -166,7 +166,7 @@ class GeneratedProofTests(unittest.TestCase):
         self.assertIsNone(self.evidence())
 
     def test_conditional_field_attribute_is_opaque(self):
-        self.module = self.root / 'platform/src/rogue.rs'
+        self.module = self.root / 'os/src/rogue.rs'
         self.module.write_text('enum Holder { Value(#[cfg_attr(feature="rogue", payload)] u32) }', encoding='utf-8')
         self.assertFalse(Proof(self.root, gate).inert(self.module, ['Holder']))
 
@@ -176,8 +176,8 @@ class GeneratedProofTests(unittest.TestCase):
     def test_consumer_namespace_shadow_is_not_canonical(self):
         path = self.root / 'session/src/shadow.rs'
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('mod plx_platform { pub mod i18n { pub enum Preference { Payload(std::cell::Cell<u32>) } } }', encoding='utf-8')
-        self.assertFalse(Proof(self.root, gate).inert(path, ['plx_platform', ':', ':', 'i18n', ':', ':', 'Preference']))
+        path.write_text('mod plx_os { pub mod i18n { pub enum Preference { Payload(std::cell::Cell<u32>) } } }', encoding='utf-8')
+        self.assertFalse(Proof(self.root, gate).inert(path, ['plx_os', ':', ':', 'i18n', ':', ':', 'Preference']))
         self.assertEqual(imports(['plx_plex', ':', ':', 'probe', ':', ':', '{', 'self', '}']), [('probe', ('plx_plex', 'probe'))])
 
     def change_root_release(self, version, manifest=True, lock=True):

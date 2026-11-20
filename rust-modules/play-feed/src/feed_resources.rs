@@ -37,7 +37,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
-pub type UnloadSpawner = fn(plx_platform::tv::sink::UnloadTicket)
+pub type UnloadSpawner = fn(plx_os::tv::sink::UnloadTicket)
     -> Option<std::thread::JoinHandle<()>>;
 
 pub struct FeedResources {

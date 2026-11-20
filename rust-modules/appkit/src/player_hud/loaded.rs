@@ -8,7 +8,7 @@
 //! pushes the [`Arc<Compiled>`] into the player page the way it pushes the frame's
 //! [`HudModel`](super::model::HudModel).
 //! Nothing here reads a registry on its own account: the language arrives as a [`LocaleContext`] (the
-//! OWNER passes `plx_platform::i18n::current()`), the strings are built from it ([`AppLabels::in_language`]) and the
+//! OWNER passes `plx_os::i18n::current()`), the strings are built from it ([`AppLabels::in_language`]) and the
 //! measurer is passed in. The draw ([`super::render`])
 //! walks the result and computes nothing.
 //!
@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{Language, LocaleContext};
+use plx_os::i18n::{Language, LocaleContext};
 
 use crate::hud_format::compile::{compile, AppLabels, CompileCtx, CompileKey, Compiled};
 use crate::hud_format::bundle::{self, VerifiedPackage};
@@ -88,7 +88,7 @@ pub fn load_classic(app_version: &str, cx: &LocaleContext, measure: &dyn Measure
 /// The ONE helper a test builder takes its `PlayerScreen::new` argument from.
 #[cfg(any(test, feature = "test-support"))]
 pub fn classic_for_test() -> Arc<Compiled> {
-    load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).compiled
+    load_classic("0.0.0-test", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure).compiled
 }
 
 /// **The reference package for a test that builds a player page**: the fixture the format's own tests draw
@@ -97,7 +97,7 @@ pub fn classic_for_test() -> Arc<Compiled> {
 #[cfg(any(test, feature = "test-support"))]
 pub fn reference_for_test() -> Arc<Compiled> {
     let bytes = crate::hud_format::fixtures::bytes("reference");
-    load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+    load(&bytes, "0.0.0-test", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure)
         .expect("the reference fixture loads")
         .compiled
 }
@@ -113,7 +113,7 @@ pub fn reference_with_info_actions_for_test() -> Arc<Compiled> {
     let actions = r#"{ "align": "end", "valign": "center", "actions": { "axis": "column", "gap": 12, "item_h": 52, "min_w": 200,
           "items": [ { "id": "from_beginning", "command": "from_beginning", "widget": "button", "size": 52 },
                      { "id": "go_to_detail", "command": "go_to_detail", "widget": "button", "size": 52 } ] } }"#;
-    load(&crate::hud_format::fixtures::with_hud("reference", &text.replace(spacer, actions)), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+    load(&crate::hud_format::fixtures::with_hud("reference", &text.replace(spacer, actions)), "0.0.0-test", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure)
         .expect("the reference fixture with Info actions loads")
         .compiled
 }
@@ -127,7 +127,7 @@ pub fn reference_with_forward_as_for_test(command: &str) -> Arc<Compiled> {
     let forward = r#"{ "id": "fwd", "command": "seek", "by": 30,"#;
     assert_eq!(text.matches(forward).count(), 1, "the reference fixture has one forward seek");
     let replaced = text.replace(forward, &format!(r#"{{ "id": "fwd", "command": "{command}","#));
-    load(&crate::hud_format::fixtures::with_hud("reference", &replaced), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+    load(&crate::hud_format::fixtures::with_hud("reference", &replaced), "0.0.0-test", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure)
         .expect("the reference fixture with a replaced forward control loads")
         .compiled
 }
@@ -146,7 +146,7 @@ pub fn reference_without_openers_for_test(policy: &str) -> Arc<Compiled> {
     );
     assert_eq!(text.matches(openers).count(), 1, "the reference's two section discs, as written");
     let text = text.replace(openers, "").replace("\"sections\": \"inline\"", &format!("\"sections\": \"{policy}\""));
-    load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+    load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure)
         .expect("the reference without its openers loads")
         .compiled
 }
@@ -233,7 +233,7 @@ pub enum DevHud {
 mod tests {
     use super::*;
     use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_platform::i18n::SHIPPED;
+    use plx_os::i18n::SHIPPED;
 
     /// The embedded classic is a package the format accepts and the compiler lays out without a single
     /// finding (a number or gap keyed on a card term), in EVERY shipped language: a label's width is a
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn classic_and_every_fixture_answer_every_frame() {
-        let en = plx_platform::i18n::english();
+        let en = plx_os::i18n::english();
         assert!(answers_every_frame(&load_classic("1.0", en, &ShippedMeasure).compiled));
         let reference = include_str!("../hud_format/fixtures/reference/hud.json");
         assert!(answers_every_frame(&load(&crate::hud_format::fixtures::with_hud("reference", reference), "1.0", en, &ShippedMeasure).unwrap().compiled));
@@ -295,11 +295,11 @@ mod tests {
     /// or another language are not, so the owner recompiles exactly when something changed.
     #[test]
     fn the_key_names_the_bytes_the_release_and_the_language() {
-        let en = plx_platform::i18n::english();
+        let en = plx_os::i18n::english();
         let a = load_classic("1.0", en, &ShippedMeasure).key;
         assert_eq!(a, load_classic("1.0", en, &ShippedMeasure).key);
         assert_ne!(a, load_classic("1.1", en, &ShippedMeasure).key, "the release is part of the key");
-        let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_platform::i18n::Language::En)).expect("a shipped language other than English");
+        let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_os::i18n::Language::En)).expect("a shipped language other than English");
         let de = LocaleContext::resolve(other, None, None, None, None);
         assert_ne!(a, load_classic("1.0", &de, &ShippedMeasure).key, "the language is part of the key");
         assert_eq!(a.sha256, plx_base::sha256::sha256(crate::hud_format::CLASSIC_PACKAGE));
@@ -308,7 +308,7 @@ mod tests {
     /// A package that does not parse is refused, never half-loaded: the screen keeps the layout it has.
     #[test]
     fn a_package_that_does_not_parse_is_refused() {
-        let err = load(b"{ not json", "1.0", plx_platform::i18n::english(), &ShippedMeasure);
+        let err = load(b"{ not json", "1.0", plx_os::i18n::english(), &ShippedMeasure);
         assert!(matches!(err, Err(LoadError::Invalid(n)) if n > 0));
     }
     /// The dev trigger's value is the package's path: its first line, trimmed. An empty file arms nothing.
@@ -324,7 +324,7 @@ mod tests {
     /// (for that language), and leaves the owner on classic.
     #[test]
     fn a_dev_package_that_does_not_load_reports_once_and_is_not_recompiled() {
-        let en = plx_platform::i18n::english();
+        let en = plx_os::i18n::english();
         let mut bad = DevPackage::new("/x/bad.json".to_owned(), Ok(b"{ not json".to_vec()));
         assert!(bad.hud().is_none());
         assert!(matches!(bad.refresh("1.0", en, &ShippedMeasure), DevStep::Report(m) if m.contains("/x/bad.json")));
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(bad.refresh("1.0", en, &ShippedMeasure), DevStep::Quiet);
         assert!(bad.hud().is_none(), "classic draws");
         // another language is another key: it is tried (and fails) once more
-        let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_platform::i18n::Language::En)).unwrap();
+        let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_os::i18n::Language::En)).unwrap();
         let de = LocaleContext::resolve(other, None, None, None, None);
         assert!(matches!(bad.refresh("1.0", &de, &ShippedMeasure), DevStep::Report(_)));
         assert_eq!(bad.refresh("1.0", &de, &ShippedMeasure), DevStep::Quiet);
@@ -341,7 +341,7 @@ mod tests {
     /// A file that cannot be read is reported once and never read again.
     #[test]
     fn a_dev_package_that_cannot_be_read_reports_once() {
-        let en = plx_platform::i18n::english();
+        let en = plx_os::i18n::english();
         let mut gone = DevPackage::new("/x/gone.json".to_owned(), Err("No such file".to_owned()));
         assert!(matches!(gone.refresh("1.0", en, &ShippedMeasure), DevStep::Report(m) if m.contains("No such file")));
         assert_eq!(gone.refresh("1.0", en, &ShippedMeasure), DevStep::Quiet);
@@ -352,13 +352,13 @@ mod tests {
     /// language changes.
     #[test]
     fn a_dev_package_compiles_once_per_language() {
-        let en = plx_platform::i18n::english();
+        let en = plx_os::i18n::english();
         let mut dev = DevPackage::new("/x/classic.json".to_owned(), Ok(crate::hud_format::CLASSIC_PACKAGE.to_vec()));
         assert_eq!(dev.refresh("1.0", en, &ShippedMeasure), DevStep::Compiled);
         let first = Arc::clone(&dev.hud().expect("loaded").compiled);
         assert_eq!(dev.refresh("1.0", en, &ShippedMeasure), DevStep::Ready);
         assert!(Arc::ptr_eq(&first, &dev.hud().unwrap().compiled), "not recompiled per frame");
-        let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_platform::i18n::Language::En)).unwrap();
+        let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_os::i18n::Language::En)).unwrap();
         let de = LocaleContext::resolve(other, None, None, None, None);
         assert_eq!(dev.refresh("1.0", &de, &ShippedMeasure), DevStep::Compiled);
         assert!(!Arc::ptr_eq(&first, &dev.hud().unwrap().compiled), "a language change recompiles");

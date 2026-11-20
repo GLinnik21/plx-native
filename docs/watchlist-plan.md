@@ -95,7 +95,7 @@ Every file:line is on origin/main adf73d81a.
 - **Replay.** `StoreId` is append-only (data/stores/mod.rs:469-486). `ARG_SHAPE`
   (registry.rs:1650) feeds `SCREEN_SHAPES_PIN` (:2232); a fixture recorded against another pin
   cannot load (:2121-2125). 3 committed fixtures.
-- **i18n.** `SHIPPED = [En, Es, Be, Fr]` (platform/i18n/mod.rs:22-23). Dates only as
+- **i18n.** `SHIPPED = [En, Es, Be, Fr]` (os/i18n/mod.rs:22-23). Dates only as
   `YMD::short()`. No collation/case-mapping/normalization crate in Cargo.lock.
 - **Text tracking.** gfx/src/text.rs has no letter-spacing.
 - **Icons.** Commit 40b4cd14 (branch claude/zen-tesla-pqhbu8): `bookmark`, `bookmark-fill`,
@@ -116,7 +116,7 @@ Every file:line is on origin/main adf73d81a.
 | `screens::catalog` | screens | Lightweight page for a Discover-only item (§1.7). |
 | `appkit::hero_layout` | appkit | Hero geometry/meta-line helpers moved out of detail/hero.rs so Detail and catalog share them without breaking the sibling rule. |
 | `ui::icons`, `ui::cards::{landing,grid}`, `ui::popover`, gfx `fs_glass.frag`, gfx text | ui/gfx | DS PRs |
-| `platform::i18n` | platform | Month-name dates, strings |
+| `os::i18n` | platform | Month-name dates, strings |
 | app (chrome.rs, bridge.rs, content.rs, effects.rs, input) | app | Strip vocabulary, routing, `AppArg::Watchlist`, tab pulse |
 
 Nothing names webOS. Screens never name a sibling screen or app.
@@ -495,7 +495,7 @@ Empty states: full-screen read-out (verdict y=372, no glyph, sentence case): emp
 "filter left nothing". DS rule change: verdict in PRIMARY text colour, body secondary,
 everywhere. App text never elides (ui/src/CLAUDE.md).
 Focus caption: TileLabel title + secondary line; unplayable → state sentence ("Coming 12
-Mar"). ICU4X dates numeric only today (`platform/src/i18n/mod.rs:151-163`); need month-name
+Mar"). ICU4X dates numeric only today (`os/src/i18n/mod.rs:151-163`); need month-name
 format for En/Es/Be (`SHIPPED`, `mod.rs:22`).
 
 **Tile states.** Unplayable tiles visible+focusable; OK → Detail, hold → menu. State marks
@@ -509,7 +509,7 @@ duotone, frosted tiles.
 not on list, filled when on. No label under a hero disc, at rest or focused (design-review S25's focused caption, "Add to Watchlist" / "On Watchlist", was removed by the owner on 2026-10-20). Without Play (coming soon / on no
 server / server offline): labelled pill in primary slot "Add to Watchlist" (outline) / "On
 Watchlist" (filled) + status line with icon; coming-soon also has a 36 px "Coming 12 March"
-line and a Trailer button. NO toast anywhere (not `platform/src/tv/toast.rs`); button state is
+line and a Trailer button. NO toast anywhere (not `os/src/tv/toast.rs`); button state is
 the only feedback.
 
 **Hold menus.** Episode menu rows today: Go to Episode, Go to Show, —, Mark as Watched, Play

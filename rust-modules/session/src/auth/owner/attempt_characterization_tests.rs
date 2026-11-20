@@ -180,7 +180,7 @@ fn discovery_failure_private_account_is_neither_wire_nor_hash_authority() {
     let epoch = waiting(&mut owner);
     login(&mut owner, 2, LoginProgress::Authorized { epoch, token: "synthetic-account".into() }, false);
     let failed = envelope(&owner, 1, 3, true, Observation::Login(LoginProgress::Failed {
-        epoch, message: plx_platform::i18n::msg::browse_auth_no_servers().into(),
+        epoch, message: plx_os::i18n::msg::browse_auth_no_servers().into(),
         incident: IncidentContext::internal(InternalClass::WorkerDropped), plaintext: None,
         account: Some("Synthetic Person".into()) }));
     let fx = step(&mut owner, SessionEvent::Result(failed.clone()));

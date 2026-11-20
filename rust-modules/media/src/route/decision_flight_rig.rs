@@ -245,7 +245,7 @@ fn install_plan(ps: &mut PlaybackSession, shape: Shape, port: i32, sid: plx_plex
     // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
     // it on this thread's answer, so a rig test plans from the same table it installs
     // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
-    ps.begin_attempt(plx_platform::devcaps::caps());
+    ps.begin_attempt(plx_os::devcaps::caps());
     apply_plan(
         ps,
         Plan {
@@ -301,7 +301,7 @@ impl FlightRig {
     /// would have ([`PlaybackSession::begin_attempt`]). The rig already began it on the thread's
     /// `devcaps::caps()` when it started; a test that installs its set AFTER the rig (a
     /// `firmware_on_this_thread_for_test` guard taken once the route is up) re-begins on that set.
-    pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+    pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_os::devcaps::Caps>) {
         ps.begin_attempt(caps);
         // The rig keeps its already installed physical Feed source while beginning a fresh
         // capability attempt. Recreate the resolved recipe and its actual admission, as the

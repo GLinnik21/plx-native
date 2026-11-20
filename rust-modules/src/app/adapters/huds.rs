@@ -71,7 +71,7 @@ use plx_data::hudpacks::{
 use plx_net::net::{RequestFailure, Resp};
 use plx_data::hudpacks::catalog;
 use plx_machine::machine::Measure;
-use plx_platform::i18n::LocaleContext;
+use plx_os::i18n::LocaleContext;
 
 // ---------------------------------------------------------------------------------------------
 // The runner: the store's effects as blocking IO on the storage worker
@@ -1107,7 +1107,7 @@ mod tests {
     use plx_appkit::player_hud::loaded::load_classic;
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_data::hudpacks::{Refusal, Source};
-    use plx_platform::i18n::{LocaleContext, Preference};
+    use plx_os::i18n::{LocaleContext, Preference};
 
     const REFERENCE: &str = include_str!("../../../appkit/src/hud_format/fixtures/reference/hud.json");
     const MINIMAL: &str = include_str!("../../../appkit/src/hud_format/fixtures/minimal/hud.json");
@@ -1205,7 +1205,7 @@ mod tests {
         let mut driver = HudDriver::new(HudRunner::inline(APP));
         driver.setup = Some(dir.setup());
         driver.faces = Some(pkg_faces());
-        let classic = load_classic(APP, plx_platform::i18n::english(), &ShippedMeasure);
+        let classic = load_classic(APP, plx_os::i18n::english(), &ShippedMeasure);
         driver.start(classic, APP);
         driver
     }
@@ -1345,7 +1345,7 @@ mod tests {
         let mut driver = HudDriver::new(HudRunner::inline(APP).on_network(network));
         driver.setup = Some(dir.setup());
         driver.faces = Some(pkg_faces());
-        driver.start(load_classic(APP, plx_platform::i18n::english(), &ShippedMeasure), APP);
+        driver.start(load_classic(APP, plx_os::i18n::english(), &ShippedMeasure), APP);
         driver
     }
 

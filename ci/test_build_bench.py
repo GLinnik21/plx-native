@@ -58,7 +58,7 @@ def read(p):
         return open(p).read()
     except OSError:
         return ""
-EDITED = ("base/src/cbuf.rs", "machine/src/landgate.rs", "platform/src/devcaps.rs", "gfx/src/overdraw.rs", "net/src/stream_redirect.rs", "ui/src/dwell.rs", "plex/src/plex/retry.rs", "telemetry/src/telemetry/window.rs", "data/src/stores/tape.rs", "session/src/auth/scripted.rs", "media/src/abr/units.rs", "appkit/src/skip_pill.rs", "screens/src/clock_readout.rs", "src/coldstart.rs", "ui/src/lib.rs")
+EDITED = ("base/src/cbuf.rs", "machine/src/landgate.rs", "os/src/devcaps.rs", "gfx/src/overdraw.rs", "net/src/stream_redirect.rs", "ui/src/dwell.rs", "plex/src/plex/retry.rs", "telemetry/src/telemetry/window.rs", "data/src/stores/tape.rs", "session/src/auth/scripted.rs", "media/src/abr/units.rs", "appkit/src/skip_pill.rs", "screens/src/clock_readout.rs", "src/coldstart.rs", "ui/src/lib.rs")
 if os.environ.get("FAKE_FAIL_ON_EDIT") and "build-bench edit" in "".join(read(p) for p in EDITED):
     sys.stderr.write("error: fake cargo failed on the edited tree\n")
     sys.exit(101)
@@ -93,7 +93,7 @@ if "--no-run" in args:
     print(json.dumps({"reason": "compiler-artifact", "package_id": "registry+x#serde@1.0.0", "fresh": True}))
     art('/base', 'plx_base', '0.0.0')
     art('/machine', 'plx_machine', '0.0.0')
-    art('/platform', 'plx_platform', '0.0.0')
+    art('/os', 'plx_os', '0.0.0')
     art('/gfx', 'plx_gfx', '0.0.0')
     art('/net', 'plx_net', '0.0.0')
     art('/ui', 'plx_ui', '0.0.0')
@@ -130,7 +130,7 @@ SCRATCH_MAKEFILE = r'''print-bench-config:
 '''
 LEAF = "rust-modules/base/src/cbuf.rs"
 MACHINE_LEAF = "rust-modules/machine/src/landgate.rs"
-PLATFORM_LEAF = "rust-modules/platform/src/devcaps.rs"
+PLATFORM_LEAF = "rust-modules/os/src/devcaps.rs"
 GFX_LEAF = "rust-modules/gfx/src/overdraw.rs"
 NET_LEAF = "rust-modules/net/src/stream_redirect.rs"
 UI_LEAF = "rust-modules/ui/src/dwell.rs"
@@ -206,11 +206,11 @@ class ShapeTests(unittest.TestCase):
             (sb.repo / "rust-modules" / "target").mkdir(parents=True)
             (sb.repo / "rust-modules" / "target" / "blob").write_bytes(b"x" * 4096)
             out = sb.repo.parent / "out.json"
-            proc = sb.run("--runs", "2", "--only", "noop,leaf,machine,platform,gfx,net,ui,plex,telemetry,data,session,media,appkit,screens,hub,tests,sizes", "--json", str(out))
+            proc = sb.run("--runs", "2", "--only", "noop,leaf,machine,os,gfx,net,ui,plex,telemetry,data,session,media,appkit,screens,hub,tests,sizes", "--json", str(out))
             self.assertEqual(proc.returncode, 0, proc.stderr)
             md = proc.stdout
             self.assertIn("| Scenario | Runs | Median | Min | Max | Notes |", md)
-            for title in (bb.TITLES["noop"], bb.TITLES["leaf"], bb.TITLES["machine"], bb.TITLES["platform"], bb.TITLES["gfx"], bb.TITLES["net"], bb.TITLES["ui"], bb.TITLES["plex"], bb.TITLES["telemetry"], bb.TITLES["data"], bb.TITLES["session"], bb.TITLES["media"], bb.TITLES["appkit"], bb.TITLES["screens"], bb.TITLES["hub"],
+            for title in (bb.TITLES["noop"], bb.TITLES["leaf"], bb.TITLES["machine"], bb.TITLES["os"], bb.TITLES["gfx"], bb.TITLES["net"], bb.TITLES["ui"], bb.TITLES["plex"], bb.TITLES["telemetry"], bb.TITLES["data"], bb.TITLES["session"], bb.TITLES["media"], bb.TITLES["appkit"], bb.TITLES["screens"], bb.TITLES["hub"],
                           bb.TITLES["tests"]):
                 self.assertRegex(md, re.escape(f"| {title} | 2 | ") + r"[\d.]+ s \| [\d.]+ s \| [\d.]+ s \|")
             self.assertIn("app crate rebuilt: no", md)   # the no-op row
@@ -227,7 +227,7 @@ class ShapeTests(unittest.TestCase):
             self.assertGreaterEqual(doc["host"]["cores"], 1)
             self.assertEqual(doc["runs"], 2)
             self.assertTrue(doc["restored_clean"])
-            self.assertEqual([s["id"] for s in doc["scenarios"]], ["noop", "leaf", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "media", "appkit", "screens", "hub", "tests", "sizes"])
+            self.assertEqual([s["id"] for s in doc["scenarios"]], ["noop", "leaf", "machine", "os", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "media", "appkit", "screens", "hub", "tests", "sizes"])
             for sc in doc["scenarios"]:
                 if sc["id"] == "sizes":
                     continue
@@ -242,8 +242,8 @@ class ShapeTests(unittest.TestCase):
             self.assertTrue(all(s["app_rebuilt"] for s in by_id["leaf"]["samples"]))
             self.assertTrue(all(s["machine_rebuilt"] and s["app_rebuilt"] for s in by_id["machine"]["samples"]))
             self.assertIn("plx_machine rebuilt: yes", md)
-            self.assertTrue(all(s["platform_rebuilt"] and s["app_rebuilt"] for s in by_id["platform"]["samples"]))
-            self.assertIn("plx_platform rebuilt: yes", md)
+            self.assertTrue(all(s["platform_rebuilt"] and s["app_rebuilt"] for s in by_id["os"]["samples"]))
+            self.assertIn("plx_os rebuilt: yes", md)
             self.assertTrue(all(s["gfx_rebuilt"] and s["app_rebuilt"] for s in by_id["gfx"]["samples"]))
             self.assertIn("plx_gfx rebuilt: yes", md)
             self.assertTrue(all(s["net_rebuilt"] and s["app_rebuilt"] for s in by_id["net"]["samples"]))

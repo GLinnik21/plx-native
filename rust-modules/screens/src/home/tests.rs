@@ -407,7 +407,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     assert_eq!(before_tick.reason, None, "the held fact does not change between ticks");
     step_clock(&mut s, view, &facts(Some(Blocked::NoKey)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
-    assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_no_key_c()));
+    assert_eq!(overlay.reason, Some(plx_os::i18n::msg::browse_clock_no_key_c()));
     assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ClockBadgeAlert), Some(c"Try again")));
     assert_eq!(overlay.caption, plain_caption.as_c_str(), "the verdict is unchanged");
     let drawn = overlay.action_frame_measured(&measure).unwrap();
@@ -418,7 +418,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     step_clock(&mut s, view, &facts(Some(Blocked::KeyChanged)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(s.clock.blocked(), Some(Blocked::KeyChanged));
-    assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
+    assert_eq!(overlay.reason, Some(plx_os::i18n::msg::browse_clock_key_changed_c()));
 
     // A read-out that has not failed takes no reason, whatever the fact says.
     for hub_state in [plx_data::pms::HubState::Loading, plx_data::pms::HubState::Ready] {

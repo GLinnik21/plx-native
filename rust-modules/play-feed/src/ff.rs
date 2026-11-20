@@ -266,7 +266,7 @@ unsafe fn audio_stream_matching(fmt: *mut AVFormatContext, want: &str) -> Option
 /// FFmpeg's codec name against the payload codec, through the shared canonicaliser: FFmpeg says
 /// `dts` where PMS (and so the payload codec) says `dca`.
 fn audio_name_matches(ffmpeg_name: &str, want: &str) -> bool {
-    plx_platform::devcaps::audio_codec_id(ffmpeg_name) == plx_platform::devcaps::audio_codec_id(want)
+    plx_os::devcaps::audio_codec_id(ffmpeg_name) == plx_os::devcaps::audio_codec_id(want)
 }
 
 /// The ffmpeg stream index of the `n`-th audio stream in file order (for native audio-track
@@ -5823,7 +5823,7 @@ mod pcm_load_guard_tests {
             ("dts", false), // lossy: the app's only when the Load itself claimed the lossy decode
             ("mp3", false), ("vorbis", false), ("truehd", false), // likewise
         ] {
-            let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
+            let app_decoded = plx_os::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
             assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");
             assert_eq!(pcm_load_feeds_raw(true, true, app_decoded), !decodable, "{name}");
         }
@@ -6452,7 +6452,7 @@ pub fn demux(
                     )).to_string_lossy();
                     // A lossy codec is the app's only when the Load declared PCM for it (the attempt
                     // decodes it in the app); otherwise it is native audio and the set's decoder takes it.
-                    plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
+                    plx_os::devcaps::app_decoded_by_ffmpeg_name(&name)
                         .filter(|c| !c.lossy || pcm_lossy())
                         .map(|_| name.into_owned())
                 } else {

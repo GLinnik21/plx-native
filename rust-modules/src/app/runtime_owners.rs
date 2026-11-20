@@ -230,7 +230,7 @@ mod tests {
         let (mut second, mut second_retained) = BridgeRetained::for_test(|| 0);
         let root = std::env::temp_dir().join(format!("plx-runtime-hud-{}", std::process::id()));
         let classic = || plx_appkit::player_hud::loaded::load_classic(
-            "0.10.0", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure);
+            "0.10.0", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure);
         first.hud.driver = adapters::huds::HudDriver::started_in(root.join("first"), classic(), "0.10.0");
         second.hud.driver = adapters::huds::HudDriver::started_in(root.join("second"), classic(), "0.10.0");
         first.hud.driver.refresh("first-choice".into());

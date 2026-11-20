@@ -10,7 +10,7 @@
 //! rung ends the ladder: there is no third identity. A rung whose first call was accepted settles
 //! it; the caller never asks again for that attempt.
 
-use plx_platform::tv::uri::Shape;
+use plx_os::tv::uri::Shape;
 use plx_playback_contract::Failure;
 
 /// The identities, in the order they are tried.

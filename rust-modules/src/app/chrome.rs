@@ -113,9 +113,9 @@ impl ChromeSnapshot {
         if strip_changed {
             self.keys = strip_keys(directory);
             self.faces = self.keys.iter().map(|&key| match key {
-                widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
-                widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
-                widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
+                widgets::TAB_KEY_HOME => TabFace::Label(plx_os::i18n::msg::browse_chrome_home().into()),
+                widgets::TAB_KEY_MOVIES => TabFace::Label(plx_os::i18n::msg::browse_kind_movies().into()),
+                widgets::TAB_KEY_SHOWS => TabFace::Label(plx_os::i18n::msg::browse_kind_tv_shows().into()),
                 widgets::TAB_KEY_WATCHLIST => TabFace::Icon(Icon::Bookmark),
                 _ => TabFace::Icon(Icon::Search),
             }).collect();

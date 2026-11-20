@@ -1,5 +1,5 @@
 [package]
-name = "plx_platform"
+name = "plx_os"
 version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
@@ -9,7 +9,7 @@ publish = false
 build = "build.rs"
 
 [lib]
-name = "plx_platform"
+name = "plx_os"
 # An rlib the application crate links, never an archive of its own: the one staticlib is the
 # application crate's (ci/test_no_host_staticlib.py holds that line for this crate too).
 crate-type = ["rlib"]

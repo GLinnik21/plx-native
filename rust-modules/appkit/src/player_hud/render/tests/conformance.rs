@@ -8,7 +8,7 @@ const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference/hud
 fn load(text: &str) -> Arc<Compiled> {
     let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
     assert!(parsed.findings.is_empty(), "{:?}", parsed.findings);
-    crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM).unwrap().compiled
+    crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_os::i18n::english(), &FM).unwrap().compiled
 }
 
 fn frame(compiled: &Compiled) -> Census {
@@ -19,7 +19,7 @@ fn frame(compiled: &Compiled) -> Census {
 #[test]
 fn declared_title_ink_weight_and_alpha_reach_the_painter() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let text = REFERENCE.replace(r#""size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true"#,
         r#""size": "TITLE", "ink": "gold", "bold": false, "alpha": 0.5"#);
     assert_ne!(text, REFERENCE);
@@ -58,14 +58,14 @@ fn a_vertical_rule_keeps_its_compiled_extent() {
 #[test]
 fn a_more_pill_or_button_draws_its_measured_app_label() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     for widget in ["pill", "button"] {
         let text = REFERENCE.replace(r#"{ "id": "more", "command": "open_more", "widget": "disc""#,
             &format!(r#"{{ "id": "more", "command": "open_more", "widget": "{widget}""#));
         assert_ne!(text, REFERENCE);
         let compiled = load(&text);
         let drew = frame(&compiled);
-        let label = plx_platform::i18n::msg::widgets_menu_options();
+        let label = plx_os::i18n::msg::widgets_menu_options();
         assert!(drew.1.iter().any(|r| r.text == label), "{widget}: accepted More control must be visible as {label:?}");
         let state = compiled.lookup(0, crate::hud_format::Slot::Discs, true, false, false).unwrap();
         let control = state.control("more").unwrap();
@@ -124,7 +124,7 @@ fn labelled_control_width_counts_only_the_glyphs_it_draws() {
             let text = if glyph { text } else { text.replace(r#", "face": "gear""#, "") };
             let compiled = load(&text);
             let state = compiled.lookup(0, crate::hud_format::Slot::Discs, true, false, false).unwrap();
-            let label = CString::new(plx_platform::i18n::msg::widgets_menu_options()).unwrap();
+            let label = CString::new(plx_os::i18n::msg::widgets_menu_options()).unwrap();
             let expected = if widget == "pill" && !glyph { TabPill::width_measured(label.to_str().unwrap(), theme::size::BODY, &FM) }
                 else { plx_ui::widgets::Button::pill_w_measured(&label, theme::size::BODY, glyph, None, &FM) };
             assert_eq!(state.control("more").unwrap().rect.w, expected, "{widget}, glyph {glyph}: no phantom leading/trailing icon");
@@ -152,7 +152,7 @@ fn info_frame(compiled: &Compiled, focus: GroupId, btn: i32) -> Census {
 #[test]
 fn a_row_button_does_not_shift_the_info_actions_focus_or_pop() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let text = REFERENCE.replace(r#"{ "id": "more", "command": "open_more", "widget": "disc""#,
         r#"{ "id": "more", "command": "open_more", "widget": "button""#);
     let text = text.replace(r#""z": 1"#, r#""z": 0"#);
@@ -161,7 +161,7 @@ fn a_row_button_does_not_shift_the_info_actions_focus_or_pop() {
         "items": [{ "id": "from_beginning", "command": "from_beginning", "widget": "button", "size": 70 },
         { "id": "detail", "command": "go_to_detail", "widget": "button", "size": 70 }] } }"#);
     let drew = info_frame(&load(&text), GROUP_SECTION, 0);
-    let label = plx_platform::i18n::msg::widgets_info_from_beginning();
+    let label = plx_os::i18n::msg::widgets_info_from_beginning();
     let action = drew.1.iter().find(|r| r.text == label).expect("Info's first action draws");
     let expected = plx_ui::widgets::ControlStyle::Accent.colors(true, ControlGround::Keyed).1;
     assert_eq!(action.ink, expected, "section index0 is still the focused action, regardless of row buttons");
@@ -171,10 +171,10 @@ fn a_row_button_does_not_shift_the_info_actions_focus_or_pop() {
 fn actions_measure_the_same_parameterised_label_they_paint() {
     let _serial = plx_base::testlock::serial();
     for (command, expected) in [
-        (r#""seek", "by": -10"#, plx_platform::i18n::msg::player_hud_skip_back()),
-        (r#""open_tracks", "tab": "audio""#, plx_platform::i18n::msg::widgets_tracks_audio()),
-        (r#""open_more", "page": "quality""#, plx_platform::i18n::msg::widgets_menu_quality()),
-        (r#""open_more""#, plx_platform::i18n::msg::widgets_menu_options()),
+        (r#""seek", "by": -10"#, plx_os::i18n::msg::player_hud_skip_back()),
+        (r#""open_tracks", "tab": "audio""#, plx_os::i18n::msg::widgets_tracks_audio()),
+        (r#""open_more", "page": "quality""#, plx_os::i18n::msg::widgets_menu_quality()),
+        (r#""open_more""#, plx_os::i18n::msg::widgets_menu_options()),
     ] {
         let text = REFERENCE.replace(r#"{ "align": "end", "spacer": { "w": 150 } }"#,
             &format!(r#"{{ "align": "end", "actions": {{ "axis": "column", "gap": 0, "item_h": 70, "min_w": 0,
@@ -261,9 +261,9 @@ fn numeric_up_next_reserves_every_countdown_label_in_every_language() {
     let _serial = plx_base::testlock::serial();
     let minimal = include_str!("../../../hud_format/fixtures/minimal/hud.json");
     let text = minimal.replace(r#""countdown": "fill_sweep""#, r#""countdown": "numeric""#);
-    for language in plx_platform::i18n::SHIPPED {
+    for language in plx_os::i18n::SHIPPED {
         let _lang = language_on_this_thread_for_test(language);
-        let locale = plx_platform::i18n::current();
+        let locale = plx_os::i18n::current();
         let hud = crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", locale, &FM).unwrap();
         let state = hud.compiled.lookup(0, crate::hud_format::Slot::UpNext, false, false, false).unwrap();
         let next = state.standin.up_next.unwrap().next;
@@ -336,7 +336,7 @@ fn chapter_frame_content(compiled: &Compiled, focused: bool, name: &str, episode
 #[test]
 fn chapter_template_text_faces_reach_focused_and_unfocused_cards() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let text = REFERENCE.replace(r#""bind": "item.title", "size": "CAPTION", "bold": false"#,
         r#""bind": "item.title", "size": "BODY", "bold": false"#);
     let compiled = load(&text);
@@ -352,7 +352,7 @@ fn chapter_template_text_faces_reach_focused_and_unfocused_cards() {
 #[test]
 fn chapter_template_omission_alignment_and_paint_are_declared() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let text = REFERENCE.replace(r#""bind": "item.title", "size": "CAPTION", "bold": false"#,
         r#""bind": "item.title", "size": "CAPTION", "bold": false, "alpha": 0.5"#)
         .replace(r#""if": { "item.focused": "TEXT_PRIMARY" }"#, r#""if": { "item.focused": "gold" }"#);

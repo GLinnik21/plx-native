@@ -7,7 +7,7 @@ use plx_machine::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, FocusRead, Fx, Host, InputEvent, InputKind, InputOwner, Key, LogicalState,
     Machine, Measure, PressId, PressRead, Source, Stamped, Tick,
 };
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::icons::Icon;

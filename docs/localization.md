@@ -58,7 +58,7 @@ context and wrapping; do not include tokens, private server addresses or persona
 
 ## Check and submit
 
-Run `make check` (or, while iterating, `make test-crate C=plx_platform T=catalog`) to validate catalogs and run the host checks. Let it finish before starting
+Run `make check` (or, while iterating, `make test-crate C=plx_os T=catalog`) to validate catalogs and run the host checks. Let it finish before starting
 another build in the same checkout: its structure-gate tests temporarily modify source files. Every build rejects duplicate,
 missing or unknown keys, invalid placeholders, incomplete plural forms, or a translation of an English-only message. The generated
 accessors also make unknown message keys and wrong argument types compilation errors. Source
@@ -100,7 +100,7 @@ a sentence. Note any wording they changed and why.
 
 A UI language is `locales/<tag>/` plus its entry in `locales/languages.json`.
 Month-and-day captions also need the language's abbreviated and full format-month names in
-`LocaleContext::month_day` (`rust-modules/platform/src/i18n/mod.rs`), with tests for both widths.
+`LocaleContext::month_day` (`rust-modules/os/src/i18n/mod.rs`), with tests for both widths.
 Use the grammatical form that follows a day number (for Polish, `12 marca`, not `12 marzec`; for Russian, `12 марта`, not `12 март`).
 
 1. Add the catalog directory, named by the bare language tag (`it`, not `it-IT`), translating all
@@ -116,7 +116,7 @@ Use the grammatical form that follows a day number (for Polish, `12 marca`, not 
    ICU's own data, and another checks that ICU has the language's number and plural data.
 3. Add launcher metadata, `pkg/resources/<tag>/appinfo.json`, and verify every character in both
    bundled font faces (the build tests do).
-4. Run `make test-crate C=plx_platform T=catalog`. A directory with no registry entry, an entry with
+4. Run `make test-crate C=plx_os T=catalog`. A directory with no registry entry, an entry with
    no directory, a missing or extra key, a missing or never-selected plural form and a wrapped
    translation are build errors that name the file and key, all listed at once.
 

@@ -13,9 +13,9 @@ import re
 from readonly_dependencies import _local_sha, _sha, _json, _manifest_paths, _configs, _workspace_hashes, WORKSPACE_HASHING
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'platform-generated-enums.json'
-CERTIFICATE_SHA256 = '1b3b34fa9b71d1850b8b9d569025e992440e29e2ce77d39f34d4e0b8d52c6503'
-SOURCES = ['platform/Cargo.toml', 'platform/src/lib.rs', 'platform/src/i18n/mod.rs',
-           'platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs',
+CERTIFICATE_SHA256 = 'ac7a32d98b59965d6551bb495e98b77d948f6646413c2084a4f147895f3460c3'
+SOURCES = ['os/Cargo.toml', 'os/src/lib.rs', 'os/src/i18n/mod.rs',
+           'os/build.rs', 'os/build_support/catalog.rs', 'build_support/install_identities.rs',
            'machine/src/lib.rs', 'machine/src/machine.rs']
 GRAMMAR = {'Preference': {'prefix': ['System'], 'catalogue_unit_variants': True},
            'Language': {'catalogue_unit_variants': True, 'suffix': ['Pseudo']}}
@@ -34,7 +34,7 @@ MACHINE_LIB_SOURCES = ['105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96c
 
 
 I18N_SOURCES = ['40a13d07a43c772b10587e510a69502684abfa1f582ce355b22fd935a8c46f45',
-                '2c978e3aa3a9215a2e96ebaec9dd5ae3cf3ee85cf1afb43a36b5f42f17ff4d52']
+                '7119e67300291b9dde7e3e65e16f673113bef30e6fb0cd237aa4aa67cabdb463']
 
 def source_hashes(root):
     sources = {p: _local_sha((root / p).read_bytes()) for p in SOURCES}
@@ -49,16 +49,16 @@ def source_hashes(root):
     if sources['machine/src/lib.rs'] not in MACHINE_LIB_SOURCES: raise ValueError('unreviewed machine namespace')
     sources['machine/src/lib.rs'] = MACHINE_LIB_SOURCES
     # Existing consumer variants differ in clock formatting, not include/enum identity.
-    if sources['platform/src/i18n/mod.rs'] not in I18N_SOURCES: raise ValueError('unreviewed include namespace')
-    sources['platform/src/i18n/mod.rs'] = I18N_SOURCES
+    if sources['os/src/i18n/mod.rs'] not in I18N_SOURCES: raise ValueError('unreviewed include namespace')
+    sources['os/src/i18n/mod.rs'] = I18N_SOURCES
     return sources
 
 def produce_certificate(root):
     """Review all executable sources on regeneration; catalogue additions need no pin."""
     root = Path(root).resolve()
     hashes = _workspace_hashes(root, _manifest_paths(root))
-    return {'schema': 'plx.readonly.generated-unit-enums.v1', 'package': 'plx_platform',
-            'module': 'platform/src/i18n/mod.rs',
+    return {'schema': 'plx.readonly.generated-unit-enums.v1', 'package': 'plx_os',
+            'module': 'os/src/i18n/mod.rs',
             'include': 'include!(concat!(env!("OUT_DIR"), "/languages.rs"));',
             'sources': source_hashes(root),
             'text_hashing': WORKSPACE_HASHING, 'manifests': hashes['manifests'],
@@ -126,7 +126,7 @@ def provenance(rust_modules_root, source_file):
         root = Path(rust_modules_root).resolve()
         path = Path(source_file)
         if not path.is_absolute(): path = root / path
-        if path.resolve() not in (root / 'platform/src/i18n/mod.rs', root / 'machine/src/machine.rs') or path.is_symlink(): return None
+        if path.resolve() not in (root / 'os/src/i18n/mod.rs', root / 'machine/src/machine.rs') or path.is_symlink(): return None
         cert = json.loads(CERTIFICATE_PATH.read_text(encoding='utf-8'))
         if _sha(_json(cert)) != CERTIFICATE_SHA256 or cert != produce_certificate(root): return None
         for relative in SOURCES:
@@ -147,7 +147,7 @@ def provenance(rust_modules_root, source_file):
 def canonical_child(root, parent, name, child):
     """An include's OUT_DIR belongs to its crate, not a foreign #[path] importer."""
     root = Path(root).resolve()
-    bindings = {root / 'platform/src/i18n/mod.rs': (root / 'platform/src/lib.rs', 'i18n'),
+    bindings = {root / 'os/src/i18n/mod.rs': (root / 'os/src/lib.rs', 'i18n'),
                 root / 'machine/src/machine.rs': (root / 'machine/src/lib.rs', 'machine')}
     expected = bindings.get(Path(child).resolve())
     return expected is None or expected == (Path(parent).resolve(), name)

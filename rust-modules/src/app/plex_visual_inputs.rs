@@ -24,7 +24,7 @@ pub(super) struct PlexVisualInputs {
     servers: Vec<ServerVisualInput>,
     preferences: Vec<u16>,
     collections: Vec<((u16, u32, i64), Option<u32>)>,
-    dv: plx_platform::devcaps::dv::DvProbe,
+    dv: plx_os::devcaps::dv::DvProbe,
 }
 
 impl PlexVisualInputs {
@@ -40,7 +40,7 @@ impl PlexVisualInputs {
         Self { current: plex::current_server(), roster: plex::server_roster_gen(),
             facts: plex::server_facts_gen(), servers,
             collections: crate::app::collections_probe::visual_facts(),
-            preferences: plx_media::route::preference_values(), dv: plx_platform::devcaps::dv::probe() }
+            preferences: plx_media::route::preference_values(), dv: plx_os::devcaps::dv::probe() }
     }
 }
 

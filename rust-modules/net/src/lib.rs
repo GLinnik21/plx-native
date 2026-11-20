@@ -5,7 +5,7 @@
 //! `net` is the blocking HTTPS client over the television's own libcurl (bound at run time by a
 //! SONAME candidate list through `plx_base::dynlib!`, so nothing is linked here), `curlio`
 //! is the interruptible HTTPS byte-range source, and `stream` is the plaintext socket stream. It is the `net` layer of `ci/module-layers.ini`: it uses `base`
-//! (and `platform`, which it does not name today) and nothing else.
+//! (and `os`, which it does not name today) and nothing else.
 //!
 //! `test-support` exposes the loopback PMS fixtures (`net::mint_cert`, `spawn_dual_protocol`, ...),
 //! the `keypin` and `resolve` test seams and the canned-response helpers that the layers above

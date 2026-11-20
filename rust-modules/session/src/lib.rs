@@ -3,7 +3,7 @@
 //! `auth` is the plex.tv sign-in and boot flow controller: PIN and QR sign-in, discovery of the
 //! account's servers, who's-watching and the profile PIN, the install of the chosen profile's
 //! credentials, and the owner machine that holds all of it (`auth::owner`). It is the `session`
-//! layer of `ci/module-layers.ini`: it uses `base`, `machine`, `platform`, `net`, `plex` and
+//! layer of `ci/module-layers.ini`: it uses `base`, `machine`, `os`, `net`, `plex` and
 //! `telemetry` and nothing above them.
 //!
 //! The release it reports and the consent hand-off are the other layers' (`plx_plex::plex::identity`

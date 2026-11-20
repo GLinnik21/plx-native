@@ -234,13 +234,13 @@ fn readout_overlay(reason: &std::ffi::CStr, back: bool) -> StatusOverlay<'_> {
     // A profile switch failing is `IncidentKind::ProfileSwitch` by construction — this screen
     // never draws the read-out for any other cause — so the glyph is the fixed one that kind maps
     // to rather than a re-derivation through an `IncidentContext` this screen doesn't hold.
-    let o = StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::settings_profiles_failed_c(), StatusKind::Failed)
+    let o = StatusOverlay::new(Rect::FULL, plx_os::i18n::msg::settings_profiles_failed_c(), StatusKind::Failed)
         .page(plx_ui::icons::Icon::PeopleBadgeAlert)
         .reason(reason);
     if back {
-        o.action(plx_platform::i18n::msg::settings_back_c()).secondary(Some(plx_platform::i18n::msg::settings_account_sign_out_c()))
+        o.action(plx_os::i18n::msg::settings_back_c()).secondary(Some(plx_os::i18n::msg::settings_account_sign_out_c()))
     } else {
-        o.action(plx_platform::i18n::msg::settings_account_sign_out_c())
+        o.action(plx_os::i18n::msg::settings_account_sign_out_c())
     }
 }
 
@@ -360,7 +360,7 @@ fn row_geom(n: usize) -> (f32, f32) {
 /// `text::text_width(..., 1)` — `Measure::width` takes a real bold flag, unlike `cap_h`/`line_h`
 /// below, so this one needs no approximation at all.
 fn footer_rect(measure: &dyn Measure) -> Rect {
-    let tw = measure.width(plx_platform::i18n::msg::settings_account_sign_out_c(), theme::size::BODY, true);
+    let tw = measure.width(plx_os::i18n::msg::settings_account_sign_out_c(), theme::size::BODY, true);
     let w = tw + 76.0;
     Rect::new((SCR_W as f32 - w) * 0.5, FOOTER_Y, w, FOOTER_H)
 }
@@ -1296,7 +1296,7 @@ impl ProfilesScreen {
             .get(self.pad.target)
             .map(|u| u.title.as_str())
             .unwrap_or("");
-        if let Ok(t) = CString::new(plx_platform::i18n::msg::settings_profiles_pin(&name)) {
+        if let Ok(t) = CString::new(plx_os::i18n::msg::settings_profiles_pin(&name)) {
             p.text(
                 t.as_ptr(),
                 SCR_W as f32 * 0.5,
@@ -1588,9 +1588,9 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         }
         if group == READOUT_GROUP || group == FOOTER_GROUP {
             let (name, label) = if *key == READOUT_BACK {
-                ("back", plx_platform::i18n::msg::settings_back_c())
+                ("back", plx_os::i18n::msg::settings_back_c())
             } else {
-                ("sign_out", plx_platform::i18n::msg::settings_account_sign_out_c())
+                ("sign_out", plx_os::i18n::msg::settings_account_sign_out_c())
             };
             let a = A11y::new(A11yPath::new().name(name), Role::Button);
             return Some(match label.to_str() {
@@ -1841,7 +1841,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
         let readout = self.roster_readout();
         // The read-out's verdict owns the page; "Who's watching?" over nobody would be a question
         // the screen has just said it cannot ask.
-        if let Some(t) = (!readout).then(|| CString::new(plx_platform::i18n::msg::settings_profiles_title()).ok()).flatten() {
+        if let Some(t) = (!readout).then(|| CString::new(plx_os::i18n::msg::settings_profiles_title()).ok()).flatten() {
             p.text(
                 t.as_ptr(),
                 SCR_W as f32 * 0.5,
@@ -1958,7 +1958,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             // "Sign out" — the picker is the only surface a user who doesn't recognise these
             // profiles ever sees, so it must offer a way out of the account.
             let footer_r = footer_rect(f.measure);
-            Button::new(plx_platform::i18n::msg::settings_account_sign_out_c().as_ptr(), theme::size::BODY, footer_r)
+            Button::new(plx_os::i18n::msg::settings_account_sign_out_c().as_ptr(), theme::size::BODY, footer_r)
                 .focused(footer_focused)
                 .scale(self.footer_pop.scale(0, f.press))
                 .palette(self.ground.palette())

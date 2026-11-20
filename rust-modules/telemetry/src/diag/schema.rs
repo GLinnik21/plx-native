@@ -316,7 +316,7 @@ pub struct UsageContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_version: Option<String>,
     /// issue #74: the k5lp/k3lp `/dev/rtkmem` sandbox pre-flight — `ok` / `missing` / `n/a` — the
-    /// SAME closed enum [`plx_platform::tv::sandbox::context`] reports, never a free-text probe result.
+    /// SAME closed enum [`plx_os::tv::sandbox::context`] reports, never a free-text probe result.
     /// Present on every event so a chassis's crash-at-start rate is queryable by sandbox rather
     /// than only discoverable from a single reported issue.
     #[serde(default = "rtkmem_default")]
@@ -378,8 +378,8 @@ impl UsageContext {
     }
 
     fn build(connection: Option<(Option<plx_plex::plex::probe::Location>, Option<plx_plex::plex::IpVersion>)>) -> Self {
-        let os = plx_platform::tv::device::info();
-        let hw = plx_platform::tv::device::device();
+        let os = plx_os::tv::device::info();
+        let hw = plx_os::tv::device::device();
         let connection = connection.map(|(link, ip)| {
             let connection = match link {
                 Some(plx_plex::plex::probe::Location::Local) => "local",
@@ -404,7 +404,7 @@ impl UsageContext {
             hardware_revision: dimension(&hw.hw_revision),
             server_connection: connection.map(|(c, _)| c.to_string()),
             ip_version: connection.map(|(_, ip)| ip.to_string()),
-            rtkmem: plx_platform::tv::sandbox::context().into(),
+            rtkmem: plx_os::tv::sandbox::context().into(),
             install: plx_base::paths::install_kind().into(),
         }
     }

@@ -10,7 +10,7 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use plx_net::net::{RequestError, RequestFailure};
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 
 /// What one scripted address does when dialled.
 #[derive(Clone, Copy)]

@@ -1,11 +1,11 @@
-//! plx_platform: what this television is and keeps, for the PlxNative application core.
+//! plx_os: what this television is and keeps, for the PlxNative application core.
 //!
 //! The webOS identity (`webos`), the storage helper's client and its wire protocol (`storage`), the
 //! key stores (`keymanager`), the codec table (`devcaps`), the artwork cache (`imgcache`), the
 //! localization catalog (`i18n`), the Cloud Lab session file (`labcfg`) and the interfaces the
-//! webOS port fills at boot (`tv`). It is the `platform` layer of `ci/module-layers.ini`: it uses
+//! webOS port fills at boot (`tv`). It is the `os` layer of `ci/module-layers.ini`: it uses
 //! `base` and `machine` and nothing else. `webos` and `keymanager` are also the port's
-//! (`[port webos]`), and nothing outside the port names them.
+//! (`[platform webos]`), and nothing outside the port names them.
 //!
 //! The crate owns its build script: it generates the `i18n::msg` catalog and the `Preference`/`Language` enums from `locales/` and
 //! `locales/languages.json`, and the

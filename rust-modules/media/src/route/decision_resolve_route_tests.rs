@@ -1762,7 +1762,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     let active_route = worker_ticket();
     let control = HlsAbrControl {
         trace_generation: 0,
-        caps: plx_platform::devcaps::caps(),
+        caps: plx_os::devcaps::caps(),
         sid,
         rating_key: "1".into(),
         media_index: 0,
@@ -1866,7 +1866,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
     let active_route = worker_ticket();
     let control = HlsAbrControl {
         trace_generation: 0,
-        caps: plx_platform::devcaps::caps(),
+        caps: plx_os::devcaps::caps(),
         sid,
         rating_key: "1".into(),
         media_index: 0,
@@ -1960,7 +1960,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
     let active_route = worker_ticket();
     let control = HlsAbrControl {
         trace_generation: 0,
-        caps: plx_platform::devcaps::caps(),
+        caps: plx_os::devcaps::caps(),
         sid,
         rating_key: "1".into(),
         media_index: 0,
@@ -2477,7 +2477,7 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     assert_eq!(
         playback_preview_with_capability_for_test(
             &show,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ),
         Some(Preview::DirectPlay),
     );
@@ -2485,7 +2485,7 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     assert_eq!(
         playback_preview_with_capability_for_test(
             &show,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ),
         Some(Preview::Converts),
         "the test must prove the selected episode codec reaches DV policy",
@@ -2514,7 +2514,7 @@ fn dolby_vision_off_stops_the_preview_promising_a_profile_5_direct_play() {
         audio: vec![plx_data::metadata::Stream { codec: "eac3".into(), ..Default::default() }],
         ..Default::default()
     };
-    let supported = plx_platform::devcaps::dv::DvCapability::Supported;
+    let supported = plx_os::devcaps::dv::DvCapability::Supported;
     assert_eq!(playback_preview_with_capability_for_test(&movie, supported), Some(Preview::DirectPlay));
     restore_dolby_vision_mode(DolbyVisionMode::Off);
     assert_eq!(playback_preview_with_capability_for_test(&movie, supported), Some(Preview::Converts));
@@ -2522,7 +2522,7 @@ fn dolby_vision_off_stops_the_preview_promising_a_profile_5_direct_play() {
 
 #[test]
 fn a_set_without_dolby_vision_previews_the_version_it_plays_instead_of_a_profile_5() {
-    use plx_platform::devcaps::dv::DvCapability;
+    use plx_os::devcaps::dv::DvCapability;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Original);
@@ -3027,9 +3027,9 @@ fn forced_audio_refusal_names_the_codec() {
 #[test]
 fn forced_audio_refusal_without_a_codec_keeps_the_generic_sentence() {
     let blank = PlayVerdict::Forced(ForcedFailure::Audio { codec: String::new() });
-    assert_eq!(blank.text(), plx_platform::i18n::msg::widgets_verdict_forced_audio());
+    assert_eq!(blank.text(), plx_os::i18n::msg::widgets_verdict_forced_audio());
     let blank = PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: String::new() });
-    assert_eq!(blank.text(), plx_platform::i18n::msg::widgets_verdict_forced_audio_conversion());
+    assert_eq!(blank.text(), plx_os::i18n::msg::widgets_verdict_forced_audio_conversion());
     let named = PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: "DTS".into() });
     assert!(named.text().contains("DTS"), "{}", named.text());
 }
@@ -3071,7 +3071,7 @@ fn uncopyable_video_keeps_its_stand_in() {
         Vec::new(),
         "truehd",
         |env, item| {
-            env.dv_capability = plx_platform::devcaps::dv::DvCapability::Supported;
+            env.dv_capability = plx_os::devcaps::dv::DvCapability::Supported;
             item.dovi = p5();
         },
     );
@@ -3114,7 +3114,7 @@ fn forced_resolve_on_a_learned_dts_refusal(
     name: &'static str,
     audio: Vec<plx_data::metadata::Stream>,
 ) -> (Plan, Vec<String>) {
-    forced_resolve_on_a_learned_dts_refusal_with(name, audio, plx_platform::devcaps::AppLossy::Off)
+    forced_resolve_on_a_learned_dts_refusal_with(name, audio, plx_os::devcaps::AppLossy::Off)
 }
 
 /// [`forced_resolve_on_a_learned_dts_refusal`] on a set whose lossy policy is `lossy` (`Off` is the
@@ -3123,30 +3123,30 @@ fn forced_resolve_on_a_learned_dts_refusal(
 fn forced_resolve_on_a_learned_dts_refusal_with(
     name: &'static str,
     audio: Vec<plx_data::metadata::Stream>,
-    lossy: plx_platform::devcaps::AppLossy,
+    lossy: plx_os::devcaps::AppLossy,
 ) -> (Plan, Vec<String>) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let _session = plx_plex::plex::session::TempSession::new(name);
-    let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+    let _set = plx_os::devcaps::firmware_on_this_thread_for_test(
         "fw",
         "B",
-        plx_platform::devcaps::Caps {
+        plx_os::devcaps::Caps {
             audio: "aac,ac3,eac3,dts".into(),
             audio_channels: [("dts".into(), 6)].into(),
             app_lossy: lossy,
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         },
     );
     assert!(
-        audio_direct_plays_with(&plx_platform::devcaps::caps(), DirectPlayMode::Forced, "dca", 6, 48_000),
+        audio_direct_plays_with(&plx_os::devcaps::caps(), DirectPlayMode::Forced, "dca", 6, 48_000),
         "sanity: the boot value feeds DTS 5.1 under Force Direct Play before the row"
     );
-    let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
+    let dts6 = plx_os::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
     assert!(plx_plex::plex::session::record_named_refusal(&dts6), "the write is queued");
     plx_base::storage_worker::drain_for_test();
     assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the row is stored");
-    let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+    let start = plx_os::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
     cold_audio_resolve_held(
         &ps,
         name,
@@ -3209,11 +3209,11 @@ fn forced_resolve_with_policy(
     name: &'static str,
     audio: Vec<plx_data::metadata::Stream>,
     acodec: &str,
-    lossy: plx_platform::devcaps::AppLossy,
+    lossy: plx_os::devcaps::AppLossy,
 ) -> (Plan, Vec<String>) {
     cold_audio_resolve(name, 2, MDE_DIRECTPLAY, audio, Vec::new(), acodec, |env, _| {
         env.direct_play_mode = DirectPlayMode::Forced;
-        env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps { app_lossy: lossy, ..plx_platform::devcaps::Caps::assumed() });
+        env.caps = std::sync::Arc::new(plx_os::devcaps::Caps { app_lossy: lossy, ..plx_os::devcaps::Caps::assumed() });
     })
 }
 
@@ -3229,7 +3229,7 @@ fn forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row() {
         "cold-forced-dca-app",
         vec![cold_track_ch(1, "dca", "eng", true, "", 2)],
         "dca",
-        plx_platform::devcaps::AppLossy::Measured,
+        plx_os::devcaps::AppLossy::Measured,
     );
     assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
     assert!(plan.url.contains("/library/parts/36013/"), "a direct Part reaches the Load: {}", plan.url);
@@ -3248,7 +3248,7 @@ fn forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down() {
         "cold-forced-dca-surround",
         vec![cold_track(1, "dca", "eng", true, "")],
         "dca",
-        plx_platform::devcaps::AppLossy::Measured,
+        plx_os::devcaps::AppLossy::Measured,
     );
     let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
         panic!("a 5.1 DTS track must not be decoded to stereo under Force Direct Play, got {:?}", plan.verdict);
@@ -3273,7 +3273,7 @@ fn auto_resolve_picks_a_codec_in_force_in_one_pass() {
         vec![cold_track(1, "dca", "eng", true, "")],
         Vec::new(),
         "dca",
-        |env, _| env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        |env, _| env.caps = std::sync::Arc::new(plx_os::devcaps::Caps::assumed().with_app_lossy()),
     );
     assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
     assert!(plan.url.contains("/library/parts/36013/"), "a direct Part reaches the Load: {}", plan.url);
@@ -3290,7 +3290,7 @@ fn forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track() {
         "cold-forced-dca-sibling",
         vec![cold_track_ch(1, "dca", "eng", true, "", 2), cold_track(2, "ac3", "eng", false, "")],
         "dca",
-        plx_platform::devcaps::AppLossy::Measured,
+        plx_os::devcaps::AppLossy::Measured,
     );
     assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
     let probes = request_with(&requests, "hasMDE=1");
@@ -3304,7 +3304,7 @@ fn forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track() {
 /// the app decodes: the audio probes of `audio` name stream `want`, the verdict is none.
 #[cfg(feature = "devtriggers")]
 fn forced_measured_probes_stream(name: &'static str, audio: Vec<plx_data::metadata::Stream>, acodec: &str, want: &str, why: &str) {
-    let (plan, requests) = forced_resolve_with_policy(name, audio, acodec, plx_platform::devcaps::AppLossy::Measured);
+    let (plan, requests) = forced_resolve_with_policy(name, audio, acodec, plx_os::devcaps::AppLossy::Measured);
     assert!(plan.verdict.is_none(), "{why}: {:?}", plan.verdict);
     let probes = request_with(&requests, "hasMDE=1");
     assert!(
@@ -3381,7 +3381,7 @@ fn forced_resolve_keeps_the_native_stand_in_when_the_intended_codec_is_not_enabl
 #[test]
 #[cfg(feature = "devtriggers")]
 fn forced_resolve_still_refuses_an_unmeasured_lossy_codec() {
-    use plx_platform::devcaps::AppLossy;
+    use plx_os::devcaps::AppLossy;
     let (plan, _) = forced_resolve_with_policy(
         "cold-forced-truehd-unmeasured",
         vec![cold_track(1, "truehd", "eng", true, "")],
@@ -3413,7 +3413,7 @@ fn forced_resolve_refuses_a_learned_surround_dts_refusal_instead_of_mixing_it_do
     let (plan, _) = forced_resolve_on_a_learned_dts_refusal_with(
         "forced-learned-dts-app",
         vec![cold_track(1, "dca", "eng", true, "")],
-        plx_platform::devcaps::AppLossy::Measured,
+        plx_os::devcaps::AppLossy::Measured,
     );
     let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
         panic!("a learned DTS 5.1 refusal must still refuse under Force Direct Play, got {:?}", plan.verdict);
@@ -3431,13 +3431,13 @@ fn the_facts_row_reads_the_start_value() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let _session = plx_plex::plex::session::TempSession::new("facts-row-start-value");
-    let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+    let _set = plx_os::devcaps::firmware_on_this_thread_for_test(
         "fw",
         "B",
-        plx_platform::devcaps::Caps {
+        plx_os::devcaps::Caps {
             audio: "aac,ac3,eac3,dts".into(),
             audio_channels: [("dts".into(), 6)].into(),
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         },
     );
     restore_direct_play_mode(DirectPlayMode::Forced);
@@ -3451,7 +3451,7 @@ fn the_facts_row_reads_the_start_value() {
     };
     assert_eq!(playback_preview(&detail), Some(Preview::DirectPlay), "sanity: the set decodes DTS 5.1 and no row says otherwise");
 
-    let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
+    let dts6 = plx_os::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
     assert!(plx_plex::plex::session::record_named_refusal(&dts6), "the write is queued");
     plx_base::storage_worker::drain_for_test();
     assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the row is stored");
@@ -3470,23 +3470,23 @@ fn the_facts_row_reads_the_start_value() {
 fn the_converted_mark_reads_the_attempt_not_the_boot() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+    let _set = plx_os::devcaps::firmware_on_this_thread_for_test(
         "fw",
         "B",
-        plx_platform::devcaps::Caps {
+        plx_os::devcaps::Caps {
             audio: "aac,ac3,eac3,dts".into(),
             audio_channels: [("dts".into(), 6)].into(),
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         },
     );
-    let boot = plx_platform::devcaps::caps();
+    let boot = plx_os::devcaps::caps();
     ps.begin_attempt(boot.clone());
     assert!(!audio_converted_by_server(&ps, "dts", 6, 48_000), "sanity: the boot value decodes DTS 5.1");
-    let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
+    let dts6 = plx_os::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
     ps.begin_attempt(std::sync::Arc::new(boot.without(&dts6)));
     assert!(audio_converted_by_server(&ps, "dts", 6, 48_000), "the attempt lost DTS 5.1: the server converts it");
     assert!(!audio_converted_by_server(&ps, "ac3", 6, 48_000), "an untouched codec still plays");
-    assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
+    assert!(plx_os::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
     ps.direct_play_mode = DirectPlayMode::Forced;
     assert!(!audio_converted_by_server(&ps, "dts", 6, 48_000), "Forced Direct Play refuses instead of converting");
 }
@@ -3506,7 +3506,7 @@ fn the_converted_mark_reads_the_attempt_not_the_boot() {
 fn production_uri_port() -> crate::route::uri_preflight::ResolvePort {
     crate::route::uri_preflight::ResolvePort::new(
         crate::route::uri_preflight::ProductEvidence::unqualified_on(
-            plx_platform::tv::sink::VP_ACB, plx_playback_contract::uri::Binding::Acb),
+            plx_os::tv::sink::VP_ACB, plx_playback_contract::uri::Binding::Acb),
         std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier))
 }
 
@@ -3680,8 +3680,8 @@ fn the_guards_that_skip_uri_qualification_leave_a_reason_and_a_qualified_play_no
 fn experimental_keeps_a_video_codec_the_caps_do_not_direct_play_in_standard() {
     let (standard, _) = experimental_plays_as_standard("uri-optin-video", 3, MDE_TRANSCODE_VIDEO,
         || vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, _| {
-            env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
-                hevc: false, ..plx_platform::devcaps::Caps::assumed() });
+            env.caps = std::sync::Arc::new(plx_os::devcaps::Caps {
+                hevc: false, ..plx_os::devcaps::Caps::assumed() });
         });
     assert!(!standard.source_decodable, "the premise: Standard refuses this video");
 }
@@ -3692,8 +3692,8 @@ fn experimental_keeps_a_video_codec_the_caps_do_not_direct_play_in_standard() {
 fn experimental_keeps_a_raster_beyond_the_caps_bound_in_standard() {
     let (standard, _) = experimental_plays_as_standard("uri-optin-raster", 3, MDE_TRANSCODE_VIDEO,
         || vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, _| {
-            env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
-                hevc_max: (1920, 1088), ..plx_platform::devcaps::Caps::assumed() });
+            env.caps = std::sync::Arc::new(plx_os::devcaps::Caps {
+                hevc_max: (1920, 1088), ..plx_os::devcaps::Caps::assumed() });
         });
     assert!(!standard.source_decodable, "the premise: Standard refuses a 4K video on a 1080p bound");
 }
@@ -3706,7 +3706,7 @@ fn experimental_keeps_a_raster_beyond_the_caps_bound_in_standard() {
 fn experimental_keeps_a_profile_5_file_on_a_set_without_dolby_vision_in_standard() {
     let (standard, _) = experimental_plays_as_standard("uri-optin-p5", 3, MDE_TRANSCODE_COPY,
         || vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, item| {
-            env.dv_capability = plx_platform::devcaps::dv::DvCapability::Unsupported;
+            env.dv_capability = plx_os::devcaps::dv::DvCapability::Unsupported;
             env.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Auto;
             item.dovi = p5();
         });
@@ -3724,7 +3724,7 @@ fn experimental_offers_a_profile_8_file_whose_base_layer_the_frozen_decision_adm
     use plx_plex::plex::session::UriEngine;
     let (plan, _) = uri_engine_resolve("uri-optin-p8", UriEngine::On, 1, MDE_DIRECTPLAY,
         vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, item| {
-            env.dv_capability = plx_platform::devcaps::dv::DvCapability::Unsupported;
+            env.dv_capability = plx_os::devcaps::dv::DvCapability::Unsupported;
             item.dovi = p8();
         });
     let known = plan.uri_original.as_ref().expect("an admitted base layer is offered");
@@ -3751,7 +3751,7 @@ fn experimental_keeps_an_audio_codec_the_set_cannot_decode_in_standard() {
 fn experimental_keeps_audio_only_the_app_decodes_in_standard() {
     let (standard, _) = experimental_plays_as_standard("uri-optin-app-decode", 2, MDE_DIRECTPLAY,
         || vec![cold_track(1, "dca", "eng", true, "")], "dca", |env, _| {
-            env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy());
+            env.caps = std::sync::Arc::new(plx_os::devcaps::Caps::assumed().with_app_lossy());
         });
     assert!(standard.url.contains("/library/parts/36013/"),
         "the premise: Standard direct-plays it by decoding in the app: {}", standard.url);
@@ -3830,7 +3830,7 @@ fn cancelled_abr_candidate_preserves_active_route_but_queue_failures_stay_termin
     let control = HlsAbrControl {
         trace_generation: 0, sid: ServerId::UNSET, rating_key: "1".into(), media_index: 0,
         logical_session: "active".into(), audio_stream_id: 0, subtitle_stream_id: 0,
-        seconds_per_segment: 2, caps: plx_platform::devcaps::caps(), initial_rung: rung,
+        seconds_per_segment: 2, caps: plx_os::devcaps::caps(), initial_rung: rung,
         initial_observed: None, fixture_base: "http://fixture.invalid".into(),
         original_probe_part: String::new(), original_source_kbps: 0,
         catalog: crate::abr::HlsActuatorCatalog::measured(), prior: None,

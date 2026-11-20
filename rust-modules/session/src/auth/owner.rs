@@ -275,7 +275,7 @@ pub struct PersistenceWarning {
     pub key: PersistenceWarningKey,
     pub site: PersistenceWarningSite,
     #[serde(default)]
-    pub helper: Option<plx_platform::storage::wire::failure::HelperFailure>,
+    pub helper: Option<plx_os::storage::wire::failure::HelperFailure>,
     #[serde(default)]
     pub candidate_errnos: [Option<i32>; 8],
     /// Closed evidence for the warning; retained independently of the consent-gated report.
@@ -286,7 +286,7 @@ pub struct PersistenceWarning {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistenceEvidence {
     class: plx_telemetry::telemetry::incident::PersistenceFailure,
-    keymanager_stage: Option<plx_platform::storage::wire::KeymanagerStage>,
+    keymanager_stage: Option<plx_os::storage::wire::KeymanagerStage>,
     service_error_code: Option<i32>,
 }
 
@@ -401,10 +401,10 @@ pub enum DevCommitDelta { Activated, StartAccount { login_req: u32 } }
 /// The picker's read-outs when it has no tiles and cannot get any. Neutral wording, drawn as a
 /// failed read-out on the picker itself (`screens/profiles.rs`), never as a sign-in failure.
 pub fn roster_unreachable() -> &'static str {
-    plx_platform::i18n::msg::browse_auth_roster_unreachable()
+    plx_os::i18n::msg::browse_auth_roster_unreachable()
 }
 pub fn roster_refused() -> &'static str {
-    plx_platform::i18n::msg::browse_auth_roster_refused()
+    plx_os::i18n::msg::browse_auth_roster_refused()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -973,7 +973,7 @@ pub fn write_persisted(w: &mut Canon, s: &PersistedSession) {
     // Include their exact captured values in init/canonical state even though patches never write
     // them over a newer store-owned value.
     w.bool(s.auto_sign_in());
-    if s.language != plx_platform::i18n::Preference::System {
+    if s.language != plx_os::i18n::Preference::System {
         w.str("language").str(s.language.tag());
     }
     w.seq(s.recent_searches.len());
@@ -2120,9 +2120,9 @@ let (envelope,): (&SessionEnvelope,) = (envelope,);
                 if !envelope.terminal { break 'apply_qr_observation false; }
                 let (message, class) = match (envelope.key.op, &envelope.outcome) {
                     (SessionOp::Rediscover, SessionArrival::Refused) =>
-                        (plx_platform::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
-                    (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
-                    _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
+                        (plx_os::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => (plx_os::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
+                    _ => (plx_os::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
                 };
                 {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(IncidentContext::internal(class)),);
@@ -2188,7 +2188,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
                         if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
                         let Some(next) = self.common.next_qr.checked_add(1) else {
                             {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -2713,7 +2713,7 @@ let (picker,): (Picker,) = (*picker,);
 }).is_none() { break 'start_switch false; }
         if self.common.persisted.account_token.is_empty() {
             {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_signed_out(), None,);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_signed_out(), None,);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -3236,7 +3236,7 @@ let (req,): (u32,) = (login_req,);
             let op = self.common.pending[&reply.req].key.op;
             match op {
                 SessionOp::Login | SessionOp::Rediscover => {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_finish_failed(), Some(IncidentContext::internal(InternalClass::CommitRefused)),);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_finish_failed(), Some(IncidentContext::internal(InternalClass::CommitRefused)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -3658,7 +3658,7 @@ let (req,): (u32,) = (req,);
             }
             (CaptureIntent::Login, SessionReadValue::LoginClientId(_)) => {
                 {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)),);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -3746,7 +3746,7 @@ let (reply,): (AdmissionReply,) = (*reply,);
             // without a first observation) cannot enter this branch.
             match pending.key.op {
                 SessionOp::Login => {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -3786,7 +3786,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
 
 },
                 SessionOp::Rediscover => {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_rediscover_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_rediscover_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -3989,9 +3989,9 @@ let (envelope,): (&SessionEnvelope,) = (&envelope,);
                 if !envelope.terminal { break 'apply_qr_observation false; }
                 let (message, class) = match (envelope.key.op, &envelope.outcome) {
                     (SessionOp::Rediscover, SessionArrival::Refused) =>
-                        (plx_platform::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
-                    (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
-                    _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
+                        (plx_os::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => (plx_os::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
+                    _ => (plx_os::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
                 };
                 {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(IncidentContext::internal(class)),);
@@ -4056,7 +4056,7 @@ let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(Inci
                         if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
                         let Some(next) = self.common.next_qr.checked_add(1) else {
                             {
-let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_os::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         self.common.persistence_warning = None;
@@ -5049,7 +5049,7 @@ mod tests {
         use plx_machine::machine::LogicalState;
         let a = SessionInit::captured(PersistedSession::default());
         let mut b = a.clone();
-        b.persisted.language = plx_platform::i18n::Preference::Be;
+        b.persisted.language = plx_os::i18n::Preference::Be;
         assert_ne!(a.hash(), b.hash());
     }
 
@@ -5491,9 +5491,9 @@ mod tests {
     fn declined_warning_reconstructs_every_persistence_class_and_its_evidence() {
         use plx_plex::plex::session::async_persistence::{CompletionOutcome as O, Failure as F, Operation, PersistOutcome};
         use plx_plex::plex::session::persistence::ProtectionFailure;
-        use plx_platform::storage::wire::{AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
+        use plx_os::storage::wire::{AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
             KeymanagerOperation, KeymanagerStage};
-        use plx_platform::storage::wire::failure::{HelperFailure, Stage};
+        use plx_os::storage::wire::failure::{HelperFailure, Stage};
         use plx_telemetry::telemetry::incident::{IncidentKind, PersistenceFailure as P};
         let protection = ProtectionFailure {
             failure: KeymanagerFailure { operation: KeymanagerOperation::Seal, stage: KeymanagerStage::Finish,
@@ -5506,10 +5506,10 @@ mod tests {
         for (outcome, class) in [
             (O::Failed(F::Admission(plx_base::storage_worker::SubmitError::Full)), P::Admission),
             (O::Failed(F::Persistence(PersistOutcome::WriteFailed)), P::WriteFailed),
-            (O::Failed(F::Storage(plx_platform::storage::StoreError::HelperUnavailable)), P::Storage),
+            (O::Failed(F::Storage(plx_os::storage::StoreError::HelperUnavailable)), P::Storage),
             (O::Failed(F::Helper(helper, errnos)), P::Storage),
-            (O::Uncertain { stage: plx_platform::storage::CommitStage::Readback, errno: 0, helper: Some((helper, errnos)) }, P::CommitUncertain),
-            (O::Uncertain { stage: plx_platform::storage::CommitStage::ParentSync, errno: 5, helper: None }, P::CommitUncertain),
+            (O::Uncertain { stage: plx_os::storage::CommitStage::Readback, errno: 0, helper: Some((helper, errnos)) }, P::CommitUncertain),
+            (O::Uncertain { stage: plx_os::storage::CommitStage::ParentSync, errno: 5, helper: None }, P::CommitUncertain),
             (O::Failed(F::Protection(protection)), P::Protection),
             (O::ProtectionUncertain(ProtectionFailure { preservation: AuthPreservation::Uncertain, ..protection }), P::ProtectionUncertain),
             (O::Failed(F::WorkerDropped), P::WorkerDropped),
@@ -5574,7 +5574,7 @@ mod tests {
     #[test]
     fn uncertain_db8_reply_reaches_the_warning_and_incident_report() {
         use plx_plex::plex::session::{persistence, async_persistence::{CompletionOutcome, PersistenceCompletion}};
-        use plx_platform::storage::wire::failure::{Detail, Stage};
+        use plx_os::storage::wire::failure::{Detail, Stage};
         for reconcile in [false, true] {
             let mut owner = SessionMachine::from_init(discovering_after_authorization());
             let req = owner.common.next_req;
@@ -5627,7 +5627,7 @@ mod tests {
     #[test]
     fn helper_failure_warning_and_one_off_are_bound_to_the_completion() {
         use plx_plex::plex::session::async_persistence::{CompletionOutcome, Failure, PersistenceCompletion};
-        use plx_platform::storage::wire::failure::{HelperFailure, Stage};
+        use plx_os::storage::wire::failure::{HelperFailure, Stage};
         for permission in [plx_telemetry::telemetry::consent::Permission::NotDetermined,
             plx_telemetry::telemetry::consent::Permission::Declined] {
             let mut owner = SessionMachine::from_init(discovering_after_authorization());
@@ -5688,7 +5688,7 @@ mod tests {
                 revision: 1, purpose: PersistencePurpose::Discovery,
             } }));
         let failed = CompletionOutcome::Failed(Failure::Storage(
-            plx_platform::storage::StoreError::HelperUnavailable));
+            plx_os::storage::StoreError::HelperUnavailable));
         step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
             req, epoch, arrival: 1, revision: 1,
             purpose: PersistencePurpose::Discovery, outcome: failed,
@@ -5768,7 +5768,7 @@ mod tests {
                 revision: 1, purpose: PersistencePurpose::Discovery,
             } }));
         let failed = CompletionOutcome::Failed(Failure::Storage(
-            plx_platform::storage::StoreError::HelperUnavailable));
+            plx_os::storage::StoreError::HelperUnavailable));
         step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
             req, epoch, arrival: 1, revision: 1,
             purpose: PersistencePurpose::Discovery, outcome: failed,

@@ -29,9 +29,9 @@ impl Default for RuntimePolicy {
 pub struct ScreenInputs {
     pub runtime_policy: RuntimePolicy,
     /// Confirmed install-wide next-launch choice, independent of the seated profile/cache.
-    pub install_language: plx_platform::i18n::Preference,
+    pub install_language: plx_os::i18n::Preference,
     /// Boot-fixed preference used for restart decisions, not the display catalog accessor.
-    pub running_language: plx_platform::i18n::Preference,
+    pub running_language: plx_os::i18n::Preference,
     /// Complete app-boundary presentation; controlled hosts never sample live diagnostics.
     pub player_presentation: plx_appkit::player_hud::Presentation,
     /// Effective app-boundary capture, including optimistic picks not yet persisted.
@@ -133,8 +133,8 @@ pub(crate) fn capture_fixture() -> ScreenInputs {
         revision: { let (cache, profile) = session::screen_input_revision(); cache.wrapping_add(profile) },
         profile: session::current_snapshot(),
         current_server: plx_plex::plex::current_server(), servers: Arc::new(servers), grant_generation: grant::revision(),
-        resolution_offered: plx_platform::tv::device::ui_resolution_offered(), runtime_policy: RuntimePolicy::default(),
-        install_language: plx_platform::i18n::saved_preference(), running_language: plx_platform::i18n::current().preference(), player_presentation: Default::default(),
+        resolution_offered: plx_os::tv::device::ui_resolution_offered(), runtime_policy: RuntimePolicy::default(),
+        install_language: plx_os::i18n::saved_preference(), running_language: plx_os::i18n::current().preference(), player_presentation: Default::default(),
         preferences: crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.get()).map(|setting|
             session::ProfilePrefs { under_posters: Some(setting), ..Default::default() }) }
 }

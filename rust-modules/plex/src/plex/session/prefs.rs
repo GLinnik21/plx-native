@@ -1015,7 +1015,7 @@ fn adopt_unstamped<E: MemoryEntry>(list: &mut Vec<ProfileList<E>>, account: &str
 /// The logical size (platform's counting rule) of anything serializable: the unit every byte
 /// figure in this section is in.
 fn logical<T: Serialize + ?Sized>(value: &T) -> usize {
-    serde_json::to_value(value).map(|v| plx_platform::storage::state::logical_size(&v)).unwrap_or(0)
+    serde_json::to_value(value).map(|v| plx_os::storage::state::logical_size(&v)).unwrap_or(0)
 }
 
 /// The logical size of a whole memory list as it serializes into the preferences.

@@ -217,16 +217,16 @@ pub(super) fn dv_landing_plan(ps: &route::PlaybackSession) -> plx_playback_contr
     };
     DvLandingPlan {
         mode,
-        idr_first: route::dv_first_picture(ps) == plx_platform::devcaps::DvFirstPicture::IdrOnly,
+        idr_first: route::dv_first_picture(ps) == plx_os::devcaps::DvFirstPicture::IdrOnly,
     }
 }
 
 /// Apply the current route's selected codec and Force policy to the native speed ceiling.
 pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
     super::engine::speed_fps_ceiling(
-        plx_platform::devcaps::LoadVideo::of_stream(&route::stream_vcodec(ps)),
-        &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !route::forced_direct_play(ps),
+        plx_os::devcaps::LoadVideo::of_stream(&route::stream_vcodec(ps)),
+        &plx_os::devcaps::caps(),
+        plx_os::devcaps::measured() && !route::forced_direct_play(ps),
     )
 }
 

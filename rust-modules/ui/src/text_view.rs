@@ -83,7 +83,7 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
 /// choice, so every screen reads this accessor rather than spelling its own literal. An earlier
 /// commit (`fc63c0c1`) drew the person page's mark as sentence-case `"More"`; that was wrong and is
 /// the reason this exists as one definition instead of two that can drift apart.
-pub fn more_mark() -> &'static std::ffi::CStr { plx_platform::i18n::msg::browse_action_more_c() }
+pub fn more_mark() -> &'static std::ffi::CStr { plx_os::i18n::msg::browse_action_more_c() }
 
 pub struct TextView<'a> {
     measure: Option<&'a dyn plx_machine::machine::Measure>,
@@ -847,9 +847,9 @@ mod tests {
     /// silently drifting one screen away from every other.
     #[test]
     fn the_more_mark_is_uppercase_in_supported_locales() {
-        for preference in plx_platform::i18n::SHIPPED {
-        let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
-        let s = plx_platform::i18n::msg::browse_action_more_in(&locale);
+        for preference in plx_os::i18n::SHIPPED {
+        let locale = plx_os::i18n::LocaleContext::resolve(preference, None, None, None, None);
+        let s = plx_os::i18n::msg::browse_action_more_in(&locale);
         assert_eq!(
             s,
             s.to_uppercase(),

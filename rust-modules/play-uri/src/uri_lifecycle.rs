@@ -1,7 +1,7 @@
 //! Registration ownership and request correlation. No transport, clock, worker or registry is read.
 use super::uri_protocol::{parse_event, Ev, MediaId, Message, Method, UriCall};
-use plx_platform::tv::plane::Phase as PlanePhase;
-use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriReply};
+use plx_os::tv::plane::Phase as PlanePhase;
+use plx_os::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriReply};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,7 +80,7 @@ pub enum Fx {
     /// The plane's release was proven by the firmware's completion: ownership is released.
     AcbReleased,
     /// The plane's release failed or timed out: it stays quarantined until the process exits.
-    AcbQuarantined(plx_platform::tv::plane::Why),
+    AcbQuarantined(plx_os::tv::plane::Why),
     Fault,
 }
 
@@ -915,7 +915,7 @@ mod tests {
     /// failure or deadline. UNLOADED still runs once, and a quarantine is still retained.
     #[test]
     fn uri_acb_bus_release_runs_unloaded_once_then_follows_the_plane_fence() {
-        use plx_platform::tv::plane::Why;
+        use plx_os::tv::plane::Why;
         for overdue in [false, true] {
             let mut m = open();
             step(&mut m, Event::AcbTouched { session: SID });

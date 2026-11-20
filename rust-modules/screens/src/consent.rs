@@ -191,7 +191,7 @@ impl LogicalState for ConsentState {
 /// the focused row; a page with no focused row says its own. Every row has one of its own today -
 /// the words are the old sub-lines.
 fn settings_sentence(id: Option<RowId>) -> &'static str {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match id {
         Some(RowId::Errors) => msg::settings_consent_crash_detail(),
         Some(RowId::Usage) => msg::settings_consent_usage_detail(),
@@ -229,38 +229,38 @@ fn consent_form(mode: Mode, draft: (bool, bool)) -> Form<RowId, Act, SettingsPag
             Form::new().section(
                 FormSection::new("")
                     .item_keyed(first, RowKey(0), preview(label), Act::Open,
-                        Row::new(plx_platform::i18n::msg::settings_consent_example()).chevron(true))
+                        Row::new(plx_os::i18n::msg::settings_consent_example()).chevron(true))
                     .item_keyed(RowId::Policy, RowKey(1), preview(PreviewKind::Policy), Act::Open,
-                        Row::new(plx_platform::i18n::msg::settings_consent_policy()).chevron(true)),
+                        Row::new(plx_os::i18n::msg::settings_consent_policy()).chevron(true)),
             )
         }
         Mode::Settings => {
             let (errors, usage) = draft;
             Form::new()
                 .section(
-                    FormSection::new(plx_platform::i18n::msg::settings_consent_reporting())
+                    FormSection::new(plx_os::i18n::msg::settings_consent_reporting())
                         .item(RowId::Errors, RowKind::Toggle, Act::FlipErrors,
-                            Row::new(plx_platform::i18n::msg::settings_consent_crash_row()).toggle(errors))
+                            Row::new(plx_os::i18n::msg::settings_consent_crash_row()).toggle(errors))
                         .item(RowId::Usage, RowKind::Toggle, Act::FlipUsage,
-                            Row::new(plx_platform::i18n::msg::settings_consent_usage_row()).toggle(usage)),
+                            Row::new(plx_os::i18n::msg::settings_consent_usage_row()).toggle(usage)),
                 )
                 .section(
-                    FormSection::new(plx_platform::i18n::msg::settings_consent_information())
+                    FormSection::new(plx_os::i18n::msg::settings_consent_information())
                         .item(RowId::PreviewCrash, preview(PreviewKind::Crash), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_crash_document()).chevron(true))
+                            Row::new(plx_os::i18n::msg::settings_consent_crash_document()).chevron(true))
                         .item(RowId::PreviewUsage, preview(PreviewKind::Usage), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_usage_document()).chevron(true))
+                            Row::new(plx_os::i18n::msg::settings_consent_usage_document()).chevron(true))
                         .item(RowId::Policy, preview(PreviewKind::Policy), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_policy()).chevron(true))
+                            Row::new(plx_os::i18n::msg::settings_consent_policy()).chevron(true))
                         .item(RowId::ErrorsId, preview(PreviewKind::ErrorsId), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_crash_id()).chevron(true))
+                            Row::new(plx_os::i18n::msg::settings_consent_crash_id()).chevron(true))
                         .item(RowId::AnalyticsId, preview(PreviewKind::AnalyticsId), Act::Open,
-                            Row::new(plx_platform::i18n::msg::settings_consent_analytics_id()).chevron(true)),
+                            Row::new(plx_os::i18n::msg::settings_consent_analytics_id()).chevron(true)),
                 )
                 .section(
-                    FormSection::new(plx_platform::i18n::msg::settings_consent_on_tv()).item(
+                    FormSection::new(plx_os::i18n::msg::settings_consent_on_tv()).item(
                         RowId::Delete, RowKind::Button, Act::Delete,
-                        Row::new(plx_platform::i18n::msg::settings_consent_delete()).chevron(true),
+                        Row::new(plx_os::i18n::msg::settings_consent_delete()).chevron(true),
                     ),
                 )
         }
@@ -371,23 +371,23 @@ impl ConsentPage {
 
     fn title(&self) -> &'static str {
         match self.mode {
-            Mode::Settings => plx_platform::i18n::msg::settings_privacy_title(),
-            Mode::FirstRun { product: false, .. } => plx_platform::i18n::msg::settings_consent_crash_title(),
-            Mode::FirstRun { product: true, .. } => plx_platform::i18n::msg::settings_consent_product_title(),
+            Mode::Settings => plx_os::i18n::msg::settings_privacy_title(),
+            Mode::FirstRun { product: false, .. } => plx_os::i18n::msg::settings_consent_crash_title(),
+            Mode::FirstRun { product: true, .. } => plx_os::i18n::msg::settings_consent_product_title(),
         }
     }
     fn body(&self) -> &'static str {
         match self.mode {
-            Mode::Settings => plx_platform::i18n::msg::settings_consent_settings_copy(),
-            Mode::FirstRun { product: false, .. } => plx_platform::i18n::msg::settings_consent_crash_body(),
-            Mode::FirstRun { product: true, .. } => plx_platform::i18n::msg::settings_consent_product_body(),
+            Mode::Settings => plx_os::i18n::msg::settings_consent_settings_copy(),
+            Mode::FirstRun { product: false, .. } => plx_os::i18n::msg::settings_consent_crash_body(),
+            Mode::FirstRun { product: true, .. } => plx_os::i18n::msg::settings_consent_product_body(),
         }
     }
     fn crumb(&self) -> Option<&'static str> {
         match self.mode {
-            Mode::Settings => Some(plx_platform::i18n::msg::settings_title()),
+            Mode::Settings => Some(plx_os::i18n::msg::settings_title()),
             Mode::FirstRun { product: false, .. } => None,
-            Mode::FirstRun { product: true, .. } => Some(plx_platform::i18n::msg::settings_consent_crash_title()),
+            Mode::FirstRun { product: true, .. } => Some(plx_os::i18n::msg::settings_consent_crash_title()),
         }
     }
     /// The band's labels this frame: Settings' Done only once the draft differs; first run's two
@@ -396,16 +396,16 @@ impl ConsentPage {
         match self.mode {
             Mode::Settings => {
                 if self.draft != self.base {
-                    vec![plx_platform::i18n::msg::settings_done_c()]
+                    vec![plx_os::i18n::msg::settings_done_c()]
                 } else {
                     Vec::new()
                 }
             }
             Mode::FirstRun { product, .. } => {
                 if product {
-                    vec![plx_platform::i18n::msg::settings_consent_share_analytics_c(), plx_platform::i18n::msg::settings_consent_do_not_share_c()]
+                    vec![plx_os::i18n::msg::settings_consent_share_analytics_c(), plx_os::i18n::msg::settings_consent_do_not_share_c()]
                 } else {
-                    vec![plx_platform::i18n::msg::settings_consent_share_reports_c(), plx_platform::i18n::msg::settings_consent_do_not_share_c()]
+                    vec![plx_os::i18n::msg::settings_consent_share_reports_c(), plx_os::i18n::msg::settings_consent_do_not_share_c()]
                 }
             }
         }
@@ -414,7 +414,7 @@ impl ConsentPage {
     /// The line beside Done while a draft is pending: what BACK does with it (proposed copy).
     /// Only Settings has a draft, and the band holds Done only then.
     fn band_note(&self) -> Option<&'static std::ffi::CStr> {
-        (self.uncommitted()).then(plx_platform::i18n::msg::settings_consent_discard_note_c)
+        (self.uncommitted()).then(plx_os::i18n::msg::settings_consent_discard_note_c)
     }
 
     fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
@@ -543,7 +543,7 @@ impl ConsentPage {
             }
             None | Some(Act::Open) => {}
             Some(Act::Delete) => {
-                self.alert.open_with_body(plx_platform::i18n::msg::settings_consent_delete_question_c(), plx_platform::i18n::msg::settings_consent_delete_scope());
+                self.alert.open_with_body(plx_os::i18n::msg::settings_consent_delete_question_c(), plx_os::i18n::msg::settings_consent_delete_scope());
                 self.state.alert_scroll = 0;
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
@@ -1021,7 +1021,7 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim(f);
-            self.alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_delete_c(), f.measure, f.route_navigation(), f.press);
+            self.alert.draw(plx_os::i18n::msg::settings_cancel_c(), plx_os::i18n::msg::settings_delete_c(), f.measure, f.route_navigation(), f.press);
             let frames = self.alert.frames(f.measure);
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**
@@ -1120,29 +1120,29 @@ impl PreviewPage {
     pub fn new(entry: EntryId, which: u8) -> Self {
         let kind = PreviewKind::ALL[(which & 0x0f) as usize % PreviewKind::ALL.len()];
         let (crumb, word) = if which & FIRST_RUN_CRASH != 0 {
-            (plx_platform::i18n::msg::settings_consent_crash_title(), word::CONSENT)
+            (plx_os::i18n::msg::settings_consent_crash_title(), word::CONSENT)
         } else if which & FIRST_RUN_PRODUCT != 0 {
-            (plx_platform::i18n::msg::settings_consent_product_title(), word::CONSENT)
+            (plx_os::i18n::msg::settings_consent_product_title(), word::CONSENT)
         } else {
-            (plx_platform::i18n::msg::settings_privacy_title(), word::PRIVACY)
+            (plx_os::i18n::msg::settings_privacy_title(), word::PRIVACY)
         };
         let (title, subtitle): (&str, &str) = match kind {
             PreviewKind::ErrorsId => (
-                plx_platform::i18n::msg::settings_consent_crash_id(),
-                plx_platform::i18n::msg::settings_consent_errors_subtitle(),
+                plx_os::i18n::msg::settings_consent_crash_id(),
+                plx_os::i18n::msg::settings_consent_errors_subtitle(),
             ),
             PreviewKind::AnalyticsId => (
-                plx_platform::i18n::msg::settings_consent_analytics_id(),
-                plx_platform::i18n::msg::settings_consent_analytics_subtitle(),
+                plx_os::i18n::msg::settings_consent_analytics_id(),
+                plx_os::i18n::msg::settings_consent_analytics_subtitle(),
             ),
-            PreviewKind::Policy => (plx_platform::i18n::msg::settings_consent_policy(), plx_platform::i18n::msg::settings_consent_policy_subtitle()),
+            PreviewKind::Policy => (plx_os::i18n::msg::settings_consent_policy(), plx_os::i18n::msg::settings_consent_policy_subtitle()),
             PreviewKind::Crash => (
-                plx_platform::i18n::msg::settings_consent_crash_document(),
-                plx_platform::i18n::msg::settings_consent_crash_subtitle(),
+                plx_os::i18n::msg::settings_consent_crash_document(),
+                plx_os::i18n::msg::settings_consent_crash_subtitle(),
             ),
             PreviewKind::Usage => (
-                plx_platform::i18n::msg::settings_consent_usage_document(),
-                plx_platform::i18n::msg::settings_consent_usage_subtitle(),
+                plx_os::i18n::msg::settings_consent_usage_document(),
+                plx_os::i18n::msg::settings_consent_usage_subtitle(),
             ),
         };
         let text = match kind {
@@ -1263,8 +1263,8 @@ impl Screen<InnerHost> for PreviewPage {
 /// mock-up: a field added to any of these schemas appears here, in front of the person being asked
 /// to consent to it, the same argument the old combined `preview` made.
 pub fn preview_crash() -> String {
-    let mut out = String::from(plx_platform::i18n::msg::settings_consent_preview_crash_intro());
-    out.push_str(plx_platform::i18n::msg::settings_consent_preview_native());
+    let mut out = String::from(plx_os::i18n::msg::settings_consent_preview_crash_intro());
+    out.push_str(plx_os::i18n::msg::settings_consent_preview_native());
     let crash = plx_telemetry::telemetry::native::preview_event();
     let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
         .ok()
@@ -1274,21 +1274,21 @@ pub fn preview_crash() -> String {
     for (label, body) in plx_telemetry::telemetry::crashreport::preview_events() {
         out.push_str("\n\n");
         out.push_str(label);
-        out.push_str(plx_platform::i18n::msg::settings_consent_preview_fallback());
+        out.push_str(plx_os::i18n::msg::settings_consent_preview_fallback());
         let text = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| serde_json::to_string_pretty(&v).ok())
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
         out.push_str(&text);
     }
-    out.push_str(plx_platform::i18n::msg::settings_consent_preview_handled());
+    out.push_str(plx_os::i18n::msg::settings_consent_preview_handled());
     let handled = plx_telemetry::telemetry::playback::preview_event();
     let handled_text = serde_json::from_slice::<serde_json::Value>(&handled)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
-    out.push_str(plx_platform::i18n::msg::settings_consent_preview_recovered());
+    out.push_str(plx_os::i18n::msg::settings_consent_preview_recovered());
     let recovered = plx_telemetry::telemetry::playback::preview_refusal_recovered();
     let recovered_text = serde_json::from_slice::<serde_json::Value>(&recovered)
         .ok()
@@ -1297,7 +1297,7 @@ pub fn preview_crash() -> String {
     out.push_str(&recovered_text);
     out.push('\n');
     out.push_str(&plx_telemetry::telemetry::playback::preview_recovered_domains());
-    out.push_str(plx_platform::i18n::msg::settings_consent_preview_incident());
+    out.push_str(plx_os::i18n::msg::settings_consent_preview_incident());
     let incident = plx_telemetry::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
         .ok()
@@ -1318,8 +1318,8 @@ pub fn preview_crash() -> String {
 /// minted only when product analytics is enabled; error-only consent creates none.
 pub fn preview_usage() -> String {
     use plx_telemetry::diag::schema::DiagEvent;
-    let mut out = String::from(plx_platform::i18n::msg::settings_consent_preview_usage_intro());
-    out.push_str(plx_platform::i18n::msg::settings_consent_preview_usage_heading());
+    let mut out = String::from(plx_os::i18n::msg::settings_consent_preview_usage_intro());
+    out.push_str(plx_os::i18n::msg::settings_consent_preview_usage_heading());
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
@@ -1444,7 +1444,7 @@ fn localize_placeholders(text: &str) -> String {
 
 /// A preview placeholder's words, or `None` for text that is not one of them.
 fn placeholder(token: &str) -> Option<&'static str> {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     Some(match token {
         "address" => msg::settings_consent_placeholder_address(),
         "flags" => msg::settings_consent_placeholder_flags(),
@@ -1529,8 +1529,8 @@ fn preview() -> String {
 /// ever turned back on, so "off" really does mean the old handle is gone.
 fn analytics_id_document() -> String {
     match consent::current().and_then(|c| c.install_id).as_deref() {
-        Some(id) => plx_platform::i18n::msg::settings_consent_analytics_present(CONTACT_EMAIL, id),
-        None => plx_platform::i18n::msg::settings_consent_analytics_absent(CONTACT_EMAIL),
+        Some(id) => plx_os::i18n::msg::settings_consent_analytics_present(CONTACT_EMAIL, id),
+        None => plx_os::i18n::msg::settings_consent_analytics_absent(CONTACT_EMAIL),
     }
 }
 
@@ -1546,8 +1546,8 @@ fn analytics_id_document() -> String {
 /// owed the reason.
 fn errors_id_document() -> String {
     match consent::current().and_then(|c| c.errors_id).as_deref() {
-        Some(id) => plx_platform::i18n::msg::settings_consent_errors_present(CONTACT_EMAIL, id),
-        None => plx_platform::i18n::msg::settings_consent_errors_absent(CONTACT_EMAIL),
+        Some(id) => plx_os::i18n::msg::settings_consent_errors_present(CONTACT_EMAIL, id),
+        None => plx_os::i18n::msg::settings_consent_errors_absent(CONTACT_EMAIL),
     }
 }
 

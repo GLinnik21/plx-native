@@ -55,7 +55,7 @@ pub enum AppFx {
     /// Account and install preference IO, admitted by the application before work starts.
     Preferences(PreferenceCmd),
     /// Local firmware logging; the runner answers this surface through an addressed event.
-    PlaybackTrace(plx_platform::playback_trace::Command),
+    PlaybackTrace(plx_os::playback_trace::Command),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
     /// Poll only the store work this visible route owns, after its read-only step returns.
@@ -87,7 +87,7 @@ pub enum AppFx {
 /// Operations executed while the dispatcher holds only logical owner borrows.
 pub enum InlineAppFx {
     Session(plx_session::auth::SessionCmd),
-    PlaybackTrace(plx_platform::playback_trace::Command),
+    PlaybackTrace(plx_os::playback_trace::Command),
     Store(StoreId, StoreCmd),
     StoreWork(StoreWork),
     Consent(ConsentCmd),
@@ -234,7 +234,7 @@ pub enum PreferenceCmd {
     /// One live player setting's pick (`plx_media::route::Choice`): the app writes it through the
     /// media door, and `reply` learns whether the write was durable.
     Choose(plx_media::route::Choice, std::sync::mpsc::Sender<bool>),
-    Language { language: plx_platform::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
+    Language { language: plx_os::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
     /// The Interface resolution picked in its picker: install-wide, applied at the next launch. The
     /// app writes it through the session; `reply` learns whether the write was durable.
     UiResolution { mode: plx_plex::plex::session::UiResolution, reply: std::sync::mpsc::Sender<bool> },
@@ -1575,7 +1575,7 @@ pub enum AppMsg {
     /// Frame/entry/instance addressing and one-shot admission belong to Dispatcher.
     PlayerPresented { watch: Option<plx_appkit::skip_policy::OfferId>, paired: bool },
     AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
-    PlaybackTrace(plx_platform::playback_trace::Status),
+    PlaybackTrace(plx_os::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
     /// A command of the player-HUD package store, delivered to [`MachineId::Huds`].

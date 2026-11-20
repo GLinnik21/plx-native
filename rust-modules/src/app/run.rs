@@ -170,8 +170,8 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
         if crate::dev::framedump::requested() {
             crate::dev::framedump::iteration_begin(app);
         }
-        plx_platform::tv::window::pump_bus();
-        plx_platform::tv::home::poll();
+        plx_os::tv::window::pump_bus();
+        plx_os::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         self.clock_notice.poll();
         // What the hold hint has taught since last frame, written once to the install's session.
@@ -332,7 +332,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
         unsafe { update(app, fr); }
         app.rec.content_results();
         app.instr.mark(plx_base::diag::heartbeat::Phase::TickDrain); // tick_drain
-        plx_platform::tv::window::frame_probe_prepare_begin();
+        plx_os::tv::window::frame_probe_prepare_begin();
         publish_resources(app, fr);
     }
     fn admit(&mut self, demand: bool) -> bool {
@@ -347,7 +347,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
     }
     fn draw_and_swap(&mut self) -> bool {
         finish_prepare(self.app);
-        plx_platform::tv::window::frame_probe_prepare_end();
+        plx_os::tv::window::frame_probe_prepare_end();
         unsafe { present_and_swap(self.app, &mut self.fr,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             self.wslg_frame_budget.take()); }
@@ -355,7 +355,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
     }
     fn skipped(&mut self) {
         finish_prepare(self.app);
-        plx_platform::tv::window::frame_probe_prepare_end();
+        plx_os::tv::window::frame_probe_prepare_end();
         unsafe { present_and_swap(self.app, &mut self.fr,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             self.wslg_frame_budget.take()); }
@@ -402,7 +402,7 @@ fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route:
 /// describes THIS frame and a spring's velocity can be judged as travel-this-frame rather than as
 /// a bare units-per-second.
 fn clock_and_press(app: &mut App, fr: &mut Frame) {
-    plx_platform::playback_trace::tick();
+    plx_os::playback_trace::tick();
     if let Some((to, status)) = app.runtime.bridge(&mut app.bridge).playback_trace_poll() {
         app.pages.emit(to, plx_machine::machine::Fx::Deliver(to,
             plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
@@ -451,7 +451,7 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 
 /// **Make sure the player has a compiled HUD**, on each player frame in `prepare_window` (inside the frame
 /// iteration, before the draw): the app's layer is where the current locale is read
-/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The classic HUD compiles once, at
+/// (`plx_os::i18n::current()`), and the compile gets it as an argument. The classic HUD compiles once, at
 /// boot ([`boot_hud`]). A dev package (`plxnative-hud=<path>`, read and compiled on that frame, so THAT frame pays the
 /// compile) and a controlled run compile on their first player frame. A chosen package compiles in
 /// `Bridge::huds_tick`, in each frame's prepare window, when the resolved selection names a package not yet compiled
@@ -462,7 +462,7 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 /// loads, so after this `app.hud` is `Some`.
 fn refresh_hud(app: &mut App) {
     use plx_appkit::player_hud::loaded::{DevHud, DevStep};
-    let cx = plx_platform::i18n::current();
+    let cx = plx_os::i18n::current();
     // `plxnative-hud=<path>`: a package from a file replaces classic while it loads. Read once; a file that
     // does not load reports one line and leaves classic to draw.
     if matches!(app.dev_hud, DevHud::Unread) {
@@ -504,7 +504,7 @@ pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> 
     if controlled {
         return None;
     }
-    let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_platform::i18n::current(), bridge.measure());
+    let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_os::i18n::current(), bridge.measure());
     bridge.huds_start(loaded.clone());
     let mut hud = None;
     adopt_hud(bridge, &mut hud, loaded);
@@ -717,7 +717,7 @@ fn finish_prepare(app: &mut App) {
     // there is nothing else in the loop that would carry it: a `return` above, or a term that
     // only ran on player frames, would leave the compositor believing our surface is still
     // opaque with an ordinary UI on it.
-    plx_platform::tv::window::opaque_route(app.player.video_plane_bound);
+    plx_os::tv::window::opaque_route(app.player.video_plane_bound);
     app.instr.mark(plx_base::diag::heartbeat::Phase::Prepare); // prepare
     // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
     // settled screen must never run untimed work at the loop rate (spec §8.3).
@@ -844,21 +844,21 @@ fn publish_player_model(app: &mut App) {
 /// syntactic unit, and that `impl Rig<AppHost> for Bridge` block carries two dozen other methods
 /// beside these three — so this is the "or just its three privileged methods" half of the D4
 /// move. `Bridge::opaque_route`/`Bridge::clear_opaque_region` call these instead of
-/// `plx_platform::tv::window::` directly, which is what keeps the OS-facing text — the thing the `frame`
+/// `plx_os::tv::window::` directly, which is what keeps the OS-facing text — the thing the `frame`
 /// gate greps for — in this ONE file rather than split across the loop and the bridge. Each is a
-/// pure pass-through: the loop's own per-frame call above (`plx_platform::tv::window::opaque_route`, from
+/// pure pass-through: the loop's own per-frame call above (`plx_os::tv::window::opaque_route`, from
 /// `fr`) and the dispatcher's `Rig` hook (from `Bridge`'s own copy of the same bit) are two
 /// independent callers of one primitive, not two implementations of it. `ls2_pump` needs no
 /// twin here — `Bridge::ls2_pump` is or stays a no-op, since the dispatcher does not yet run a
 /// phase this early in the frame.
 pub(crate) fn rig_opaque_route(video_plane_bound: bool) {
-    plx_platform::tv::window::opaque_route(video_plane_bound);
+    plx_os::tv::window::opaque_route(video_plane_bound);
 }
 
 /// See [`rig_opaque_route`]. The `if self.video_plane` guard stays on `Bridge`'s side — this is
-/// the OS call alone, exactly what `plx_platform::tv::window::clear_opaque_region` was before the move.
+/// the OS call alone, exactly what `plx_os::tv::window::clear_opaque_region` was before the move.
 pub(crate) fn rig_clear_opaque_region() {
-    plx_platform::tv::window::clear_opaque_region();
+    plx_os::tv::window::clear_opaque_region();
 }
 
 /// **Simulator only: the television's compositor, over the frame the straighten pass just made.** The
@@ -970,7 +970,7 @@ unsafe fn present_and_swap(
             }
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
-            plx_platform::tv::window::frame_probe_request();
+            plx_os::tv::window::frame_probe_request();
             SDL_GL_SwapWindow(app.win);
         }
         app.window_activity.presented(fr.player);
@@ -1170,7 +1170,7 @@ fn window_step(stage: plx_telemetry::telemetry::window::Stage, playing: Option<b
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
-    ingest_sdl_event_with_window(app, fr, plx_platform::tv::window::grab);
+    ingest_sdl_event_with_window(app, fr, plx_os::tv::window::grab);
 }
 
 /// The window reacquisition is a platform operation, supplied separately so the
@@ -1293,7 +1293,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         app.runtime.bridge(&mut app.bridge).notify_suspend();
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
-        release_borrowed_window(plx_platform::tv::window::release);
+        release_borrowed_window(plx_os::tv::window::release);
         // A trailer preview is not parked: the OS taking the screen ends it, like any other way
         // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
         // left Abandoning, and a preview session is never parked for the foreground reload —
@@ -1490,7 +1490,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // The bare player samples its HUD in delivery order. The lab trigger is
         // consumed here, so it keeps the loop's fresh-press bookkeeping.
         let ordered_player_key = tree_owns_key && !app.pages.surface_up()
-            && matches!(app.route(), AppArg::Player) && !plx_platform::labcfg::is_trigger_key(sym, wcode);
+            && matches!(app.route(), AppArg::Player) && !plx_os::labcfg::is_trigger_key(sym, wcode);
         begin_fresh_press(&mut app.player.session,
             key,
             sym,
@@ -3127,7 +3127,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             plx_ui::profile::phase("frame.ui", || {
                 plx_ui::guard(|| {
                     if fr.player {
-                        // `plx_platform::tv::window::clear_opaque_region()` used to be called here. It is
+                        // `plx_os::tv::window::clear_opaque_region()` used to be called here. It is
                         // §3.3 step 10's privileged call and belongs at the container library's
                         // OWN draw entry, which `app.pages.draw` below reaches in this same frame:
                         // `Bridge::clear_opaque_region` performs it, keyed on the plane's bit
@@ -3138,9 +3138,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // wait for a free back buffer: spanned like every other route's `clear`.
                         // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
                         // and, from the acquired buffer to the swap, over the commit phase.
-                        plx_platform::tv::window::frame_probe_waiting();
+                        plx_os::tv::window::frame_probe_waiting();
                         plx_base::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
-                        plx_platform::tv::window::frame_probe_acquired();
+                        plx_os::tv::window::frame_probe_acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same
@@ -3543,7 +3543,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     plx_ui::glassload::step_index(),
                     bridge.home_snap_target(&app.pages),
                     bridge.home_snap_pos(&app.pages),
-                    plx_platform::tv::window::frame_probe_fields()
+                    plx_os::tv::window::frame_probe_fields()
                 )
             }) {
                 log(&line);
@@ -4885,7 +4885,7 @@ mod lifecycle_regression_tests {
     fn hud_address_field_up(dir: &std::path::Path,
         network: fn(&str, usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure>) -> (App, Frame, u32) {
         let mut app = app();
-        let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::english(),
+        let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_os::i18n::english(),
             &plx_base::fontcov::advances::ShippedMeasure);
         app.runtime.hud.driver = super::super::adapters::huds::HudDriver::started_on_network(dir.to_path_buf(), classic,
             "0.10.0", super::super::adapters::huds::HudRunner::inline("0.10.0").on_network(network));
@@ -5463,7 +5463,7 @@ mod lifecycle_regression_tests {
         let minimal = plx_appkit::player_hud::loaded::load(
             include_bytes!("../../appkit/src/hud_format/fixtures/minimal.plxhud"),
             "0.0.0-test",
-            plx_platform::i18n::english(),
+            plx_os::i18n::english(),
             &plx_ui::fixture::FixtureMeasure,
         )
         .expect("the minimal fixture loads")
@@ -6831,7 +6831,7 @@ mod lifecycle_regression_tests {
             assert!(plx_media::route::request_play(
                 &mut self.app.player.session,
                 self.app.runtime.metadata_mut(),
-                plx_platform::devcaps::caps(),
+                plx_os::devcaps::caps(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -7083,7 +7083,7 @@ mod lifecycle_regression_tests {
             assert!(plx_media::route::request_play(
                 &mut self.app.player.session,
                 self.app.runtime.metadata_mut(),
-                plx_platform::devcaps::caps(),
+                plx_os::devcaps::caps(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -7334,7 +7334,7 @@ mod lifecycle_regression_tests {
         };
         // The fixture parks its first answer until released; release it ahead of time.
         rig.release.send(()).unwrap();
-        let _ = plx_platform::tv::launch::take_all();
+        let _ = plx_os::tv::launch::take_all();
         let sid = rig.sid;
         let top = |app: &App| app.pages.nav.tabs.stack.entries.last().map(|e| e.arg.clone());
         let linked = AppArg::Content(ContentArg::Detail { sid, rk: "777".into() });
@@ -7347,7 +7347,7 @@ mod lifecycle_regression_tests {
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
         event(&mut rig.app, &mut fr, 0x103);
         event(&mut rig.app, &mut fr, 0x104);
-        plx_platform::tv::launch::offer(
+        plx_os::tv::launch::offer(
             r#"{"event":"launch","parameters":{"plex":{"ratingKey":"777","action":"open"}}}"#);
         for i in 0..30 {
             assert!(!backgrounded_iteration(&mut rig.app, &mut t), "iteration {i} presented while backgrounded");
@@ -7390,7 +7390,7 @@ mod lifecycle_regression_tests {
         rig.resolve();
         rig.accept_start();
         frame(&mut rig.app, 16);
-        let _ = plx_platform::tv::launch::take_all();
+        let _ = plx_os::tv::launch::take_all();
     }
 
     const LINK_777: &str = r#"{"event":"launch","parameters":{"plex":{"ratingKey":"777","action":"open"}}}"#;
@@ -7418,7 +7418,7 @@ mod lifecycle_regression_tests {
         start_film(&mut rig);
         assert!(super::super::bridge::player(&rig.app.pages).is_some() && rig.app.adapters.player.is_live(),
             "premise: the film is playing");
-        plx_platform::tv::launch::offer(LINK_777);
+        plx_os::tv::launch::offer(LINK_777);
         let mut t = 16;
         assert!(run_until_linked(&mut rig, &mut t), "the link lands over the film");
         settle(&mut rig.app, &mut t);
@@ -7437,7 +7437,7 @@ mod lifecycle_regression_tests {
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
         event(&mut rig.app, &mut fr, 0x103);
         event(&mut rig.app, &mut fr, 0x104);
-        plx_platform::tv::launch::offer(LINK_777);
+        plx_os::tv::launch::offer(LINK_777);
         let mut t = 16;
         for _ in 0..5 { backgrounded_iteration(&mut rig.app, &mut t); }
         event(&mut rig.app, &mut fr, 0x105);
@@ -7462,7 +7462,7 @@ mod lifecycle_regression_tests {
         event(&mut rig.app, &mut fr, 0x103);
         event(&mut rig.app, &mut fr, 0x104);
         assert!(rig.app.player.lifecycle.awaiting_load(), "premise: the film is parked");
-        plx_platform::tv::launch::offer(LINK_777);
+        plx_os::tv::launch::offer(LINK_777);
         event(&mut rig.app, &mut fr, 0x105);
         event(&mut rig.app, &mut fr, 0x106);
         assert!(matches!(rig.app.player.lifecycle.state(), ForegroundState::Suspended { .. }),
@@ -7491,7 +7491,7 @@ mod lifecycle_regression_tests {
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
         event(&mut rig.app, &mut fr, 0x103);
         event(&mut rig.app, &mut fr, 0x104);
-        plx_platform::tv::launch::offer(LINK_777);
+        plx_os::tv::launch::offer(LINK_777);
         let mut t = 16;
         backgrounded_iteration(&mut rig.app, &mut t);
         assert!(!rig.app.deeplink.is_leaving(), "the link started leaving while the window was hidden");
@@ -8608,7 +8608,7 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::request_play(
             &mut rig.app.player.session,
             rig.app.runtime.metadata_mut(),
-            plx_platform::devcaps::caps(),
+            plx_os::devcaps::caps(),
             rig.sid,
             "replacement",
             "/library/parts/2/file.mkv",
@@ -10138,7 +10138,7 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::request_preview(
             &mut rig.app.player.session,
             rig.app.runtime.metadata_mut(),
-            plx_platform::devcaps::caps(),
+            plx_os::devcaps::caps(),
             rig.sid,
             "1",
             "/library/parts/1/file.mkv",
@@ -10969,7 +10969,7 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::request_play(
             &mut rig.app.player.session,
             rig.app.runtime.metadata_mut(),
-            plx_platform::devcaps::caps(),
+            plx_os::devcaps::caps(),
             rig.sid,
             rk,
             &format!("/library/parts/{rk}/file.mkv"),
@@ -10987,7 +10987,7 @@ mod lifecycle_regression_tests {
         });
         rig.accept_start();
         frame(&mut rig.app, 16);
-        let _ = plx_platform::tv::launch::take_all();
+        let _ = plx_os::tv::launch::take_all();
         assert!(rig.app.adapters.player.is_live(), "the fixture must create the actual Engine");
         plx_play_feed::shared::FEED_SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
         plx_play_feed::shared::FEED_SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
@@ -11181,7 +11181,7 @@ mod video_plane_gate_tests {
             .next()
             .expect("the loop's source");
         assert!(
-            !src.contains("plx_platform::tv::window::opaque_route(fr.player)"),
+            !src.contains("plx_os::tv::window::opaque_route(fr.player)"),
             "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
         );
         // **UNCONDITIONAL.** The claim this pins is not where the call sits relative to the
@@ -11196,7 +11196,7 @@ mod video_plane_gate_tests {
         // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
         // `prepare_window`'s own body depth (four spaces, never inside that function's one
         // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
-        const CALL: &str = "    plx_platform::tv::window::opaque_route(app.player.video_plane_bound);";
+        const CALL: &str = "    plx_os::tv::window::opaque_route(app.player.video_plane_bound);";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,

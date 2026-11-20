@@ -139,7 +139,7 @@ pub enum Fault {
 
 impl Fault {
     pub fn message(self) -> &'static str {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         match self {
             Fault::StartFailed => msg::widgets_ass_start_failed(),
             Fault::InvalidFile => msg::widgets_ass_invalid_file(),

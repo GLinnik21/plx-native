@@ -315,10 +315,10 @@ def scan(source: str, calls: dict[str, tuple[int, ...]] | None = None,
 
 
 # The layer crates split out of rust-modules/src whose files this gate reads (docs/module-layers.md).
-# `platform` holds three of the listed product files below (webos.rs, tv/device.rs, devcaps/dv.rs);
+# `os` holds three of the listed product files below (webos.rs, tv/device.rs, devcaps/dv.rs);
 # `gfx` holds `overdraw.rs`, which this gate read as `ui/overdraw.rs` before the split, and `ui`
 # is the whole of what this gate read as `rust-modules/src/ui`.
-LAYER_SRCS = ('rust-modules/platform/src', 'rust-modules/gfx/src', 'rust-modules/ui/src')
+LAYER_SRCS = ('rust-modules/os/src', 'rust-modules/gfx/src', 'rust-modules/ui/src')
 # The constants table reads EVERY layer crate, not only the three above: a prose `const` is followed
 # across files, and `rust-modules/src` held all of them before the split. Without `plex` (which
 # also took `PlaybackQuality::label`, the quality row's text, out of the listed `route/decision.rs`)

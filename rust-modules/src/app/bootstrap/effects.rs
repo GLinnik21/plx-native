@@ -240,7 +240,7 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
     Ok(match effect {
         AppFx::Session(command) => json!({"session":wire(command)?}),
         AppFx::SessionEffect(effect) => json!({"session_effect":wire(effect)?}),
-        AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => json!({"playback_trace":"status"}),
+        AppFx::PlaybackTrace(plx_os::playback_trace::Command::Status) => json!({"playback_trace":"status"}),
         AppFx::Preferences(_) => return Err("unsupported controlled preferences effect"),
         // Yielding is not authorization: these heads must refuse before any MainThread,
         // recorder, catalog write or native player resource is borrowed by the runner.
@@ -271,7 +271,7 @@ pub(crate) fn inline(effect: &plx_screens::registry::InlineAppFx) -> Result<Valu
     use plx_screens::registry::InlineAppFx;
     match effect {
         InlineAppFx::Session(command) => Ok(json!({"session":wire(command)?})),
-        InlineAppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => Ok(json!({"playback_trace":"status"})),
+        InlineAppFx::PlaybackTrace(plx_os::playback_trace::Command::Status) => Ok(json!({"playback_trace":"status"})),
         InlineAppFx::Store(id, command) => Ok(json!({"store":id.ord().0,"command":store(command)?})),
         InlineAppFx::StoreWork(work) => Ok(json!({"work":work_value(work)?})),
         InlineAppFx::PlaybackTrace(_) | InlineAppFx::Consent(_) | InlineAppFx::Huds(_) => Err("unsupported Home application effect"),
@@ -345,7 +345,7 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
             SessionEvent::Pump => json!("pump"),
             _ => return Err("unsupported Home Session delivery"),
         },
-        AppMsg::PlaybackTrace(plx_platform::playback_trace::Status::Off) => json!({"playback_trace":"off"}),
+        AppMsg::PlaybackTrace(plx_os::playback_trace::Status::Off) => json!({"playback_trace":"off"}),
         AppMsg::Store(command) => store(command)?,
         AppMsg::PersonCommand { command, .. } => store(&plx_data::stores::StoreCmd::Person(command.clone()))?,
         AppMsg::StoreWork(work) => work_value(work)?,
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn controlled_diagnostics_only_records_the_deterministic_off_query() {
-        use plx_platform::playback_trace::{Command, Status};
+        use plx_os::playback_trace::{Command, Status};
         use plx_screens::registry::{AppFx, AppMsg};
         assert_eq!(super::app(&AppFx::PlaybackTrace(Command::Status)), Ok(serde_json::json!({"playback_trace":"status"})));
         assert_eq!(super::message(&AppMsg::PlaybackTrace(Status::Off)), Ok(serde_json::json!({"playback_trace":"off"})));

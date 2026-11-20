@@ -31,7 +31,7 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(len(tree(source)), 1)
 
     def test_tuples_and_qualified_paths_count(self):
-        self.assertEqual(len(tree('const X: [(plx_platform::i18n::Language::En, &str); 0] = [(Language::En, "a"), (Language::It, "b")];')), 1)
+        self.assertEqual(len(tree('const X: [(plx_os::i18n::Language::En, &str); 0] = [(Language::En, "a"), (Language::It, "b")];')), 1)
 
     def test_one_language_a_registry_slice_and_prose_are_fine(self):
         self.assertEqual(tree('let a = [Preference::En]; let b = SHIPPED; // [Preference::En, Preference::Es]\n'), [])

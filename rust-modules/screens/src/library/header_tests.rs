@@ -87,8 +87,8 @@ fn the_library_pill_shows_the_owner_only_if_the_full_credit_fits() {
 fn long_favorite_names_leave_room_for_options_in_every_language() {
     let _guard = plx_base::testlock::serial();
     let measure = plx_base::fontcov::advances::ShippedMeasure;
-    for language in plx_platform::i18n::SHIPPED {
-        let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
+    for language in plx_os::i18n::SHIPPED {
+        let _language = plx_os::i18n::language_on_this_thread_for_test(language);
         let mut fixture = Fixture::new(3, 36, 0);
         for section in &mut fixture.sections {
             section.row.title = format!("{} — {}", section.row.title, "International cinema and restored classics ".repeat(5));
@@ -159,7 +159,7 @@ fn the_collections_control_is_on_the_row_only_with_a_known_count_for_this_librar
     let (fixture, mut page, engine) = grid_page(1);
     assert_eq!(page.collections, CollectionsControl::Unknown, "premise: the probe has not answered");
     assert_eq!(page.toolbar_elems(), [RECOMMENDED, SORTFILTER], "an unknown count is not a control on the row");
-    let collections = plx_platform::i18n::msg::library_header_collections();
+    let collections = plx_os::i18n::msg::library_header_collections();
     let labels = |page: &LibraryScreen| page.header.row().unwrap().page.spec().right.iter().map(|item| item.label.clone()).collect::<Vec<_>>();
     assert!(!labels(&page).iter().any(|label| label == collections), "and it is not laid out: {:?}", labels(&page));
     for (answer, control) in [
@@ -228,7 +228,7 @@ fn the_cluster_declares_places_a_divider_and_a_value_only_sort_control() {
     let divider = row.layout.items.iter().find(|r| r.slot == Slot::Right(2)).unwrap();
     assert!(!divider.focusable && !right[2].focusable, "the divider is no stop");
     let sort = &right[3];
-    assert_eq!(sort.label, plx_platform::i18n::msg::library_header_sort_filter(), "its name stays 'Sort & Filter'");
+    assert_eq!(sort.label, plx_os::i18n::msg::library_header_sort_filter(), "its name stays 'Sort & Filter'");
     assert!(sort.value_only && sort.fold_glyph && sort.fold_quiet && sort.glyph == Some(plx_ui::icons::Icon::Sort));
     assert!(sort.value.is_some());
     let elems: Vec<u32> = row.stops.iter().map(|(elem, _)| *elem).collect();
@@ -383,7 +383,7 @@ fn back_from_the_nav_leaves_for_home() {
 /// language (measured with the device's whole-pixel advances).
 #[test]
 fn the_header_cluster_leaves_the_names_room_in_every_shipped_language() {
-    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
     let _guard = plx_base::testlock::serial();
     let (fixture, page, engine) = grid_page(1);
     let measure = plx_base::fontcov::advances::ShippedMeasure;
@@ -413,7 +413,7 @@ fn the_header_cluster_leaves_the_names_room_in_every_shipped_language() {
 /// width the LIVE item was placed for.)
 #[test]
 fn the_collections_widest_case_reserves_three_digits_and_a_longer_count_widens_only_its_own() {
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference};
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(Preference::En);
     let (fixture, mut page, engine) = grid_page(1);
@@ -504,7 +504,7 @@ fn a_known_count_stays_on_the_row_while_the_same_library_reads_unknown() {
         let seen = <LibraryScreen as Focusable<TestHost>>::reconcile(&page, page.key(COLLECTIONS), &fixture.cx(&engine));
         assert_eq!(seen.elem, COLLECTIONS, "focus on the control is seated elsewhere");
         let built = page.header.row().unwrap().page.spec().right.iter()
-            .find(|item| item.label == plx_platform::i18n::msg::library_header_collections()).map(|item| item.value.clone());
+            .find(|item| item.label == plx_os::i18n::msg::library_header_collections()).map(|item| item.value.clone());
         assert_eq!(built, Some(Some("4".to_string())), "the built row dropped the control");
     }
     // The answer that follows is the truth, whatever it says.
@@ -628,7 +628,7 @@ fn every_header_opener_is_lit_by_the_lift_while_its_menu_is_open() {
 /// new one rises, and the settled lift draws the new one alone.
 #[test]
 fn a_picked_sort_swaps_its_criterion_through_the_opener_lift() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     use plx_ui::screen::Screen;
     let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = grid_page(2);
@@ -719,7 +719,7 @@ fn the_filter_readout_stays_and_glides_while_a_picked_sort_reloads_the_listing()
     let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine, mut ms) = filtered_page();
     let readout = page.header.row().and_then(|row| row.readout()).unwrap().to_owned();
-    let collections = plx_platform::i18n::msg::library_header_collections();
+    let collections = plx_os::i18n::msg::library_header_collections();
     let x_of = |runs: &[plx_ui::draw_census::Run], text: &str, frame: &str| {
         runs.iter().find(|run| run.text == text).unwrap_or_else(|| panic!("{frame}: {text} is drawn")).at.x
     };
@@ -1226,7 +1226,7 @@ struct Frame {
 fn rest_alpha() -> f32 { plx_ui::theme::CONTROL_TEXT_REST[3] }
 
 fn watch_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32, numbers: &[&str]) -> Frame {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let runs = header_runs_after_a_frame(fixture, page, engine, ms);
     let collections = msg::library_header_collections();
     Frame {
@@ -1327,7 +1327,7 @@ fn a_switch_to_a_known_count_cross_fades_the_number_in_place() {
 fn a_count_of_another_width_dissolves_at_each_x_and_moves_nothing_else() {
     let _guard = plx_base::testlock::serial();
     for to in [123, 1_234] {
-        let text = plx_platform::i18n::current().number(i64::from(to));
+        let text = plx_os::i18n::current().number(i64::from(to));
         let (rest, frames) = switch_and_watch(4, Ok(to), true, &["4", text.as_str()]);
         let (from_x, to_x) = (rest.labels[0].0, frames.last().unwrap().labels[0].0);
         assert!(to_x < from_x - 1.0, "{to}: premise: the wider count moves the label left ({from_x} -> {to_x})");

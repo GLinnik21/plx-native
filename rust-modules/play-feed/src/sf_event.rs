@@ -259,7 +259,7 @@ pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::E
         // callback numbering shifts by two between webOS 4 and 5+ (`docs/webos5-port.md` §5):
         // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
         // the raw type.
-        note_sink_counter(&FEED_SHARED, ty, num, plx_platform::tv::device::info().major);
+        note_sink_counter(&FEED_SHARED, ty, num, plx_os::tv::device::info().major);
         // **A refusal before the first picture is a VERDICT, not a statistic.** Until 2026-09-03
         // the latch above was all this arm did, and `docs/webos10-lab-report.md` §3.5 records the
         // result on a set that refused the Load asynchronously (`Load()` returned ok=1, then

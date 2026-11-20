@@ -9,7 +9,7 @@ pub const CONTRIBUTE_URL: &str =
     "https://github.com/GLinnik21/plx-native/blob/main/docs/localization.md";
 
 // `Preference`, `Language`, `SHIPPED` and every table over them are generated from
-// `locales/languages.json` (see `platform/build_support/catalog.rs`); this file holds only the
+// `locales/languages.json` (see `os/build_support/catalog.rs`); this file holds only the
 // behavior around them. A shipped tag is never renamed: it is what the preferences store.
 include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 impl<'de> Deserialize<'de> for Preference {

@@ -196,7 +196,7 @@ impl BrowseDirectoryReq {
 /// The request's IO body and its completion: read the directory through `client` and post the
 /// answer to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands like one that
 /// failed (`ok: false`), never as the empty list of a read that found nothing. `zone` is the viewer's
-/// time zone, which only the application's runner can read (`plx_platform::i18n`): a bands read of a
+/// time zone, which only the application's runner can read (`plx_os::i18n`): a bands read of a
 /// calendar family converts its edges with it, and nothing else uses it.
 pub fn finish_browse_directory_job(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
     req: BrowseDirectoryReq, zone: Zone) {

@@ -17,11 +17,11 @@ use super::super::{
 use super::track_memory::*;
 use super::track_memory_tests::{put, show, typical, worst, STAMP};
 use super::ProfileList;
-use plx_platform::storage::state::{self, logical_size, MAX_LOGICAL_BYTES};
-use plx_platform::storage::wire::{
+use plx_os::storage::state::{self, logical_size, MAX_LOGICAL_BYTES};
+use plx_os::storage::wire::{
     AuthLoad, ErrorCode, MigrationMutation, ProtectionRequest, Request, SecretString, WireMutation,
 };
-use plx_platform::storage::client;
+use plx_os::storage::client;
 use serde_json::{json, Value};
 
 // ---- the household, at its bounds --------------------------------------------------------------
@@ -202,7 +202,7 @@ fn count(preferences: &Value, key: &str) -> usize {
 struct Db8 {
     record: Option<Value>,
 }
-impl plx_platform::storage::keymanager::Rpc for Db8 {
+impl plx_os::storage::keymanager::Rpc for Db8 {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         match uri {
             "luna://com.palm.db/get" => Ok(json!({"returnValue":true,"results":self.record.iter().cloned().collect::<Vec<_>>()})),
@@ -220,10 +220,10 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
         }
     }
 }
-type Store = plx_platform::storage::backend::Backend<Db8>;
+type Store = plx_os::storage::backend::Backend<Db8>;
 
 fn store() -> Store {
-    plx_platform::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
+    plx_os::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
 }
 fn try_commit(store: &mut Store, session: &Session, authority: SaveAuthority) -> persistence::CanonicalCommit {
     let mut transport = |request: Request| Ok(store.dispatch(request));
@@ -469,7 +469,7 @@ fn projection_is_the_platform_document_at(revision: u64) {
 /// A keymanager that seals nothing and answers with what AES-GCM would: the plaintext plus a 16-byte
 /// tag, base64. That is all `keymanager::seal` needs to build an envelope of the real size.
 struct LengthKeymanager;
-impl plx_platform::storage::keymanager::Rpc for LengthKeymanager {
+impl plx_os::storage::keymanager::Rpc for LengthKeymanager {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         // base64 of `n` zero bytes
         let zeros = |n: usize| format!("{}{}", "AAAA".repeat(n / 3), ["", "AA==", "AAA="][n % 3]);
@@ -498,7 +498,7 @@ fn the_keymanager_estimate_covers_the_envelope_the_helper_seals() {
     context.auth_generation = worst;
     for (users, sources) in [(1, 0), (2, 1), (USERS, USERS)] {
         let (_, protected) = split_canonical(&household(users, sources)).unwrap();
-        let sealed = plx_platform::storage::keymanager::seal(
+        let sealed = plx_os::storage::keymanager::seal(
             &mut LengthKeymanager,
             &worst.key_name(),
             &protected,

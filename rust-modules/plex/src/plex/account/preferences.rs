@@ -49,12 +49,12 @@ pub enum PreferenceError {
 impl PreferenceError {
     pub fn message(self) -> &'static str {
         match self {
-            Self::Stale => plx_platform::i18n::msg::browse_preferences_stale(),
-            Self::Refused => plx_platform::i18n::msg::browse_preferences_refused(),
-            Self::TimedOut => plx_platform::i18n::msg::browse_preferences_timed_out(),
-            Self::Unavailable => plx_platform::i18n::msg::browse_preferences_unavailable(),
-            Self::InvalidResponse => plx_platform::i18n::msg::browse_preferences_invalid_response(),
-            Self::InvalidPreference => plx_platform::i18n::msg::browse_preferences_invalid_preference(),
+            Self::Stale => plx_os::i18n::msg::browse_preferences_stale(),
+            Self::Refused => plx_os::i18n::msg::browse_preferences_refused(),
+            Self::TimedOut => plx_os::i18n::msg::browse_preferences_timed_out(),
+            Self::Unavailable => plx_os::i18n::msg::browse_preferences_unavailable(),
+            Self::InvalidResponse => plx_os::i18n::msg::browse_preferences_invalid_response(),
+            Self::InvalidPreference => plx_os::i18n::msg::browse_preferences_invalid_preference(),
         }
     }
 }

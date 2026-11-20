@@ -4,7 +4,7 @@ use super::super::readout::{self, Readout};
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_machine::machine::Measure as _;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::page_header::HeaderSwap;
@@ -331,7 +331,7 @@ fn a_lifted_control_is_left_out_and_the_row_rides_the_scroll() {
 fn the_readout_is_the_librarys_sentence_in_every_language() {
     for lang in SHIPPED {
         let _g = language_on_this_thread_for_test(lang);
-        let locale = plx_platform::i18n::current();
+        let locale = plx_os::i18n::current();
         let want = msg::library_header_filtered_of(&locale.number(1284), &locale.number(2500));
         assert_eq!(Count::Of { shown: 1284, total: 2500 }.readout(), Some(want), "{lang:?}");
         assert_eq!(Count::All(14).readout(), None);

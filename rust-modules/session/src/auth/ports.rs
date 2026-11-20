@@ -78,7 +78,7 @@ pub(super) fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
             // signed in. Drawn as the reason under "Couldn't sign in" (`screens/login.rs`).
             output_failed(output,
                 epoch,
-                plx_platform::i18n::msg::browse_auth_plex_unreachable(),
+                plx_os::i18n::msg::browse_auth_plex_unreachable(),
                 IncidentContext::new(IncidentKind::PinCreate, Some(last))
                     .with_link_state(0, None, generation),
                 None,
@@ -608,9 +608,9 @@ pub fn profile_switch_worker_with_io(
             // person to a router that is fine. The PIN was already accepted by this point, so
             // this is never the PIN flash either.
             let error = if plx_plex::plex::account::refused_identity(&evidence).is_some() {
-                plx_platform::i18n::msg::browse_auth_profile_signin_refused(&tile.title)
+                plx_os::i18n::msg::browse_auth_profile_signin_refused(&tile.title)
             } else {
-                plx_platform::i18n::msg::browse_auth_switch_failed().into()
+                plx_os::i18n::msg::browse_auth_switch_failed().into()
             };
             output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
@@ -629,7 +629,7 @@ pub fn profile_switch_worker_with_io(
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: plx_platform::i18n::msg::browse_auth_no_access(&tile.title),
+                error: plx_os::i18n::msg::browse_auth_no_access(&tile.title),
                 pin_denied: false,
             },
         }));
@@ -743,20 +743,20 @@ pub fn profile_switch_worker_with_io(
                 error: if insecure_only {
                     discovery_insecure_only_message().to_owned()
                 } else if let Some((name, _)) = refusal {
-                    plx_platform::i18n::msg::browse_auth_server_profile_refused(&tile.title, &name)
+                    plx_os::i18n::msg::browse_auth_server_profile_refused(&tile.title, &name)
                 } else if malformed {
-                    plx_platform::i18n::msg::browse_auth_switch_invalid().into()
+                    plx_os::i18n::msg::browse_auth_switch_invalid().into()
                 } else if !admission_failures.is_empty() {
-                    plx_platform::i18n::msg::browse_auth_switch_failed().into()
+                    plx_os::i18n::msg::browse_auth_switch_failed().into()
                 } else {
                     // Closed precedence, strongest first: a certificate this TV does not trust (the
                     // person can fix it by updating), a 401 (the profile has no grant — the ONLY
                     // case `no_source_access` is true of), then silence. A probe that left no cause at
                     // all cannot occur once a server was probed; it reads as silence, never as a refusal.
                     match probe_cause {
-                        Some(Cause::TlsUntrusted { .. }) => plx_platform::i18n::msg::browse_auth_tls_untrusted().into(),
-                        Some(Cause::Unauthorized) => plx_platform::i18n::msg::browse_auth_no_source_access(&tile.title),
-                        Some(Cause::Unreachable) | None => plx_platform::i18n::msg::browse_auth_servers_unreachable().into(),
+                        Some(Cause::TlsUntrusted { .. }) => plx_os::i18n::msg::browse_auth_tls_untrusted().into(),
+                        Some(Cause::Unauthorized) => plx_os::i18n::msg::browse_auth_no_source_access(&tile.title),
+                        Some(Cause::Unreachable) | None => plx_os::i18n::msg::browse_auth_servers_unreachable().into(),
                     }
                 },
                 pin_denied: false,

@@ -210,7 +210,7 @@ class MakeWiring(unittest.TestCase):
         every binary is the default pass). A crate left out has an identical test set in both passes:
         no `hostsim` feature in its manifest and no `feature = "hostsim"` in its source. What the guard
         does not check is the dependency side: the old pass linked those crates' test binaries
-        against hostsim-built `plx_base`, `plx_gfx`, `plx_platform`, `plx_media` and `plx_play_feed`
+        against hostsim-built `plx_base`, `plx_gfx`, `plx_os`, `plx_media` and `plx_play_feed`
         (`ENV_STEERABLE` paths, glyph-cache sizes, `ffi_host` present), and none of their tests
         observes those differences. A crate that gains the feature or a cfg fails here until it is
         added to HOSTSIM_SUITE (and the recipe's `-p` list)."""

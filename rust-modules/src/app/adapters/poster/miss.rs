@@ -48,7 +48,7 @@ impl Currency {
     pub(super) fn live(srv: ServerId) -> Currency {
         let (token_gen, grant_epoch) = plx_plex::plex::client_for(srv)
             .map_or((0, 0), |c| (c.token_gen(), c.grant_epoch()));
-        Currency { cache_gen: plx_platform::imgcache::generation(), grant_epoch, token_gen }
+        Currency { cache_gen: plx_os::imgcache::generation(), grant_epoch, token_gen }
     }
 }
 

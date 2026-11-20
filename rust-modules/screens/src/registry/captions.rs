@@ -159,7 +159,7 @@ pub fn status_policy(policy: &CaptionPolicy) -> CaptionPolicy {
 }
 
 fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, states_survive: bool) -> TileLabel {
-    let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
+    let [title, details] = caption_lines(policy, facts, plx_os::i18n::current());
     let details = if policy.details_for(facts.is_show).is_empty() { if states_survive { state } else { None } } else { state.or(details) };
     // No line carries a mark: what OK does is the focused still's footer cue (`ui::still_footer`),
     // not a caption's.

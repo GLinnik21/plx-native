@@ -10,7 +10,7 @@ use super::baked::{Bake, Cached};
 use super::card::{self, CardIo, Part, Source};
 use super::cover::{self, CoverIo};
 use super::fan::{Got, Rgba};
-use plx_platform::imgcache::DiskKey;
+use plx_os::imgcache::DiskKey;
 use plx_plex::plex::account::AccountClient;
 use plx_plex::plex::artwork::{card_parts, cover_parts};
 use plx_plex::plex::watchlist::{CatalogItem, WatchlistError};
@@ -31,7 +31,7 @@ fn decode(bytes: &[u8]) -> Option<Rgba> {
 /// that straddles a sign-out, a retoken or a profile switch is still delivered to its (now
 /// unreachable) slot, but never filed on disk.
 fn current(client: &Client, cache_gen: u64, token_gen: u32, profile: Option<&str>) -> bool {
-    cache_gen == plx_platform::imgcache::generation()
+    cache_gen == plx_os::imgcache::generation()
         && client.token_gen() == token_gen
         && profile.is_none_or(|p| plx_plex::plex::session::current_profile_key() == p)
 }
@@ -65,7 +65,7 @@ impl<'a> WorkerCoverIo<'a> {
         let ns = cover::namespace(language);
         let (w, h) = box_px();
         let identity = |kind, (w, h)| {
-            disk_or_none(plx_platform::imgcache::classify_baked(&ns, kind, hex, cover::COVER_STAMP, w, h))
+            disk_or_none(plx_os::imgcache::classify_baked(&ns, kind, hex, cover::COVER_STAMP, w, h))
         };
         let snapshot = plx_plex::plex::session::current_snapshot();
         WorkerCoverIo {
@@ -88,21 +88,21 @@ impl<'a> WorkerCoverIo<'a> {
 
 impl CoverIo for WorkerCoverIo<'_> {
     fn cached(&mut self) -> Option<Cached> {
-        let c = plx_platform::imgcache::read_at(self.cache_gen, self.disk.as_ref()?)?;
+        let c = plx_os::imgcache::read_at(self.cache_gen, self.disk.as_ref()?)?;
         Some(Cached { bytes: c.bytes, stale: c.stale })
     }
     fn discard(&mut self) {
         if let Some(k) = &self.disk {
-            plx_platform::imgcache::remove_at(self.cache_gen, k);
+            plx_os::imgcache::remove_at(self.cache_gen, k);
         }
     }
     fn marker(&mut self) -> Option<bool> {
         let k = self.none_disk.as_ref()?;
-        let c = plx_platform::imgcache::read_at(self.cache_gen, k)?;
+        let c = plx_os::imgcache::read_at(self.cache_gen, k)?;
         if c.bytes == cover::NO_COVER_MARKER {
             return Some(c.stale);
         }
-        plx_platform::imgcache::remove_at(self.cache_gen, k);
+        plx_os::imgcache::remove_at(self.cache_gen, k);
         None
     }
     fn identified(&mut self) -> bool {
@@ -124,12 +124,12 @@ impl CoverIo for WorkerCoverIo<'_> {
     }
     fn persist(&mut self, bytes: &[u8]) {
         if let (true, Some(k)) = (self.still_current(), &self.disk) {
-            plx_platform::imgcache::write_at(self.cache_gen, k, bytes);
+            plx_os::imgcache::write_at(self.cache_gen, k, bytes);
         }
     }
     fn persist_marker(&mut self, body: &[u8]) {
         if let (true, Some(k)) = (self.still_current(), &self.none_disk) {
-            plx_platform::imgcache::write_at(self.cache_gen, k, body);
+            plx_os::imgcache::write_at(self.cache_gen, k, body);
         }
     }
 }
@@ -157,7 +157,7 @@ pub(super) struct WorkerCardIo<'a> {
 impl<'a> WorkerCardIo<'a> {
     pub(super) fn new(client: &'a Client, logo: &'a str, art: &'a str, cache_gen: u64, token_gen: u32) -> Self {
         let (w, h) = box_px();
-        let disk = disk_or_none(plx_platform::imgcache::classify_baked(
+        let disk = disk_or_none(plx_os::imgcache::classify_baked(
             &super::disk_namespace(client), card::CARD_KIND, logo, art, w, h,
         ));
         WorkerCardIo { client, srv: client.id(), logo, art, cache_gen, token_gen, disk }
@@ -189,12 +189,12 @@ impl<'a> WorkerCardIo<'a> {
 
 impl CardIo for WorkerCardIo<'_> {
     fn cached(&mut self) -> Option<Cached> {
-        let c = plx_platform::imgcache::read_at(self.cache_gen, self.disk.as_ref()?)?;
+        let c = plx_os::imgcache::read_at(self.cache_gen, self.disk.as_ref()?)?;
         Some(Cached { bytes: c.bytes, stale: c.stale })
     }
     fn discard(&mut self) {
         if let Some(k) = &self.disk {
-            plx_platform::imgcache::remove_at(self.cache_gen, k);
+            plx_os::imgcache::remove_at(self.cache_gen, k);
         }
     }
     fn load(&mut self, part: Part) -> Got<Source> {
@@ -212,7 +212,7 @@ impl CardIo for WorkerCardIo<'_> {
     }
     fn persist(&mut self, png: &[u8]) {
         if let (true, Some(k)) = (self.still_current(), &self.disk) {
-            plx_platform::imgcache::write_at(self.cache_gen, k, png);
+            plx_os::imgcache::write_at(self.cache_gen, k, png);
         }
     }
 }

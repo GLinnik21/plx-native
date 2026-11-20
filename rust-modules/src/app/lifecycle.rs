@@ -270,15 +270,15 @@ mod root_back_tests {
     #[test]
     fn back_at_home_root_shows_the_platform_home() {
         let _g = plx_base::testlock::serial();
-        plx_platform::tv::home::release_root_press();
-        let before = plx_platform::tv::home::home_requests();
+        plx_os::tv::home::release_root_press();
+        let before = plx_os::tv::home::home_requests();
         back_at_root();
         assert_eq!(
-            plx_platform::tv::home::home_requests(),
+            plx_os::tv::home::home_requests(),
             before + 1,
             "BACK at Home's root must ask webOS for its Home screen"
         );
-        plx_platform::tv::home::release_root_press();
+        plx_os::tv::home::release_root_press();
     }
 
     /// **A refused root BACK leaves the sign-in it refused to leave RUNNING, and asks for the
@@ -320,8 +320,8 @@ mod root_back_tests {
     #[test]
     fn owned_home_root_back_reaches_platform_home_without_moving_the_root() {
         let _guard = plx_base::testlock::serial();
-        plx_platform::tv::home::release_root_press();
-        let before = plx_platform::tv::home::home_requests();
+        plx_os::tv::home::release_root_press();
+        let before = plx_os::tv::home::home_requests();
         let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
         let mut rig = harness.bridge();
@@ -340,10 +340,10 @@ mod root_back_tests {
             [plx_screens::registry::LoopReq::BackAtRoot]));
         assert!(rig.retained.screen_command_receipts.iter().any(|(_, _, outcome)|
             *outcome == plx_machine::machine::AppCommandOutcome::Completed));
-        assert_eq!(plx_platform::tv::home::home_requests(), before + 1);
+        assert_eq!(plx_os::tv::home::home_requests(), before + 1);
         assert_eq!(d.nav.top_page().map(|page| page.id), Some(entry));
         assert_eq!(d.nav.instance_of(entry), Some(instance));
-        plx_platform::tv::home::release_root_press();
+        plx_os::tv::home::release_root_press();
     }
 
     /// A BACK on an actual non-root Detail page is the page's typed `ContentReq::Back`, never the
@@ -352,8 +352,8 @@ mod root_back_tests {
     #[test]
     fn nonroot_owned_page_back_never_reaches_platform_home() {
         let _guard = plx_base::testlock::serial();
-        plx_platform::tv::home::release_root_press();
-        let before = plx_platform::tv::home::home_requests();
+        plx_os::tv::home::release_root_press();
+        let before = plx_os::tv::home::home_requests();
         let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
         let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
         let mut rig = harness.bridge();
@@ -377,10 +377,10 @@ mod root_back_tests {
             *from == plx_machine::machine::MachineId::Instance(detail_instance)
                 && *outcome == plx_machine::machine::AppCommandOutcome::Completed),
             "the owned Detail Back executes through the product runner");
-        assert_eq!(plx_platform::tv::home::home_requests(), before);
+        assert_eq!(plx_os::tv::home::home_requests(), before);
         assert_eq!(d.nav.instance_of(detail_entry), None, "the same-frame Back retires Detail");
         assert!(d.top_arg() == Some(&plx_screens::registry::AppArg::Home));
-        plx_platform::tv::home::release_root_press();
+        plx_os::tv::home::release_root_press();
     }
 
     /// First-run BACK starts as a request from the real `OnboardScreen`, then runs the exact

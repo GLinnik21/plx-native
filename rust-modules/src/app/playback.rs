@@ -357,10 +357,10 @@ pub(crate) fn warm_up_next_still(sid: plx_plex::plex::ServerId, thumb: &str) {
 /// from the value it is handed and reads no process-wide answer itself. A refusal learned during a
 /// play reaches the NEXT play's value once the learner's write has landed (the request in flight
 /// narrowed its own attempt).
-pub(crate) fn start_caps() -> std::sync::Arc<plx_platform::devcaps::Caps> {
+pub(crate) fn start_caps() -> std::sync::Arc<plx_os::devcaps::Caps> {
     let stored = plx_plex::plex::session::peek().applied_refusals();
-    let start = plx_platform::devcaps::start_caps(&stored);
-    if !std::sync::Arc::ptr_eq(&start, &plx_platform::devcaps::caps()) {
+    let start = plx_os::devcaps::start_caps(&stored);
+    if !std::sync::Arc::ptr_eq(&start, &plx_os::devcaps::caps()) {
         plx_base::eventlog::log(&format!(
             "devcaps: play start less learned refusals ({} stored) -> audio={} channels={:?}",
             stored.len(),
@@ -835,7 +835,7 @@ pub(crate) fn player_requests(
             }
             PlayerReq::RepairSandbox => {
                 if player.session.jail_load_blocked {
-                    pa.repair_sandbox(&mut player.repair, plx_platform::tv::sandbox::blocks_native_video());
+                    pa.repair_sandbox(&mut player.repair, plx_os::tv::sandbox::blocks_native_video());
                     player.session.repair_status = player.repair.state();
                     pages.present.note_in_scope(plx_machine::present::Scope::Page, plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
                 }
@@ -2107,31 +2107,31 @@ mod play_start_caps_tests {
     fn the_play_start_value_lacks_an_applied_refusal() {
         let _serial = plx_base::testlock::serial();
         let _session = plx_plex::plex::session::TempSession::new("play-start-value");
-        let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+        let _set = plx_os::devcaps::firmware_on_this_thread_for_test(
             "fw",
             "B",
-            plx_platform::devcaps::Caps {
+            plx_os::devcaps::Caps {
                 audio: "aac,ac3,eac3,dts".into(),
                 audio_channels: [("dts".into(), 6)].into(),
-                ..plx_platform::devcaps::Caps::assumed()
+                ..plx_os::devcaps::Caps::assumed()
             },
         );
-        let boot = plx_platform::devcaps::caps();
+        let boot = plx_os::devcaps::caps();
         assert!(
             std::sync::Arc::ptr_eq(&start_caps(), &boot),
             "sanity: no row stored, so the start value is the boot snapshot itself"
         );
 
-        let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
+        let dts6 = plx_os::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
         assert!(plx_plex::plex::session::record_named_refusal(&dts6), "the write is queued");
         plx_base::storage_worker::drain_for_test();
         assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the row is stored");
 
         let start = start_caps();
-        assert!(!std::sync::Arc::ptr_eq(&start, &plx_platform::devcaps::caps()), "a row in force makes a new value");
+        assert!(!std::sync::Arc::ptr_eq(&start, &plx_os::devcaps::caps()), "a row in force makes a new value");
         assert!(!start.audio_supports("dts", 6), "the start value lost DTS 5.1");
         assert!(!start.forced_feeds_audio_track("dca", 6), "and Force Direct Play will not feed it");
-        assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
+        assert!(plx_os::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
     }
 }
 

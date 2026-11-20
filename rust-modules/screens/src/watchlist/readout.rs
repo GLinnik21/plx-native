@@ -31,18 +31,18 @@ impl Readout {
     /// The verdict sentence.
     pub fn verdict(self) -> &'static str {
         match self {
-            Readout::Empty => plx_platform::i18n::msg::watchlist_empty_list(),
-            Readout::Filtered => plx_platform::i18n::msg::watchlist_empty_filtered(),
-            Readout::NoToken => plx_platform::i18n::msg::watchlist_empty_no_token(),
-            Readout::Unreachable => plx_platform::i18n::msg::watchlist_empty_unreachable(),
+            Readout::Empty => plx_os::i18n::msg::watchlist_empty_list(),
+            Readout::Filtered => plx_os::i18n::msg::watchlist_empty_filtered(),
+            Readout::NoToken => plx_os::i18n::msg::watchlist_empty_no_token(),
+            Readout::Unreachable => plx_os::i18n::msg::watchlist_empty_unreachable(),
         }
     }
 
     /// The line under the verdict (the boards' body copy), or none.
     pub fn body(self) -> Option<&'static str> {
         match self {
-            Readout::Empty => Some(plx_platform::i18n::msg::watchlist_empty_list_body()),
-            Readout::Filtered => Some(plx_platform::i18n::msg::watchlist_empty_filtered_body()),
+            Readout::Empty => Some(plx_os::i18n::msg::watchlist_empty_list_body()),
+            Readout::Filtered => Some(plx_os::i18n::msg::watchlist_empty_filtered_body()),
             Readout::NoToken | Readout::Unreachable => None,
         }
     }
@@ -56,9 +56,9 @@ impl Readout {
 /// The page-placed `Failed` read-out of [`Readout::Unreachable`]: the shared verdict at the 540
 /// anchor with its Try again action, built the way Home's and the Collection's are.
 pub fn unreachable_overlay<'a>() -> StatusOverlay<'a> {
-    StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::watchlist_empty_unreachable_c(), StatusKind::Failed)
+    StatusOverlay::new(Rect::FULL, plx_os::i18n::msg::watchlist_empty_unreachable_c(), StatusKind::Failed)
         .page(plx_ui::icons::Icon::ServerBadgeMinus)
-        .action(plx_platform::i18n::msg::browse_action_retry_c())
+        .action(plx_os::i18n::msg::browse_action_retry_c())
 }
 
 /// The verdict's and the reason's bands for a read-out drawn into `frame` (the page rect). The

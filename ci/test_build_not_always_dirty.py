@@ -12,7 +12,7 @@ Two halves, both reading cargo's own `--message-format=json` records (only lines
 objects with a `reason` are looked at; `cargo test` also prints harness text on stdout):
 
 * `SecondBuildIsFreshTests` builds the real crate twice from `rust-modules/` and demands that the
-  second run recompiled nothing of the crate: every `plxnative_modules` (and `plx_platform`, the
+  second run recompiled nothing of the crate: every `plxnative_modules` (and `plx_os`, the
   layer crate whose own build script generates the catalog, and `plx_gfx`, whose build script
   compiles the nanosvg object for its own test binary) compiler-artifact is `fresh`, and the
   crate's build script did not write its output again (cargo replays a
@@ -62,14 +62,14 @@ CRATE = "plxnative_modules"  # the lib target's name (underscored)
 PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_id
 # The layer crate that owns a build script of its own (catalog + install identities): it must not be
 # always-dirty either, or every crate above it would rebuild with it.
-PLATFORM_CRATE = "plx_platform"
+PLATFORM_CRATE = "plx_os"
 GFX_CRATE = "plx_gfx"
 NIGHTLY = pinned()  # the repo's one toolchain (historic name)
 
 
-# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp --features
+# The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp --features
 # lab-diagnostics"); identical arguments and CARGO_INCREMENTAL make the first run here a reuse.
-LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_platform", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry", "-p", "plx_data", "-p", "plx_session", "-p", "plx_media", "-p", "plx_playback_contract", "-p", "plx_play_uri", "-p", "plx_play_feed", "-p", "plx_media_codecs", "-p", "plx_appkit", "-p", "plx_screens", "-p", "plx_owp", "--features", "lab-diagnostics"]
+LIB_ARGS = ["check", "--lib", "--tests", "-p", "plxnative-modules", "-p", "plx_base", "-p", "plx_machine", "-p", "plx_os", "-p", "plx_gfx", "-p", "plx_net", "-p", "plx_ui", "-p", "plx_plex", "-p", "plx_telemetry", "-p", "plx_data", "-p", "plx_session", "-p", "plx_media", "-p", "plx_playback_contract", "-p", "plx_play_uri", "-p", "plx_play_feed", "-p", "plx_media_codecs", "-p", "plx_appkit", "-p", "plx_screens", "-p", "plx_owp", "--features", "lab-diagnostics"]
 
 
 def cargo_env():

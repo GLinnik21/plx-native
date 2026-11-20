@@ -431,7 +431,7 @@ pub(super) fn classify_prime_decision(
 /// the claim's inputs), for the same reason: the profile PMS reads is built from it, so it is the
 /// value the plan chose its tracks from and no function here consults the process-wide answer.
 pub(super) fn transcode_spec<'a>(
-    caps: &'a plx_platform::devcaps::Caps,
+    caps: &'a plx_os::devcaps::Caps,
     rk: &'a str,
     media_index: usize,
     session: &'a str,
@@ -455,7 +455,7 @@ pub(super) fn transcode_spec<'a>(
 /// `ResolveEnv::sub_sid` is a burn the session was already carrying (`build_stream` keeps its
 /// remux-shaped contract and the server re-encodes for the burn), which the rule must not erase.
 pub(super) fn transcode_spec_carrying_burn<'a>(
-    caps: &'a plx_platform::devcaps::Caps,
+    caps: &'a plx_os::devcaps::Caps,
     rk: &'a str,
     media_index: usize,
     session: &'a str,
@@ -956,7 +956,7 @@ fn decision_audio(mc: &plx_plex::plex::MediaContainer) -> Option<&str> {
 /// anyway: `Unverified` (M2's AAC 5.1 under the measured profile).
 /// No answer at all is `Unverified` for the same reason.
 pub(super) fn classify_outcome(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     mc: Option<&plx_plex::plex::MediaContainer>,
     carried: Option<&CarriedAudio>,
     audio: plx_plex::plex::AudioEnhancements,
@@ -1121,7 +1121,7 @@ pub(super) fn decision_copies_video(mc: &plx_plex::plex::MediaContainer, remux: 
 /// and a quoted line can tell it from a failed probe or a set without Dolby Vision.
 pub fn frozen_dv_decision(
     mode: plx_plex::plex::session::DolbyVisionMode,
-    probed: plx_platform::devcaps::dv::DvCapability,
+    probed: plx_os::devcaps::dv::DvCapability,
     dovi: plx_data::metadata::Dovi,
     vcodec: &str,
 ) -> plx_data::metadata::DvDecision {
@@ -1241,7 +1241,7 @@ impl PlayVerdict {
     /// Borrowed for every sentence but the two that name a codec, which are formatted (an
     /// allocation on the failure path only).
     pub fn text(&self) -> std::borrow::Cow<'_, str> {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         use std::borrow::Cow::{Borrowed, Owned};
         match self {
             Self::Server(sentence, _) => Borrowed(sentence),
@@ -1426,12 +1426,12 @@ pub struct ResolveEnv {
     /// The set's Dolby Vision answer (`devcaps::dv::capability`), read once at the request beside
     /// the mode so the worker never reads the process cache. A regression sets it directly: no
     /// test mutates the production `OnceLock` or makes the whole host a DV set.
-    pub dv_capability: plx_platform::devcaps::dv::DvCapability,
+    pub dv_capability: plx_os::devcaps::dv::DvCapability,
     /// **The capability value this attempt plans from**, copied off the session
     /// ([`PlaybackSession::attempt_caps`]) beside the quality and the mode, so the worker never reads the
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
     /// profile of this resolve are derived from this one value.
-    pub caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    pub caps: std::sync::Arc<plx_os::devcaps::Caps>,
     /// The playback backends composed for this session, copied off it like the capability value
     /// above: the worker plans Feed work only when Feed is among them.
     pub backends: plx_playback_contract::BackendSet,
@@ -3469,7 +3469,7 @@ impl AccountAudioLanguage {
 /// The account-language resolver diagnostic. This is pure so every emitted outcome stays
 /// host-testable; it intentionally contains only the language code, never account identity.
 fn account_audio_language_log(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     account: &AccountAudioLanguage,
     tracks: &[plx_data::metadata::Stream],
     audio_sel: Option<&(i32, String, i64)>,
@@ -3633,7 +3633,7 @@ fn audio_intents<'a>(
 /// which it has never been; see the tests at the foot of this file.
 #[cfg(test)]
 pub(super) fn pick_dp_audio(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
 ) -> Option<(i32, String, i64)> {
@@ -3646,7 +3646,7 @@ pub(super) fn pick_dp_audio(
 /// series set to Hungarian opened in English (#160).
 #[cfg(test)]
 pub(super) fn pick_dp_audio_pref(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
     prefs: AudioLangPrefs<'_>,
@@ -3656,11 +3656,11 @@ pub(super) fn pick_dp_audio_pref(
 
 /// Can the TV take this audio track straight from the file, under `mode`, on the attempt's
 /// capability value `caps`: with its own decoder ([`audio_natively_plays_with`]) or with the app's
-/// lossy decode to stereo ([`plx_platform::devcaps::Caps::app_decodes_lossy_track`]: a codec in force,
+/// lossy decode to stereo ([`plx_os::devcaps::Caps::app_decodes_lossy_track`]: a codec in force,
 /// or, under Forced, one the set has no native path for and the policy admits, and then only for a
 /// track of at most two channels, because the app never mixes a surround source down under Force)? Auto and Forced both go
 /// through `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
-/// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
+/// Both also apply the Load's own limits ([`plx_os::devcaps::audio_track_fits`]): the PCM
 /// path's channel count and rate rule (`pcm_load_rate`: a table rate, or any faster one the app
 /// resamples), the stated channel count an Opus `opusInfo` header can describe (1..=8,
 /// `devcaps::OPUS_LOAD_CHANNELS`; an unstated width is not direct-playable, #1096), and the sample-rate
@@ -3668,7 +3668,7 @@ pub(super) fn pick_dp_audio_pref(
 /// to the app's decoder and the Load, not to a hardware decoder Forced may trust past its table, so a 5.1
 /// FLAC, or a 96 kHz AAC, is refused under Forced instead of failing at the Load; a 96 kHz stereo FLAC is not.
 pub(super) fn audio_direct_plays_with(
-    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+    caps: &plx_os::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
     audio_natively_plays_with(caps, mode, codec, channels, sample_rate)
@@ -3679,7 +3679,7 @@ pub(super) fn audio_direct_plays_with(
 /// resort (Auto has one pass, over `audio_direct_plays_with`), so a native track that honours the
 /// intent is never passed over for one the app would decode.
 pub(super) fn audio_natively_plays_with(
-    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+    caps: &plx_os::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
     caps.native_audio_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
@@ -3687,7 +3687,7 @@ pub(super) fn audio_natively_plays_with(
 
 #[cfg(test)]
 fn pick_dp_audio_mode(
-    caps: &plx_platform::devcaps::Caps, tracks: &[plx_data::metadata::Stream], default_acodec: &str,
+    caps: &plx_os::devcaps::Caps, tracks: &[plx_data::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
@@ -4219,7 +4219,7 @@ pub(super) fn pick_subtitle(
 pub(super) fn video_feed_supported(
     vcodec: &str,
     dv: plx_data::metadata::DvPresentation,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
 ) -> bool {
     (matches!(vcodec, "h264" | "hevc")
         || (vcodec == "av1" && caps.av1)
@@ -4242,7 +4242,7 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::L
 /// decoder, av1 / vp9 only when the table lists their own row (`Caps::av1`, `Caps::vp9`), and
 /// anything else the pipeline cannot feed at all. The resolution half is the local agreement with the profile's
 /// `video.width`/`video.height` limitations (the `*`-scoped one and the codec-scoped ones, both from
-/// [`plx_platform::devcaps::Caps::raster_bound`]): the profile makes PMS transcode a 4K source down for a
+/// [`plx_os::devcaps::Caps::raster_bound`]): the profile makes PMS transcode a 4K source down for a
 /// 1080p-bounded SoC, but when `/decision` is unreachable the fallback never asks PMS, so without
 /// this test a 4K file with one direct-playable audio track was fed verbatim to a decoder whose
 /// table says 1920x1088 — the wrong-side failure devcaps' own doc names (issue #22's over-claim
@@ -4296,7 +4296,7 @@ pub(super) fn video_direct_plays(
     src_w: i64,
     src_h: i64,
     dv: plx_data::metadata::DvPresentation,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
 ) -> bool {
     let codec_ok = vcodec == "h264"
         || (vcodec == "hevc" && caps.hevc)
@@ -4304,7 +4304,7 @@ pub(super) fn video_direct_plays(
         || (vcodec == "vp9" && caps.vp9);
     // The codec's one raster bound: the shared bound, AV1's and VP9's own table rows on each axis
     // they state, and the attempt's ceiling for this codec after a recovery took a refused video
-    // out of it ([`plx_platform::devcaps::Caps::raster_bound`]).
+    // out of it ([`plx_os::devcaps::Caps::raster_bound`]).
     let (bw, bh) = caps.raster_bound(vcodec);
     codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
@@ -4343,9 +4343,9 @@ impl PlayedVideo<'_> {
 pub fn played_video<'a>(
     d: &'a plx_data::metadata::Detail,
     mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
+    dv_probed: plx_os::devcaps::dv::DvCapability,
 ) -> Option<PlayedVideo<'a>> {
     // A show's primary stream metadata is backfilled on Detail. Its part and codecs live on
     // the episode, so the show container itself retains its identity as a non-playable item.
@@ -4377,9 +4377,9 @@ pub fn played_video<'a>(
 pub fn version_play_starts<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
+    dv_probed: plx_os::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     match mode {
         DirectPlayMode::Forced => None,
@@ -4389,9 +4389,9 @@ pub fn version_play_starts<'a>(
 
 pub(super) fn decodable_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
+    dv_probed: plx_os::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     let direct = |v: &plx_data::pms::MediaVersion| {
         video_direct_plays(
@@ -4525,7 +4525,7 @@ impl AudioPreviewInputs<'_> {
 /// a subtitle that only a show or account preference would turn on (only a subtitle already
 /// selected on the item counts as due). Unknown tracks answer `false`.
 pub(super) fn audio_intent_needs_conversion(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream], part: &str, video_dp: bool, inputs: AudioPreviewInputs<'_>,
 ) -> bool {
     if tracks.is_empty() {
@@ -4552,7 +4552,7 @@ pub(super) fn audio_intent_needs_conversion(
 /// [`playback_preview`]'s pure core — the four-way answer from the fields it actually needs, so
 /// a caller holding an EPISODE's file and a show's stream list can ask the same question.
 pub fn playback_preview_of(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     part: &str,
     vcodec: &str,
     width: i64,
@@ -4565,7 +4565,7 @@ pub fn playback_preview_of(
 
 /// [`playback_preview_of`] with what the page knows about the audio pick ([`AudioPreviewInputs`]).
 pub fn playback_preview_with_audio(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     part: &str,
     vcodec: &str,
     width: i64,

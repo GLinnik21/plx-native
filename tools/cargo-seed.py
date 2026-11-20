@@ -187,7 +187,7 @@ def seed_key(root, kind):
     part("manifest-storage", manifest_bytes(os.path.join(root, "rust-modules", "storage", "Cargo.toml")))
     part("manifest-base", manifest_bytes(os.path.join(root, "rust-modules", "base", "Cargo.toml")))
     part("manifest-machine", manifest_bytes(os.path.join(root, "rust-modules", "machine", "Cargo.toml")))
-    part("manifest-platform", manifest_bytes(os.path.join(root, "rust-modules", "platform", "Cargo.toml")))
+    part("manifest-os", manifest_bytes(os.path.join(root, "rust-modules", "os", "Cargo.toml")))
     part("manifest-gfx", manifest_bytes(os.path.join(root, "rust-modules", "gfx", "Cargo.toml")))
     part("manifest-net", manifest_bytes(os.path.join(root, "rust-modules", "net", "Cargo.toml")))
     part("manifest-ui", manifest_bytes(os.path.join(root, "rust-modules", "ui", "Cargo.toml")))

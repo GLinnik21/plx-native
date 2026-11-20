@@ -77,16 +77,16 @@ const FACTS_SEP_PAD: f32 = theme::space::SM;
 /// the pill is sized to the very glyph it carries.
 pub const ALT_ICON: plx_ui::icons::Icon = plx_ui::icons::Icon::ChevronDown;
 
-pub fn alt_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_also_available_c() }
+pub fn alt_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_also_available_c() }
 
-fn mark_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_watched_c() }
-fn mark_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_unwatched_c() }
-fn mark_episode_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_episode_watched_c() }
-fn mark_episode_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_episode_unwatched_c() }
-fn play_from_start_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_play_start_c() }
-fn trailer_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_trailer_c() }
-fn play_version_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_play_version_c() }
-fn go_to_show_label() -> &'static CStr { plx_platform::i18n::msg::browse_menu_go_show_c() }
+fn mark_watched_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_mark_watched_c() }
+fn mark_unwatched_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_mark_unwatched_c() }
+fn mark_episode_watched_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_mark_episode_watched_c() }
+fn mark_episode_unwatched_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_mark_episode_unwatched_c() }
+fn play_from_start_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_play_start_c() }
+fn trailer_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_trailer_c() }
+fn play_version_label() -> &'static CStr { plx_os::i18n::msg::browse_detail_play_version_c() }
+fn go_to_show_label() -> &'static CStr { plx_os::i18n::msg::browse_menu_go_show_c() }
 
 /// The Play Version disc's mark: a portrait card with another behind it — several copies of one
 /// title, which is what a version list is. It used to be [`plx_ui::icons::Icon::Show`], the item
@@ -554,10 +554,10 @@ pub fn hero_credit(d: &Detail) -> Option<(&'static str, Vec<&str>)> {
             .filter(|credit| credit.role.contains("Writer"))
             .map(|credit| credit.tag.as_str())
             .collect();
-        return (!names.is_empty()).then_some((plx_platform::i18n::msg::browse_detail_created_by(), names));
+        return (!names.is_empty()).then_some((plx_os::i18n::msg::browse_detail_created_by(), names));
     }
     let names: Vec<&str> = d.directors.iter().map(String::as_str).collect();
-    (!names.is_empty()).then_some((plx_platform::i18n::msg::browse_detail_directed_by(), names))
+    (!names.is_empty()).then_some((plx_os::i18n::msg::browse_detail_directed_by(), names))
 }
 
 pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
@@ -580,7 +580,7 @@ fn people_blocks(d: &Detail, button_y: f32, measure: &dyn Measure, mut f: impl F
     let cast_text = people_text(&cast_names);
     let credit_text = credit.as_ref().map(|(_, names)| people_text(names));
     let cast = (!cast_names.is_empty()).then(|| {
-        people_view(&cast_text, plx_platform::i18n::msg::browse_detail_starring(), measure)
+        people_view(&cast_text, plx_os::i18n::msg::browse_detail_starring(), measure)
     });
     let credit_view = credit.as_ref().zip(credit_text.as_deref()).map(|((label, _), text)| people_view(text, label, measure));
     let heights = [
@@ -647,7 +647,7 @@ fn item_subscription(d: &Detail) -> plx_plex::plex::serverinfo::Subscription {
 }
 
 const FACTS_GLYPH_D: f32 = theme::size::CAPTION as f32;
-fn converts_on_server_c() -> &'static CStr { plx_platform::i18n::msg::browse_detail_converts_c() }
+fn converts_on_server_c() -> &'static CStr { plx_os::i18n::msg::browse_detail_converts_c() }
 
 #[derive(Clone, Copy)]
 enum Bit {
@@ -690,10 +690,10 @@ fn play_mode_bits_for(
     match play_note(preview, hdr, subscription) {
         PlayNote::Quiet => push(Bit::Word(
             match preview {
-                plx_media::route::Preview::DirectPlay => plx_platform::i18n::msg::browse_detail_direct_play_c(),
-                plx_media::route::Preview::Remux => plx_platform::i18n::msg::browse_detail_direct_stream_c(),
+                plx_media::route::Preview::DirectPlay => plx_os::i18n::msg::browse_detail_direct_play_c(),
+                plx_media::route::Preview::Remux => plx_os::i18n::msg::browse_detail_direct_stream_c(),
                 plx_media::route::Preview::OriginalAudioConverted => {
-                    plx_platform::i18n::msg::browse_detail_original_audio_converted_c()
+                    plx_os::i18n::msg::browse_detail_original_audio_converted_c()
                 }
                 plx_media::route::Preview::Converts => converts_on_server_c(),
             },
@@ -704,7 +704,7 @@ fn play_mode_bits_for(
             push(Bit::Word(converts_on_server_c(), plx_ui::detail_layout::FACTS_INK, 0));
             push(Bit::Sep);
             push(Bit::Word(
-                plx_platform::i18n::msg::browse_detail_hardware_needs_c(),
+                plx_os::i18n::msg::browse_detail_hardware_needs_c(),
                 theme::TEXT_SECONDARY,
                 0,
             ));
@@ -716,7 +716,7 @@ fn play_mode_bits_for(
             push(Bit::Air(theme::space::SM));
             push(Bit::Word(c"HDR \u{2192} SDR", theme::TEXT_SECONDARY, 1));
             push(Bit::Sep);
-            push(Bit::Word(plx_platform::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
+            push(Bit::Word(plx_os::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
             push(Bit::Air(theme::space::SM));
             push(Bit::Capsule);
         }
@@ -1743,7 +1743,7 @@ mod tests {
     /// the People column or the row stays circles. Never across.
     #[test]
     fn five_discs_never_cross_the_people_column_in_any_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         // Go to Show belongs to an episode page; the on-deck More disc is absent there.
         let wide = HeroSet { more: false,
@@ -2139,7 +2139,7 @@ mod tests {
     /// all-language sweep above covers the languages where the row itself collapses to circles.
     #[test]
     fn the_go_to_show_disc_opens_in_every_english_episode_row() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let english = SHIPPED
             .iter()
@@ -2176,7 +2176,7 @@ mod tests {
     /// may collapse; this one must not.
     #[test]
     fn go_to_show_unfurls_in_every_language_when_the_row_has_no_alt() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         for restart in [false, true] {
             for version in [false, true] {

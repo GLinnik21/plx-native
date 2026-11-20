@@ -57,7 +57,7 @@ use std::ffi::CString;
 
 use plx_machine::machine::Measure;
 use plx_media::player::text_style::HudBand;
-use plx_platform::i18n::{msg, LocaleContext};
+use plx_os::i18n::{msg, LocaleContext};
 use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::vstack::{Anchor, VStack};
@@ -118,7 +118,7 @@ pub struct AppLabels {
 impl AppLabels {
     /// **The app's own strings in the language `cx` names**: the one constructor of [`AppLabels`], over the
     /// generated `msg::*_in(cx)` accessors. The language is an ARGUMENT, so nothing here reads the
-    /// process-wide current locale: the app layer passes `plx_platform::i18n::current()` when it compiles
+    /// process-wide current locale: the app layer passes `plx_os::i18n::current()` when it compiles
     /// (outside the draw, `player_hud::loaded`), the lint passes each shipped language's context.
     pub fn in_language(cx: &LocaleContext) -> AppLabels {
         AppLabels {
@@ -2634,7 +2634,7 @@ mod content_axis_tests {
             r#"{ "id": "title", "when": "title.is_episode", "cells": ["#);
         let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.unwrap();
         let mut compiled = compile(&package, &plx_ui::fixture::FixtureMeasure,
-            CompileCtx { labels: AppLabels::in_language(plx_platform::i18n::english()) });
+            CompileCtx { labels: AppLabels::in_language(plx_os::i18n::english()) });
         assert!(crate::player_hud::loaded::answers_every_frame(&compiled));
         compiled.states.retain(|state| !(state.key.open == 0 && state.key.slot == Slot::Discs && state.key.episode && state.key.real_episode == Some(false)));
         assert!(!crate::player_hud::loaded::answers_every_frame(&compiled));

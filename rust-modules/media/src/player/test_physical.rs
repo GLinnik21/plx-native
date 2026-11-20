@@ -16,7 +16,7 @@ use plx_play_feed::physical::FeedSet;
 use plx_play_feed::sf_event::SfEventHooks;
 use plx_play_feed::shared::FEED_SHARED;
 use plx_play_feed::sink_fence::SinkFence;
-use plx_platform::tv::sink::{RefusingSink, UnloadTicket, VideoSink};
+use plx_os::tv::sink::{RefusingSink, UnloadTicket, VideoSink};
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::os::raw::c_char;
 
@@ -34,7 +34,7 @@ pub(crate) fn raw_sink() -> &'static dyn VideoSink {
     }
     #[cfg(not(feature = "hostsim"))]
     {
-        plx_platform::tv::sink::installed()
+        plx_os::tv::sink::installed()
     }
 }
 
@@ -110,7 +110,7 @@ pub(super) const TEST_HOOKS: NativeHooks = NativeHooks {
     feed: FeedHooks { sink, mirror_playstate, mute_for_preroll, feed_clock_us },
     release: ReleaseHooks {
         raw_sink,
-        plane: plx_platform::tv::plane::installed(),
+        plane: plx_os::tv::plane::installed(),
         on_release_step: super::engine::release_step,
         on_exported_window_destroy: super::engine::exported_window_destroyed,
         spawn_unload,

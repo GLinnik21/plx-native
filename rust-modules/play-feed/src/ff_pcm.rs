@@ -63,7 +63,7 @@ impl PcmDecoder {
     /// or whose codec is not one of the app-decoded set.
     pub unsafe fn open(par: *const AVCodecParameters, out: PcmOut) -> Result<PcmDecoder, String> {
         let name = std::ffi::CStr::from_ptr(plx_media_codecs::ffi::avcodec_get_name((*par).codec_id)).to_string_lossy();
-        let Some(entry) = plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name) else {
+        let Some(entry) = plx_os::devcaps::app_decoded_by_ffmpeg_name(&name) else {
             return Err(format!("{name} is not an app-decoded codec"));
         };
         // A lossless stream must be the declared shape (a wrong rate is wrong pitch); a lossy one

@@ -188,7 +188,7 @@ fn quality_is_stored_optional_and_read_as_original() {
 /// clears has a row that says so, and no row says so that platform does not clear.
 #[test]
 fn t_account_the_bound_rows_are_the_platform_bound_keys() {
-    let platform: BTreeSet<&str> = plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
+    let platform: BTreeSet<&str> = plx_os::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
     let declared: BTreeSet<&str> = DESCRIPTORS.iter().filter(|d| d.account_bound).map(|d| d.key).collect();
     assert_eq!(declared, platform, "account-bound rows and platform's ACCOUNT_BOUND_PREFERENCES drifted");
     // Every key platform clears is a row at all (a bound key with no row would be unlisted here).
@@ -270,7 +270,7 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
 /// **The taught hold hints** (`plx_ui::hold_hint`): an absent key is "not taught" and writes no
 /// key, each flag round-trips through both on-disk hosts, a damaged flag costs only itself, and the
 /// row is the television's (Install, never account-bound, so sign-out keeps it:
-/// `platform::storage::state::clear_tenure_keeps_the_taught_hold_hints`).
+/// `os::storage::state::clear_tenure_keeps_the_taught_hold_hints`).
 #[test]
 fn the_taught_hold_hints_default_absent_round_trip_and_are_install_wide() {
     let default_json = serde_json::to_value(Preferences::default()).unwrap();
@@ -299,7 +299,7 @@ fn the_taught_hold_hints_default_absent_round_trip_and_are_install_wide() {
 
     let row = DESCRIPTORS.iter().find(|d| d.key == "hold_hint_taught").expect("the row is in the table");
     assert_eq!((row.scope, row.account_bound, row.live, row.settings), (Scope::Install, false, false, None));
-    assert!(!plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.contains(&"hold_hint_taught"));
+    assert!(!plx_os::storage::state::ACCOUNT_BOUND_PREFERENCES.contains(&"hold_hint_taught"));
 }
 
 /// The `subtitle_offsets` row is a `Preferences` field under its own key, written only while

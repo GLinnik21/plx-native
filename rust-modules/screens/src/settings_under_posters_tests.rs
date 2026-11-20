@@ -5,7 +5,7 @@ use super::*;
 use super::super::test_support::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_plex::plex::session::UnderPosters;
-use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
 use plx_machine::present::Present;
 use DetailPart as P;
 
@@ -156,7 +156,7 @@ fn the_page_has_a_title_switch_two_details_rows_a_sort_value_switch_and_reset_wi
 #[test]
 fn each_page_row_states_the_designs_sentence() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let said = |id| sentence_for(Some(&id));
     assert_eq!(said(UpId::Title), "Shows each title under its poster.");
     assert_eq!(said(UpId::MovieDetails), "Choose what appears under movie posters.");
@@ -168,7 +168,7 @@ fn each_page_row_states_the_designs_sentence() {
 #[test]
 fn no_row_carries_a_sub_line_on_either_page() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     let page = UnderPostersPage::new(EntryId(0));
     assert!(page.form.table.sections.iter().flat_map(|s| s.rows.iter()).all(|r| r.detail.is_empty()),
@@ -182,7 +182,7 @@ fn no_row_carries_a_sub_line_on_either_page() {
 #[test]
 fn each_details_row_reads_its_kinds_names_and_opens_its_own_picker() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     let mut page = UnderPostersPage::new(EntryId(0));
     for (id, kind, label, want) in [
@@ -204,7 +204,7 @@ fn each_details_row_reads_its_kinds_names_and_opens_its_own_picker() {
 #[test]
 fn a_details_value_is_the_names_nothing_or_a_count() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     assert_eq!(names_value(DetailParts::NONE), "Nothing");
     assert_eq!(names_value(parts(&[P::Year])), "Year");
     assert_eq!(names_value(parts(&[P::Length, P::Year])), format!("Year {DOT} Length"), "the line's order, not the order ticked");
@@ -216,7 +216,7 @@ fn a_details_value_is_the_names_nothing_or_a_count() {
 #[test]
 fn the_rows_read_each_kinds_stored_parts_independently() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters { details: parts(&[P::VideoQuality]), show_details: parts(&[P::AgeRating, P::Score]), ..UnderPosters::DEFAULT });
     let page = UnderPostersPage::new(EntryId(0));
     let value_of = |id: UpId| {
@@ -261,7 +261,7 @@ fn a_dropped_receipt_is_a_refusal() {
 #[test]
 fn the_movie_picker_lists_six_parts_each_with_its_sample_and_checks_the_current() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     let page = DetailsPage::new(EntryId(0), PosterKind::Movie);
     assert_eq!(rows_of(&page), vec![
@@ -281,7 +281,7 @@ fn the_movie_picker_lists_six_parts_each_with_its_sample_and_checks_the_current(
 #[test]
 fn the_show_picker_lists_five_parts_with_seasons_and_no_length_or_video_quality() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     let page = DetailsPage::new(EntryId(0), PosterKind::Show);
     assert_eq!(rows_of(&page), vec![
@@ -302,7 +302,7 @@ fn the_show_picker_lists_five_parts_with_seasons_and_no_length_or_video_quality(
 #[test]
 fn each_pickers_samples_are_worded_from_the_first_poster_of_its_own_kind() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     let sitcom = PmsMovie { child_count: 3, ..show("Sitcom", 2011, "Comedy") };
     let mut western = poster("Bravo", 2022, "Western");
@@ -457,7 +457,7 @@ fn the_unfocused_kind_is_dimmed_to_the_designs_value_per_focus() {
 fn the_picture_draws_each_kinds_whole_column_at_its_opacity() {
     use plx_ui::follow_copy::DIM;
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, ..UnderPosters::DEFAULT });
     let slot = RouteLayout::screen().picture_slot();
     let alphas = |opacity: [f32; 2]| {
@@ -480,9 +480,9 @@ fn the_picture_draws_each_kinds_whole_column_at_its_opacity() {
 
 #[test]
 fn a_pickers_focus_states_the_part_or_why_it_is_blocked() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let four = parts(&[P::Year, P::Length, P::Genre, P::VideoQuality]);
     let _live = Live::set(UnderPosters { details: four, ..UnderPosters::DEFAULT });
     let mut page = DetailsPage::new(EntryId(0), PosterKind::Movie);
@@ -499,7 +499,7 @@ fn a_pickers_focus_states_the_part_or_why_it_is_blocked() {
 #[test]
 fn every_part_has_its_own_sentence_with_a_real_example_and_its_own_blocked_one() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let two = DetailParts::MOVIE_DEFAULT;
     let four = parts(&[P::Year, P::Length, P::Genre, P::VideoQuality]);
     let sentence = |kind, set, part, example: &str| picker_sentence(kind, set, part, example);
@@ -568,7 +568,7 @@ fn drawn_texts<S: Screen<InnerHost>>(page: &mut S) -> Vec<String> {
 #[test]
 fn a_pickers_picture_shows_both_kinds_and_words_the_ticks_of_its_own() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, details: parts(&[P::Genre]), show_details: parts(&[P::Genre]), sort_value: true });
     let mut movies = DetailsPage::new(EntryId(0), PosterKind::Movie);
     let texts = drawn_texts(&mut movies);
@@ -588,7 +588,7 @@ fn a_pickers_picture_shows_both_kinds_and_words_the_ticks_of_its_own() {
 #[test]
 fn the_pages_picture_draws_a_tile_of_each_kind_from_the_library() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, details: parts(&[P::Genre]), show_details: parts(&[P::Genre]), sort_value: true });
     let mut page = UnderPostersPage::new(EntryId(0));
     for row in [UpId::Title, UpId::MovieDetails, UpId::ShowDetails, UpId::Reset] {
@@ -604,7 +604,7 @@ fn the_pages_picture_draws_a_tile_of_each_kind_from_the_library() {
 #[test]
 fn the_picture_shows_each_posters_year_only_while_the_sort_value_row_has_focus() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, details: parts(&[P::Genre]), sort_value: true, ..UnderPosters::DEFAULT });
     let mut page = UnderPostersPage::new(EntryId(0));
     page.state.sel = UpId::SortValue.key();
@@ -638,7 +638,7 @@ fn reset_restores_the_default_and_is_inert_at_the_default() {
 
 #[test]
 fn the_show_preview_supplies_examples_for_missing_facts() {
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let tv = PmsMovie {
         kind: 1,
         title: "Family Stories".into(),
@@ -674,7 +674,7 @@ fn the_band_follows_either_kinds_parts() {
 #[test]
 fn the_picture_is_captioned_by_the_same_policy() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let lines = |v, kind| picture_lines(v, kind, None, false);
     for kind in [PosterKind::Movie, PosterKind::Show] {
         assert_eq!(lines(up(false, &[], &[]), kind), [None, None]);
@@ -714,10 +714,10 @@ fn the_root_row_opens_the_page() {
 
 fn text_fit_inputs() -> RootInputs {
     RootInputs {
-        trace: plx_platform::playback_trace::Status::Off,
+        trace: plx_os::playback_trace::Status::Off,
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: false,
-        language: plx_platform::i18n::Preference::System,
+        language: plx_os::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
 }
@@ -738,7 +738,7 @@ fn root_row_text(inputs: &RootInputs) -> (Option<String>, String) {
 #[test]
 fn the_root_row_reads_the_setting() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let read = |title, details: &[DetailPart]| root_row_text(&RootInputs { under_posters: UnderPosters { title, details: parts(details), ..UnderPosters::DEFAULT }, ..text_fit_inputs() });
     let (value, sub) = read(false, &[P::Year, P::Length]);
     assert_eq!(value.as_deref(), Some("Year \u{b7} Length"), "the default reads its names");
@@ -765,7 +765,7 @@ fn the_root_row_reads_the_setting() {
 fn the_root_page_reads_the_stored_setting_into_its_row() {
     let _guard = plx_base::testlock::serial();
     let _sess = seated_scratch_session("root-reads-under-posters");
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let stored = UnderPosters { title: true, details: parts(&[P::Genre]), show_details: DetailParts::NONE, sort_value: false };
     let _live = Live::set(stored);
     let mut inputs = crate::registry::capture_fixture();
@@ -778,9 +778,9 @@ fn the_root_page_reads_the_stored_setting_into_its_row() {
 
 #[test]
 fn every_row_states_its_own_sentence_and_the_page_its_own() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     assert_eq!(sentence_for(Some(&UpId::Title)), msg::under_posters_title_detail());
     assert_eq!(sentence_for(Some(&UpId::MovieDetails)), msg::under_posters_movie_details_detail());
     assert_eq!(sentence_for(Some(&UpId::ShowDetails)), msg::under_posters_show_details_detail());
@@ -798,7 +798,7 @@ fn every_row_states_its_own_sentence_and_the_page_its_own() {
 #[test]
 fn the_page_opens_on_its_first_rows_sentence_and_follows_focus_and_the_dimming_with_it() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     let mut page = UnderPostersPage::new(EntryId(0));
     assert_eq!(page.follow.text(), sentence_for(Some(&UpId::Title)), "no fade on arrival");
@@ -850,8 +850,8 @@ fn every_under_posters_string_fits_in_every_language() {
         }
         // each sentence ends above the picture slot, in at most the lines the column gives it
         let mut sentences: Vec<(String, &str, String)> = [UpId::Title, UpId::MovieDetails, UpId::ShowDetails, UpId::SortValue, UpId::Reset]
-            .iter().map(|id| (format!("{id:?}"), plx_platform::i18n::msg::under_posters_title(), sentence_for(Some(id)).to_string())).collect();
-        sentences.push(("page".into(), plx_platform::i18n::msg::under_posters_title(), plx_platform::i18n::msg::under_posters_copy().to_string()));
+            .iter().map(|id| (format!("{id:?}"), plx_os::i18n::msg::under_posters_title(), sentence_for(Some(id)).to_string())).collect();
+        sentences.push(("page".into(), plx_os::i18n::msg::under_posters_title(), plx_os::i18n::msg::under_posters_copy().to_string()));
         let two = DetailParts::MOVIE_DEFAULT;
         let four = |kind: PosterKind| parts(kind.offered()).kept(&kind.offered()[..4]);
         for kind in [PosterKind::Movie, PosterKind::Show] {
@@ -1048,7 +1048,7 @@ fn placeholders_of(value: UnderPosters, posters: &[&PmsMovie]) -> plx_ui::placeh
 #[test]
 fn the_picture_never_draws_a_skeleton_or_an_empty_art_key_card() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
     for value in every_value() {
         // neither kind has art anywhere: the finished art-less face, twice
@@ -1070,7 +1070,7 @@ fn the_picture_never_draws_a_skeleton_or_an_empty_art_key_card() {
 #[test]
 fn a_kind_with_art_still_draws_through_the_shared_card() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
     // With art, the card is the shared one: it waits on its poster like any tile (a counted skeleton
     // with its real key until the poster source answers), and never on an empty key.
@@ -1094,7 +1094,7 @@ fn a_tile_takes_the_first_poster_of_its_kind_else_the_sample_of_that_kind() {
 #[test]
 fn a_line_the_setting_turns_on_is_never_drawn_empty_and_a_blank_setting_draws_no_word() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let off = up(false, &[], &[]);
     let words = |v: UnderPosters, posters: &[&PmsMovie]| -> Vec<String> {
         let picture = RootPicture { value: v, posters, sorted: false, opacity: [1.0, 1.0] };
@@ -1176,7 +1176,7 @@ fn the_sort_value_switch_uses_the_existing_confirmed_profile_write_and_reset() {
 fn the_sort_value_picture_words_the_year_of_every_kind_of_item() {
     use plx_data::pms::KIND_SHOW;
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let value = UnderPosters { sort_value: true, ..up(false, &[], &[]) };
     let drawn = |posters: &[&PmsMovie]| -> Vec<String> {
         let picture = RootPicture { value, posters, sorted: true, opacity: [1.0, 1.0] };
@@ -1201,7 +1201,7 @@ fn the_sort_value_picture_words_the_year_of_every_kind_of_item() {
 fn the_picture_paints_into_the_slot_it_is_handed() {
     use plx_ui::follow_copy::PictureSlot;
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let _live = Live::set(UnderPosters::DEFAULT);
     assert_eq!((PICTURE_TILE_W, PICTURE_TILE_H, PICTURE_TILE_STEP), (250.0, 375.0, 410.0), "the board's tiles");
     let picture = RootPicture { value: UnderPosters::DEFAULT, posters: &[], sorted: false, opacity: [1.0, 1.0] };
@@ -1242,7 +1242,7 @@ fn the_picture_paints_into_the_slot_it_is_handed() {
 #[test]
 fn with_title_on_the_bold_title_stands_above_the_details_line() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let slot = RouteLayout::screen().picture_slot();
     let picture = RootPicture { value: UnderPosters { title: true, ..UnderPosters::DEFAULT }, posters: &[], sorted: false, opacity: [1.0, 1.0] };
     let runs = plx_ui::draw_census::capture_runs(|| {
@@ -1262,7 +1262,7 @@ fn with_title_on_the_bold_title_stands_above_the_details_line() {
 #[test]
 fn the_kind_captions_wear_the_section_header_look_under_every_setting() {
     let _guard = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
     let slot = RouteLayout::screen().picture_slot();
     for value in every_value() {
@@ -1295,7 +1295,7 @@ fn the_preview_draws_every_selected_example_inside_its_caption_column() {
             for set in subsets(kind.offered()) {
                 let value = kind.with_parts(UnderPosters { title: true, ..UnderPosters::DEFAULT }, set);
                 let [_, details] = plx_ui::caption_policy::caption_lines(
-                    &caption_policy_of(value), &kind_sample(kind), plx_platform::i18n::current(),
+                    &caption_policy_of(value), &kind_sample(kind), plx_os::i18n::current(),
                 );
                 let picture = RootPicture { value, posters: &[], sorted: false, opacity: [1.0, 1.0] };
                 let runs = plx_ui::draw_census::capture_runs(|| {

@@ -4,7 +4,7 @@ use crate::feed_resources::LoadReceipt;
 use crate::pcm_lead::PcmLead;
 use crate::shared::FEED_SHARED;
 use crate::SendPtr;
-use plx_platform::tv::sink::VideoSink;
+use plx_os::tv::sink::VideoSink;
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -154,7 +154,7 @@ mod load_timing_tests {
                 SendPtr(payload.as_ptr() as *mut c_char),
                 epoch,
                 None,
-                PcmLead::FromOutput(plx_platform::devcaps::AudioStack::Liblxa),
+                PcmLead::FromOutput(plx_os::devcaps::AudioStack::Liblxa),
                 |_| {
                     std::thread::sleep(READ);
                     Some(400_000_000)

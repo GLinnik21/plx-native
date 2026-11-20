@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn a_numberless_episode_card_never_reads_episode_zero() {
         let _g = plx_base::testlock::serial();
-        let kind = plx_platform::i18n::msg::browse_kind_episode().to_uppercase();
+        let kind = plx_os::i18n::msg::browse_kind_episode().to_uppercase();
         let dated = Episode { title: "Pilot".into(), aired: "2016-04-21".into(), ..Default::default() };
         let words = card_words(&dated);
         assert!(!words.iter().any(|w| w.contains("EPISODE 0") || w.contains('0') && w.to_uppercase().contains("EPISODE")), "{words:?}");
@@ -721,7 +721,7 @@ mod tests {
         let undated = Episode { title: "Pilot".into(), ..Default::default() };
         assert!(card_words(&undated).contains(&kind), "an episode with no number and no date says what it is");
         let numbered = Episode { index: 3, title: "Pilot".into(), ..Default::default() };
-        assert!(card_words(&numbered).contains(&plx_platform::i18n::msg::browse_detail_episode_number(3)), "a numbered one keeps EPISODE N");
+        assert!(card_words(&numbered).contains(&plx_os::i18n::msg::browse_detail_episode_number(3)), "a numbered one keeps EPISODE N");
     }
 
     fn settled_lift(focused: bool) -> TextLift {

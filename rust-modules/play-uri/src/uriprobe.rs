@@ -35,7 +35,7 @@
 //!
 //! The probe cannot see the video plane. The summary reports what the service said; the tester's
 //! eyes are the verdict, and no `video=shown` token is guessed.
-use plx_platform::tv::uri::{Shape, UriReply};
+use plx_os::tv::uri::{Shape, UriReply};
 #[cfg(test)]
 use serde_json::Value;
 
@@ -261,10 +261,10 @@ pub enum UriEvent {
     Back,
     /// The previous registration actually released; the retry can now register.
     Closed,
-    AcbReleaseTail { session: plx_platform::tv::uri::SessionId },
+    AcbReleaseTail { session: plx_os::tv::uri::SessionId },
     AcbAnswered { request: AcbRequest, invoked: bool, completed_ms: u64 },
     /// Correlation assigned by the ownership reducer before this call can answer.
-    Dispatched { method: Method, kind: Option<&'static str>, request: plx_platform::tv::uri::RequestId },
+    Dispatched { method: Method, kind: Option<&'static str>, request: plx_os::tv::uri::RequestId },
     /// Time has passed: the deadlines are checked against `now_ms`.
     Tick,
     /// A message from the transport, or the transport's refusal to send one.
@@ -562,7 +562,7 @@ pub struct UriProbe {
     facts: Facts,
     acb: AcbBind,
     foreground_sent: bool,
-    requests: std::collections::BTreeMap<(Method, Option<&'static str>), plx_platform::tv::uri::RequestId>,
+    requests: std::collections::BTreeMap<(Method, Option<&'static str>), plx_os::tv::uri::RequestId>,
 }
 
 impl std::fmt::Debug for UriProbe {
@@ -1273,7 +1273,7 @@ impl UriProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::uri::ReplyQueue;
+    use plx_os::tv::uri::ReplyQueue;
 
     const WINDOW: &str = "_Window_Id_7";
     /// A media URL as the planner hands it over: a `plex.direct` host, a port, a path and a token.
@@ -1315,10 +1315,10 @@ mod tests {
             self.feed(ev)
         }
         fn msg(&mut self, method: &'static str, payload: &str) -> Vec<UriEffect> {
-            self.feed(UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method, payload: payload.to_owned(), ok: true }))
+            self.feed(UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method, payload: payload.to_owned(), ok: true }))
         }
         fn deny(&mut self, method: &'static str, text: &str) -> Vec<UriEffect> {
-            self.feed(UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method, payload: text.to_owned(), ok: false }))
+            self.feed(UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method, payload: text.to_owned(), ok: false }))
         }
         fn tick(&mut self, ms: u64) -> Vec<UriEffect> {
             self.after(ms, UriEvent::Tick)
@@ -1385,7 +1385,7 @@ mod tests {
         let fx = rig.after(40, UriEvent::Reply { method: Method::Register, ok: true, message: Message::default() });
         assert_eq!(fx, [UriEffect::Log("uriprobe: t=40 register shape=named ok".into()), load(Some(WINDOW))]);
 
-        let fx = rig.after(60, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "load", payload: r#"{"returnValue":true,"mediaId":"_m1"}"#.into(), ok: true }));
+        let fx = rig.after(60, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "load", payload: r#"{"returnValue":true,"mediaId":"_m1"}"#.into(), ok: true }));
         assert_eq!(fx, [UriEffect::Log("uriprobe: t=100 call load ok".into()), call(UriCall::Subscribe { media_id: media("_m1") })]);
 
         let fx = rig.msg("subscribe", r#"{"returnValue":true,"subscribed":true}"#);
@@ -1400,7 +1400,7 @@ mod tests {
             ]
         );
 
-        let fx = rig.after(300, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"mediaId":"_m1","loadCompleted":true}"#.into(), ok: true }));
+        let fx = rig.after(300, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"mediaId":"_m1","loadCompleted":true}"#.into(), ok: true }));
         assert_eq!(
             fx,
             [
@@ -1411,7 +1411,7 @@ mod tests {
         );
         assert!(!rig.probe.plane_open());
 
-        let fx = rig.after(100, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"mediaId":"_m1","playing":true}"#.into(), ok: true }));
+        let fx = rig.after(100, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"mediaId":"_m1","playing":true}"#.into(), ok: true }));
         assert_eq!(logs(&fx), ["uriprobe: t=500 ev=playing"]);
         assert!(rig.probe.plane_open());
 
@@ -1507,7 +1507,7 @@ mod tests {
     fn current_time_is_logged_when_it_first_moves_then_once_a_second() {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
-        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
+        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
         assert!(has_log(&time(&mut rig, 10, 0), "(first report)"));
         assert!(time(&mut rig, 10, 0).is_empty(), "the same value again says nothing");
         assert!(has_log(&time(&mut rig, 10, 40), "ev=currentTime value=40"), "first move");
@@ -1524,7 +1524,7 @@ mod tests {
         rig.playing();
         let time = |rig: &mut Rig, ms: u64, value: i64| {
             let payload = format!(r#"{{"currentTime":{{"currentTime":{value},"mediaId":"_m1"}}}}"#);
-            rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload, ok: true }))
+            rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload, ok: true }))
         };
         assert!(has_log(&time(&mut rig, 10, 40), "ev=currentTime value=40 (first report)"));
         let fx = time(&mut rig, 600, 1040);
@@ -1539,7 +1539,7 @@ mod tests {
     fn a_current_time_in_no_known_shape_logs_one_line_and_arms_nothing() {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
-        let odd = |rig: &mut Rig, ms: u64, payload: &str| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: payload.to_owned(), ok: true }));
+        let odd = |rig: &mut Rig, ms: u64, payload: &str| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: payload.to_owned(), ok: true }));
         let fx = odd(&mut rig, 10, r#"{"currentTime":{"mediaId":"_m1"}}"#);
         assert_eq!(logs(&fx).len(), 1);
         assert!(has_log(&fx, "ev=currentTime (unparsed)"));
@@ -1653,7 +1653,7 @@ mod tests {
 
     #[test]
     fn a_frozen_current_time_ends_the_session_but_a_silent_one_does_not() {
-        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
+        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
         time(&mut rig, 10, 0);
@@ -1674,7 +1674,7 @@ mod tests {
     fn a_frozen_nested_current_time_ends_the_session_like_a_bare_one() {
         let time = |rig: &mut Rig, ms: u64, value: i64| {
             let payload = format!(r#"{{"currentTime":{{"currentTime":{value},"mediaId":"_m1"}}}}"#);
-            rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload, ok: true }))
+            rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload, ok: true }))
         };
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
@@ -1715,9 +1715,9 @@ mod tests {
             for ev in [
                 UriEvent::Back,
                 UriEvent::Tick,
-                UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"error":{"errorCode":-1}}"#.into(), ok: true }),
-                UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"loadCompleted":true,"mediaId":"_m1"}"#.into(), ok: true }),
-                UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "unload", payload: r#"{"returnValue":true}"#.into(), ok: true }),
+                UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"error":{"errorCode":-1}}"#.into(), ok: true }),
+                UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"loadCompleted":true,"mediaId":"_m1"}"#.into(), ok: true }),
+                UriEvent::from_reply(&UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "unload", payload: r#"{"returnValue":true}"#.into(), ok: true }),
                 UriEvent::Start,
             ] {
                 assert!(rig.after(100_000, ev).is_empty(), "{name}: effects after Done");
@@ -1780,9 +1780,9 @@ mod tests {
         assert!(rig.msg("subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#).is_empty(), "no load was sent yet");
         // The `dropped` reply exactly as the transport's own queue makes it (`ok: false`), by
         // overflowing a real one: three pushes into a queue of one lose two.
-        let queue = ReplyQueue::new(plx_platform::tv::uri::SessionId::new(1), 1);
+        let queue = ReplyQueue::new(plx_os::tv::uri::SessionId::new(1), 1);
         for _ in 0..3 {
-            queue.push(plx_platform::tv::uri::RequestId::new(1), "subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#.to_owned(), true);
+            queue.push(plx_os::tv::uri::RequestId::new(1), "subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#.to_owned(), true);
         }
         let replies = queue.drain();
         let marker = replies.last().expect("the drain ends with the dropped reply");
@@ -2000,7 +2000,7 @@ mod tests {
 
     #[test]
     fn events_built_from_a_reply_hold_no_payload() {
-        let reply = UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: hostile_event(), ok: true };
+        let reply = UriReply { session: plx_os::tv::uri::SessionId::new(1), request: plx_os::tv::uri::RequestId::new(1), method: "subscribe", payload: hostile_event(), ok: true };
         assert_clean("UriEvent", &format!("{:?}", UriEvent::from_reply(&reply)));
         assert_clean("failure", &format!("{:?}", UriEvent::from_failure("load", &format!("refused {URL}"))));
     }
@@ -2485,8 +2485,8 @@ mod tests {
     #[test]
     fn uri_drive_review_ignored_pause_reports_movement_instead_of_freeze() {
         let mut rig=drive_pause_rig();
-        rig.after(250,UriEvent::from_reply(&UriReply{session:plx_platform::tv::uri::SessionId::new(1),request:plx_platform::tv::uri::RequestId::new(1),method:"subscribe",payload:r#"{"mediaId":"_m1","currentTime":1250}"#.into(),ok:true}));
-        rig.after(2_250,UriEvent::from_reply(&UriReply{session:plx_platform::tv::uri::SessionId::new(1),request:plx_platform::tv::uri::RequestId::new(1),method:"subscribe",payload:r#"{"mediaId":"_m1","currentTime":3500}"#.into(),ok:true}));
+        rig.after(250,UriEvent::from_reply(&UriReply{session:plx_os::tv::uri::SessionId::new(1),request:plx_os::tv::uri::RequestId::new(1),method:"subscribe",payload:r#"{"mediaId":"_m1","currentTime":1250}"#.into(),ok:true}));
+        rig.after(2_250,UriEvent::from_reply(&UriReply{session:plx_os::tv::uri::SessionId::new(1),request:plx_os::tv::uri::RequestId::new(1),method:"subscribe",payload:r#"{"mediaId":"_m1","currentTime":3500}"#.into(),ok:true}));
         rig.tick(0);
         let fx=rig.feed(UriEvent::Back);
         assert!(summary_of(&fx).contains("pause=moved"),"ignored Pause graded as freeze: {}",summary_of(&fx));

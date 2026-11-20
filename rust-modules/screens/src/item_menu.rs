@@ -400,10 +400,10 @@ fn build_card(
             // and the episode's own page is what the menu adds
             let ok_opens_show = opens_details && deck_episode_opens_show(m);
             if !opens_details || ok_opens_show {
-                nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
+                nav.push(go_item(plx_os::i18n::msg::browse_menu_go_episode()));
             }
             if has_show && !ok_opens_show {
-                nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
+                nav.push(go_show(plx_os::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
             }
         }
         // a show or season deck card whose OK opens the page: that page IS the "go to" row's
@@ -411,11 +411,11 @@ fn build_card(
         1 | 2 if opens_details => {}
         // a season has no page of its own — it IS the show page with that season selected, so one
         // row covers it; a show's own page is likewise the only navigation it has
-        2 if has_show => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
+        2 if has_show => nav.push(go_show(plx_os::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
         2 => {}
-        1 => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
+        1 => nav.push(go_show(plx_os::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
         _ if opens_details => {}
-        _ => nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_movie())),
+        _ => nav.push(go_item(plx_os::i18n::msg::browse_menu_go_movie())),
     }
     // the divider the design groups on — only when there IS a group above it
     let had_nav = !nav.is_empty();
@@ -457,14 +457,14 @@ fn build_card(
         ItemRow::RemoveFromDeck,
         RowKind::Button,
         Action::RemoveFromDeck(m.rk.clone()),
-        Row::new(plx_platform::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
+        Row::new(plx_os::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
     );
     if let Some(guid) = watchlist_guid {
         sec = sec.item(
             ItemRow::WatchlistRemove,
             RowKind::Button,
             Action::WatchlistRemove(guid.to_string()),
-            Row::new(plx_platform::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
+            Row::new(plx_os::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
         );
     } else {
         // A Watchlist tile's own Remove (above) is the membership row there; everywhere else the
@@ -537,7 +537,7 @@ fn state_rows(
         ItemRow::PlayVersion,
         RowKind::Button,
         Action::ChooseVersion(rk.to_string()),
-        Row::new(plx_platform::i18n::msg::browse_menu_play_version()).licon(Icon::Play),
+        Row::new(plx_os::i18n::msg::browse_menu_play_version()).licon(Icon::Play),
     )
     .item_if(
         playable.is_some(),
@@ -1854,7 +1854,7 @@ pub(crate) mod tests {
 
     #[test]
     fn translated_action_menus_measure_complete_verbs_and_keep_safe_anchors() {
-        use plx_platform::i18n::{LocaleContext, Preference};
+        use plx_os::i18n::{LocaleContext, Preference};
         use plx_machine::machine::Measure;
         struct MenuMeasure;
         impl Measure for MenuMeasure {
@@ -1866,17 +1866,17 @@ pub(crate) mod tests {
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
         let measure = MenuMeasure;
-        for preference in plx_platform::i18n::SHIPPED {
+        for preference in plx_os::i18n::SHIPPED {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let mut form: FormTable<ItemRow, Action, Infallible> = FormTable::new(crate::registry::BAND);
             form.table.compact = true;
             form.set(Form::new().section(FormSection::new("")
                 .item(ItemRow::MarkWatched, RowKind::Button, Action::MarkWatched("1".into()),
-                    Row::new(plx_platform::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
+                    Row::new(plx_os::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
                 .item(ItemRow::MarkUnwatched, RowKind::Button, Action::MarkUnwatched("1".into()),
-                    Row::new(plx_platform::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
+                    Row::new(plx_os::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
                 .item(ItemRow::RemoveFromDeck, RowKind::Button, Action::RemoveFromDeck("1".into()),
-                    Row::new(plx_platform::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
+                    Row::new(plx_os::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
             let table = &form.table;
             let width = table.measured_width(&measure);
             if preference == Preference::Be {
@@ -2350,7 +2350,7 @@ pub(crate) mod tests {
     /// whole-pixel advances. No row carries server text; the parent title only rides an action.
     #[test]
     fn every_action_row_fits_the_widest_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         // The panel hugs its content, so it always fits itself; the widest it may ever grow to
         // ([`MENU_MAX_W`], the shared cap) is the width a verb can actually be held to.
         let widest = MENU_MAX_W;
@@ -2505,7 +2505,7 @@ pub(crate) mod tests {
     #[test]
     fn the_catalog_menus_go_row_names_the_kind() {
         use plx_data::watchlist::model::{Kind, TileState};
-        let _guard = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _guard = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let label = |kind| {
             let menu = built(super::build_catalog(TileState::Available, kind, "42", "plex://movie/abc", plx_data::catalog::Membership::On));
             menu.0.table.sections.iter().flat_map(|s| s.rows.iter()).next().map(|r| r.label.to_string())
@@ -2517,7 +2517,7 @@ pub(crate) mod tests {
     #[test]
     fn the_catalog_menu_fits_in_every_language() {
         use plx_data::watchlist::model::TileState;
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {

@@ -116,7 +116,7 @@ pub enum Phase {
     Deleted,
 }
 
-pub fn discovery_trouble() -> &'static str { plx_platform::i18n::msg::browse_auth_discovery_trouble() }
+pub fn discovery_trouble() -> &'static str { plx_os::i18n::msg::browse_auth_discovery_trouble() }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiscoveryRetryRun { Resources, HomeUsers }
@@ -978,7 +978,7 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         };
         if matches!(status, Some(401 | 403)) {
             return Some((
-                plx_platform::i18n::msg::browse_auth_signin_refused().into(),
+                plx_os::i18n::msg::browse_auth_signin_refused().into(),
                 IncidentContext::new(IncidentKind::Authorization, Some(*last)),
             ));
         }
@@ -987,13 +987,13 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::Ok { .. } | Discovery::Cancelled => return None,
         Discovery::NoServers(evidence) => {
             return Some((
-                plx_platform::i18n::msg::browse_auth_no_servers().into(),
+                plx_os::i18n::msg::browse_auth_no_servers().into(),
                 IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
                     .with_no_servers(*evidence),
             ));
         }
         Discovery::Refused => (
-            plx_platform::i18n::msg::browse_auth_refused(),
+            plx_os::i18n::msg::browse_auth_refused(),
             DiscoveryClass::Refused,
             None,
         ),
@@ -1002,13 +1002,13 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         // an untrusted certificate is a server that did not answer this build as itself: neither a
         // new class nor the verify code leaves the device. The events log keeps the detail locally.
         Discovery::TlsUntrusted { trigger } => return Some((
-            plx_platform::i18n::msg::browse_auth_tls_untrusted().into(),
+            plx_os::i18n::msg::browse_auth_tls_untrusted().into(),
             IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), None)
                 .with_discovery(DiscoveryEvidence { trigger: *trigger,
                     target: Some(DiscoveryTarget::Servers) }),
         )),
         Discovery::ServersUnreachable { trigger } => return Some((
-            plx_platform::i18n::msg::browse_auth_servers_unreachable().into(),
+            plx_os::i18n::msg::browse_auth_servers_unreachable().into(),
             IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), None)
                 .with_discovery(DiscoveryEvidence { trigger: *trigger,
                     target: Some(DiscoveryTarget::Servers) }),
@@ -1016,15 +1016,15 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::PlexTvFailed(run) => {
             let (link, _, _) = plx_telemetry::telemetry::incident::classify(Some(run.last));
             let message = match link {
-                plx_telemetry::telemetry::incident::LinkClass::Dns => plx_platform::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
+                plx_telemetry::telemetry::incident::LinkClass::Dns => plx_os::i18n::msg::browse_auth_plex_dns_retry(i64::from(run.attempts)),
                 plx_telemetry::telemetry::incident::LinkClass::Tls =>
-                    plx_platform::i18n::msg::browse_auth_plex_tls().into(),
+                    plx_os::i18n::msg::browse_auth_plex_tls().into(),
                 plx_telemetry::telemetry::incident::LinkClass::Answered2xx
                 | plx_telemetry::telemetry::incident::LinkClass::Answered4xx
                 | plx_telemetry::telemetry::incident::LinkClass::Answered5xx
                 | plx_telemetry::telemetry::incident::LinkClass::AnsweredOther =>
-                    plx_platform::i18n::msg::browse_auth_plex_unavailable().into(),
-                _ => plx_platform::i18n::msg::browse_auth_plex_connect_retry(i64::from(run.attempts)),
+                    plx_os::i18n::msg::browse_auth_plex_unavailable().into(),
+                _ => plx_os::i18n::msg::browse_auth_plex_connect_retry(i64::from(run.attempts)),
             };
             let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), Some(run.last))
                 .with_retry_run(run.attempts, run.elapsed)
@@ -1101,7 +1101,7 @@ fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output:
             PollEnd::Expired(tail) => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
                 let incident = expired_incident(&tail, generation);
-                return output_failed(output, epoch, plx_platform::i18n::msg::browse_auth_timeout(), incident, None);
+                return output_failed(output, epoch, plx_os::i18n::msg::browse_auth_timeout(), incident, None);
             }
         }
     };
@@ -1631,7 +1631,7 @@ struct PlexTvFailure {
 /// cannot say two different things about the same verdict (plan §4).
 ///
 /// The English catalog preserves the approved wording; translations retain its remedy.
-pub fn discovery_insecure_only_message() -> &'static str { plx_platform::i18n::msg::browse_auth_insecure() }
+pub fn discovery_insecure_only_message() -> &'static str { plx_os::i18n::msg::browse_auth_insecure() }
 
 /// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
 /// can be changed.
@@ -1663,14 +1663,14 @@ pub enum ReadoutSurface {
 /// A SHARED server is named by its owner ([`PlaintextVerdict::shared_by`]) — on screen only; the
 /// report never carries it.
 pub fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface) -> std::borrow::Cow<'static, str> {
-    plaintext_copy_in(verdict, surface, plx_platform::i18n::current())
+    plaintext_copy_in(verdict, surface, plx_os::i18n::current())
 }
 
 // Explicit locale keeps the entire verdict testable without changing the process locale.
 // Each catalog sentence owns the server/owner grammar and the named action.
 pub fn plaintext_copy_in(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface,
-    locale: &plx_platform::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
-    use plx_platform::i18n::msg;
+    locale: &plx_os::i18n::LocaleContext) -> std::borrow::Cow<'static, str> {
+    use plx_os::i18n::msg;
     use std::borrow::Cow;
     let fallback = || Cow::Borrowed(msg::browse_auth_insecure_in(locale));
     let Some(v) = verdict else { return fallback() };
@@ -3747,7 +3747,7 @@ fn switch_failure(pin_submitted: bool) -> (String, bool) {
         (String::new(), true)
     } else {
         (
-            plx_platform::i18n::msg::browse_auth_switch_failed().into(),
+            plx_os::i18n::msg::browse_auth_switch_failed().into(),
             false,
         )
     }
@@ -3856,7 +3856,7 @@ fn offline_switch_outcome(
             // pick is needed first).
             ProfileSwitchOutcomeProgress::Failed {
                 error: String::from(
-                    plx_platform::i18n::msg::browse_auth_offline_profile(),
+                    plx_os::i18n::msg::browse_auth_offline_profile(),
                 ),
                 pin_denied: false,
             }

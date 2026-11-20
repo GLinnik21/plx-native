@@ -252,7 +252,7 @@ pub fn capsule_shown(selectable: usize) -> bool {
 /// the count, and the sort `criterion` the page carries ("Date viewed"; `None` for a page that
 /// carries none, which draws the plain capsule).
 pub fn capsule_parts(name: &str, total: i64, criterion: Option<&str>) -> (CString, CString, Option<CString>) {
-    let count = plx_platform::i18n::current().number(total);
+    let count = plx_os::i18n::current().number(total);
     (
         CString::new(name).unwrap_or_default(),
         CString::new(count).unwrap_or_default(),
@@ -290,7 +290,7 @@ impl CapsuleText {
     /// language differ. A `build` must read nothing the key does not name, or the held strings go
     /// stale: it takes the pieces by capture, never the page.
     pub fn get_keyed(&mut self, key: &[&str], build: impl FnOnce() -> String, total: i64, criterion: Option<&str>) -> (&CStr, &CStr, Option<&CStr>) {
-        let language = std::ptr::from_ref(plx_platform::i18n::current()) as usize;
+        let language = std::ptr::from_ref(plx_os::i18n::current()) as usize;
         let held = self.key.as_ref().is_some_and(|(pieces, t, c, l)| {
             pieces.len() == key.len() && pieces.iter().zip(key).all(|(piece, now)| piece == now)
                 && *t == total && c.as_deref() == criterion && *l == language
