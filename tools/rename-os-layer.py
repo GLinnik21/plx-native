@@ -33,10 +33,13 @@ backticked `os`, a quoted "os") are skipped where `os` already means the operati
 `--reverse-patch` is the backport route: a fix written after the rename has hunks in the new names and
 paths; each hunk line is rewritten with the reverse rules keyed by the file it belongs to (the enumerated
 sites are per file), so `git apply` accepts it on a line that still carries the old names. Run `git
-apply --check` on the result before `git apply`.
+apply --check` on the result before `git apply`. A weak pattern (a bare `os` that may be the operating
+system) can turn a natural `os` into `platform` in a file `--reverse` does not know: every line one
+changes is printed to standard error as `file:line: old -> new`, for the person applying the patch to read.
 
 `--check` fails on any hit of the three spellings (the package; the path, in its bare and `../`
-forms; the layer token), on every enumerated literal site the forward pass rewrites, and on any
+forms, also after a `/`; the layer token, also unquoted in a list written with spaces, commas or
+arrows between layer names unless SEP_KEEP names the hit), on every enumerated literal site the forward pass rewrites, and on any
 quoted `"platform"` that is not classified (a JSON key, a Sentry field, `sys.platform`): a quoted
 `platform` in a list of layer names is never a keeper, because `walk` over a missing directory
 passes silently (Fable N1). It is a PR gate, not a standing CI step: later waves legitimately use
@@ -96,15 +99,21 @@ PKG_NEW = re.compile(r'plx_os(?![A-Za-z0-9_])')
 DIR_OLD = re.compile(r'rust-modules/platform(?![A-Za-z0-9_-])')
 DIR_NEW = re.compile(r'rust-modules/os(?![A-Za-z0-9_-])')
 BARE_FOLLOW = r'(?=(?:src|build_support|i18n)(?![A-Za-z0-9_-])|build\.rs|Cargo\.toml)'
-BARE_OLD = re.compile(r'(?<![A-Za-z0-9_./~-])((?:\.\./)*)platform/' + BARE_FOLLOW)
-BARE_NEW = re.compile(r'(?<![A-Za-z0-9_./~-])((?:\.\./)*)os/' + BARE_FOLLOW)
-UP_OLD = re.compile(r'(?<![A-Za-z0-9_./~-])((?:\.\./)+)platform(?=["\'])')
-UP_NEW = re.compile(r'(?<![A-Za-z0-9_./~-])((?:\.\./)+)os(?=["\'])')
+# A bare path starts after a character that cannot continue a name or another path; the one exception
+# is a `/` directly before a `../` (`"/../platform/src"`, a joined path), which still reaches the layer.
+BARE_START = r'(?:(?<![A-Za-z0-9_./~-])|(?<=/)(?=\.\./))'
+BARE_OLD = re.compile(BARE_START + r'((?:\.\./)*)platform/' + BARE_FOLLOW)
+BARE_NEW = re.compile(BARE_START + r'((?:\.\./)*)os/' + BARE_FOLLOW)
+UP_OLD = re.compile(BARE_START + r'((?:\.\./)+)platform(?=["\'])')
+UP_NEW = re.compile(BARE_START + r'((?:\.\./)+)os(?=["\'])')
 DIRLIST_OLD, DIRLIST_NEW = '`platform/`', '`os/`'
 TICK_OLD, TICK_NEW = '`platform`', '`os`'
 SECTION_OLD, SECTION_NEW = '[platform]', '[os]'
 RUN_OLD = re.compile(r'\b(base|machine) platform\b')
 RUN_NEW = re.compile(r'\b(base|machine) os\b')
+# `platform` beside a layer name with a space, comma, `>` or `-` between them: `for c in net platform gfx`,
+# `--only machine,platform`, `base -> platform -> ui`. Every hit is a site unless SEP_KEEP names it.
+SEP_OLD = re.compile(r'\b(?:%s)\b[ ,>-]+platform\b|\bplatform\b[ ,>-]+(?:%s)\b' % (('|'.join(LAYERS),) * 2))
 ROW_OLD = re.compile(r'(\+ )platform(?= (?:machine )?base\b)')  # the `+ platform machine base` column of the layer table
 ROW_NEW = re.compile(r'(\+ )os(?= (?:machine )?base\b)')
 MODPATH_OLD = re.compile(r'(?<![A-Za-z0-9_:])platform::(?=(?:' + MEMBERS + r')\b)')
@@ -144,12 +153,22 @@ KEEP = [
 ]
 
 
+# (file, line regex, label): a separator-list hit where `platform` is not the layer. Both must match.
+SEP_KEEP = [
+    (r'^docs/plex-api-design\.md$', r'client_id, product, version, platform, session,', 'Plex client-identification field list'),
+    (r'^rust-modules/session/src/auth/owner\.rs$', r'machine, platform API', 'prose: a platform API'),
+]
+
+
 def quoted_layers(line, name):
     return {layer for layer in LAYERS if re.search(r'''["']%s["']''' % layer, line)} - {name}
 
 
-def rewrite(text, rel, reverse):
-    """The forward (or reverse) rewrite of one file's text; the same text back when nothing applies."""
+def rewrite(text, rel, reverse, weak=True):
+    """The forward (or reverse) rewrite of one file's text; the same text back when nothing applies.
+    `weak=False` (reverse only) skips the patterns whose new form is the bare word `os` (a backticked
+    `os`, a quoted "os" in a layer list, `base os`, `+ os machine base`, `os::member`, `os/` in a
+    directory list): `reverse_patch` runs both ways and names every line the weak patterns change."""
     natural = rel in NATURAL_OS
     if not reverse:
         text = PKG_OLD.sub('plx_os', text)
@@ -171,16 +190,17 @@ def rewrite(text, rel, reverse):
     text = FENCE_NEW.sub('[port ', text)
     for path, old, new in LITERALS:
         if path == rel: text = text.replace(new, old)
-    if not natural:
+    if not natural and weak:
         text = ''.join(QUOTED_NEW.sub(r'\1platform\1', line) if len(quoted_layers(line, 'os')) >= 2 else line
                        for line in text.splitlines(keepends=True))
         text = text.replace(TICK_NEW, TICK_OLD)
     if rel in SECTION_FILES: text = text.replace(SECTION_NEW, SECTION_OLD)
-    text = RUN_NEW.sub(r'\1 platform', text)
-    text = ROW_NEW.sub(r'\1platform', text)
-    text = MODPATH_NEW.sub('platform::', text)
+    if weak:
+        text = RUN_NEW.sub(r'\1 platform', text)
+        text = ROW_NEW.sub(r'\1platform', text)
+        text = MODPATH_NEW.sub('platform::', text)
     text = SRC_NEW.sub('SRC_PLATFORM', text)
-    text = text.replace(DIRLIST_NEW, DIRLIST_OLD)
+    if weak: text = text.replace(DIRLIST_NEW, DIRLIST_OLD)
     text = UP_NEW.sub(lambda m: m.group(1) + 'platform', text)
     text = BARE_NEW.sub(lambda m: m.group(1) + 'platform/', text)
     text = DIR_NEW.sub(OLD_DIR, text)
@@ -237,19 +257,38 @@ def apply(root, reverse, dry_run=False):
 
 # ---- --reverse-patch -----------------------------------------------------------------------
 
-def reverse_patch(text):
+def reverse_patch(text, report=None):
     """The unified diff `text`, written in the new names, rewritten to the old names. Each hunk line is
-    rewritten on its own (no rule spans lines), so every hunk header's line counts still hold."""
-    out, rel = [], None
+    rewritten on its own (no rule spans lines), so every hunk header's line counts still hold. When
+    `report` is a list, every hunk line a weak pattern changed is appended as `file:line: old -> new`
+    (line = the new-side number, the old-side one for a `-` line): those rewrites turn an `os` that may
+    be the operating system back into `platform`, so the person applying the patch reads each one."""
+    out, rel, old_no, new_no, old_left, new_left = [], None, 0, 0, 0, 0
     for line in text.splitlines(keepends=True):
-        header = re.match(r'diff --git a/(\S+) b/(\S+)', line)
-        if header: rel = header.group(2)
-        if rel is None: out.append(line)
-        elif header or line.startswith(('--- ', '+++ ', 'rename from ', 'rename to ', 'copy from ', 'copy to ')):
+        header = re.match(r'diff --git a/(\S+) b/(\S+)', line)  # no hunk line starts with `diff` or `@@`
+        hunk = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+        in_hunk = old_left > 0 or new_left > 0
+        if header:
+            rel, old_left, new_left = header.group(2), 0, 0
             out.append(rewrite(line, rel, True))
-        elif line[:1] in (' ', '+', '-'):
-            out.append(line[0] + rewrite(line[1:], rel, True))
-        else: out.append(line)
+        elif hunk:
+            old_no, new_no = int(hunk.group(1)), int(hunk.group(3))
+            old_left, new_left = int(hunk.group(2) or 1), int(hunk.group(4) or 1)
+            out.append(line)
+        elif rel is not None and not in_hunk and line.startswith(('--- ', '+++ ', 'rename from ', 'rename to ', 'copy from ', 'copy to ')):
+            out.append(rewrite(line, rel, True))
+        elif rel is not None and in_hunk and line[:1] in (' ', '+', '-'):
+            body = line[1:]
+            rewritten = rewrite(body, rel, True)
+            if report is not None and rewritten != rewrite(body, rel, True, weak=False):
+                report.append(f'{rel}:{old_no if line[0] == "-" else new_no}: {body.rstrip(chr(10))} -> {rewritten.rstrip(chr(10))}')
+            out.append(line[0] + rewritten)
+            if line[0] != '+': old_no, old_left = old_no + 1, old_left - 1
+            if line[0] != '-': new_no, new_left = new_no + 1, new_left - 1
+        else:
+            if in_hunk and line in ('\n', '\r\n'):  # an editor stripped the blank context line's space
+                old_no, old_left, new_no, new_left = old_no + 1, old_left - 1, new_no + 1, new_left - 1
+            out.append(line)
     return ''.join(out)
 
 
@@ -281,6 +320,13 @@ def classify_quoted(rel, line):
     return None
 
 
+def classify_separator(rel, line):
+    """The keeper label of a separator-list hit that is not the layer, or None."""
+    for path, pattern, label in SEP_KEEP:
+        if re.search(path, rel) and re.search(pattern, line): return label
+    return None
+
+
 def check(root):
     problems, kept = [], {}
     patterns = check_patterns()
@@ -291,8 +337,13 @@ def check(root):
         text = read_text(root / rel)
         if text is None: continue
         for number, line in enumerate(text.splitlines(), 1):
+            flagged = False
             for label, pattern in patterns:
-                if pattern.search(line): problems.append((rel, number, label, line.strip()))
+                if pattern.search(line): problems.append((rel, number, label, line.strip())); flagged = True
+            if not flagged and SEP_OLD.search(line):
+                keeper = classify_separator(rel, line)
+                if keeper is None: problems.append((rel, number, '3 layer token in a separator list', line.strip()))
+                else: kept.setdefault(keeper, []).append(rel)
             if rel == 'ci/module-layers.ini' and line.startswith('uses') and re.search(r'\bplatform\b', line):
                 problems.append((rel, number, '3 layer token in a uses line', line.strip()))
             for path, old, _ in LITERALS:
@@ -304,7 +355,7 @@ def check(root):
     for rel, number, label, line in problems:
         print(f'{rel}:{number}: [{label}] {line[:110]}')
     for label, paths in sorted(kept.items()):
-        print(f'kept ({label}): {len(paths)} quoted hits in {len(set(paths))} files')
+        print(f'kept ({label}): {len(paths)} hits in {len(set(paths))} files')
     exempt = [rel for rel in files if is_exempt(rel) and rel not in (SELF, SELF_TEST)]
     hits = sum(1 for rel in exempt if read_text(root / rel) and re.search(r'plx_platform|rust-modules/platform', read_text(root / rel)))
     print(f'exempt (dated records, the plan): {hits} of {len(exempt)} exempt files name the old name and keep it')
@@ -413,7 +464,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     root = args.root.resolve()
     if args.reverse_patch:
-        patch = reverse_patch(args.reverse_patch.read_bytes().decode('utf-8'))
+        weak = []
+        patch = reverse_patch(args.reverse_patch.read_bytes().decode('utf-8'), weak)
+        for entry in weak: print(entry, file=sys.stderr)
+        if weak: print(f'reverse-patch: {len(weak)} line(s) rewritten by a weak pattern (a bare `os` read as the layer); '
+                       'read each before applying', file=sys.stderr)
         if args.output: args.output.write_bytes(patch.encode('utf-8'))
         else: sys.stdout.write(patch)
         return 0
