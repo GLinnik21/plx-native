@@ -549,9 +549,12 @@ mod tests {
         let mut count = Count::default();
         surface.deliver(&mut count);
         assert_eq!(count.0, 0, "an SDL surface delivers nothing through the sink");
-        assert!(surface.poll(&mut ev), "the pushed key is still the queue's, through `poll`");
-        assert!(plx_shell_sdl::event::decode(&ev).is_some(), "and it decodes as before");
-        assert!(!surface.poll(&mut ev), "and the queue is empty after it");
+        // `synth_key` pushes the two edges of a tap, down then up: both are still the queue's.
+        for edge in ["down", "up"] {
+            assert!(surface.poll(&mut ev), "the pushed key's {edge} edge is still the queue's, through `poll`");
+            assert!(plx_shell_sdl::event::decode(&ev).is_some(), "and it decodes as before ({edge})");
+        }
+        assert!(!surface.poll(&mut ev), "and the queue is empty after them");
     }
 
     /// **The SDL calls the application still declares are the two that stay.** Everything SDL-shaped

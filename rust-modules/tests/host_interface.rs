@@ -227,12 +227,15 @@ fn an_event_sink_is_implementable_from_outside_and_receives_a_surfaces_events_in
 fn every_path_into_the_application_crate_goes_through_host() {
     let source = include_str!("host_interface.rs");
     // Split, so this test's own text never matches.
-    let needle = concat!("plxnative_", "modules::");
+    let needle = concat!("plxnative_", "modules");
     let mut seen = 0;
     for (at, _) in source.match_indices(needle) {
         seen += 1;
         let line = source[..at].matches('\n').count() + 1;
-        assert!(source[at + needle.len()..].starts_with("host"), "line {line}: a path into the application crate that is not `host`'s");
+        assert!(
+            source[at + needle.len()..].starts_with("::host"),
+            "line {line}: a name of the application crate that is not a path into `host`"
+        );
     }
     assert!(seen > 0, "the scan found no path at all: it is not reading this file");
 }
