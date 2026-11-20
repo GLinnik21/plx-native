@@ -247,7 +247,7 @@ mod tests {
         platform.shell.hide_pointer();
         platform.shell.hide_pointer();
         platform.shell.show_pointer_after_motion();
-        platform.shell.pump_bus();
+        assert!(!platform.shell.release_surface(), "a shell call that is no pointer call is not counted");
         assert_eq!((counted.hides.load(Relaxed), counted.shows.load(Relaxed)), (2, 1));
         assert_eq!((other_counted.hides.load(Relaxed), other_counted.shows.load(Relaxed)), (0, 0),
             "another platform's counts are its own");
