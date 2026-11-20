@@ -52,14 +52,17 @@ static PORT: plx_os::tv::Port = plx_os::tv::Port {
     uri_media: plx_os::webos::URI_MEDIA,
 };
 
-/// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`): install the port, then
-/// hand over to `app::run_application`.
+/// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`): install the port, hand
+/// over to `app::run_application`, then end the process with the status it returned.
+///
+/// The executable owns the process end: `exit_now` (`_exit`, never libc's `exit`, #1115) right after
+/// the app returns, in the order the app always ended in. A process that hosts the app never calls it.
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     let _ = plx_os::tv::install(&PORT);
     #[cfg(target_os = "linux")]
     let _ = plx_os::storage::client::install_activator(plx_os::webos::activate_storage_helper);
-    crate::app::run_application(pms_host, pms_port)
+    plx_base::process::exit_now(crate::app::run_application(pms_host, pms_port).code)
 }
 
 /// `src/main.c` hands over SAM's launch payload (`argv[1]`) before `plex_run`. Kept raw in

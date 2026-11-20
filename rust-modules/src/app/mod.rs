@@ -2,7 +2,8 @@
 //! event loop, input decode, the per-frame tick, draw orchestration, app lifecycle,
 //! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
-//! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`.
+//! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`
+//! and, when it returns its `Exit` (`exit.rs`), ends the process.
 //! The only application subsystems left in C are the starfish.c C++ Feed seam and the video_plane.c
 //! ACB / exported-window display binding (the engine itself is Rust: plx_media::player).
 #![allow(non_upper_case_globals)]
@@ -131,6 +132,8 @@ mod clock_notice;
 mod hint_taught;
 mod recorder;
 mod window_activity;
+mod exit;
+pub(crate) use exit::Exit;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod playback;
@@ -368,6 +371,12 @@ pub(crate) struct App {
     pub(crate) rec: recorder::Recplay,
     pub(crate) boot_initial: Option<bootstrap::Initial>,
     pub(crate) telemetry_guard: Option<plx_telemetry::telemetry::native::Guard>,
+    /// The sentinel that proves the returning exit leaks the `App` (`exit::entry`): a counter its
+    /// own drop increments, so dropping the `App` drops it whatever the other fields are. A field,
+    /// not a static. Read by the hostsim lifecycle tests, which build the `App` the rig needs.
+    #[cfg(test)]
+    #[cfg_attr(not(all(feature = "hostsim", feature = "play-feed")), allow(dead_code))]
+    drop_probe: exit::DropProbe,
 
     /// The frame plan's GLASS half (spec §8.3): the layer/region source registry, shared chrome
     /// material and dev load dial. The budget half lives on the `Dispatcher` (§2.2).
@@ -434,7 +443,7 @@ impl App {
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
         pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
-        deferred: Option<plx_plex::plex::session::DeferredLoad>) -> Result<Self, c_int> {
+        deferred: Option<plx_plex::plex::session::DeferredLoad>) -> Result<Self, Exit> {
         boot::construct(pms_host, pms_port, mt, mode, Some(initial), deferred)
     }
     /// **Which page is on top** (spec §15.2) — the container's answer, and since D1 the ONLY one.
@@ -558,7 +567,11 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
 /// The run+teardown sequence `run_application` hands the mounted `App` to, split out for the same
 /// reason as [`pre_boot_diagnostics`] (D4): `run_application` stays a ten-line skeleton naming only
 /// the THREE real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
-unsafe fn run_and_shutdown(app: &mut App) -> ! {
+///
+/// It RETURNS how the session ended; ending the process is the executable entry's (`port::plex_run`).
+/// The `App` is leaked by the caller (`exit::entry`), so the last thing this does is the one `Drop`
+/// that persists something.
+unsafe fn run_and_shutdown(app: &mut App) -> Exit {
     run::run(app);
     // The crash record's phase (`src/crashtrace.c`): from here a fault is in the teardown.
     plx_base::task::watchdog::set_crash_phase(plx_base::task::watchdog::CrashPhase::Shutdown);
@@ -568,12 +581,11 @@ unsafe fn run_and_shutdown(app: &mut App) -> ! {
     let failed = finish_recording(&mut app.rec, bridge.landgate())
         || bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
-    let code = i32::from(failed);
-    run::shutdown(&mut app.player.session, &mut app.adapters.player);
+    let release = run::shutdown(&mut app.player.session, &mut app.adapters.player);
     // The crash-channel guard is the one `Drop` that persists something (it closes the capture
     // backend and removes its database), so it runs here explicitly: nothing drops the `App`.
     drop(app.telemetry_guard.take());
-    plx_base::process::exit_now(code)
+    Exit::played(failed, release)
 }
 
 fn finish_recording(rec: &mut recorder::Recplay, gate: &plx_machine::landgate::Gate) -> bool {
@@ -597,7 +609,7 @@ pub fn synthetic_home_initial(seed: u32, port: u16, settings: Option<String>)
     serde_json::to_string_pretty(&initial).map_err(|_| "cannot encode synthetic initial inputs")
 }
 
-fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_int> {
+fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,Exit> {
     // What `plx_plex` reports as `X-Plex-Version` is this build's `PLX_VERSION`, which a
     // `cargo:rustc-env` makes visible to this crate only; before anything can build a header.
     plx_plex::plex::identity::set_version(env!("PLX_VERSION"));
@@ -617,7 +629,7 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     plx_media::player::report::install_trace_eraser();
     let preflight = match bootstrap::Preflight::detect() {
         Ok(mode) => mode,
-        Err(reason) => { log(&format!("replay: REFUSED — {reason}")); return Err(1); }
+        Err(reason) => { log(&format!("replay: REFUSED — {reason}")); return Err(Exit::refused(1)); }
     };
     // The player's `…` menu draws the Stats for nerds switch from the read-out's own flag, which
     // this layer owns and `appkit` cannot name, so it is handed the reader on EVERY boot (a
@@ -639,11 +651,11 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 }
 
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
-pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> ! {
-    // An early-boot refusal ends the same way: the workers it has already started (diagnostics,
-    // capability probe, telemetry) are as live as after a played session.
-    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => plx_base::process::exit_now(code) };
-    unsafe { run_and_shutdown(&mut app) }
+pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> Exit {
+    // Returns how it ended and drops nothing: an early-boot refusal has live workers (diagnostics,
+    // capability probe, telemetry) just as a played session does, so `exit::entry` leaks the `App`.
+    // Ending the process is the entry's (`port::plex_run`); a hosted entry never does.
+    exit::entry(|| enter_application(pms_host,pms_port), |app| unsafe { run_and_shutdown(app) })
 }
 
 

@@ -34,6 +34,7 @@ use super::*;
 
 use plx_ui::dispatch::Rig as _;
 use super::bridge::AppHost;
+use super::exit::{release_of, Release};
 
 /// One lazy product frame-tail hash path for recording and replay grading alike.
 pub(super) fn recorder_end_frame(
@@ -3706,24 +3707,23 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
         }
 }
 
-/// Whether [`shutdown`] quits SDL before the process ends. EVERY exit ends the process with `_exit`
-/// (`plx_base::process::exit_now`), never by returning into libc's `exit` (#1115); this is the one decision
-/// left in the teardown.
+/// Whether [`shutdown`] quits SDL before the process ends. The executable entry ends the process with
+/// `_exit` (`plx_base::process::exit_now`), never by returning into libc's `exit` (#1115); this is the one
+/// decision left in the teardown, and it is [`release_of`]'s: `SDL_Quit` runs exactly when the
+/// release is `Complete`, so the hosted entry's report cannot say `Complete` where the executable
+/// skipped it.
 pub(crate) fn quits_sdl(native_exit: plx_media::player::NativeExit) -> bool {
-    match native_exit {
-        plx_media::player::NativeExit::Clean => true,
-        // A native worker is still inside firmware: the display must not be torn down under it.
-        plx_media::player::NativeExit::WorkerInFirmware => false,
-    }
+    release_of(native_exit) == Release::Complete
 }
 
 /// Teardown after the loop: abandon the pending report, stop the active backend, wait for the stop
 /// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
-/// in firmware). The caller (`app::run_and_shutdown`) then ends the process with `_exit`.
+/// in firmware). Answers what it released: the caller (`app::run_and_shutdown`) returns it in the
+/// `Exit`, and the executable entry then ends the process with `_exit`.
 pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-) {
+) -> Release {
     ps.finish_metric_request(plx_media::player::attempt_metrics::RequestOutcome::Cancelled);
     pa.sync_request_metrics(ps);
     plx_media::player::report::abandon_pending(ps);
@@ -3734,7 +3734,7 @@ pub(crate) unsafe fn shutdown(
     // object it is releasing left undestroyed. The wait is bounded, and a worker still inside
     // firmware (an overdue `Unload`, or a timed-out Load's media thread) means the display must not
     // be torn down under it, and nothing may run the firmware libraries' destructors either: the
-    // caller (`app::run_and_shutdown`) ends the process with `_exit`.
+    // executable entry ends the process with `_exit`, and the `App` is leaked (`app::exit::entry`).
     let native_exit = plx_media::player::exit_native(ps, pa);
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
@@ -3751,6 +3751,7 @@ pub(crate) unsafe fn shutdown(
     } else {
         log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
     }
+    release_of(native_exit)
 }
 
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL
@@ -3912,14 +3913,21 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
 }
 
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
-mod lifecycle_regression_tests {
+pub(in crate::app) mod lifecycle_regression_tests {
     use super::*;
 
+    /// Both answers, pinned for both variants: `SDL_Quit` runs exactly when the release is
+    /// `Complete`, so the hosted report cannot say `Complete` where the executable skipped it.
     #[test]
     fn shutdown_quits_sdl_only_when_no_worker_is_in_firmware() {
         use plx_media::player::NativeExit;
         assert!(!quits_sdl(NativeExit::WorkerInFirmware));
         assert!(quits_sdl(NativeExit::Clean));
+        assert_eq!(release_of(NativeExit::WorkerInFirmware), Release::Retained);
+        assert_eq!(release_of(NativeExit::Clean), Release::Complete);
+        for exit in [NativeExit::Clean, NativeExit::WorkerInFirmware] {
+            assert_eq!(quits_sdl(exit), release_of(exit) == Release::Complete, "{exit:?}: one decision, two readings");
+        }
     }
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{
@@ -3967,7 +3975,7 @@ mod lifecycle_regression_tests {
     }
 
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
-    fn app() -> App {
+    pub(in crate::app) fn app() -> App {
         plx_play_feed::ff_test_support::reset_session_for_test(&mut plx_media::player::reset_common_for_test);
         let (runtime, bridge) = super::super::bridge::BridgeRetained::for_test(|| 0);
         let mut app = App {
@@ -4106,6 +4114,7 @@ mod lifecycle_regression_tests {
             rec: super::super::recorder::Recplay::Off,
             boot_initial: Default::default(),
             telemetry_guard: Default::default(),
+            drop_probe: Default::default(),
 
             glass: Default::default(),
             pages: plx_ui::dispatch::Dispatcher::new(),
