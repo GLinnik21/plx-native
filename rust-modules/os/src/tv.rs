@@ -1,4 +1,5 @@
 //! The television, as everything outside the port sees it (step L15, docs/module-layers.md).
+pub mod authority;
 pub mod device;
 pub mod home;
 pub mod launch;
@@ -10,13 +11,15 @@ pub mod sound;
 pub mod toast;
 pub mod uri;
 
+pub use authority::StorageHooks;
+
 use std::sync::OnceLock;
 
 /// What the platform's settings service said about the locale. i18n owns the parse and the log lines.
 #[cfg_attr(any(feature = "hostsim", test, feature = "test-support"), allow(dead_code))] // Reply/Unavailable: TV arm only
 pub enum LocaleReply { NoPlatform, Unavailable, Reply(String) }
 
-/// What the lower layers read from the platform, in four groups. Installed once ([`install`]) before
+/// What the lower layers read from the platform, in five groups. Installed once ([`install`]) before
 /// anything reads it, and read only by `tv`'s own modules, so no other module can issue a verb the
 /// interfaces below do not offer. The window, the bus pump and the frame probe are NOT here: only
 /// the loop reads them, so they belong to the application's own `Platform`.
@@ -28,6 +31,7 @@ pub struct Services {
     pub identity: IdentityHooks,
     pub secure: SecureHooks,
     pub system: SystemHooks,
+    pub storage: StorageHooks,
     pub legacy_webos_media: LegacyWebosMedia,
 }
 
@@ -117,6 +121,7 @@ impl Services {
         identity: IdentityHooks::NONE,
         secure: SecureHooks::NONE,
         system: SystemHooks::NONE,
+        storage: StorageHooks::NONE,
         legacy_webos_media: LegacyWebosMedia::NONE,
     };
 }
@@ -159,6 +164,7 @@ mod tests {
             identity: IdentityHooks { probe_device, start_capability_probe, repair_native_video, device_files, system_locale, sound_output },
             secure: SecureHooks { seal, open, remove, mode },
             system: SystemHooks { go_home, poll_home, deliver_toast },
+            storage: StorageHooks { authority },
             legacy_webos_media: LegacyWebosMedia { sink, display_sink, uri_media },
         } = Services::HOST_TEST;
 
@@ -192,6 +198,8 @@ mod tests {
             deliver_toast("hello", toast::Identity::AsApp),
             toast::Sent { reply: None, outcome: toast::Outcome::NoBus }
         );
+
+        assert_eq!(authority, authority::Authority::Files, "no storage helper: the app keeps its records in files");
 
         assert!(!sink.feed_abi_is_cow(), "the refusing sink, not a native one");
         assert_eq!(display_sink.window_mode(), sink::VP_NONE);

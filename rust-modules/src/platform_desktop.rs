@@ -18,6 +18,8 @@
 //! no compositor to hint, no bus to pump and no remote pointer to hide. The secure store is
 //! `SecureHooks::NONE`: nothing seals, so a session is the 0600 plaintext file the session layer
 //! writes itself, which the simulator's harnesses plant and read.
+//! The storage group is `StorageHooks::NONE`: there is no storage helper, so the account's records
+//! live in files under the persistent state root.
 //!
 //! This module never names `port`, `system`, `webos` or `keymanager`, so a desktop executable
 //! references none of the television's code. It still COMPILES it (the television arms of those
@@ -28,7 +30,7 @@
 use crate::app::platform::{FrameProbe, Platform, Shell};
 use plx_os::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use plx_os::tv::toast::{Identity, Outcome, Sent};
-use plx_os::tv::{IdentityHooks, LegacyWebosMedia, SecureHooks, Services, SystemHooks};
+use plx_os::tv::{IdentityHooks, LegacyWebosMedia, SecureHooks, Services, StorageHooks, SystemHooks};
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_void};
 
@@ -56,6 +58,7 @@ static SERVICES: Services = Services {
     },
     secure: SecureHooks::NONE,
     system: SystemHooks { go_home, poll_home: SystemHooks::NONE.poll_home, deliver_toast },
+    storage: StorageHooks::NONE,
     legacy_webos_media: LegacyWebosMedia {
         sink: SINK,
         display_sink: DISPLAY,
@@ -156,6 +159,13 @@ mod tests {
         shell.hide_pointer();
         shell.show_pointer_after_motion();
         assert!(!shell.hide_is_cursor_swap());
+    }
+
+    /// A desktop has no storage helper: the session, the install's preferences and the consent record
+    /// are files. The same value a host test reads from `Services::HOST_TEST`.
+    #[test]
+    fn the_desktop_table_keeps_the_account_in_files() {
+        assert_eq!(SERVICES.storage.authority, plx_os::tv::authority::Authority::Files);
     }
 
     /// The app's plane boot resolves the display through `display_installed()` (this table's
