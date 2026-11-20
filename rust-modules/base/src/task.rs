@@ -129,7 +129,9 @@ impl OffFrame {
 pub struct MainThread(PhantomData<*const ()>);
 
 impl MainThread {
-    /// Mint the token. `plex_run` calls this once, at the top, and nothing else should.
+    /// Mint the token. In production `enter_application` (`app/mod.rs`) calls this once, for every entry
+    /// (`plex_run` on the television and `platform_desktop::run` on a desktop reach it through
+    /// `run_application`), and nothing else should; a test rig assumes its own.
     ///
     /// # Safety
     /// The caller asserts this is the SDL main thread. It is not a memory-safety obligation in

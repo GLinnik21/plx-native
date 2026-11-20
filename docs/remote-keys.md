@@ -276,9 +276,10 @@ predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym i
 build's configured upload trigger (`crate::labcfg::is_trigger_key`, `false` at compile time in every
 build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
-out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
-whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
-host's SDL rather than the press. The bare player samples the HUD for bound keys in ordered screen
+out so `make check` can grade it — `begin_fresh_press` itself hides the pointer through the platform's
+`Shell` (`hide_pointer`), which on a television acts on whatever pointer calls the process's SDL
+exports, so a test that reached the television's shell would be grading the host's SDL rather than the
+press. The bare player samples the HUD for bound keys in ordered screen
 delivery. A second Back in the same SDL batch sees the first one's dismissal, and an intervening
 bound press spends any exit arming. The LG pointer-hidden notification only stops edge scrolling.
 
@@ -323,10 +324,13 @@ un-dismisses the HUD. Narrowing that means making the predicate route-aware, i.e
 the ladder's own order — the duplication `page_dir` exists to have ended. A number key is also,
 unlike a colour button, a key this app really does bind, so calling it bound is honest.
 
-Graded twice, because neither half implies the other: `app/input.rs`'s `unsupported_key_tests` covers the
-two global effects (invisible to any focus fingerprint), and `tools/keytable.py` covers "moves
+Graded in three places, because no one of them implies the others: `app/input.rs`'s
+`unsupported_key_tests` covers the HUD wake (invisible to any focus fingerprint); the press half is
+observed on the dispatcher's real press in `run.rs`'s `lifecycle_regression_tests` (an unbound key
+leaves a click armed and live, a direction key abandons it); and `tools/keytable.py` covers "moves
 nothing on any screen" — its `k:0,269` (HOME) and `k:53,34` (the digit 5) rows are inert on Home,
-Library and Search in `tests/keytable.json`.
+Library and Search in `tests/keytable.json`. The trap to avoid is an `armed` assertion beside
+`note_global_press`: that function holds no press, so such an assertion cannot fail.
 
 **What neither covers**: the player route. The simulator has no video path, so no fingerprint in
 that table was taken with a HUD on screen. The HUD half of this invariant has been graded as a unit

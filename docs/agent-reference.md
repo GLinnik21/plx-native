@@ -345,7 +345,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   asserts only what its code promises (no panic, the documented bounds, round trips) and a crash fails the
   run, with the input in `fuzz/artifacts/<target>/`. The package is a top-level `fuzz/` with its own
   `[workspace]`, so no shipped `Cargo.toml` names it and no shipped build changes; it depends on the layer
-  crates by path, with `plx_media/hostsim` (the host configuration: the Feed backend's host sink and the layers' host stand-ins), and `fuzz/build.rs`
+  crates by path, with `plx_media/hostsim` (the host configuration of the layers below it: the stand-ins they compile in place of the television's calls, so the package links and runs on a desktop), and `fuzz/build.rs`
   reuses `rust-modules/build_support/host_link.rs`. `tools/fuzz-hud.py` is the whole workflow
   (`list | seed | lock | build | run`): it copies `rust-modules/Cargo.lock` to the gitignored `fuzz/Cargo.lock`
   (the shared crates are exactly the shipped versions), builds with the nightly named by `FUZZ_TOOLCHAIN`

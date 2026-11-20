@@ -15,9 +15,9 @@
 //!   refusing `NoSink`.
 //!
 //! The shell and the frame probe are plain no-ops: SDL owns the window and its event loop, there is
-//! no compositor to hint and no bus to pump. The secure store is `SecureHooks::NONE`: nothing seals,
-//! so a session is the 0600 plaintext file the session layer writes itself, which the simulator's
-//! harnesses plant and read.
+//! no compositor to hint, no bus to pump and no remote pointer to hide. The secure store is
+//! `SecureHooks::NONE`: nothing seals, so a session is the 0600 plaintext file the session layer
+//! writes itself, which the simulator's harnesses plant and read.
 //! The storage group is `StorageHooks::NONE`: there is no storage helper, so the account's records
 //! live in files under the persistent state root.
 //!
@@ -99,7 +99,8 @@ fn deliver_toast(_message: &str, identity: Identity) -> Sent {
 }
 
 /// The desktop shell: SDL owns the window and its event loop, so nothing is bound, grabbed, hinted
-/// or pumped, and no surface is ever held.
+/// or pumped, and no surface is ever held. The pointer is a mouse the application does not hide, so
+/// hiding and showing it do nothing, and a click is always a real one (the hide is not a cursor swap).
 struct DesktopShell;
 
 impl Shell for DesktopShell {
@@ -112,6 +113,11 @@ impl Shell for DesktopShell {
     fn opaque_route(&self, _player: bool) {}
     fn clear_opaque_region(&self) {}
     fn pump_bus(&self) {}
+    fn hide_pointer(&self) {}
+    fn show_pointer_after_motion(&self) {}
+    fn hide_is_cursor_swap(&self) -> bool {
+        false
+    }
 }
 
 /// The desktop frame probe: always unarmed, there is no compositor callback to clock.
@@ -160,6 +166,17 @@ pub fn run(pms_host: &CStr, pms_port: u16) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The desktop hides no pointer and says so**: its mouse is not the application's to hide, so a
+    /// hide and a show do nothing, and the hide is not a cursor swap, which is what makes a click
+    /// always a real one (`input::click_is_ok`). The simulator's pointer behaviour is exactly this.
+    #[test]
+    fn the_desktop_shell_hides_no_pointer_and_its_clicks_are_real() {
+        let shell: &dyn Shell = &DesktopShell;
+        shell.hide_pointer();
+        shell.show_pointer_after_motion();
+        assert!(!shell.hide_is_cursor_swap());
+    }
 
     /// A desktop has no storage helper: the session, the install's preferences and the consent record
     /// are files. The same value a host test reads from `Services::HOST_TEST`.

@@ -18,7 +18,7 @@
 //! consumes only the Session owner's committed Ready handoff.
 
 use super::*;
-
+use super::platform::Shell;
 
 /// The Magic Remote POINTER, as one value: which input mode the remote is in, what the
 /// cursor is doing, and the two gestures that outlive a single event (a scrub drag and the
@@ -64,8 +64,8 @@ struct BackCursorOwner {
 
 impl Pointer {
     /// **Enter D-pad mode** — the one place its state is written, for the arrow keys and PLAY
-    /// alike. Each caller keeps its own decision to call `hide_cursor()`; this is the state
-    /// half: the cursor reads hidden, Back no longer owns it, motion is counted afresh against
+    /// alike. Each caller keeps its own decision to hide the pointer (`Shell::hide_pointer`); this
+    /// is the state half: the cursor reads hidden, Back no longer owns it, motion is counted afresh against
     /// `DPAD_MOTION_GATE` and the edge glide stops.
     pub(crate) fn enter_dpad(&mut self) {
         self.dpad_mode = true;
@@ -94,9 +94,9 @@ impl Pointer {
         self.back_cursor.is_some()
     }
 
-    pub(crate) fn note_cursor_motion(&mut self) {
+    pub(crate) fn note_cursor_motion(&mut self, shell: &dyn Shell) {
         if self.cur_hidden && !self.back_cursor_active() {
-            unsafe { super::boot::show_cursor_after_motion(); }
+            shell.show_pointer_after_motion();
             self.cur_hidden = false;
         }
     }
@@ -108,12 +108,13 @@ impl Pointer {
 
     pub(crate) fn sync_back_cursor(
         &mut self,
+        shell: &dyn Shell,
         current: Option<BackCursorTarget>,
         request: Option<(BackCursorTarget, plx_screens::registry::BackCursorChange)>,
     ) {
         use plx_screens::registry::BackCursorChange;
         if self.back_cursor.as_ref().is_some_and(|owner| Some(owner.target) != current) {
-            self.release_back_cursor(false);
+            self.release_back_cursor(shell, false);
         }
         let Some((target, change)) = request.filter(|(target, _)| Some(*target) == current) else {
             return;
@@ -121,20 +122,20 @@ impl Pointer {
         match change {
             BackCursorChange::Hide => {
                 let installed = !self.cur_hidden || self.back_cursor.as_ref().is_some_and(|owner| owner.installed);
-                unsafe { hide_cursor(); }
+                shell.hide_pointer();
                 self.cur_hidden = true;
                 self.back_cursor = Some(BackCursorOwner { target, installed });
             }
-            BackCursorChange::Wake => self.release_back_cursor(true),
-            BackCursorChange::Release => self.release_back_cursor(false),
+            BackCursorChange::Wake => self.release_back_cursor(shell, true),
+            BackCursorChange::Release => self.release_back_cursor(shell, false),
         }
     }
 
-    fn release_back_cursor(&mut self, motion: bool) {
+    fn release_back_cursor(&mut self, shell: &dyn Shell, motion: bool) {
         if self.back_cursor.take().is_some_and(|owner| motion || owner.installed) {
             // On LG's backend this is a no-op. Only a blank cursor installed by
             // this app can be restored here.
-            unsafe { super::boot::show_cursor_after_motion(); }
+            shell.show_pointer_after_motion();
             self.cur_hidden = false;
         }
     }
@@ -317,7 +318,7 @@ impl EdgeScroll {
 /// **Is this pointer click really the remote's OK button?**
 ///
 /// On a set without LG's `SDL_webOSCursorVisibility` (webOS 3.9.3's SDL 2.0.4, issue #642) the
-/// app hides the pointer by swapping in a transparent cursor (`boot::hide_cursor`). The system
+/// app hides the pointer by swapping in a transparent cursor (`Shell::hide_is_cursor_swap`). The system
 /// still believes its pointer is up, so the Magic Remote's OK arrives as a CLICK at wherever that
 /// invisible pointer sits, never as an OK key: the viewer arrows to the `…` disc, presses OK, and
 /// the click lands on the picture and toggles pause. (Measured on an OLED55B7V-Z, 3.9.3,
@@ -1251,7 +1252,7 @@ pub(crate) unsafe fn begin_fresh_press(
     down_sym: &mut u32,
     hud: Option<&mut HudState>,
     ptr: &mut Pointer,
-
+    shell: &dyn Shell,
 ) {
     *down_sym = sym;
     note_global_press(ps, sym, wcode, now, viewer_paused, hud);
@@ -1260,7 +1261,7 @@ pub(crate) unsafe fn begin_fresh_press(
         Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
     ) {
         if !ptr.dpad_mode || !ptr.cur_hidden {
-            hide_cursor();
+            shell.hide_pointer();
         }
         ptr.enter_dpad();
     }
@@ -1269,10 +1270,11 @@ pub(crate) unsafe fn begin_fresh_press(
 /// **The global HUD wake of a fresh press, and the guard that decides whether it happens** —
 /// the half of [`begin_fresh_press`] that LG checklist item 40 is about, and its only caller.
 ///
-/// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which acts on whatever
-/// pointer calls the process's SDL exports (resolved at run time, `app/boot.rs`), so a host test
-/// that reached it would be grading the host's SDL rather than the press. This half touches no SDL
-/// at all, so the invariant is gradeable by `make check` instead of only by a television.
+/// Split out for one blunt reason: `begin_fresh_press` hides the pointer through the platform's
+/// shell, which on a television calls whatever pointer functions the process's SDL exports (resolved
+/// at run time, `system.rs`), so a test that reached the television's shell would be grading the
+/// host's SDL rather than the press. This half touches no shell at all, so the invariant is
+/// gradeable by `make check` instead of only by a television.
 pub(crate) fn note_global_press(
     ps: &plx_media::route::PlaybackSession,
     sym: c_uint,
@@ -1294,46 +1296,44 @@ pub(crate) fn note_global_press(
     // Release and cancellation are owned by the dispatcher's InputMachine.
 }
 
-/// **The unsupported-key invariant, graded.** `tools/keytable.py` grades the other half — that an
-/// unbound press moves no focus on any screen — and cannot see either of these two, because neither
-/// appears in a focus fingerprint.
+/// **The unsupported-key invariant, graded.** `tools/keytable.py` grades one half — that an unbound
+/// press moves no focus on any screen — and cannot see the HUD wake this module grades, because it
+/// appears in no focus fingerprint. The press half is graded on the real press, in the loop's tests.
 #[cfg(test)]
 mod unsupported_key_tests {
     use super::*;
 
-    /// Drive one fresh press through [`note_global_press`] and report what it left behind:
-    /// `(a click is still armed, the HUD is still dismissed)`. `press::*`, `hud_until()` and
-    /// The caller supplies the viewer's pause goal at the input boundary; the press is this
-    /// test's own `Press`.
-    fn press(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> (bool, bool) {
+    /// Drive one fresh press through [`note_global_press`] and report whether the HUD is still
+    /// dismissed afterwards. The caller supplies the viewer's pause goal at the input boundary.
+    ///
+    /// This used to report a second thing, "a click is still armed", by arming a `Press` of its own
+    /// beside the call. `note_global_press` no longer touches any press (the dispatcher's input
+    /// machine owns it, "Release and cancellation are owned by the dispatcher's InputMachine"), so
+    /// that local `Press` was never reachable from the code under test and the `armed` assertions
+    /// could not fail. They are gone, and what they meant to guard is observed on the real press, armed
+    /// by a click and left alone by an unbound key through the loop's key ingress:
+    /// `run::lifecycle_regression_tests::an_unbound_key_leaves_the_press_a_click_armed_live_and_a_direction_key_abandons_it`.
+    fn press(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> bool {
         let mut hud = HudState::IDLE;
-
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
-        let mut p = plx_ui::dispatch::press::Press::new();
-        p.begin(1_000);
-        note_global_press(ps, sym, wcode, 1_000, false,
-            Some(&mut hud));
-        let out = (p.is_active(), hud.dismissed);
-        p.cancel();
-        out
+        note_global_press(ps, sym, wcode, 1_000, false, Some(&mut hud));
+        hud.dismissed
     }
 
-    /// Bound keys wake the HUD; physical bookkeeping leaves all gesture cancellation to input.
+    /// Bound keys wake the HUD.
     #[test]
-    fn a_bound_key_still_wakes_the_hud_without_owning_the_press() {
+    fn a_bound_key_still_wakes_the_hud() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
-        let (armed, dismissed) = press(&ps, plx_ui::consts::SDLK_ESCAPE, 0);
-        assert!(armed, "physical bookkeeping must leave press ownership to the dispatcher");
-        assert!(!dismissed, "…and any key un-dismisses the transport");
+        assert!(!press(&ps, plx_ui::consts::SDLK_ESCAPE, 0), "any bound key un-dismisses the transport");
     }
 
-    /// **The regression.** An unsupported key must do NEITHER — it is not input the app acted on,
-    /// so it may not raise the transport over playback and it may not abandon a press in flight.
-    /// 269 is HOME (`SDL_SCANCODE_AC_HOME`, evdev 172 `KEY_HOMEPAGE`); every other unbound
-    /// scancode takes the same branch.
+    /// **The regression.** An unsupported key must not raise the transport over playback, it is not
+    /// input the app acted on (nor may it abandon a press in flight: that half is observed on the
+    /// real press, see [`press`]). 269 is HOME (`SDL_SCANCODE_AC_HOME`, evdev 172 `KEY_HOMEPAGE`);
+    /// every other unbound scancode takes the same branch.
     #[test]
-    fn an_unsupported_key_wakes_nothing_and_abandons_nothing() {
+    fn an_unsupported_key_wakes_nothing() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         for (sym, wcode, what) in [
@@ -1341,9 +1341,7 @@ mod unsupported_key_tests {
             (0, 270, "AC_BACK"),
             (b'a' as c_uint, 4, "a letter"),
         ] {
-            let (armed, dismissed) = press(&ps, sym, wcode);
-            assert!(armed, "{what} must not cancel the armed click");
-            assert!(dismissed, "{what} must not un-dismiss the HUD");
+            assert!(press(&ps, sym, wcode), "{what} must not un-dismiss the HUD");
         }
     }
 
@@ -1354,23 +1352,20 @@ mod unsupported_key_tests {
     fn a_number_key_counts_as_bound_because_the_pin_keypad_types_from_it() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
-        let (armed, dismissed) = press(&ps, b'5' as c_uint, 34);
-        assert!(armed, "physical bookkeeping leaves cancellation to the input owner");
-        assert!(!dismissed);
+        assert!(!press(&ps, b'5' as c_uint, 34));
     }
 
     /// The native pair as the loop reads it: decoded from the SDL bytes a television sends, then
     /// handed to [`press`]. Returns the decoded action too.
     fn native(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint)
-        -> (Option<plx_ui::consts::Action>, (bool, bool)) {
+        -> (Option<plx_ui::consts::Action>, bool) {
         let (key, _) = crate::app::events::native_key_input(sym, wcode, true, plx_machine::machine::Tick::default());
         let pair = key.pair();
         assert_eq!((pair.sym, pair.wcode), (sym, wcode), "the decoder keeps the raw pair");
         (key.action(), press(ps, pair.sym, pair.wcode))
     }
 
-    /// **A native key that no action names wakes nothing and abandons nothing, and a bound one still
-    /// wakes the HUD.** Both halves through the decoder, each pair a literal, in one test so the bound
+    /// **A native key that no action names wakes nothing, and a bound one still wakes the HUD.** Both halves through the decoder, each pair a literal, in one test so the bound
     /// keys are the positive control for the unbound ones: the colour button (504), HOME (269),
     /// and the wcode-only press in 48..=57. That last one is the keypad's: `pin_digit` reads the
     /// wcode, `is_remote_bound` reads the sym only (`action_of`'s number-key arm), so a scancode that
@@ -1383,9 +1378,8 @@ mod unsupported_key_tests {
         let mut unbound: Vec<(c_uint, c_uint)> = vec![(0, 504), (0, 269), (0, 270), (b'a' as c_uint, 4), (0, 0)];
         unbound.extend((48..=57).map(|wcode| (0, wcode)));
         for (sym, wcode) in unbound {
-            let (action, (armed, dismissed)) = native(&ps, sym, wcode);
+            let (action, dismissed) = native(&ps, sym, wcode);
             assert_eq!(action, None, "({sym}, {wcode}) names no action");
-            assert!(armed, "({sym}, {wcode}) must not cancel the armed click");
             assert!(dismissed, "({sym}, {wcode}) must not un-dismiss the HUD");
         }
         for (sym, wcode, action) in [
@@ -1394,7 +1388,7 @@ mod unsupported_key_tests {
             (0x4000_004e, 0, Action::PageDown), (0, 300, Action::PageUp),
             (8, 42, Action::Backspace), (53, 34, Action::Digit(5)),
         ] {
-            let (decoded, (_, dismissed)) = native(&ps, sym, wcode);
+            let (decoded, dismissed) = native(&ps, sym, wcode);
             assert_eq!(decoded, Some(action), "({sym}, {wcode}) decodes to its action");
             assert!(!dismissed, "{action:?} is bound, so it un-dismisses the HUD");
         }
@@ -2051,6 +2045,77 @@ mod click_is_ok_tests {
             (true, 0.0, false, false),
         ] {
             assert!(!click_is_ok(dpad, motion, on_control, transparent), "{dpad} {motion} {on_control} {transparent}");
+        }
+    }
+}
+
+/// **The pointer's hide and show reach the shell, and only when they should.** The machine owns the
+/// decision (`cur_hidden`, the D-pad mode, Back's ownership); the shell owns the act. Counted on a
+/// shell that says what it was asked, with no loop and no feature gate, so the default build grades
+/// the same calls the hostsim loop tests do.
+#[cfg(test)]
+mod pointer_hide_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    fn press_down(ptr: &mut Pointer, shell: &dyn Shell) {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut down_sym = 0;
+        unsafe {
+            begin_fresh_press(&ps, Key::Down, plx_ui::consts::SDLK_DOWN, 0, 0, false, &mut down_sym, None, ptr, shell)
+        };
+    }
+
+    /// The first direction key hides (and enters the D-pad's mode), a second while the pointer is
+    /// still hidden asks for nothing, a motion shows it once and a second motion nothing more, and the
+    /// next direction key hides it again. A key that is no direction hides nothing.
+    #[test]
+    fn a_direction_key_hides_once_and_a_motion_shows_once() {
+        let _g = plx_base::testlock::serial();
+        let (platform, counted) = crate::app::platform::SwapShell::platform();
+        let shell = platform.shell;
+        let counts = || (counted.hides.load(Relaxed), counted.shows.load(Relaxed));
+        let mut ptr = Pointer::IDLE;
+        ptr.note_cursor_motion(shell);
+        assert_eq!(counts(), (0, 0), "a pointer that was never hidden is not shown");
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut down_sym = 0;
+        unsafe { begin_fresh_press(&ps, Key::Ok, 13, 0, 0, false, &mut down_sym, None, &mut ptr, shell) };
+        assert_eq!(counts(), (0, 0), "OK is no direction: nothing hides");
+        press_down(&mut ptr, shell);
+        assert_eq!(counts(), (1, 0), "the first direction key hides");
+        assert!(ptr.dpad_mode && ptr.cur_hidden);
+        press_down(&mut ptr, shell);
+        assert_eq!(counts(), (1, 0), "a second one, with the pointer already hidden, asks for nothing");
+        ptr.note_cursor_motion(shell);
+        assert_eq!(counts(), (1, 1), "a motion shows it");
+        assert!(!ptr.cur_hidden);
+        ptr.note_cursor_motion(shell);
+        assert_eq!(counts(), (1, 1), "...once");
+        press_down(&mut ptr, shell);
+        assert_eq!(counts(), (2, 1), "and the next direction key hides it again");
+    }
+
+    /// Back's cursor owns what it hid: a motion does not show it while Back holds it (`Wake` does),
+    /// and handing it back restores the pointer only if Back's own `Hide` was what hid it.
+    #[test]
+    fn backs_cursor_is_hidden_through_the_shell_and_restored_only_if_back_hid_it() {
+        use plx_machine::machine::{InstanceId, MachineId};
+        use plx_screens::registry::BackCursorChange;
+        let target = (MachineId::Instance(InstanceId(1)), 7);
+        let _g = plx_base::testlock::serial();
+        for already_hidden in [false, true] {
+            let (platform, counted) = crate::app::platform::SwapShell::platform();
+            let shell = platform.shell;
+            let mut ptr = Pointer::IDLE;
+            ptr.cur_hidden = already_hidden;
+            ptr.sync_back_cursor(shell, Some(target), Some((target, BackCursorChange::Hide)));
+            assert_eq!(counted.hides.load(Relaxed), 1, "Back's Hide hides through the shell");
+            ptr.note_cursor_motion(shell);
+            assert_eq!(counted.shows.load(Relaxed), 0, "a motion does not undo Back's hide while Back holds it");
+            ptr.sync_back_cursor(shell, Some(target), Some((target, BackCursorChange::Release)));
+            assert_eq!(counted.shows.load(Relaxed), usize::from(!already_hidden),
+                "release shows the pointer only if Back's own Hide had hidden it (already hidden: {already_hidden})");
         }
     }
 }

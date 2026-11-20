@@ -16,8 +16,8 @@
 //! — see `docs/async-model-decision.md`).
 //!
 //! The reasoning is unchanged and the enforcement is stronger. **The token is now CONSUMED at
-//! construction** ([`PlayerAdapter::new`] takes it by value, and `plex_run` is the only place that
-//! can mint one), so holding a `&mut PlayerAdapter` IS the proof the old argument stood in for —
+//! construction** ([`PlayerAdapter::new`] takes it by value, and `enter_application` is the only
+//! production place that mints one), so holding a `&mut PlayerAdapter` IS the proof the old argument stood in for —
 //! and it is a proof the borrow checker keeps rather than one a caller could satisfy twice. Two
 //! live `&mut` to the engine no longer requires a convention: it does not compile. The native
 //! feed owns that borrow; common callers receive addressed facts or coarse physical actions.
@@ -558,7 +558,7 @@ pub enum QueuedLanding {
 }
 
 impl PlayerAdapter {
-    /// Take the token. `app::boot` calls this once, with the token `plex_run` minted.
+    /// Take the token. `app::boot` calls this once, with the token `enter_application` minted.
     pub fn new(mt: MainThread) -> Self {
         Self {
             mt,

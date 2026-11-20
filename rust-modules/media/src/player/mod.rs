@@ -10,9 +10,9 @@
 //! docs/engine-port-design.md.
 //!
 //! "Runs on the SDL main thread" is a **compile error to violate** for the two things where it
-//! matters — the ACB/Starfish seam and the native session slot. `plex_run` mints ONE
-//! [`MainThread`] token; `boot` moves it into [`adapter::PlayerAdapter`], which owns the session
-//! that was `engine::ENGINE`. The seam still takes `&MainThread` (reached through the adapter),
+//! matters — the ACB/Starfish seam and the native session slot. `enter_application` mints ONE
+//! [`MainThread`] token (every entry reaches it through `run_application`); `boot` moves it into
+//! [`adapter::PlayerAdapter`], which owns the session that was `engine::ENGINE`. The seam still takes `&MainThread` (reached through the adapter),
 //! the slot takes `&mut PlayerAdapter`, and the token is `!Send`, so a closure that captured
 //! either cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
 //! above are `extern "C"` entry points *from* the library thread and touch only `FEED_SHARED`,

@@ -732,7 +732,7 @@ pub(crate) fn execute_player_command(request: plx_screens::registry::PlayerReq,
         resources.repause_at, vec![request], now, resources.refresh_hubs, pages, bridge);
     if outcome.back_cursor.is_some() || resources.ptr.back_cursor_active() {
         let target = if outcome.exiting { None } else { back_cursor_target(pages) };
-        resources.ptr.sync_back_cursor(target, outcome.back_cursor);
+        resources.ptr.sync_back_cursor(bridge.shell(), target, outcome.back_cursor);
     }
     if outcome.slot_refresh {
         let slot = plx_appkit::player_hud::slot_with_preferences(&resources.player.session,
@@ -1571,7 +1571,7 @@ pub(crate) unsafe fn key_play(
         }
     }
     if was_off_player && !ptr.dpad_mode {
-        hide_cursor();
+        bridge.shell().hide_pointer();
         ptr.enter_dpad();
     }
     super::bridge::send_player_message(pages,

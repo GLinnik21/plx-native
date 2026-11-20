@@ -260,7 +260,7 @@ Reading the output:
   C++11 `std::string` ABI and are untested on a set apart from one 3.4.3 (webOS 1.x/2.x were never
   tried). They used to fail on two missing symbols, `SDL_webOSCursorVisibility` and
   `StarfishMediaAPIs::Feed`'s C++11 name, but since #578 both are `dlsym`'d at runtime
-  (`src/starfish.c`, `rust-modules/src/app/boot.rs`), so the binary no longer imports them. Re-run
+  (`src/starfish.c`, `rust-modules/src/app/boot.rs`, and `rust-modules/src/system.rs`'s `cursor_door`), so the binary no longer imports them. Re-run
   `tools/fwcompat.py` for what the old rows print now; they are still printed below the floor and
   do not set the exit status.
 * **Baseline as of 2026-08-23** (verified by running it): `15 DT_NEEDED, 319 undefined dynamic

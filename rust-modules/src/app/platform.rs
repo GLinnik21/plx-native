@@ -6,10 +6,11 @@
 //! - `services`: [`plx_os::tv::Services`], what the LOWER layers read through the private `tv`
 //!   accessors (identity, the secure store, Home and the toast, the legacy webOS media verbs).
 //!   `run_application` installs it into `tv` once, and nothing else in the app reads it.
-//! - `shell`: the window and the bus, [`Shell`]. Its consumers are boot (`app::boot` brings the
-//!   window up with the platform it was handed), the loop (`app::run` drives it every frame, through
-//!   `App::platform`) and the bridge, which holds the shell for the dispatcher's two opaque-region
-//!   hooks.
+//! - `shell`: the window, the bus and the pointer's visibility, [`Shell`]. Its consumers are boot
+//!   (`app::boot` brings the window up with the platform it was handed), the loop (`app::run` drives
+//!   it every frame, through `App::platform`) and the bridge, which holds the shell for the
+//!   dispatcher's two opaque-region hooks and lends it to the pointer's own callers (`input`,
+//!   `playback`), which hide and show the Magic Remote's pointer through it.
 //! - `diag`: the six frame probes, [`FrameProbe`], read by the loop. The renderer's clear hook takes
 //!   plain functions, so the platform's entry installs it (`gfx::install_clear_probe`).
 //! - `media`: [`MediaBoot`], the platform's two boot-time playback steps. `early_init` runs once before
@@ -29,9 +30,10 @@ use plx_media::route::PlaybackSession;
 use plx_os::tv::Services;
 use std::os::raw::c_void;
 
-/// The platform's window and bus, as the frame loop drives them: the SDL window and its surface, the
-/// opaque-region hint, and the platform bus pump. Every call runs on the loop thread, and every
-/// hook is required: a platform with nothing to do states a no-op, as the test-only host platform does.
+/// The platform's window, bus and pointer, as the application drives them: the SDL window and its
+/// surface, the opaque-region hint, the platform bus pump, and the visibility of the Magic Remote's
+/// pointer. Every call runs on the loop thread, and every hook is required: a platform with nothing
+/// to do states a no-op, as the desktop and the test-only host platform do.
 pub(crate) trait Shell: Sync {
     /// Hand the platform the SDL window, once, at boot: the window is created deep inside boot and
     /// the platform needs it a long way from there (`textinput::bind`'s shape and its reason).
@@ -50,6 +52,18 @@ pub(crate) trait Shell: Sync {
     fn clear_opaque_region(&self);
     /// Service the platform bus once; the frame loop calls this every frame.
     fn pump_bus(&self);
+    /// Hide the remote's on-screen pointer: the D-pad took over, or the pointer idled over video.
+    /// A platform whose pointer is not the application's to hide, a desktop's mouse, does nothing.
+    fn hide_pointer(&self);
+    /// Bring the pointer back after [`hide_pointer`](Shell::hide_pointer), on the next pointer motion.
+    /// Where the hide was the platform's own call, the platform shows its pointer by itself and this
+    /// does nothing.
+    fn show_pointer_after_motion(&self);
+    /// Whether [`hide_pointer`](Shell::hide_pointer) hides the pointer by swapping in a transparent
+    /// cursor rather than by the platform's own call. Then the system's pointer is still up, and the
+    /// remote's OK arrives as a click at wherever the invisible pointer sits, which the loop reads as
+    /// the OK key (`input::click_is_ok`). `false` where a click is always a real one.
+    fn hide_is_cursor_swap(&self) -> bool;
 }
 
 /// The dev frame probe (`/tmp/plxnative-framecb`): the platform's presentation-callback clock, read
@@ -164,6 +178,11 @@ impl Shell for HostShell {
     fn opaque_route(&self, _player: bool) {}
     fn clear_opaque_region(&self) {}
     fn pump_bus(&self) {}
+    fn hide_pointer(&self) {}
+    fn show_pointer_after_motion(&self) {}
+    fn hide_is_cursor_swap(&self) -> bool {
+        false
+    }
 }
 
 /// The frame probe of a process with no platform: always unarmed. Test builds only.
@@ -179,6 +198,52 @@ impl FrameProbe for HostProbe {
     fn acquired(&self) {}
     fn fields(&self) -> String {
         String::new()
+    }
+}
+
+/// A shell whose hide is a cursor swap, counting what the application asks of it. Test builds only.
+/// The swap is the webOS 3.x case, where the remote's OK arrives as a click (`input::click_is_ok`), and a
+/// test of it needs a platform that says so, which [`Platform::HOST_TEST`] does not: it hides nothing.
+#[cfg(test)]
+pub(crate) struct SwapShell {
+    pub(crate) hides: std::sync::atomic::AtomicUsize,
+    pub(crate) shows: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl Shell for SwapShell {
+    fn bind_window(&self, _win: *mut c_void) {}
+    fn grab_surface(&self, _win: *mut c_void) {}
+    fn release_surface(&self) -> bool {
+        false
+    }
+    fn arm_opaque_region(&self) {}
+    fn opaque_route(&self, _player: bool) {}
+    fn clear_opaque_region(&self) {}
+    fn pump_bus(&self) {}
+    fn hide_pointer(&self) {
+        self.hides.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn show_pointer_after_motion(&self) {
+        self.shows.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn hide_is_cursor_swap(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+impl SwapShell {
+    /// A platform whose shell is a fresh `SwapShell`, and that shell, for a test to read the counts
+    /// from. Leaked, because a `Platform` holds its parts for `'static`; every call makes its own
+    /// counters, so the shell is no process global and no test shares a count with another.
+    pub(crate) fn platform() -> (&'static Platform, &'static SwapShell) {
+        let shell: &'static SwapShell = Box::leak(Box::new(SwapShell {
+            hides: std::sync::atomic::AtomicUsize::new(0),
+            shows: std::sync::atomic::AtomicUsize::new(0),
+        }));
+        let platform = Platform::new(&Services::HOST_TEST, shell, &HostProbe, MediaBoot::HOST_TEST);
+        (Box::leak(Box::new(platform)), shell)
     }
 }
 
@@ -231,6 +296,9 @@ mod tests {
         s.opaque_route(false);
         s.clear_opaque_region();
         s.pump_bus();
+        s.hide_pointer();
+        s.show_pointer_after_motion();
+        assert!(!s.hide_is_cursor_swap(), "no hide, so a click is always a real one");
 
         p.request();
         p.prepare_begin();
@@ -260,5 +328,25 @@ mod tests {
         publish_composition(&mut session, &adapter, Composition::default());
         assert_eq!(session.backends(), plx_playback_contract::BackendSet::NONE);
         assert!(session.uri_preflight_port().is_none());
+    }
+
+    /// **The counting shell says what it is and counts what it is asked, per platform.** It is a
+    /// cursor swap (the webOS 3.x answer), every `platform()` call has counters of its own, and the
+    /// pointer calls are the only ones it counts. The loop's tests read these counts, so the shell they
+    /// read is pinned here, where no feature gate hides it.
+    #[test]
+    fn the_swap_shell_is_a_cursor_swap_that_counts_its_own_pointer_calls() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (platform, counted) = SwapShell::platform();
+        let (other, other_counted) = SwapShell::platform();
+        assert!(platform.shell.hide_is_cursor_swap(), "a swap says so");
+        platform.shell.hide_pointer();
+        platform.shell.hide_pointer();
+        platform.shell.show_pointer_after_motion();
+        assert!(!platform.shell.release_surface(), "a shell call that is no pointer call is not counted");
+        assert_eq!((counted.hides.load(Relaxed), counted.shows.load(Relaxed)), (2, 1));
+        assert_eq!((other_counted.hides.load(Relaxed), other_counted.shows.load(Relaxed)), (0, 0),
+            "another platform's counts are its own");
+        assert!(!other.shell.release_surface(), "the rest of the shell answers as the host-test one does");
     }
 }

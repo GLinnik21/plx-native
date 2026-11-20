@@ -253,8 +253,8 @@ pub(crate) fn arm_gst_logging() {
         spec
     };
     let log = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::GST);
-    // SAFETY: single-threaded here by construction — `plex_run` has not yet minted a worker, and
-    // this runs before SDL init. `set_var` is only unsound against a concurrent reader.
+    // SAFETY: single-threaded here by construction — the entry (`run_application`) has not yet started
+    // a worker, and this runs before SDL init. `set_var` is only unsound against a concurrent reader.
     std::env::set_var("GST_DEBUG", &spec);
     std::env::set_var("GST_DEBUG_FILE", &log);
     std::env::set_var("GST_DEBUG_FILE_OVERWRITE", "enable");

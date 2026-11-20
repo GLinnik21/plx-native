@@ -724,92 +724,6 @@ mod seam_order_tests {
     }
 }
 
-/// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
-/// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
-///
-/// One door rather than a branch at each caller, so the platform question is asked once
-/// and the callers read the same on LG's extension and on the transparent-cursor path.
-///
-/// Resolved at runtime rather than linked: webOS 3.4 ships SDL 2.0.3, which has none of LG's
-/// `SDL_webOS*` extensions, and a strong reference there is a lazily-bound PLT slot that kills
-/// the process on the first D-pad press (`tools/fwcompat.py --release 3.4.0`).
-///
-/// **Without LG's extension the pointer is SDL's own cursor, and it is swapped for a transparent
-/// one rather than switched off.** webOS 3.9.3 ships SDL 2.0.4 with no `SDL_webOS*` export at all,
-/// and that SDL draws the pointer itself (its `.rodata` carries `/usr/share/im/cursorType*.png`
-/// and `wl_starfish_pointer`). With nothing to call, every hide was a no-op and the pointer stayed
-/// up until LG's ~5-minute idle timeout, issue #642. `SDL_ShowCursor(SDL_DISABLE)` does hide it
-/// there, but measured on that set it also stops pointer motion reaching the app until the pointer
-/// re-enters the window (opening and closing the Settings overlay), so no motion could bring it
-/// back. With a transparent cursor the motion keeps arriving, and [`show_cursor_after_motion`] puts
-/// the previous cursor back on the next one. Every SDL call is dlsym'd, so the binary gains no
-/// import.
-#[inline]
-pub(crate) unsafe fn hide_cursor() {
-    #[cfg(not(feature = "hostsim"))]
-    {
-        hide_through(cursor_door(), &SHOWN_CURSOR);
-    }
-}
-
-/// True where the pointer is hidden by swapping in a transparent cursor rather than by LG's call,
-/// so the system's pointer stays up and the remote's OK arrives as a click (`input::click_is_ok`).
-/// False on the host simulator, where a click is always a real one.
-pub(crate) unsafe fn cursor_is_transparent() -> bool {
-    #[cfg(not(feature = "hostsim"))]
-    {
-        matches!(cursor_door(), CursorDoor::Sdl { .. })
-    }
-    #[cfg(feature = "hostsim")]
-    {
-        false
-    }
-}
-
-/// Bring the pointer back after [`hide_cursor`] swapped in the transparent cursor. Call on pointer
-/// motion while the cursor is hidden. A no-op wherever LG's extension exists: there the
-/// compositor shows its own pointer on motion, as it always has.
-#[inline]
-pub(crate) unsafe fn show_cursor_after_motion() {
-    #[cfg(not(feature = "hostsim"))]
-    {
-        show_through(cursor_door(), &SHOWN_CURSOR);
-    }
-}
-
-/// [`hide_cursor`] on a given door, the cursor it replaced kept in `shown`. Split out so the
-/// bookkeeping is gradeable on the host with a door of fake functions.
-#[cfg(not(feature = "hostsim"))]
-unsafe fn hide_through(door: CursorDoor, shown: &std::sync::atomic::AtomicUsize) {
-    match door {
-        CursorDoor::Lg(f) => {
-            f(0);
-        }
-        CursorDoor::Sdl { set, get, def, blank } => {
-            let cur = get() as usize;
-            if cur != blank {
-                let keep = if cur != 0 { cur } else { def() as usize };
-                if keep == 0 {
-                    return; // nothing to put back, so the pointer would never return: leave it
-                }
-                shown.store(keep, std::sync::atomic::Ordering::Relaxed);
-            }
-            set(blank as *mut std::ffi::c_void);
-        }
-        CursorDoor::None => {}
-    }
-}
-
-/// [`show_cursor_after_motion`] on a given door.
-#[cfg(not(feature = "hostsim"))]
-unsafe fn show_through(door: CursorDoor, shown: &std::sync::atomic::AtomicUsize) {
-    if let CursorDoor::Sdl { set, .. } = door {
-        let shown = shown.load(std::sync::atomic::Ordering::Relaxed);
-        if shown != 0 {
-            set(shown as *mut std::ffi::c_void);
-        }
-    }
-}
 /// The window to ask for when it is not the 1920x1080 canvas, `None` for the canvas (1:1): whatever
 /// `/tmp/plxnative-drawable=<W>x<H>` says when that trigger is armed (debug builds only; it
 /// outranks the setting and is bounded to 640x360..=1920x1080 so a typo cannot ask for nonsense),
@@ -985,177 +899,9 @@ unsafe extern "C" fn wrapped_message(msg: *mut std::ffi::c_void) -> *const std::
     p
 }
 
-/// The cursor [`hide_cursor`] replaced with the transparent one, for the motion that restores it.
-#[cfg(not(feature = "hostsim"))]
-static SHOWN_CURSOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(not(feature = "hostsim"))]
-type CursorVisibilityFn = unsafe extern "C" fn(c_int) -> c_int;
-#[cfg(not(feature = "hostsim"))]
-type SetCursorFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-#[cfg(not(feature = "hostsim"))]
-type GetCursorFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
-#[cfg(not(feature = "hostsim"))]
-type CreateCursorFn =
-    unsafe extern "C" fn(*const u8, *const u8, c_int, c_int, c_int, c_int) -> *mut std::ffi::c_void;
-
-/// Which call hides the pointer on this firmware, resolved once: LG's extension when the system
-/// SDL has it (webOS 4+), else a transparent SDL cursor (webOS 3.x).
-#[cfg(not(feature = "hostsim"))]
-#[derive(Clone, Copy)]
-enum CursorDoor {
-    Lg(CursorVisibilityFn),
-    /// `SDL_SetCursor` / `SDL_GetCursor` / `SDL_GetDefaultCursor`, and the transparent cursor.
-    Sdl { set: SetCursorFn, get: GetCursorFn, def: GetCursorFn, blank: usize },
-    None,
-}
-
-/// Resolved on the first hide, after `SDL_Init`, because `SDL_CreateCursor` needs the video
-/// subsystem.
-#[cfg(not(feature = "hostsim"))]
-fn cursor_door() -> CursorDoor {
-    static DOOR: std::sync::OnceLock<CursorDoor> = std::sync::OnceLock::new();
-    *DOOR.get_or_init(|| {
-        use std::ffi::c_void;
-        use std::mem::transmute;
-        // SAFETY: each symbol is transmuted to the signature SDL2's public API (or, for
-        // `SDL_webOSCursorVisibility`, LG's fork) gives it, and is called on the main thread.
-        let door = unsafe {
-            if let Some(f) = self_sym("SDL_webOSCursorVisibility") {
-                CursorDoor::Lg(transmute::<*mut c_void, CursorVisibilityFn>(f))
-            } else if let (Some(set), Some(get), Some(def), Some(create)) = (
-                self_sym("SDL_SetCursor"),
-                self_sym("SDL_GetCursor"),
-                self_sym("SDL_GetDefaultCursor"),
-                self_sym("SDL_CreateCursor"),
-            ) {
-                // 8x1 with every data and mask bit clear: SDL's transparent pixel throughout.
-                let bits = [0u8; 1];
-                let create = transmute::<*mut c_void, CreateCursorFn>(create);
-                let blank = create(bits.as_ptr(), bits.as_ptr(), 8, 1, 0, 0);
-                if blank.is_null() {
-                    CursorDoor::None
-                } else {
-                    CursorDoor::Sdl {
-                        set: transmute::<*mut c_void, SetCursorFn>(set),
-                        get: transmute::<*mut c_void, GetCursorFn>(get),
-                        def: transmute::<*mut c_void, GetCursorFn>(def),
-                        blank: blank as usize,
-                    }
-                }
-            } else {
-                CursorDoor::None
-            }
-        };
-        log(match door {
-            CursorDoor::Lg(_) => "cursor: SDL_webOSCursorVisibility",
-            CursorDoor::Sdl { .. } => "cursor: transparent SDL cursor (no SDL_webOS* in this SDL)",
-            CursorDoor::None => "cursor: no way to hide the pointer",
-        });
-        door
-    })
-}
 #[cfg(all(test, not(feature = "hostsim")))]
-mod cursor_door_tests {
+mod cursor_sleep_hint_tests {
     use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::ffi::c_void;
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-
-    const BLANK: usize = 0x99;
-
-    thread_local! {
-        static CURRENT: Cell<usize> = const { Cell::new(0) };
-        static DEFAULT: Cell<usize> = const { Cell::new(0) };
-        static SET: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-        static LG: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
-    }
-
-    unsafe extern "C" fn set(c: *mut c_void) {
-        SET.with(|s| s.borrow_mut().push(c as usize));
-        CURRENT.with(|cur| cur.set(c as usize));
-    }
-    unsafe extern "C" fn get() -> *mut c_void {
-        CURRENT.with(Cell::get) as *mut c_void
-    }
-    unsafe extern "C" fn def() -> *mut c_void {
-        DEFAULT.with(Cell::get) as *mut c_void
-    }
-    unsafe extern "C" fn lg(visible: c_int) -> c_int {
-        LG.with(|l| l.borrow_mut().push(visible));
-        0
-    }
-
-    /// A fresh door with SDL's current cursor and default cursor as given (0 = NULL).
-    fn sdl(current: usize, default: usize) -> CursorDoor {
-        CURRENT.with(|c| c.set(current));
-        DEFAULT.with(|d| d.set(default));
-        SET.with(|s| s.borrow_mut().clear());
-        CursorDoor::Sdl { set, get, def, blank: BLANK }
-    }
-    fn installed() -> Vec<usize> {
-        SET.with(|s| s.borrow().clone())
-    }
-
-    #[test]
-    fn hiding_swaps_in_the_blank_cursor_and_motion_puts_the_previous_one_back() {
-        let shown = AtomicUsize::new(0);
-        let door = sdl(0x10, 0x20);
-        unsafe {
-            hide_through(door, &shown);
-            assert_eq!(installed(), [BLANK]);
-            show_through(door, &shown);
-        }
-        assert_eq!(installed(), [BLANK, 0x10]);
-    }
-
-    #[test]
-    fn with_no_current_cursor_the_default_one_is_what_comes_back() {
-        let shown = AtomicUsize::new(0);
-        let door = sdl(0, 0x20);
-        unsafe {
-            hide_through(door, &shown);
-            show_through(door, &shown);
-        }
-        assert_eq!(installed(), [BLANK, 0x20]);
-    }
-
-    #[test]
-    fn hiding_again_while_hidden_keeps_the_cursor_to_restore() {
-        let shown = AtomicUsize::new(0);
-        let door = sdl(0x10, 0x20);
-        unsafe {
-            hide_through(door, &shown);
-            hide_through(door, &shown); // `get` now answers the blank cursor
-            show_through(door, &shown);
-        }
-        assert_eq!(installed(), [BLANK, BLANK, 0x10]);
-    }
-
-    /// With no current and no default cursor there is nothing to put back, so the pointer must not
-    /// be hidden: it would never come back.
-    #[test]
-    fn with_nothing_to_restore_the_cursor_is_left_alone() {
-        let shown = AtomicUsize::new(0);
-        let door = sdl(0, 0);
-        unsafe {
-            hide_through(door, &shown);
-            show_through(door, &shown);
-        }
-        assert_eq!(installed(), Vec::<usize>::new());
-        assert_eq!(shown.load(Relaxed), 0);
-    }
-
-    #[test]
-    fn lgs_extension_is_asked_to_hide_and_motion_leaves_it_to_the_compositor() {
-        let shown = AtomicUsize::new(0);
-        LG.with(|l| l.borrow_mut().clear());
-        unsafe {
-            hide_through(CursorDoor::Lg(lg), &shown);
-            show_through(CursorDoor::Lg(lg), &shown);
-        }
-        assert_eq!(LG.with(|l| l.borrow().clone()), [0]);
-    }
 
     #[test]
     fn the_idle_hide_hint_is_asked_for_only_where_lgs_extension_is_absent() {
@@ -1299,7 +1045,7 @@ pub(crate) fn direct_trigger_server() -> Result<plx_plex::plex::ServerId, String
 }
 
 // ---- boot, and the loop's own between-frame state ---------------------------------------------
-/// Which screen the boot gate landed on — see the gate itself in `plex_run`, which is where the
+/// Which screen the boot gate landed on — see the gate itself in `boot`, which is where the
 /// order of its four cases is argued.
 pub(crate) enum BootTo {
     Home,
@@ -1376,8 +1122,10 @@ pub(super) fn install_pms_owned(
 /// television, `src/bin/sim.rs` after `platform_desktop::run` on a desktop; a hosted entry reports it
 /// and stays alive).
 ///
-/// `mt`, THE main-thread token, is minted once by `plex_run` itself (`plx_base::task::MainThread::
-/// assume()` — that function IS the SDL main thread) and MOVES into `App.adapters.player` here,
+/// `mt`, THE main-thread token, is minted once by `enter_application` (`app/mod.rs`:
+/// `plx_base::task::MainThread::assume()`, the thread that runs it IS the SDL main thread), which both
+/// entries reach through `run_application` (`port::plex_run` on the television, `platform_desktop::run`
+/// on a desktop), and MOVES into `App.adapters.player` here,
 /// from where a `&mut PlayerAdapter` is the proof it is still held: the ACB/Starfish seam takes
 /// `&MainThread` (which is `!Send`, so `task::spawn` rejects any closure that captured one), and
 /// the native session slot takes the adapter itself. See `task::MainThread` and `player::adapter`.

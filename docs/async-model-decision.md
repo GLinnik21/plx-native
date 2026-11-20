@@ -360,7 +360,8 @@ flagged as unused, precisely because it reached the static directly instead of t
 
 **Superseded for the slot, 2026-09-10 (UI restructure phase 9).** `ENGINE` is no longer a `static
 mut` and the four accessors are gone: the slot is a FIELD, `App.adapters.player`, and
-`player::adapter::PlayerAdapter::new` **consumes** the one token `plex_run` mints. So the token is
+`player::adapter::PlayerAdapter::new` **consumes** the one token `enter_application` mints (`app/mod.rs`,
+`MainThread::assume()`, reached by `plex_run` and `platform_desktop::run` alike through `run_application`). So the token is
 no longer an argument that ASSERTS main-thread confinement for the session — holding
 `&mut PlayerAdapter` IS the confinement, and the borrow checker keeps it. The seam half of this
 finding is unchanged: `ffi.rs`'s wrappers still take `&MainThread`, reached as `pa.mt()`. What the
