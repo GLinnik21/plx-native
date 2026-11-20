@@ -15,14 +15,16 @@ up the split. **Thirteen of the fourteen layers, `base`, `machine`, `os`, `gfx`,
 `machine/`, `os/`, `gfx/`, `net/`, `ui/`, `plex/`, `telemetry/`, `data/`, `session/`, `media/`,
 `appkit/` and `screens/`; "Split 1: base" to "Split 13 (screens)" below, and "Splits 9 and 10
 together" for how those two were combined). **The split is finished.** What is left in
-`rust-modules/src/` is the last layer, `app`, and it stays the top crate `plxnative-modules`: the
+`rust-modules/src/` is the last layer, `app`, and it is the top crate `plxnative-modules` until L15f
+puts `plx_platform_webos` and `plx_platform_desktop` on top of it, the webOS one taking over the staticlib the
+Makefile links (`docs/platform-ports.md`, W7b): the
 loop, its adapters, every dev and diagnostic surface, and the application's side of the port
-(`port`, `system`, and the other `[platform webos]` members that are not in a layer crate). They are
+(`port`, `system`, and the other `[platform webos]` members that are not in a layer crate). Today they are
 the one `staticlib` the Makefile links and the one place that may name every other layer, so there
 is nothing below it to split off. **Decision, revised 2026-11-20: the `[platform webos]` members stay where they are
 until the simulator is its own platform, and then leave for crates of their own on top.**
-(`webos`, `keymanager` and `system` are modules of `plx_os` (the Starfish sink is
-`webos::video_sink`), and `port` of the top crate.) The earlier decision was to wait **until a second TV OS exists**:
+(`webos` and `keymanager` are modules of `plx_os`, the Starfish sink being `webos::video_sink`; `system` and `port`
+are modules of the top crate.) The earlier decision was to wait **until a second TV OS exists**:
 a port crate would have had one customer and a boundary drawn from guesses about the second. The desktop platform, the
 simulator and `PlxNative.app` as a platform of their own (L15d), is a second implementation of the same interfaces,
 which is what the wait was for, so the crates are extracted (L15f) after it and no second TV OS has to exist first
@@ -453,7 +455,7 @@ still webOS's. Three things are left:
 L15b is done when the sink is OS-neutral, the simulator is its own port, and these facts are the
 port's. The port does not wait for all three before it leaves its layers. The order, amended 2026-11-20, is item 2
 (the simulator as its own port), then the extraction, then item 3 and item 1 ("L15c to L15h" below). Extracted, the
-port is a crate of its own on top: it names `app` to start it, and nothing names it. The webOS platform crate
+port is a crate of its own on top: it names `app` to start it, and nothing names it. `plx_platform_webos`
 produces the staticlib the Makefile links, and `plxnative-modules` stays the application crate beneath it. Another TV
 OS is another platform in that position. The simulator binary, `src/bin/sim.rs`, is already a separate crate there,
 and enters through `port::plex_run` until W4 gives it its own platform value.
@@ -474,8 +476,9 @@ then L15f; then L15g and L15h. So the extraction (L15f, W7) follows item 2 (L15d
 item 1 (L15h, W11) come afterwards. The earlier order put the extraction after all of L15b, which would have made W7
 wait for the neutral sink: item 1 needs the television and gates nothing the other platforms need, and W8 follows W7.
 Some workstreams are not steps of this table because they change no layer rule: W0 (the record of the plan, this
-amendment), W1 (the `PLATFORM` build axis), and W9, W10, W12 and W13 (the Tizen platform, its URI and Feed drivers and
-the desktop products), which each add a platform crate to the arrangement L15f creates.
+amendment), W1 (the `PLATFORM` build axis), W9 (the Tizen platform, which adds `plx_platform_tizen` to the
+arrangement L15f creates), and W10, W12 and W13 (its URI and Feed drivers and the desktop products), which add code
+to the `plx_platform_tizen` and `plx_platform_desktop` crates and change no layer rule.
 
 ### Then the split
 

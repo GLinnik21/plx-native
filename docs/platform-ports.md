@@ -7,12 +7,12 @@ build-bench flags are in "Workstreams". The layer-graph side of the plan is `doc
 L15h. Unprefixed ids are this page's own: F facts, T Tizen research, E emulator evidence, H hello-world questions and
 W workstreams.
 
-The sections "Verified facts" (F1-F52), "Tizen research" (T1-T8) and "Emulator run, 2026-11-20" (E1-E12) quote the
+The sections "Verified facts" (F1-F52), "Tizen research" (T1-T8) and "Emulator run, 2026-11-20" (E1-E13) quote the
 tree at `e9924f0f9`, before the bottom-layer rename (Wave R), so they keep the old names and the old line numbers;
 "Names and paths" gives the map. Every other section uses the final names (Wave R's own text names the old ones it
 replaces), and "today", "now" and "as today" anywhere on the page mean that tree. Hello-world refs
 (`tizen/hello/...`) pin to `origin/samsung/hello-tpk` at `72c5cd82a`, except the H5 result (E10), which pins to
-`64c609a46`, and the tester build of E11, `1afe1978b`.
+`64c609a46`, the tester build of E11, `1afe1978b`, and the probe build of E13, `e8da14ce6`.
 
 ## History
 
@@ -27,7 +27,7 @@ review texts are not kept, and no section depends on a revision number.
 Wave R renames the bottom layer first, so the design below uses the final names: crate `plx_os` (directory
 `rust-modules/os`, layer `[os]`, inner module `tv` unchanged), fence sections `[platform <name>]`
 (was `[port <name>]`), platform crates `plx_platform_webos`, `plx_platform_desktop`, `plx_platform_tizen`.
-Verified facts F1-F52, T1-T8 and E1-E12 quote the tree at `e9924f0f9`, before the rename, where the old names
+Verified facts F1-F52, T1-T8 and E1-E13 quote the tree at `e9924f0f9`, before the rename, where the old names
 stand, so every grep in them reproduces: read `plx_platform` as `plx_os`, `rust-modules/platform/` as
 `rust-modules/os/`, `[platform]` as `[os]` and `[port X]` as `[platform X]`; the bare path `platform/src/...`
 (relative to `rust-modules/`, as `ci/list-caps.ini` and the certificates spell it) is `os/src/...`, and the shell
@@ -423,7 +423,7 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   (a regex over Makefile `-p plx_platform`), `tests/test_harness.py:9916`, `ci/test_test_crate.py`,
   `ci/test_no_host_staticlib.py`, `ci/test_build_bench.py` and `tools/build-bench.py`. The gate keys on the
   keyword (`ci/check-module-layers.py:68,74`). These are the size of Wave R.
-- F37. What the hello-world build can answer (review M9, M10); the emulator's results are E1-E12.
+- F37. What the hello-world build can answer (review M9, M10); the emulator's results are E1-E13.
   - It builds one library per `--arch`: `arm` for retail 2021+ sets, `x86_64` ("the default emulator
     target") and `i686` (the older emulator) (`tizen/hello/README.md:41-43`). The emulator cannot test
     `Tizen.Multimedia` (`:120`), and the run did not probe it (E9). The host's TFM is `tizen80`
@@ -503,7 +503,8 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
     Tizen ARM reads `native = true`; `load` accepts `version == 1` only (`:59`) and `Saved` is
     `deny_unknown_fields`. The ARM canonical write is cfg'd out of host tests (`session/persistence.rs:1400-1425`).
   - `ci/check-deps.sh`: `plex/` is in `FORK_SCOPE`, `session.rs` in `MACHINES` (`:1399-1404`): a new
-    `cfg(test)` branch there is a `forks` line, a new static a `statics` line; `platform/` is in neither. The
+    `cfg(test)` branch there is a `forks` line, a new static a `statics` line. `platform/` is not in `FORK_SCOPE`,
+    and only `platform/src/tv/plane.rs` is in `MACHINES` (`:1402-1407`; the scan `find` at `:1439` lists it too). The
     `globals` pattern (`:1429`) does not name `secure::mode`: UNVERIFIED whether it should.
 - F45. Facts that fix file ownership (the lanes' Files lines are these).
   - `src/app/run_uri_boot_tests.rs` is `include!`d at `src/app/run.rs:6953`: a test added there needs no line in
@@ -580,7 +581,7 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
     test_harness.py` 1) and the build-bench scenario `platform` (`tools/build-bench.py:132,149,171,180,201`,
     `ci/test_build_bench.py:96,212,229,244-245`).
   - Exempt, dated records that keep the old name: `docs/release-audits/*`, `docs/measurements/*`, dated
-    `docs/*-20YY-MM-DD*.md`, and this plan's fact sections.
+    `docs/*-20YY-MM-DD*.md`, and this plan (the whole page, `tools/rename-os-layer.py`'s `EXEMPT`).
 - F49. `ProductQualifier` and the layer rule (G3).
   - It is a unit struct in `plx_media` (`media/src/route/uri_preflight.rs:768`) implementing media's
     `OriginalQualifier`; the composition builds it at `src/app/adapters/backends.rs:387`, after the
@@ -636,7 +637,7 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
 ### Tizen research
 
 From the Tizen research report (not in the repository), by section. None of it is checked on a retail set; where
-the emulator runs (E1-E12) measured it, the item says so.
+the emulator runs (E1-E13) measured it, the item says so.
 - T1. A retail TV refuses a native `capp`. The host is a `type="dotnet"` C# `.tpk` P/Invoking our
   `.so` (section 1).
 - T2. The floor is Tizen 6.0 (2021). The 4.0-5.5 sets block file-backed exec of the app's `.so`, and
@@ -664,7 +665,7 @@ the emulator runs (E1-E12) measured it, the item says so.
 - T8. There is no `sdb shell` or `dlog` on a retail TV, so logs must be in-app (2a). Measured on the
   TV 10.0 emulator too: UDP is the only channel out, and a file in the app data dir cannot be read (E5).
 
-### The hello-world questions (H1-H6)
+### The hello-world questions (H1-H8)
 
 The Tizen hello-world (F28) exists to answer these, and the text cites them by number:
 - H1: whether a retail set's host process is armv7 or aarch64 (T3).
@@ -674,14 +675,20 @@ The Tizen hello-world (F28) exists to answer these, and the text cites them by n
 - H5: whether static SDL2 and SDL2_ttf draw text and a GLES2 texture through our path (F15).
 - H6: whether `Tizen.Multimedia.Player` shows a mock title beneath our window and survives a TV-menu round trip
   (T6, W10).
+- H7: whether the application's own renderer, `plx_gfx`, compiles its shader programs and draws on the set's GL
+  (README "H7" on `samsung/hello-tpk`; F40 says why a rejected required shader ends the process).
+- H8: whether the application's own libcurl binding (`plx_net` on the `dynlib!` loader) finds a libcurl on the set
+  and reaches a server on the tester's PC (README "H8"; F27).
 
 Status: H3, H4 and H5 are answered yes, on the emulator only (E6, E8, E10); H1 and H2 are open and need a retail
-set (E9); H6 is not probed (E9, E11).
+set (E9); H6 is not probed (E9, E11). H7 and H8 were probed by the build of E13: H8 yes, and H7 yes once
+`vs_ambient.vert`'s one multi-declarator is split, with one optional program still failing; both on the emulator
+only.
 
 ### Emulator run, 2026-11-20
 
 Reported by the operator of the emulator run (E1-E9, built from `origin/samsung/hello-tpk` at `72c5cd82a`);
-E10-E12 are later runs on the same emulator. Measured on the emulator only; no retail set has reported a result.
+E10-E13 are later runs on the same emulator. Measured on the emulator only; no retail set has reported a result.
 
 - E1. Setup. TV Extension 10.0 emulator, image 10.0.6 (`tv-samsung-10.0-x86_64`, BUILD_ID
   `EMULATOR64-202601071715`), under WSL2/KVM; the library is x86_64, built on Ubuntu 22.04. `sdb
@@ -779,6 +786,35 @@ E10-E12 are later runs on the same emulator. Measured on the emulator only; no r
     reverse forward into the emulator (`sdb reverse` mode: unchecked), so the emulator MVP (Decision 8) boots on the
     dev-token path (a `--guest --mock` style boot, the PMS advertised as `10.0.2.2`), and the sign-in against the
     mock plex.tv is a follow-up check. The loopback rule is not widened.
+
+- E13. The real renderer and libcurl (H7, H8; 2026-11-20, the TV 10.0 x86_64 emulator, a probe build of
+  `samsung/hello-tpk` at `e8da14ce6`). Emulator only; no retail set has run it.
+  - H8: yes. libcurl, loaded through the app's own `dynlib` mechanism (`libcurl.so.4`, E12), reached
+    `tests/mock_pms.py` on the host as `10.0.2.2` and got HTTP 200.
+  - H7, shaders. YaGL ("YaGL GLESv2", OpenGL ES 2.0, GLSL ES 1.4, over the host's Mesa llvmpipe) rejected
+    `VS_AMBIENT_DITHERED` with `0:37(9): error: syntax error, unexpected NEW_IDENTIFIER`, at
+    `varying highp vec2 v_dither_nc;`. That is the error Mesa gives for raw desktop GLSL 1.10, where `highp` is an
+    ordinary identifier, so the source looks passed through untranslated (an inference from the message, not a
+    measurement of YaGL).
+    - The only multi-declarator in `shaders/`, `uniform vec4 u_atl, u_atr, u_abr, u_abl;` in `vs_ambient.vert`,
+      split into four declarations, makes it compile. Before and after: the original fails and the split compiles,
+      and a cut-down variant does the same. The tree these facts pin still has the statement; the split was made in
+      the probe build.
+    - A `#version 100` preamble also made it compile, but the link then failed ("all shaders must use same shading
+      language version"), so that route was dropped.
+    - With the split, all 14 required programs compile and link. `plx_gfx`'s `init_gl`, `init_text`, `init_image`
+      and `init_blur` all returned, and it drew a rect and text. `glGetError` was 0 at init, frame and swap, and it
+      drew 3420 frames at about 33 fps (llvmpipe through YaGL: no frame-rate claim, E6).
+  - One optional program still fails the same way. The straighten program (`fs_straighten.frag`, its copy variant,
+    because the emulator has neither framebuffer-fetch extension) fails with `0:37(1): syntax error, unexpected
+    NEW_IDENTIFIER` at `precision mediump float;`. It degrades ("frames over the video plane stay premultiplied")
+    and does not exit. The suspect, untested, is its `#extension ... : require` lines inside inactive `#if`
+    branches. It matters only over the video plane, so it is for W10, not the W9 MVP.
+  - Font. `plx_gfx` opens `<exe dir>/appfont.ttf`, but the executable is `/usr/bin/dotnet-launcher` (E4), so the open
+    fails. The probe retried from the package's `res/` and it opened. The resource directory has to become a
+    platform value (W8b, W9).
+  - Linking. `plx_gfx` imports `gl*` at link time, and the hosted `.so` is loaded `BIND_NOW`. The probe used a
+    `dlsym` shim; W9 either links `libGLESv2.so.2` or keeps a shim.
 
 ## Target shape
 
@@ -904,8 +940,8 @@ Ecore names to `remote_token_key` pairs".
   `secure::set_mode_for_test(StoreMode) -> ModeReset` calls `plx_base::testlock::assert_held(..)` first and its
   guard restores `Durable` on drop, so a failing test cannot leave `MemoryOnly` behind for the next one. Every test
   that sets it begins with `let _serial = plx_base::testlock::serial();` (the session persistence tests already do),
-  and no test sets it without that. `os/` is in neither `MACHINES` nor `FORK_SCOPE`, so the override adds no
-  ledger line.
+  and no test sets it without that. `os/` is not in `FORK_SCOPE`, and only `os/src/tv/plane.rs` of it is in
+  `MACHINES`, so the override in `tv/secure.rs` adds no ledger line.
 - Globals (G6; F44, F50). Reading `secure::mode()` from the session code adds NO line to `ci/allow/globals/`: the
   gate's pattern is a fixed list of spellings that does not name `secure::`, and `session.rs` already makes four
   unledgered `secure::` calls. The pattern is NOT extended (it would turn those four into new sites, and counts
@@ -1145,8 +1181,9 @@ Ecore names to `remote_token_key` pairs".
 - `[platform webos]`: crate `plx_platform_webos` (`rust-modules/platform-webos`): `webos`, `keymanager`, the LG
   half of `system`, `webos::video_sink`, the storage activator, the value and `plex_run`; it produces the
   staticlib `main.c` links.
-- `[platform desktop]`: crate `plx_platform_desktop`: the desktop value, the 62 hostsim-only fenced arms (W4; the
-  other 40 stay as test seams) and the sim bin. `HostSink` stays in `play_feed`.
+- `[platform desktop]`: crate `plx_platform_desktop`: the desktop value, the 14 positive host arms of the fence that
+  name no `test` term (W4; the television gates and the 11 test seams stay where they are) and the sim bin.
+  `HostSink` stays in `play_feed`.
 - `[platform tizen]`: crate `plx_platform_tizen` plus top-level `tizen/` (C# host, manifest, sysroot scripts).
 - The bottom layer is `[os]`, crate `plx_os` in `rust-modules/os`: Wave R (Decision 1, B; owner 2026-11-20: first
   and alone) renames it with its directory, its 12 manifests and its references (F36), keeping the inner `tv`
@@ -1170,7 +1207,7 @@ Ecore names to `remote_token_key` pairs".
   the Samsung Public certificate profile the emulator needs too (E2), and the configuration W9's MVP is accepted on.
   armv7 softfp (T3) with the NDK sysroot, a named firmware range and the same kind of profile is the retail
   configuration; it is recorded but untested until a retail set answers H1 and H2. Their variables are printed by the
-  CI job and quoted in the PR. What has run so far is x86_64 on the Tizen 10 emulator (E1-E12): it exercised
+  CI job and quoted in the PR. What has run so far is x86_64 on the Tizen 10 emulator (E1-E13): it exercised
   `tizen80`, the signing path and the host contract but neither the ARM library nor the NDK sysroot (H1, H2), and its
   results read "emulator only". A further configuration (aarch64, `tizen90`, glibc 2.40) is added only when a
   measured incompatibility on a named device requires it (E4: `tizen80` runs on Tizen 10). The packaged `.so` is
@@ -1276,10 +1313,12 @@ Gates (review C7; critic F9; owner, 2026-11-20):
     carry. `ci/test_readonly_generated.py` is edited with them (13 bare paths). Order, because each step feeds
     the next: script; `Cargo.lock` regenerated by cargo (`--locked` fails until it is); any reflow; both
     certificates regenerated; both constants re-pinned.
-  - It ships `tools/rename-os-layer.py`: idempotent; `--check` (below); `--reverse`, so a `backport` cherry-pick of a
-    later fix onto a release line, which still has the old names, can be rewritten to apply (`backport.yml` opens
-    nothing when a pick conflicts, and every pick touching a renamed path does); and `--equivalence BASE` (below).
-    The script does not run rustfmt, and `--reverse` rewrites only the sites the forward pass wrote (F48 C).
+  - It ships `tools/rename-os-layer.py`: idempotent; `--check` (below); `--reverse`, which rewrites a tree back to
+    the old names, and `--reverse-patch FILE`, which rewrites a backport's diff to the old names so that a
+    `backport` cherry-pick of a later fix onto a release line, which still has the old names, applies
+    (`backport.yml` opens nothing when a pick conflicts, and every pick touching a renamed path does); and
+    `--equivalence BASE` (below). The script does not run rustfmt, and `--reverse` rewrites only the sites the
+    forward pass wrote (F48 C).
 - Proof (G2). A missed reference does NOT always fail the build: `tools/cargo-seed.py:190` reads a missing manifest
   as empty and `Makefile:1016,1055` drop a missing directory from their `find` lists (F48 B1, B4), and both stay green.
   Two checks are needed for that reason.
@@ -1297,15 +1336,18 @@ Gates (review C7; critic F9; owner, 2026-11-20):
     every gate, `--equivalence` included, stays green); `.claude/hooks/release-config-check.py:276` is loud only
     through its test (`:69`); (3) the layer token: `[platform]` and `platform` in a `uses =` line of `ci/module-layers.ini`,
     and `[port X]`. Exempt, by a list in the script: `docs/release-audits/*`, `docs/measurements/*`, dated
-    `docs/*-20YY-MM-DD*.md` and this plan's fact sections. It must print zero outside the list. The reviewer ALSO
+    `docs/*-20YY-MM-DD*.md` and this plan (the whole page: the Wave R section itself quotes the old names). It must
+    print zero outside the list. The reviewer ALSO
     runs plain `git grep` counts for each class of F48 before and after, in the PR body, so a bug shared by the
     script's rewrite and its check cannot hide.
-  - Equivalence: `--equivalence BASE` applies `--reverse` to a scratch copy of the head and compares it with BASE.
-    The only differences allowed are an enumerated list, printed with the result: (a) the two certificates, each a
-    `.json` and one constant line; (b) `rust-modules/Cargo.lock` (the package renames and re-sorts); (c) a `.rs` hunk
-    that is a pure reflow or `use` reorder (the same multiset of tokens), which the shorter name causes
-    (`plx_os` sorts differently and lets a wrapped line fit). Everything else must be byte-identical; a file in none of
-    the three classes fails the gate. The reviewer reads the list, not the 338-file stat (AGENTS: a diff stat is
+  - Equivalence: `--equivalence BASE` applies the forward pass to a scratch copy of BASE and `--reverse` to a scratch
+    copy of the head, and compares each with the other side. The only differences allowed are an enumerated list,
+    printed with the result: (a) the two certificates, each a `.json` and one constant line; (b)
+    `rust-modules/Cargo.lock` (the package renames and re-sorts); (c) a `.rs` hunk that is a pure reflow or `use`
+    reorder (the same multiset of tokens), which the shorter name causes (`plx_os` sorts differently and lets a
+    wrapped line fit); (d) the tool itself, its test and its two lines (a comment and the step) in
+    `ci/check-python-steps.txt`. Everything else must be byte-identical; a file in none of the four classes fails the
+    gate. The reviewer reads the list, not the 338-file stat (AGENTS: a diff stat is
     not a measure of change).
   - Two rehearsals, before the PR lands, results in the PR body. (1) One open PR head (the one touching the most
     renamed paths; `gh pr list`): run the open-PR recipe on it (before Wave R lands, `origin/main` in the recipe is
@@ -1316,8 +1358,8 @@ Gates (review C7; critic F9; owner, 2026-11-20):
     the winner. (2) `release/v0.10` (it exists on `origin`): no real post-rename fix exists before Wave R
     lands, and the reverse of the PR's own diff reproduces the base by construction (vacuous, N4), so make a
     synthetic content edit on the Wave R branch (one changed line in a file the rename rewrites, one in a file it
-    leaves alone), rewrite its diff with `--reverse`, `git apply --check` it on a scratch checkout of the line, and
-    run `--check` on the result (the old names must be back, the new ones gone).
+    leaves alone), rewrite its diff with `--reverse-patch`, `git apply --check` it on a scratch checkout of the line,
+    and run `--check` on the result (the old names must be back, the new ones gone).
 - Files: everything above; `docs/module-layers.md` here only for the names (W0 follows). Also `rust-modules/
   build_support/install_identities.rs` (outside the directory, F47) and the bare-path files of F48 B2 (a
   `rust-modules/platform/` grep does not find them), and the sites of N1 and N2: `media/src/player/report.rs`,
@@ -1449,17 +1491,23 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - Goal: a second fence section, `[platform desktop]` (no gate code: Wave R already switched the keyword, F1), with
   member `platform_desktop` (a module of the app crate until W7) and its own `Platform` value; the hostsim-only
   arms move out of `webos`, `keymanager`, `system` and `port` into it; `sim.rs` names it (F7).
-- Rule for the three configurations. Of the 102 fenced `hostsim` lines (F10), 40 also name `test` or
-  `test-support` (`keymanager.rs:198`, `port.rs:9-23`): those 40 STAY in `os` and `port.rs` as
-  `cfg(any(test, feature = "test-support"))` (only the `hostsim` term goes); the 62 `hostsim`-only move; under
-  `cfg(test)` without `hostsim` the webOS table stays as today (`SINK = NoSink`, `DISPLAY = SINK`).
+- Rule for the three configurations. The 102 fenced `hostsim` lines (F10) are cfg lines of both polarities, not 102
+  host arms. 77 carry a negated `hostsim` (`git grep -h 'feature = "hostsim"' -- <F10's files> | grep -c -e
+  'not(feature = "hostsim")' -e '!cfg!(feature = "hostsim")'`): they gate the TELEVISION arm, so they lose only the
+  `hostsim` term and stay in their files (`src/system.rs` included). 17 of them are exactly `all(not(feature =
+  "hostsim"), not(any(test, feature = "test-support")))` (`webos/toast.rs:26`) and keep their `not(any(test, ...))`
+  term: dropping it would turn a production gate into a test-only one. The other 25 name `hostsim` only positively.
+  The 11 that also name `test` or `test-support` are test seams (`keymanager.rs:198`, `port.rs:22`): they stay in
+  their files and lose only the `hostsim` term, so `any(feature = "hostsim", test, feature = "test-support")` becomes
+  `cfg(any(test, feature = "test-support"))`. The 14 that do not are the host arms and move. Under `cfg(test)`
+  without `hostsim` the webOS table stays as today (`SINK = NoSink`, `DISPLAY = SINK`).
 - Order: after W2 and W3d (stacked in its lane). Files: `src/port.rs`, `src/platform_desktop*`, `src/lib.rs`,
   `src/system.rs`, `os/src/webos*.rs`, `os/src/keymanager.rs`, `src/bin/sim.rs`, `ci/module-layers.ini`,
   `ci/check-deps.sh` (the `sink` rule's paths, F25), `ci/mkmacapp.py`, `ci/test_sim_backend.py`,
   `ci/test_test_crate.py`, `.github/workflows/ci.yml:379`.
-- Test: `make test-hostsim`; the fenced `hostsim` count (F10's grep) falls from 102 to 0 (40 re-gated, 62 moved;
-  both numbers in the PR); the discovered-test diff; `make sim-macos` and `make macapp` booting to Home under
-  ui-sim; replay fixtures unchanged; a build-bench table; fw-compat-reviewer (`system.rs`'s Wayland and SDL externs
+- Test: `make test-hostsim`; the fenced `hostsim` count (F10's grep) falls from 102 to 0 (77 television gates lose a
+  term, 11 seams are re-gated, 14 host arms move; the three numbers, each with the grep that gives it, in the PR);
+  the discovered-test diff; `make sim-macos` and `make macapp` booting to Home under ui-sim; replay fixtures unchanged; a build-bench table; fw-compat-reviewer (`system.rs`'s Wayland and SDL externs
   are split). TV: none beyond the wave's. Risk: the 363 non-fence arms remain (W8); F11's mechanism lands in W7.
 
 ### W5 (N, W5b also T). The event contract (one lane: W5a -> W5b -> W5c)
@@ -1564,8 +1612,8 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   total (a host difference that needs IO becomes a runner, never a `forks/` line); fw-compat-reviewer on
   W8b; a build-bench table for W8b. Risk: size. W8c blocks nothing Tizen needs; only W8a does.
 
-### W9 (H). The Tizen skeleton: UI, sign-in, no playback
-- Prerequisites: the hello-world's four answers (F28), as the emulator runs left them (E1-E12; what the
+### W9 (H). The Tizen skeleton: the UI on a dev-token boot, no playback
+- Prerequisites: the hello-world's four answers (F28), as the emulator runs left them (E1-E13; what the
   emulator can and cannot answer: F37, Decision 3); H5 (static SDL2 + SDL2_ttf draws text and a GLES2 texture
   through our path, F15): ANSWERED, yes, emulator only (E10); a Samsung Public certificate profile naming each
   device's DUID, kept out of the repo (E2, T7); W8a; W3a-c.
@@ -1578,8 +1626,10 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
     run on a retail set would answer H1 and H2 and return a retail key table, which replaces E7's and E11's
     emulator codes as the table W5b and W9 build from. The tester request on #1460 covering H1, H2 and H6 is
     posted only with the owner's approval (Decision 5).
-- Goal: taken to the TV 10.0 x86_64 emulator as the MVP (Decision 8): the interface and sign-in against the mock
-  server, no playback, labelled emulator only. `[platform tizen]`, `rust-modules/platform-tizen` and `tizen/host/`
+- Goal: taken to the TV 10.0 x86_64 emulator as the MVP (Decision 8): the interface on the dev-token path (a
+  `--guest --mock` style boot, the PMS advertised as `10.0.2.2`) against the mock server, no playback, labelled
+  emulator only. The sign-in against the mock plex.tv is a follow-up check, and the `plex_tv()` loopback rule is not
+  widened (E12, "W9 design note"). `[platform tizen]`, `rust-modules/platform-tizen` and `tizen/host/`
   (T7); the hosted contract of Target shape 7 with its fake host; the Ecore key table to `Action` (Target shape 2;
   E7's five codes first, E11's colour button); in-app UDP logging (Target shape 7, E5); `StoreMode::MemoryOnly` (no
   credential is persisted; per Decision 7, B only `client_id`, language and interface resolution are, in the
@@ -1592,11 +1642,10 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   `ci/check-deps.sh` confirms the new thread and the host-table static trip no ledger (UNVERIFIED: the ledgers scan
   machine crates; this crate is runner code).
   - MVP acceptance (Decision 8): an emulator run (x86_64, the TV 10.0 image) against `tests/mock_pms.py`, never a
-    real account: the interface draws, the Ecore keys drive it, the sign-in leg works against the mock server, there
-    is no playback, and the log reaches a UDP receiver with no sequence gap (E5). It is labelled emulator only and
-    gives no frame-rate or latency claim (E6). The emulator boots on the dev-token path against the mock PMS
-    advertised as `10.0.2.2`; the sign-in against the mock plex.tv is a follow-up check, because that override stays
-    loopback-only (E12).
+    real account: the interface draws, the Ecore keys drive it, there is no playback, and the log reaches a UDP
+    receiver with no sequence gap (E5). It is labelled emulator only and gives no frame-rate or latency claim (E6).
+    The emulator boots on the dev-token path against the mock PMS advertised as `10.0.2.2`; the sign-in against the
+    mock plex.tv is a follow-up check, because that override stays loopback-only and is not widened (E12).
   - Retail acceptance, not part of the MVP: a device run on the owner's Samsung set against `tests/mock_pms.py` and
     the mock plex.tv, never a real account. It answers H1 and H2 (E9).
   - The LG TV lock covers neither.
@@ -1624,7 +1673,8 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   required). The exit condition is that neither `media` nor the app crate names
   them (F8; W6b moves the app's names). Until it lands, no document calls the contract neutral. It also
   edits the pinned `os/Cargo.toml` if the `uri-transport`/`feed-sink` features move: a certificate
-  review.
+  review. `ci/check-deps.sh` carries the `os/src/tv/plane.rs` entry of `MACHINES` and its path in the scan `find`
+  with the file to `plx_acb`.
 - W11b: the ACB bind sequence, `sf_on_event`/`acb_on_event` and `sink_counter_kind` move behind a neutral
   Feed sink (`docs/module-layers.md:407-412`).
 - Order: after W7; independent of W9-W10. Verify: the TV log graded before and after (F22),
@@ -1644,7 +1694,8 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 ## Where the Tizen hello-world on `samsung/hello-tpk` fits
 
 - It does not land on main (owner decision). It is committed on the branch (F28) and ran on the TV 10.0 emulator
-  on 2026-11-20 (E1-E12): H3, H4 and H5 yes, emulator only; H1 and H2 need a retail set (F37). Its Option B (EGL on a
+  on 2026-11-20 (E1-E13): H3, H4, H5, H7 and H8 yes, emulator only (H7 after one shader source change, with one
+  optional program still failing, E13); H1 and H2 need a retail set (F37). Its Option B (EGL on a
   Rust thread) is what W9's shell follows unless a retail run fails; its `plx_tizen_*` exports grow into Target
   shape 7. H5 (SDL2 + SDL2_ttf) passed on the emulator at `64c609a46` (E10, Decision 5, emulator only); the
   tester build with an on-screen diagnostics and key-code panel (`1afe1978b`) has also run on the emulator (E11) and,
@@ -1718,8 +1769,10 @@ emulator runs E11 and E12); they are recorded below and the body follows them.
   B. Persist only `client_id`, language and interface resolution, carried by the `install_preferences` file at
   version 2 (adds `client_id`), written only under `MemoryOnly`; no session writer runs in `MemoryOnly`; webOS and
   desktop files stay byte-identical (v1 is `deny_unknown_fields`).
-- 2026-11-20, Decision 8 (MVP target): W9 is taken to the TV 10.0 x86_64 emulator as the MVP (interface and sign-in
-  against the mock server, no playback, labelled emulator only). H1 and H2 still gate a retail set. x86_64 is a
+- 2026-11-20, Decision 8 (MVP target): W9 is taken to the TV 10.0 x86_64 emulator as the MVP (the interface on the
+  dev-token path against the mock PMS advertised as `10.0.2.2`, no playback, labelled emulator only; the sign-in
+  against the mock plex.tv is a follow-up check and the `plex_tv()` loopback rule is not widened, E12). H1 and H2
+  still gate a retail set. x86_64 is a
   first-class configuration of `mk/platform-tizen.mk`.
 
 ## Open disagreements
