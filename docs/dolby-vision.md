@@ -50,10 +50,12 @@ Original after a trip to HLS, because the stored Original candidate is downgrade
 the next play is planned again. Only a declared direct play is withdrawn: a Profile 5 (no base layer) and a remux that copies
 the video are reported in the log and fed as before. `platform_gate` is not the vehicle: it removes
 Dolby Vision from every play on a set, while this keeps it wherever the landing is an IDR. The URI
-(Experimental) engine has no such guard, and a URI play builds the same splitter, node or not,
-wherever the TV's demuxer flags the stream as Dolby Vision (`docs/uri-mode.md`, the Dolby Vision row of
-Results), so on a set whose caps say IDR-first a Dolby Vision original is not offered to it and plays
-on Standard (`UriDecline::DolbyVisionIdrFirst`).
+(Experimental) engine has no such guard, and on 5.5.0-19 a URI play builds the same splitter, node or
+not, wherever the TV's demuxer flags the stream as Dolby Vision (`docs/uri-mode.md`, the Dolby Vision
+row of Results; that read found no splitter in 6.5.3-47's chain, §7). On a set whose caps say IDR-first
+a Dolby Vision original is therefore not offered to it and plays on Standard
+(`UriDecline::DolbyVisionIdrFirst`), where a Profile 5 or a video-copy remux still has nothing to
+withdraw to.
 
 | Source | Confirmed supported | Unsupported / unknown |
 |---|---|---|

@@ -3786,11 +3786,12 @@ fn experimental_offers_an_mp4_original_that_standard_streams() {
 
 /// Where this firmware's Dolby Vision splitter takes only an IDR as the first picture
 /// (`Caps::dv_first_picture`, a `devcaps::EXCLUSIONS` row: the CX's 5.5.0-19 and the C1's 6.5.3-47), a
-/// Dolby Vision original stays on Standard. The TV's own demuxer flags an MP4's Dolby Vision, a URI play
-/// then builds the same splitter (`docs/uri-mode.md`, the Dolby Vision row's (e)), and a landing on a CRA
+/// Dolby Vision original stays on Standard. The TV's own demuxer flags an MP4's Dolby Vision, on 5.5.0-19
+/// a URI play then builds the same splitter (`docs/uri-mode.md`, the Dolby Vision row's (e); that read
+/// found none in 6.5.3-47's chain, whose row is followed anyway, the safe side), and a landing on a CRA
 /// sits on Buffering with nothing on the URI path to withdraw and reload; Standard's `dv_start` guard
-/// does both. The same file where the splitter takes any random access point first is offered, and so is
-/// a file without Dolby Vision on the IDR-only set.
+/// does both for a file with a base layer. The same file where the splitter takes any random access point
+/// first is offered, and so is a file without Dolby Vision on the IDR-only set.
 #[test]
 #[cfg(feature = "devtriggers")]
 fn experimental_leaves_a_dolby_vision_original_on_standard_where_the_splitter_takes_only_an_idr() {
@@ -3820,7 +3821,7 @@ fn experimental_leaves_a_dolby_vision_original_on_standard_where_the_splitter_ta
     assert_eq!(idr_only.uri_decline, Some(UriDecline::DolbyVisionIdrFirst));
     assert_eq!(uri_decline_line(UriEngine::On, &idr_only).as_deref(), Some(concat!(
         "uri: original declined (the file has Dolby Vision and this firmware's Dolby Vision splitter ",
-        "takes only an IDR as the first picture, which can hang a seek; Standard recovers from that)")));
+        "takes only an IDR as the first picture, which can hang a seek on the URI engine)")));
     // The demuxer's Dolby Vision switch is the pipeline's own configd read, not this app's probe, so a
     // probe that did not answer (Standard plays the base layer, undeclared) is no proof the URI play
     // builds no splitter.

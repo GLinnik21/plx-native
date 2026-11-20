@@ -2,7 +2,7 @@
 //! `DolbyHdrInfo` node out of a play whose first picture the firmware's Dolby Vision splitter will not
 //! present.
 //!
-//! The splitter (`libgstdvsplitter.so`, built only when a Load carries the node) of webOS 5.5.0-19 (seen
+//! The splitter (`libgstdvsplitter.so`, on a Feed play built only when a Load carries the node) of webOS 5.5.0-19 (seen
 //! on a CX) and of the C1's 6.5.3-47 (read from its image, not seen hanging) lets only an HEVC IDR be
 //! the first picture after its init or a flush. A file whose only IDR is frame 0
 //! and whose later random access points are CRAs therefore sits on Buffering for good after every seek

@@ -177,9 +177,9 @@ pub enum AppLossy {
 }
 
 /// Which first picture a set's Dolby Vision splitter (`libgstdvsplitter.so`) takes after its init or a
-/// flush. A Feed play builds the splitter only when its Load carries a `DolbyHdrInfo` node; a URI play
-/// builds it wherever the TV's own demuxer flags the stream as Dolby Vision (`docs/uri-mode.md`, the
-/// Dolby Vision row of Results). Read through the attempt's caps by the player at a landing
+/// flush. A Feed play builds the splitter only when its Load carries a `DolbyHdrInfo` node; on 5.5.0-19 a
+/// URI play builds it wherever the TV's own demuxer flags the stream as Dolby Vision (`docs/uri-mode.md`,
+/// the Dolby Vision row of Results, (e), which found no splitter in 6.5.3-47's chain). Read through the attempt's caps by the player at a landing
 /// (`route::dv_first_picture`) and by the URI original's offer, which keeps a Dolby Vision original on
 /// Standard where this is [`IdrOnly`](Self::IdrOnly) (`route::uri_preflight::UriDecline::DolbyVisionIdrFirst`);
 /// never by a PMS profile.

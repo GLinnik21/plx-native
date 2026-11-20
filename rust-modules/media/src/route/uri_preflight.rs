@@ -171,10 +171,12 @@ pub enum UriDecline {
     /// The file carries Dolby Vision and Settings > Dolby Vision is Off.
     DolbyVisionOff,
     /// The file carries Dolby Vision and this firmware's Dolby Vision splitter takes only an IDR as the
-    /// first picture after its init or a flush ([`OriginalRequest::dv_first_picture`]). A URI play builds
-    /// that splitter wherever the TV's demuxer flags the stream as Dolby Vision, so a seek or a resume
-    /// landing on a CRA would never show a picture. Standard withdraws its declaration and reloads at
-    /// such a landing (the Feed's `dv_start` guard); the URI engine has nothing that does.
+    /// first picture after its init or a flush ([`OriginalRequest::dv_first_picture`]). On 5.5.0-19 a URI
+    /// play builds that splitter wherever the TV's demuxer flags the stream as Dolby Vision, so a seek or
+    /// a resume landing on a CRA would never show a picture, and the URI engine has nothing that
+    /// recovers it. Standard withdraws its declaration and reloads at such a landing when the file has a
+    /// base layer to fall back to (the Feed's `dv_start` guard). The same firmware read found no splitter
+    /// in 6.5.3-47's chain; that build's caps row declines it anyway, the safe side, until a C1 settles it.
     DolbyVisionIdrFirst,
     /// A trailer preview, which the exported window cannot place.
     Preview,
@@ -229,7 +231,7 @@ impl UriDecline {
             Self::SubtitleOff => "the file has subtitle streams and none is selected; subtitle streams keep a play in Standard today",
             Self::DolbyVisionOff => "the file has Dolby Vision and the Dolby Vision setting is Off",
             Self::DolbyVisionIdrFirst =>
-                "the file has Dolby Vision and this firmware's Dolby Vision splitter takes only an IDR as the first picture, which can hang a seek; Standard recovers from that",
+                "the file has Dolby Vision and this firmware's Dolby Vision splitter takes only an IDR as the first picture, which can hang a seek on the URI engine",
             Self::Preview => "a trailer preview",
             Self::NoDurationOrUrl => "no duration or URL for the file",
             Self::NotCertified => "the qualifier did not certify the file",
