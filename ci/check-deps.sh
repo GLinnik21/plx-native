@@ -1140,7 +1140,7 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 fi # frame
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
-# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which installs one)
+# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which names one)
 # and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
 # `app/adapters/backends.rs`, the boot composition that resolves the installed display once for the
 # ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
