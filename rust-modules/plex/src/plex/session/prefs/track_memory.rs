@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 /// The most entries one profile keeps (the oldest are dropped first).
 pub const CAP: usize = 64;
-/// The household budget for the whole list, in logical bytes (platform's counting rule). 64
+/// The household budget for the whole list, in logical bytes (the os layer's counting rule). 64
 /// worst-case entries for one profile fit in it (`one_profile_keeps_64_worst_case_entries` builds
 /// them from the bounds below), so one viewer always keeps the full [`CAP`]; several heavy viewers
 /// share what is left.

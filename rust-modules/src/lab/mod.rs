@@ -39,7 +39,7 @@
 //! shell, read a file, call an arbitrary URL or control webOS outside this SDL process. Both
 //! directions are initiated by the television as pinned, authenticated HTTPS POSTs.
 
-// `lab.json`'s reader, `is_trigger_key` and `menu_row_enabled` live in `plx_os::labcfg` (platform):
+// `lab.json`'s reader, `is_trigger_key` and `menu_row_enabled` live in `plx_os::labcfg` (the os layer):
 // `ui/` and `screens/` ask those two questions and may not name this module.
 #[cfg(feature = "lab-diagnostics")]
 use plx_os::labcfg::config;
