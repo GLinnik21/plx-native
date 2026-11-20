@@ -638,7 +638,10 @@ a dead source is **absent** from Home and states itself in its own library secti
   Under `Helper` the dispatchers never answer for a helper that cannot answer (a blocked read stays blocked,
   and a legacy file is neither imported nor retired on its word); the files a television does keep beside DB8
   are `session.rs`'s own: the marked fallback `save_legacy_fallback_locked` writes when a commit is not
-  durable, which `read_legacy_filtered_locked` serves as transient state, and the legacy migration inputs.
+  durable, which `read_legacy_filtered_locked` serves as transient state, the legacy migration inputs, and the
+  install-preferences file (`install_preferences::save`, an unmarked `….language.json` beside a session
+  candidate) that `clear_for_erase` writes when a sign-out's helper clear is not durable. `secure::mode()`'s
+  `MemoryOnly` is read before the authority: it holds the session in memory and touches no credential store.
   `clear_for_erase`, `read_into_cache_locked` and `install_preferences::keeps_language_file` read the same
   value; the telemetry sweep after a durable clear runs only under `Helper`.
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
