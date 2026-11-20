@@ -128,6 +128,37 @@ $(if $(strip $(FLAVORS)),,$(error ci/flavor.py --list produced no flavours — i
 FLAVOR      ?= debug
 $(if $(filter $(FLAVOR),$(FLAVORS)),,$(error unknown FLAVOR "$(FLAVOR)" — one of: $(FLAVORS)))
 
+# --- WHICH OS: the PLATFORM axis -----------------------------------------------------------
+#
+# `webos` (the television this file has always built for, and the default), `desktop` (the macOS and
+# Windows/WSLg simulators and the macOS app) or `tizen` (a name only: no goal builds it yet). It is the
+# TARGET OS and nothing else. FLAVOR stays the install identity, and the compatibility axis — the Rust
+# target (`RUST_TARGET`), the sysroot (`SYSROOT`) and, once a platform needs them, a managed TFM, a
+# firmware floor and the signing path — stays a set of separate variables that PLATFORM does not choose:
+# `make -s print-rust-target` answers the same under every PLATFORM. Today the axis labels and validates;
+# no recipe reads it, so the default `PLATFORM=webos` builds exactly what it built before the axis existed.
+#
+# The simulators and the macOS app are desktop builds, so `sim`, `sim-*`, `macapp` and `macapp-zip` imply
+# PLATFORM=desktop when it was not given: `$(origin PLATFORM)` is `undefined` (not on the command line,
+# not in the environment), and an explicit value wins. It is one value per invocation, read from the whole
+# goal list. The target names themselves do not change. This sits ABOVE the `?=`, so the literal default
+# line below stays the one place that says `webos`.
+#
+# Validated against `ci/platform_axis.py --list` the way FLAVOR is against `ci/flavor.py --list`, for the
+# same reason: `make PLATFORM=webso ...` must be a message on a terminal, not a build of something nobody
+# asked for. One word, exactly (a `filter` of the value against the list would also pass `webos bogus`
+# and `%`). The script is NOT `ci/platform.py`: scripts run from ci/ `import platform` (`mkmacapp.py`,
+# `build-libass.py`, `test-compat.py`), and a file of that name would shadow the standard library for them.
+PLATFORMS   := $(shell python3 ci/platform_axis.py --list)
+$(if $(strip $(PLATFORMS)),,$(error ci/platform_axis.py --list produced no platforms — is python3 available and does ci/platform_axis.py run?))
+ifeq ($(origin PLATFORM),undefined)
+ifneq ($(filter sim sim-% macapp macapp-zip,$(MAKECMDGOALS)),)
+PLATFORM    := desktop
+endif
+endif
+PLATFORM    ?= webos
+$(if $(and $(filter 1,$(words $(PLATFORM))),$(filter $(PLATFORMS),$(PLATFORM))),,$(error unknown PLATFORM "$(PLATFORM)" — one of: $(PLATFORMS)))
+
 # The id users get. Also `paths::STABLE_APP_ID` in the Rust half and `STABLE_ID` in ci/flavor.py —
 # three copies of one string, each in a language that cannot see the others, and ci/flavor.py's
 # selftest is what keeps them in step.
@@ -185,7 +216,8 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv print-playback-config \
               print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
               print-sentry-project print-bench-config print-disk-entries \
-              print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
+              print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env \
+              print-platform print-rust-target
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -193,6 +225,11 @@ print-rundir:   ; @echo '$(RUNDIR)'
 print-eventlog: ; @echo '$(EVENTLOG)'
 print-appport:  ; @echo '$(APPPORT)'
 print-tv:       ; @echo '$(TV)'
+# The PLATFORM axis (above) and the Rust target the ARM recipes cross-compile for. They are two queries
+# because they are two axes: PLATFORM does not choose the Rust target, so `print-rust-target` does not
+# move with it. Both are in QUERY_GOALS, so asking resets nothing under `pkg/`.
+print-platform:    ; @echo '$(PLATFORM)'
+print-rust-target: ; @echo '$(RUST_TARGET)'
 # Where `make sim` put the simulator. It is `$(SIM_TDIR)`-derived and `SIM_TDIR` is deliberately
 # overridable — agents running several simulators at once keep separate target dirs, and the
 # `macapp` build has its own — so a tool that restates the path silently runs another lane's
