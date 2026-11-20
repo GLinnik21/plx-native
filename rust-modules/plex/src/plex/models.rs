@@ -503,7 +503,7 @@ pub fn catalog_hex_of_guid(guid: &str) -> Option<[u8; 12]> {
 }
 
 /// WORKER. The catalog id to write to: the one the row already carries, else the one the item's own
-/// server record names. `fetch` is `|| client.metadata(rk).map(|m| m.guid)` (or `grandparent`'s
+/// server record names. `fetch` is `|| client.metadata_background(rk).map(|m| m.guid)` (or `grandparent`'s
 /// `show_rk` read for an episode's show); it is not called when `known` is set, so a press from a
 /// row that was decoded with its guid costs no round trip. `None` is a server that did not answer
 /// or an item with no `plex://movie|show` identity.
