@@ -1,6 +1,9 @@
 //! SDL event decoding and the remote-FIFO token synthesis — the raw-offset reads of LG's shifted
 //! `SDL_KeyboardEvent`, the synthetic key/pointer/wheel events, and `dispatch_remote_token`.
 //! Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
+//!
+//! The one decode that yields a platform-neutral value is [`decode_host_event`]: SDL's quit and
+//! application-lifecycle events become a [`HostEvent`], which the loop consumes in one function.
 
 use super::*;
 
@@ -124,6 +127,73 @@ pub(crate) fn host_wcode(sym: u32) -> u32 {
         8 => plx_ui::consts::WCODE_BACK,   // backspace
         _ => 0,
     }
+}
+
+/// SDL's application events (`SDL_APP_*`), the four the loop acts on: the compositor taking the
+/// screen (WILL and DID enter background) and giving it back (WILL and DID enter foreground).
+const SDL_APP_WILLENTERBACKGROUND: u32 = 0x103;
+const SDL_APP_DIDENTERBACKGROUND: u32 = 0x104;
+const SDL_APP_WILLENTERFOREGROUND: u32 = 0x105;
+const SDL_APP_DIDENTERFOREGROUND: u32 = 0x106;
+
+/// What the platform tells the loop that is not a key, a text commit or a pointer: the window
+/// leaving or returning to the screen, and the host asking the application to end. App-private,
+/// like [`Shell`](super::platform::Shell): no platform reaches it by a type of its own until the
+/// platform contract is settled (`docs/platform-ports.md`, Target shape 2).
+///
+/// The SDL drain decodes SDL's events into it ([`decode_host_event`]) and the loop consumes it in
+/// ONE function (`run::ingest_host_event`), so a host that stops the application without SDL
+/// (the hosted entry's `plx_host_stop`) arrives as the same [`HostEvent::Quit`] an `SDL_QUIT`
+/// does and takes the same path. Keys, text, pointer and wheel are not here yet: they keep their
+/// raw path in `run::ingest_sdl_event_with_window` until their own steps (W5b, W5c) move them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostEvent {
+    /// The window left or came back to the screen.
+    Lifecycle(Lifecycle),
+    /// The host asks the application to end (`SDL_QUIT` on SDL platforms).
+    Quit,
+}
+
+/// One edge of the window's visibility. Both background edges park the tree (the second finds
+/// nothing left to park); WILL foreground un-parks the tree, and DID foreground alone reacquires the
+/// window and restores playback. A platform that sends only DID background is enough on its own
+/// (`WindowActivity`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lifecycle {
+    WillBackground,
+    DidBackground,
+    WillForeground,
+    DidForeground,
+}
+
+impl Lifecycle {
+    /// The SDL event type this edge arrives as, and so the code the SDL-coded readers take: the
+    /// recorder's tape (`enc_lifecycle`, whose recorded codes ARE the tape format), the window gate
+    /// and telemetry's crash steps and session. The inverse of [`decode_host_event`]'s table;
+    /// `host_event_tests` pins the four pairs.
+    pub(crate) const fn sdl_code(self) -> u32 {
+        match self {
+            Lifecycle::WillBackground => SDL_APP_WILLENTERBACKGROUND,
+            Lifecycle::DidBackground => SDL_APP_DIDENTERBACKGROUND,
+            Lifecycle::WillForeground => SDL_APP_WILLENTERFOREGROUND,
+            Lifecycle::DidForeground => SDL_APP_DIDENTERFOREGROUND,
+        }
+    }
+}
+
+/// An SDL event decoded into a [`HostEvent`]: `SDL_QUIT` and the four application lifecycle types.
+/// `None` for everything else, which the loop reads raw (keys, text, pointer, wheel, and the SDL
+/// events nothing acts on). Beside [`decode_key`], the other place that knows SDL's event bytes.
+#[inline]
+pub(crate) fn decode_host_event(ev: &[u8]) -> Option<HostEvent> {
+    Some(match rd_u32(ev, 0) {
+        SDL_QUIT => HostEvent::Quit,
+        SDL_APP_WILLENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::WillBackground),
+        SDL_APP_DIDENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::DidBackground),
+        SDL_APP_WILLENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::WillForeground),
+        SDL_APP_DIDENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::DidForeground),
+        _ => return None,
+    })
 }
 
 /// The bytes a synthetic key event needs, in whichever layout [`decode_key`] reads.
@@ -768,5 +838,52 @@ mod key_layout_tests {
             remote_token_key("pageup"),
             Some((plx_ui::consts::SDLK_PAGEUP, 0))
         );
+    }
+}
+
+/// SDL's quit and application events, decoded into the `HostEvent` the loop consumes (W5a). The SDL
+/// codes are literals: the table is the contract with SDL and with the tape, so it is not read back
+/// from the mapping it grades.
+#[cfg(test)]
+mod host_event_tests {
+    use super::{decode_host_event, encode_key, is_input_event, HostEvent, Lifecycle};
+
+    fn event_of(code: u32) -> [u8; 128] {
+        let mut ev = [0u8; 128];
+        ev[..4].copy_from_slice(&code.to_ne_bytes());
+        ev
+    }
+
+    #[test]
+    fn quit_and_the_four_lifecycle_types_decode_and_the_lifecycle_codes_round_trip() {
+        for (code, event) in [
+            (0x100, HostEvent::Quit),
+            (0x103, HostEvent::Lifecycle(Lifecycle::WillBackground)),
+            (0x104, HostEvent::Lifecycle(Lifecycle::DidBackground)),
+            (0x105, HostEvent::Lifecycle(Lifecycle::WillForeground)),
+            (0x106, HostEvent::Lifecycle(Lifecycle::DidForeground)),
+        ] {
+            assert_eq!(decode_host_event(&event_of(code)), Some(event), "{code:#x}");
+            assert!(!is_input_event(code), "{code:#x}: a host event is the app's, never a modal's input");
+            if let HostEvent::Lifecycle(edge) = event {
+                assert_eq!(edge.sdl_code(), code, "the code a decoded edge is read back as");
+            }
+        }
+    }
+
+    /// Everything the loop still reads raw stays raw: no key, text, pointer or wheel event decodes,
+    /// in either key layout, and neither do the SDL events nothing acts on (terminating and low
+    /// memory, which sit between quit and the background pair, and the window events).
+    #[test]
+    fn every_other_event_stays_on_the_raw_path() {
+        for code in [
+            0, 0x101, 0x102, 0x107, 0x200, 0x300, 0x301, 0x302, 0x303, 0x400, 0x401, 0x402, 0x403,
+            u32::MAX,
+        ] {
+            assert_eq!(decode_host_event(&event_of(code)), None, "{code:#x}");
+        }
+        for down in [true, false] {
+            assert_eq!(decode_host_event(&encode_key(plx_ui::consts::SDLK_DOWN, 0, down)), None);
+        }
     }
 }
