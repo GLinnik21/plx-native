@@ -3,8 +3,9 @@
 //! Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
 //!
 //! The one decode that yields a platform-neutral value is [`decode_host_event`]: SDL's quit,
-//! application-lifecycle, key and text events become a [`HostEvent`], which the loop consumes in one
-//! function. A key carries its canonical [`Action`] (`ui::consts`) beside the raw pair.
+//! application-lifecycle, key, text, pointer and wheel events become a [`HostEvent`], which the loop
+//! consumes in one function. A key carries its canonical [`Action`] (`ui::consts`) beside the raw
+//! pair; a pointer event carries authored coordinates, and a wheel tick its already-decoded count.
 
 use super::*;
 use plx_machine::machine::Edge;
@@ -139,8 +140,8 @@ const SDL_APP_DIDENTERBACKGROUND: u32 = 0x104;
 const SDL_APP_WILLENTERFOREGROUND: u32 = 0x105;
 const SDL_APP_DIDENTERFOREGROUND: u32 = 0x106;
 
-/// What the platform tells the loop: a key press, a text commit, the window leaving or returning to
-/// the screen, and the host asking the application to end. App-private, like
+/// What the platform tells the loop: a key press, a text commit, the pointer, the wheel, the window
+/// leaving or returning to the screen, and the host asking the application to end. App-private, like
 /// [`Shell`](super::platform::Shell): no platform reaches it by a type of its own until the
 /// platform contract is settled (`docs/platform-ports.md`, Target shape 2).
 ///
@@ -148,13 +149,14 @@ const SDL_APP_DIDENTERFOREGROUND: u32 = 0x106;
 /// ONE function (`run::ingest_host_event`), so a host that stops the application without SDL
 /// (the hosted entry's `plx_host_stop`) arrives as the same [`HostEvent::Quit`] an `SDL_QUIT`
 /// does and takes the same path, and a host with no SDL key pair sends a [`HostEvent::Key`] that
-/// carries an [`Action`]. Pointer and wheel are not here yet: they keep their raw path in
-/// `run::ingest_sdl_event_with_window` until their own step (W5c) moves them.
+/// carries an [`Action`]. The pointer and the wheel are decoded here too (W5c), so what the loop reads
+/// of a mouse or a Magic Remote is a [`HostEvent::Pointer`] in authored coordinates and a
+/// [`HostEvent::Wheel`] count, never SDL's bytes or either layout's wheel offset.
 ///
 /// There is no `Edit` event: nothing produces one. `SDL_TEXTEDITING` (the IME pre-edit) is read by
 /// nothing and stays a log-only raw event, and the system keyboard's edit keys (caret, backspace,
 /// clear-all) are ordinary [`HostEvent::Key`] actions. `Edit` arrives with its first producer (W9).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HostEvent {
     /// The window left or came back to the screen.
     Lifecycle(Lifecycle),
@@ -167,6 +169,40 @@ pub(crate) enum HostEvent {
     /// loop ignores an empty one as it always has). The platform's own text layout is decoded
     /// before it gets here (`textinput::decode`, the one place that knows the offsets).
     Text(String),
+    /// One pointer event, at authored 1920x1080 coordinates ([`ptr_xy`]: the window's pixels
+    /// converted exactly once, the identity while the drawable is the canvas). `edge` is what it did:
+    /// moved, went down or came up. It is the event TYPE alone, for any button, as the loop has always
+    /// read it. The plan's `buttons` and `shown` members are not carried, because today's SDL events
+    /// give them no source the loop reads: whether a button is held is the loop's own state, set by
+    /// the down and up edges (`Pointer::button_down`), and whether the pointer is shown is not in any
+    /// SDL pointer event (LG's own hide arrives as a key, [`Action::PointerHidden`]; a show is a motion).
+    Pointer { x: f32, y: f32, edge: PointerEdge },
+    /// One tick of the wheel: its vertical count in the signed whole ticks the loop reads (a
+    /// fractional trackpad tick that rounds to nothing is `0`, which the loop records and then
+    /// ignores, as it always has). Decoded from whichever offset this host carries it at
+    /// ([`decode_wheel_dy`]).
+    Wheel { dy: i32 },
+}
+
+/// What a [`HostEvent::Pointer`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PointerEdge {
+    /// `SDL_MOUSEMOTION`.
+    Move,
+    /// `SDL_MOUSEBUTTONDOWN`, any button.
+    Down,
+    /// `SDL_MOUSEBUTTONUP`, any button.
+    Up,
+}
+
+impl HostEvent {
+    /// Is this the viewer's INPUT (a key, text, pointer or wheel event), as opposed to the window's
+    /// (a lifecycle edge, quit)? The loop's activity bookkeeping asks it: input keeps a release-health
+    /// session open and repaints as input damage, where the window's events are page damage. The same
+    /// split [`is_input_event`] makes of an SDL event type, which `host_event_tests` pins them to.
+    pub(crate) fn is_input(&self) -> bool {
+        matches!(self, HostEvent::Key(_) | HostEvent::Text(_) | HostEvent::Pointer { .. } | HostEvent::Wheel { .. })
+    }
 }
 
 /// The raw `(sym, wcode)` pair a key arrived as. Kept beside the [`Action`] because three things
@@ -298,9 +334,10 @@ impl Lifecycle {
 }
 
 /// An SDL event decoded into a [`HostEvent`]: `SDL_QUIT`, the four application lifecycle types, a
-/// key edge (`SDL_KEYDOWN`/`SDL_KEYUP`, through [`decode_key`], so both layouts) and a text commit
-/// (`SDL_TEXTINPUT`, through `textinput::decode`). `None` for everything else, which the loop reads
-/// raw (pointer, wheel, the IME's pre-edit, and the SDL events nothing acts on). Beside
+/// key edge (`SDL_KEYDOWN`/`SDL_KEYUP`, through [`decode_key`], so both layouts), a text commit
+/// (`SDL_TEXTINPUT`, through `textinput::decode`), a pointer event (motion, button down and button up,
+/// through [`ptr_xy`]) and a wheel tick (through [`decode_wheel_dy`]). `None` for everything else,
+/// which the loop reads raw (the IME's pre-edit, and the SDL events nothing acts on). Beside
 /// [`decode_key`], the other place that knows SDL's event bytes.
 #[inline]
 pub(crate) fn decode_host_event(ev: &[u8]) -> Option<HostEvent> {
@@ -308,12 +345,49 @@ pub(crate) fn decode_host_event(ev: &[u8]) -> Option<HostEvent> {
         SDL_QUIT => HostEvent::Quit,
         SDL_KEYDOWN | SDL_KEYUP => HostEvent::Key(KeyPress::from_sdl(ev)?),
         SDL_TEXTINPUT => HostEvent::Text(crate::textinput::decode(ev)),
+        SDL_MOUSEMOTION => pointer_event(ev, PointerEdge::Move),
+        SDL_MOUSEBUTTONDOWN => pointer_event(ev, PointerEdge::Down),
+        SDL_MOUSEBUTTONUP => pointer_event(ev, PointerEdge::Up),
+        SDL_MOUSEWHEEL => HostEvent::Wheel { dy: decode_wheel_dy(ev) },
         SDL_APP_WILLENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::WillBackground),
         SDL_APP_DIDENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::DidBackground),
         SDL_APP_WILLENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::WillForeground),
         SDL_APP_DIDENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::DidForeground),
         _ => return None,
     })
+}
+
+/// A pointer event's position and edge. The coordinates are read at +20 and +24 in both layouts (the
+/// pointer offsets agree, [`ptr_xy`]), and the button at +16 and its state at +17 are not read: the
+/// edge is the event type, for any button, as the loop has always taken it.
+#[inline]
+fn pointer_event(ev: &[u8], edge: PointerEdge) -> HostEvent {
+    let (x, y) = ptr_xy(ev);
+    HostEvent::Pointer { x, y, edge }
+}
+
+/// A wheel event's vertical tick count, in the signed whole ticks the loop reads.
+///
+/// **The host reads a DIFFERENT offset, and this one is not the LG-fork
+/// shift `decode_key` documents — it is macOS `libSDL2` again being
+/// sdl2-compat forwarding into SDL3.** `SDL_MouseWheelEvent` on real SDL2
+/// (what the television runs) carries a plain `Sint32 y` at +20, which is
+/// what production code always read. Measured 2026-09-02 by dumping the
+/// polled bytes of an injected -40 tick on this host: `+20` came back 0, and
+/// -40.0 arrived instead as the FLOAT `preciseY` field at `+32` — SDL2's own
+/// struct gained that field in 2.0.18 for fractional trackpad scroll, and
+/// sdl2-compat's round trip apparently only forwards it, leaving the legacy
+/// integer field zeroed for both a genuine trackpad tick and anything
+/// `SDL_PushEvent`d in this shape (item 13's `wheel:<dy>` FIFO token hit
+/// this the first time anything synthesized a wheel event at all — nothing
+/// needed one before). `cfg!`, not `#[cfg]`, so both arms keep compiling.
+#[inline]
+fn decode_wheel_dy(ev: &[u8]) -> i32 {
+    if cfg!(feature = "hostsim") {
+        rd_f32(ev, 32).round() as i32
+    } else {
+        rd_i32(ev, 20)
+    }
 }
 
 /// The bytes a synthetic key event needs, in whichever layout [`decode_key`] reads.
@@ -629,7 +703,7 @@ pub(crate) fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
 /// Synthesize one Magic-Remote scroll-wheel tick — item 13's `wheel:<dy>` FIFO token, so a script
 /// can drive the wheel with no mouse in the room. Encoded in the plain, real-SDL2 shape
 /// (`Sint32 y` at `+20`) unconditionally: it is the READING side that has to branch by platform
-/// now, not this one — see the wheel arm's own comment on why `+20` decodes to 0 on this host and
+/// now, not this one — see [`decode_wheel_dy`] on why `+20` decodes to 0 on this host and
 /// where the value actually lands after `SDL_PushEvent` round-trips it.
 pub(crate) fn remote_synth_wheel(dy: i32) {
     let mut ev = [0u8; 128];
@@ -1011,16 +1085,183 @@ mod host_event_tests {
         }
     }
 
-    /// Everything the loop still reads raw stays raw: no pointer or wheel event decodes (0x400 to
-    /// 0x403, until W5c), nor the IME's pre-edit (0x302, which nothing reads), nor the SDL events
-    /// nothing acts on (terminating and low memory, which sit between quit and the background pair,
-    /// and the window events). Keys (0x300, 0x301) and text (0x303) are decoded: `key_event_tests`.
+    /// Everything the loop still reads raw stays raw: the IME's pre-edit (0x302, which nothing reads),
+    /// the SDL events nothing acts on (terminating and low memory, which sit between quit and the
+    /// background pair, and the window events), and the types either side of the pointer and wheel
+    /// block (0x3ff and 0x404). Keys (0x300, 0x301), text (0x303), the pointer (0x400 to 0x402) and
+    /// the wheel (0x403) are decoded: `key_event_tests` and `pointer_event_tests`.
     #[test]
     fn every_other_event_stays_on_the_raw_path() {
         for code in [
-            0, 0x101, 0x102, 0x107, 0x200, 0x302, 0x400, 0x401, 0x402, 0x403, u32::MAX,
+            0, 0x101, 0x102, 0x107, 0x200, 0x302, 0x3ff, 0x404, u32::MAX,
         ] {
             assert_eq!(decode_host_event(&event_of(code)), None, "{code:#x}");
+        }
+    }
+
+    /// **`HostEvent::is_input` and `is_input_event` are one classification.** The loop asks the first
+    /// of a decoded event and the second of the raw type, and `Dispatcher::input_scope` rests on the
+    /// second, so a pointer or wheel event the first called window damage (or a lifecycle edge it called
+    /// input) would repaint under the wrong owner. Every type that decodes is held to both: the window's
+    /// are not input, the viewer's are. The IME's pre-edit (0x302) is input to the type table and decodes
+    /// to nothing, so it has no `HostEvent` to compare.
+    #[test]
+    fn a_host_event_is_input_exactly_when_its_sdl_type_is() {
+        let _serial = plx_base::testlock::serial();
+        for (code, input) in [
+            (0x100, false), (0x103, false), (0x104, false), (0x105, false), (0x106, false),
+            (0x300, true), (0x301, true), (0x303, true),
+            (0x400, true), (0x401, true), (0x402, true), (0x403, true),
+        ] {
+            let mut ev = event_of(code);
+            if code == 0x300 || code == 0x301 {
+                ev = super::encode_key(plx_ui::consts::SDLK_UP, 0, code == 0x300);
+            }
+            let event = decode_host_event(&ev).unwrap_or_else(|| panic!("{code:#x} decodes"));
+            assert_eq!(event.is_input(), input, "{code:#x} as a HostEvent");
+            assert_eq!(is_input_event(code), input, "{code:#x} as a type");
+        }
+    }
+}
+
+/// A pointer event and a wheel tick as a [`HostEvent`] (W5c): what the SDL decoder makes of the
+/// bytes, in both layouts. The offsets are literals, written out here and not read back from the
+/// decoder: they are the contract with SDL (and, for the pointer, with `docs/testing-player-pointer.md`'s
+/// `offsetof` assertions).
+#[cfg(test)]
+mod pointer_event_tests {
+    use super::{decode_host_event, encode_pointer, HostEvent, PointerEdge};
+
+    const MOTION: u32 = 0x400;
+    const DOWN: u32 = 0x401;
+    const UP: u32 = 0x402;
+    const WHEEL: u32 = 0x403;
+
+    /// A pointer event as SDL lays it out, written by hand: `type` at +0, the window id at +8, the
+    /// button at +16 and its state at +17, then `Sint32 x` at +20 and `Sint32 y` at +24. LG's fork and
+    /// stock SDL2 agree on all of it (the keyboard event is the one that shifts), which is why the
+    /// decoder has one reading for both.
+    fn bytes(code: u32, button: u8, state: u8, x: i32, y: i32) -> [u8; 128] {
+        let mut ev = [0u8; 128];
+        ev[0..4].copy_from_slice(&code.to_ne_bytes());
+        ev[8..12].copy_from_slice(&7u32.to_ne_bytes());
+        ev[16] = button;
+        ev[17] = state;
+        ev[20..24].copy_from_slice(&x.to_ne_bytes());
+        ev[24..28].copy_from_slice(&y.to_ne_bytes());
+        ev
+    }
+
+    fn pointer(x: f32, y: f32, edge: PointerEdge) -> Option<HostEvent> {
+        Some(HostEvent::Pointer { x, y, edge })
+    }
+
+    /// **The decode table.** Each of the three SDL types, at the corners and the middle of the canvas
+    /// and just outside it (a drag past the edge reports negative and over-large positions), decodes
+    /// to its edge and its position. The surface is the identity here (1920x1080, the default), so the
+    /// position is what the bytes say; `ptr_xy`'s conversion off the identity is `plx_base::surface`'s.
+    #[test]
+    fn an_sdl_pointer_event_decodes_to_its_edge_and_its_position() {
+        let _serial = plx_base::testlock::serial();
+        for (code, edge) in [(MOTION, PointerEdge::Move), (DOWN, PointerEdge::Down), (UP, PointerEdge::Up)] {
+            for (x, y) in [(0, 0), (960, 540), (1919, 1079), (1400, 870), (-3, 1085), (2000, -1)] {
+                assert_eq!(decode_host_event(&bytes(code, 1, 1, x, y)), pointer(x as f32, y as f32, edge),
+                    "{code:#x} at ({x}, {y})");
+            }
+        }
+    }
+
+    /// **The edge is the event type alone**, for any button and whatever its state byte says, as the
+    /// loop has always taken it: a button-up carrying state 1, a button-down carrying state 0 and a
+    /// motion with a button byte set are still an up, a down and a move. Bytes the decoder must not read
+    /// (the window id, the bytes after `y`, the float where the wheel keeps its fraction) are noise here.
+    #[test]
+    fn the_edge_is_the_event_type_whatever_the_button_bytes_say() {
+        let _serial = plx_base::testlock::serial();
+        for button in [0u8, 1, 2, 3, 255] {
+            for state in [0u8, 1] {
+                for (code, edge) in [(MOTION, PointerEdge::Move), (DOWN, PointerEdge::Down), (UP, PointerEdge::Up)] {
+                    let mut ev = bytes(code, button, state, 640, 360);
+                    ev[28..64].fill(0xa5);
+                    assert_eq!(decode_host_event(&ev), pointer(640.0, 360.0, edge), "{code:#x} button {button} state {state}");
+                }
+            }
+        }
+    }
+
+    /// The bytes the loop's own synthesis writes (`encode_pointer`, which the FIFO's `ck:` `pm:` `pd:`
+    /// `pu:` tokens and the replay driver push) decode to the position and edge they were built from.
+    /// The encoder and the decoder shipped apart once for keys; this is what couples them for the pointer.
+    #[test]
+    fn the_synthesized_pointer_bytes_round_trip() {
+        let _serial = plx_base::testlock::serial();
+        for (code, edge) in [(MOTION, PointerEdge::Move), (DOWN, PointerEdge::Down), (UP, PointerEdge::Up)] {
+            for (x, y) in [(0, 0), (1400, 870), (1919, 1079)] {
+                assert_eq!(decode_host_event(&encode_pointer(code, x, y)), pointer(x as f32, y as f32, edge), "{code:#x}");
+            }
+        }
+    }
+
+    /// A wheel event as the television's SDL2 lays it out: `Sint32 y` at +20.
+    fn wheel_lg(dy: i32) -> [u8; 128] {
+        let mut ev = [0u8; 128];
+        ev[0..4].copy_from_slice(&WHEEL.to_ne_bytes());
+        ev[20..24].copy_from_slice(&dy.to_ne_bytes());
+        ev
+    }
+
+    /// A wheel event as the simulator's stock SDL2 (sdl2-compat over SDL3) delivers it: the count in
+    /// the float `preciseY` at +32, with the legacy integer at +20 left at zero.
+    fn wheel_stock(precise_y: f32) -> [u8; 128] {
+        let mut ev = [0u8; 128];
+        ev[0..4].copy_from_slice(&WHEEL.to_ne_bytes());
+        ev[32..36].copy_from_slice(&precise_y.to_ne_bytes());
+        ev
+    }
+
+    fn wheel(dy: i32) -> Option<HostEvent> {
+        Some(HostEvent::Wheel { dy })
+    }
+
+    /// **Each layout's wheel, and the one this build does not read.** The television's integer at +20
+    /// is the count in the default build and is ignored in the simulator's; the simulator's float at +32
+    /// is the count there (rounded to whole ticks) and is ignored on the television. A decoder that
+    /// read both, or the wrong one, fails one of the two assertions in each build.
+    #[test]
+    fn a_wheel_tick_is_read_from_the_offset_this_hosts_sdl_carries_it_at() {
+        for dy in [-40, -3, -1, 1, 2, 120] {
+            if cfg!(feature = "hostsim") {
+                assert_eq!(decode_host_event(&wheel_stock(dy as f32)), wheel(dy), "stock layout, {dy}");
+                assert_eq!(decode_host_event(&wheel_lg(dy)), wheel(0), "the television's field is not this host's: {dy}");
+            } else {
+                assert_eq!(decode_host_event(&wheel_lg(dy)), wheel(dy), "LG layout, {dy}");
+                assert_eq!(decode_host_event(&wheel_stock(dy as f32)), wheel(0), "the simulator's field is not read here: {dy}");
+            }
+        }
+    }
+
+    /// **The `+20` case.** `remote_synth_wheel`, the `wheel:<dy>` token's pusher, writes the television's
+    /// shape (`Sint32 y` at +20) unconditionally, so the bytes it builds decode to the count on the
+    /// television and to ZERO in the simulator (where `SDL_PushEvent` hands the value back at +32; the
+    /// decoder's doc has the measurement). The zero is not a bug: it is why the decoder reads the other
+    /// offset there. It is pinned so a "fix" that reads `+20` everywhere shows up here, in the simulator
+    /// run, as a count that is no longer zero.
+    #[test]
+    fn the_television_shaped_wheel_the_fifo_token_builds_decodes_to_zero_in_the_simulator() {
+        let mut token_shape = [0u8; 128];
+        token_shape[0..4].copy_from_slice(&WHEEL.to_ne_bytes());
+        token_shape[20..24].copy_from_slice(&(-2i32).to_ne_bytes());
+        let expected = if cfg!(feature = "hostsim") { 0 } else { -2 };
+        assert_eq!(decode_host_event(&token_shape), wheel(expected));
+    }
+
+    /// A fractional trackpad tick keeps the sign of what it rounds to, and a half tick or less is no
+    /// tick (the loop records a zero and ignores it). Only the simulator's layout carries a fraction.
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn a_fractional_trackpad_tick_rounds_to_whole_ticks() {
+        for (precise, dy) in [(-0.4, 0), (0.4, 0), (-0.6, -1), (0.6, 1), (-1.4, -1), (2.5, 3), (-40.0, -40)] {
+            assert_eq!(decode_host_event(&wheel_stock(precise)), wheel(dy), "{precise}");
         }
     }
 }

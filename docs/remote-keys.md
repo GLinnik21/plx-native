@@ -276,9 +276,10 @@ predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym i
 build's configured upload trigger (`crate::labcfg::is_trigger_key`, `false` at compile time in every
 build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
-out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
-whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
-host's SDL rather than the press. The bare player samples the HUD for bound keys in ordered screen
+out so `make check` can grade it — `begin_fresh_press` itself hides the pointer through the platform's
+`Shell` (`hide_pointer`), which on a television acts on whatever pointer calls the process's SDL
+exports, so a test that reached the television's shell would be grading the host's SDL rather than the
+press. The bare player samples the HUD for bound keys in ordered screen
 delivery. A second Back in the same SDL batch sees the first one's dismissal, and an intervening
 bound press spends any exit arming. The LG pointer-hidden notification only stops edge scrolling.
 

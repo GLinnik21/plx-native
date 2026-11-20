@@ -49,8 +49,9 @@ static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
     },
 };
 
-/// The webOS shell: the SDL window's Wayland surface, the opaque-region hint and the LS2 bus pump.
-/// The bodies stay in `crate::system` (and `webos::bind_window`); this is the table over them.
+/// The webOS shell: the SDL window's Wayland surface, the opaque-region hint, the LS2 bus pump and the
+/// Magic Remote's pointer. The bodies stay in `crate::system` (and `webos::bind_window`); this is the
+/// table over them.
 struct WebosShell;
 
 impl Shell for WebosShell {
@@ -74,6 +75,15 @@ impl Shell for WebosShell {
     }
     fn pump_bus(&self) {
         crate::system::ls2_pump();
+    }
+    fn hide_pointer(&self) {
+        crate::system::hide_cursor();
+    }
+    fn show_pointer_after_motion(&self) {
+        crate::system::show_cursor_after_motion();
+    }
+    fn hide_is_cursor_swap(&self) -> bool {
+        crate::system::cursor_is_transparent()
     }
 }
 

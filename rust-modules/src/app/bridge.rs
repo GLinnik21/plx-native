@@ -739,6 +739,12 @@ pub(crate) struct BridgeRetained {
 }
 
 impl Bridge<'_> {
+    /// The platform's shell, which the pointer's callers (`playback`'s PLAY key and Back-cursor
+    /// commands) hide and show the Magic Remote's pointer through: the one `App::platform` holds.
+    pub(super) fn shell(&self) -> &'static dyn Shell {
+        self.retained.shell
+    }
+
     #[cfg(test)]
     pub(crate) fn measurement_queries(&self)->Vec<plx_ui::rec::MetricKey> { self.retained.measure.queries() }
     /// The measurer every screen of this bridge lays out with (a host test's has no fonts): the HUD
@@ -858,8 +864,16 @@ impl BridgeRetained {
     /// dies inside `text.rs` on a `debug_assert!`, several frames away from anything it asserted.
     #[cfg(test)]
     pub(crate) fn for_test(now_us: fn() -> u64) -> (super::runtime_owners::RuntimeOwners, Self) {
+        Self::for_test_on(now_us, super::platform::Platform::HOST_TEST.shell)
+    }
+
+    /// [`Self::for_test`] on a given platform's shell, for a test that counts what the bridge's
+    /// callers ask of the shell (the PLAY key's and Back's pointer hide).
+    #[cfg(test)]
+    pub(crate) fn for_test_on(now_us: fn() -> u64, shell: &'static dyn Shell)
+        -> (super::runtime_owners::RuntimeOwners, Self) {
         static FIXTURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
-        let (mut runtime, mut retained) = Self::with_measure(&FIXTURE, now_us, super::platform::Platform::HOST_TEST.shell,
+        let (mut runtime, mut retained) = Self::with_measure(&FIXTURE, now_us, shell,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
             super::adapters::consent::ConsentAdapter::fixture(),
