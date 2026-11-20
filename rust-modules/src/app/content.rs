@@ -594,6 +594,67 @@ fn halt_screen_preview(app: &mut ScreenCommandApp<'_, '_>) {
     halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
 
+/// The item a hero preview is asked for, and the part it would open ([`ContentReq::PreviewStart`]).
+#[cfg(feature = "play-feed")]
+pub(crate) struct HeroPreviewAsk<'a> {
+    pub(crate) sid: plx_plex::plex::ServerId,
+    pub(crate) rk: &'a str,
+    pub(crate) part: &'a str,
+    pub(crate) vcodec: &'a str,
+    pub(crate) acodec: &'a str,
+    pub(crate) title: &'a str,
+}
+
+/// How [`start_hero_preview`] ended.
+#[cfg(feature = "play-feed")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeroPreview {
+    /// The item has no extra to preview; the preview machine remembers it.
+    NoExtra,
+    /// Nothing was started: the machine's own gates said no, or this boot composed no Feed, or the
+    /// admission was refused. The item is remembered, so the page's dwell gate does not ask again.
+    Refused,
+    /// The resolve is in flight and the asking page owns the preview.
+    Started,
+}
+
+/// **`ContentReq::PreviewStart`, performed.** A hero preview is a Feed engine's: the resolve lands a
+/// direct-play plan the Feed opens muted. A boot that composed no Feed (`BackendSet::feed` false)
+/// has nothing to open it on, so the request is refused HERE, once, through the preview machine's
+/// own fact for an item it cannot preview (`Fact::RefusedDirect`, the same one the build with no
+/// Feed compiled in says): the page's dwell gate (`preview::blocked`) then stops asking, and no
+/// resolve runs. Left to the planner, the refusal would come after the PlayQueue request as a
+/// standing verdict, which `player::state()` reads as an Error and `report::tick_preview` reports
+/// as a failed preview.
+#[cfg(feature = "play-feed")]
+pub(crate) fn start_hero_preview(
+    session: &mut plx_media::route::PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    ask: &HeroPreviewAsk<'_>,
+    now: u32,
+) -> HeroPreview {
+    use plx_media::player::preview;
+    if !session.backends().feed {
+        preview::note_refused_direct(ask.sid, ask.rk);
+        return HeroPreview::Refused;
+    }
+    if ask.part.is_empty() {
+        preview::note_no_extra(ask.sid, ask.rk);
+        return HeroPreview::NoExtra;
+    }
+    if !matches!(preview::request_start(ask.sid, ask.rk, now), preview::Start::Accepted) {
+        return HeroPreview::Refused;
+    }
+    if plx_media::route::request_preview(session, meta, super::playback::start_caps(),
+        ask.sid, ask.rk, ask.part, ask.vcodec, ask.acodec, ask.title)
+    {
+        HeroPreview::Started
+    } else {
+        preview::note_admission_refused();
+        HeroPreview::Refused
+    }
+}
+
 fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, request: ContentReq,
     ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
@@ -654,32 +715,13 @@ fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, reques
                     return AppCommandOutcome::Refused;
                 }
                 #[cfg(feature = "play-feed")]
+                match start_hero_preview(&mut app.player.session, app.bridge.metadata_mut(),
+                    &HeroPreviewAsk { sid, rk: &rk, part: &part, vcodec: &vcodec, acodec: &acodec, title: &title },
+                    now)
                 {
-                if part.is_empty() {
-                    plx_media::player::preview::note_no_extra(sid, &rk);
-                    return AppCommandOutcome::Completed;
-                }
-                if !matches!(
-                    plx_media::player::preview::request_start(sid, &rk, now),
-                    plx_media::player::preview::Start::Accepted
-                ) { return AppCommandOutcome::Refused; }
-                let ok = plx_media::route::request_preview(
-                    &mut app.player.session,
-                    app.bridge.metadata_mut(),
-                    super::playback::start_caps(),
-                    sid,
-                    &rk,
-                    &part,
-                    &vcodec,
-                    &acodec,
-                    &title,
-                );
-                if ok {
-                    PREVIEW_HOST.with(|h| h.set(Some(instance)));
-                } else {
-                    plx_media::player::preview::note_admission_refused();
-                    return AppCommandOutcome::Refused;
-                }
+                    HeroPreview::NoExtra => return AppCommandOutcome::Completed,
+                    HeroPreview::Refused => return AppCommandOutcome::Refused,
+                    HeroPreview::Started => PREVIEW_HOST.with(|h| h.set(Some(instance))),
                 }
             }
             ContentReq::PreviewStop => halt_screen_preview(app),

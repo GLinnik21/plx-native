@@ -476,8 +476,8 @@ pub(crate) mod tests {
         assert_eq!(played, Some(plx_appkit::version_list::sample()[1].id), "the host page is told which version");
     }
 
-    /// A platform that composed no playback driver opens the same list with every row disabled under
-    /// the one reason (`browse.detail.no_playback`, the Detail facts line's own word): OK closes the
+    /// A platform that composed no playback driver opens the same list with every row disabled and the
+    /// one reason noted under them (`browse.detail.no_playback`, the Detail facts line's own word): OK closes the
     /// panel like any menu's and reports no version, so nothing is asked of a driver that is not there.
     #[test]
     fn with_no_playback_driver_every_row_is_disabled_and_reports_nothing() {
@@ -488,11 +488,14 @@ pub(crate) mod tests {
         for (can_play, disabled) in [(true, false), (false, true)] {
             let mut p = VersionsPanelScreen::new(EntryId(3), arg.clone(), &plx_appkit::version_list::sample(), can_play);
             let rows: Vec<_> = p.form.table.sections.iter().flat_map(|s| s.rows.iter()).collect();
-            assert_eq!(rows.len(), 2);
-            for row in rows {
+            let versions: Vec<_> = rows.iter().filter(|row| !row.is_note()).collect();
+            let notes: Vec<_> = rows.iter().filter(|row| row.is_note()).collect();
+            assert_eq!(versions.len(), 2);
+            for row in versions {
                 assert_eq!(row.disabled, disabled, "can_play={can_play}");
-                assert_eq!(row.value.as_deref(), disabled.then_some(why), "can_play={can_play}: the reason is the value");
             }
+            assert_eq!(notes.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
+                disabled.then_some(why).into_iter().collect::<Vec<_>>(), "can_play={can_play}: the one note says why");
             let mut out = Vec::new();
             let mut present = plx_machine::present::Present::new();
             let mut fx: Effects<'_, HostFixture> =

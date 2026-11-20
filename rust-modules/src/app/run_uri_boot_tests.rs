@@ -325,15 +325,17 @@ mod uri_boot_tests {
         assert!(!rig.requests.lock().unwrap().iter().any(|request| request.contains("/decision?")));
     }
 
-    /// **A platform that composed no driver has no hero trailer, and says so once, quietly.** The
-    /// Detail hero's dwell asks for a preview whenever focus rests on it and the item is not known to
-    /// refuse (`player::preview::blocked`); with no driver the request is refused, and it must be
-    /// REMEMBERED (`Fact::RefusedDirect`, the preview machine's own refusal path) or the dwell asks
-    /// again every `DWELL_S` for as long as the page is open. The refusal leaves the machine Idle,
-    /// raises no error and puts no page on the route.
+    /// **A platform that composed no Feed has no hero trailer, and says so once, quietly.** The
+    /// Detail hero's dwell asks for a preview whenever focus rests on it and the item is not known
+    /// to refuse (`player::preview::blocked`). With no Feed composed the request is refused by
+    /// `start_hero_preview` through the preview machine's own fact (`Fact::RefusedDirect`), BEFORE
+    /// any server work: no PlayQueue request, no resolve, so no standing verdict for `player::state()`
+    /// to read as an Error (and for the failure report to tell as a failed preview), and the dwell
+    /// gate stops asking, so there is no retry every `DWELL_S`. Nothing reaches the route.
     #[cfg(feature = "play-feed")]
     #[test]
-    fn a_boot_that_composed_no_driver_refuses_the_hero_preview_once_and_quietly() {
+    fn a_boot_that_composed_no_feed_refuses_the_hero_preview_once_and_quietly() {
+        use crate::app::content::{start_hero_preview, HeroPreview, HeroPreviewAsk};
         use plx_media::player::preview;
         let _serial = plx_base::testlock::serial();
         let _preview = crate::app::bridge::test_support::PreviewReset;
@@ -347,29 +349,70 @@ mod uri_boot_tests {
         preview::reset_for_test();
         preview::restore_trailer_autoplay(true);
         let route = rig.app.route();
+        let served = rig.requests.lock().unwrap().len();
+        let ask = HeroPreviewAsk { sid: rig.sid, rk: "1", part: "/library/parts/1/file.mkv",
+            vcodec: "h264", acodec: "aac", title: "First" };
         assert!(!preview::blocked(rig.sid, "1"), "premise: nothing is known about the item yet");
-        // What `content_command`'s `PreviewStart` arm does, in its order.
-        assert_eq!(preview::request_start(rig.sid, "1", 0), preview::Start::Accepted);
-        assert!(plx_media::route::request_preview(&mut rig.app.player.session,
-            rig.app.runtime.metadata_mut(), plx_os::devcaps::caps(), rig.sid, "1",
-            "/library/parts/1/file.mkv", "h264", "aac", "First"));
-        let _ = rig.entered.recv_timeout(Duration::from_secs(1));
-        rig.release.send(()).unwrap();
-        poll_until("the refused preview never settled", || {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
-            fr.now = t;
-            unsafe { update(&mut rig.app, &mut fr); }
-            !preview::occupies()
-        });
+        assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
+            &ask, 0), HeroPreview::Refused);
         assert!(preview::blocked(rig.sid, "1"),
             "the refusal is remembered, so the page's dwell gate stops asking: no retry loop");
         assert_eq!(preview::request_start(rig.sid, "1", 1),
             preview::Start::Cached(preview::Fact::RefusedDirect));
-        assert!(!plx_media::route::is_preview(&rig.app.player.session), "the refused mark is retired");
+        assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
+            &ask, 2_000), HeroPreview::Refused, "a dwell that asks anyway is refused the same way");
+        for _ in 0..5 {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+            fr.now = t;
+            unsafe {
+                playback_tick(&mut rig.app, &mut fr);
+                update(&mut rig.app, &mut fr);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(rig.requests.lock().unwrap().len(), served, "refused before any server work");
+        assert!(!preview::occupies(), "the machine stays Idle");
+        assert!(!plx_media::route::play_pending(), "no resolve was started");
+        assert!(!plx_media::route::play_refused(&rig.app.player.session),
+            "no standing verdict, so no Error read-out and no failure report");
+        assert!(!plx_media::route::is_preview(&rig.app.player.session));
         assert_ne!(plx_media::player::state(&rig.app.player.session),
             plx_media::player::PlaybackState::Error, "a refused hero trailer is not a playback error");
         assert!(crate::app::bridge::player(&rig.app.pages).is_none(), "no player page");
-        assert_eq!(rig.app.route(), route, "the route did not move");
+        assert!(rig.app.route() == route, "the route did not move");
+    }
+
+    /// The control for the test above: the same request on a boot that composed a Feed starts the
+    /// resolve, which is what the gate must leave alone.
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_boot_that_composed_a_feed_starts_the_hero_preview() {
+        use crate::app::content::{start_hero_preview, HeroPreview, HeroPreviewAsk};
+        use plx_media::player::preview;
+        let _serial = plx_base::testlock::serial();
+        let _preview = crate::app::bridge::test_support::PreviewReset;
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        assert!(rig.app.player.session.backends().feed, "premise: the rig composes the Feed");
+        preview::reset_for_test();
+        preview::restore_trailer_autoplay(true);
+        let ask = HeroPreviewAsk { sid: rig.sid, rk: "1", part: "/library/parts/1/file.mkv",
+            vcodec: "h264", acodec: "aac", title: "First" };
+        assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
+            &ask, 0), HeroPreview::Started);
+        assert!(rig.entered.recv_timeout(Duration::from_secs(1)).is_ok(), "the resolve reached the server");
+        assert!(preview::occupies(), "the preview machine holds the request");
+        rig.release.send(()).unwrap();
+        poll_until("the preview's resolve never landed", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+            fr.now = t;
+            unsafe {
+                playback_tick(&mut rig.app, &mut fr);
+                update(&mut rig.app, &mut fr);
+            }
+            !plx_media::route::play_pending()
+        });
     }
 
     /// Two drivers (the rig's Feed and the product URI driver): the session holds both, and the

@@ -17,8 +17,10 @@ pub fn title() -> &'static str {
 /// **The list as one section**, in the server's order: row `n` is `versions[n]`, identified by
 /// `id(n)` and reporting `act(&versions[n])`. Every row is a button that plays, unless
 /// `unavailable` gives the reason nothing can (a platform that composed no playback driver): every
-/// row is then disabled (`FormSection::disabled`, which makes it answer no press) and wears the
-/// reason as its value.
+/// row is then disabled (`FormSection::disabled`, which makes it answer no press) and the reason is
+/// said once, as the note under the rows (`FormSection::note`, the shared line for a reason that
+/// belongs to the rows above it: it wraps, where a per-row value would not fit beside a version's
+/// label and detail).
 pub fn section<Id: FormId, A, D>(
     versions: &[MediaVersion],
     id: impl Fn(u16) -> Id,
@@ -31,12 +33,12 @@ pub fn section<Id: FormId, A, D>(
         if !detail.is_empty() {
             row = row.detail(detail);
         }
-        if let Some(why) = unavailable {
-            row = row.value(why);
-        }
         sec = sec.item(id(n as u16), RowKind::Button, act(v), row).disabled(unavailable.is_some());
     }
-    sec
+    match unavailable {
+        Some(why) => sec.note(why),
+        None => sec,
+    }
 }
 
 /// What each version's row says: `"25.2 Mbps · 4K"`, over the facts that DIFFER between the
@@ -141,7 +143,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             // Both states: the rows that play, and the rows a platform with no driver disables
-            // under their reason (the row's value, the one place a reason is read).
+            // under the one note that says why.
             for unavailable in [None, Some(plx_os::i18n::msg::browse_detail_no_playback())] {
                 let mut form: FormTable<Pos, plx_plex::plex::MediaId, Infallible> = FormTable::new(plx_ui::table_screen::BAND_BASE);
                 form.set(Form::new().section(section(&sample(), Pos, |v| v.id, unavailable)), None);
@@ -155,8 +157,8 @@ mod tests {
         plx_ui::table::assert_no_fit_failures(&out);
     }
 
-    /// With a reason every row is disabled and wears it as its value, answers no press, and a list
-    /// with none is the buttons that play.
+    /// With a reason every row is disabled and answers no press, and the reason is said once, as the
+    /// note under them; a list with none is the buttons that play and no note.
     #[test]
     fn an_unavailable_list_is_disabled_rows_that_press_nothing() {
         let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
@@ -165,11 +167,15 @@ mod tests {
             let mut form: FormTable<Pos, plx_plex::plex::MediaId, Infallible> = FormTable::new(plx_ui::table_screen::BAND_BASE);
             form.set(Form::new().section(section(&sample(), Pos, |v| v.id, unavailable)), None);
             let rows: Vec<_> = form.table.sections.iter().flat_map(|s| s.rows.iter()).collect();
-            assert_eq!(rows.len(), 2);
-            for (i, row) in rows.iter().enumerate() {
+            let versions: Vec<_> = rows.iter().filter(|row| !row.is_note()).collect();
+            let notes: Vec<_> = rows.iter().filter(|row| row.is_note()).collect();
+            assert_eq!(versions.len(), 2);
+            for (i, row) in versions.iter().enumerate() {
                 assert_eq!(row.disabled, disabled, "row {i}");
-                assert_eq!(row.value.as_deref(), unavailable, "row {i}: the reason is the value");
+                assert_eq!(row.value, None, "row {i}: the reason is not repeated per row");
             }
+            assert_eq!(notes.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
+                unavailable.into_iter().collect::<Vec<_>>(), "the one note says why");
             for i in 0..2 {
                 assert_eq!(form.activate(i).is_some(), !disabled, "row {i}: a disabled row answers no press");
             }
