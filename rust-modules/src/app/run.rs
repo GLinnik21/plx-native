@@ -958,8 +958,11 @@ unsafe fn present_and_swap(
         #[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
         let screenshot_seam = true;
         // The settled-capture's arm-wait is simulator-only (the arms never run on the television),
-        // so the term is a constant `false` there.
-        #[cfg(feature = "hostsim")]
+        // so the term is a constant `false` there. The hostsim binding is `devtriggers`-gated too:
+        // the only use is the `devtriggers`-gated seam below, and a hostsim build WITHOUT
+        // devtriggers (the shipping Mac sim, `--no-default-features --features hostsim,play-feed`)
+        // would otherwise compile the term and nothing that reads it.
+        #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
         let scenarios_pending = app.scenarios.shots.pending();
         #[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
         let scenarios_pending = false;

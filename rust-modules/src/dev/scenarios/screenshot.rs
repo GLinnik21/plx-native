@@ -51,8 +51,10 @@ impl ScreenshotArms {
     /// (`app::run`'s `shot::tick`): a screen can come to rest BEFORE an arm acts — a black player
     /// waiting on its seek — and a capture of that rest is the wrong picture. An arm that was never
     /// armed, reached its state or gave up (and logged it) is not pending. Simulator only, as the
-    /// settled capture is.
-    #[cfg(feature = "hostsim")]
+    /// settled capture is, and its only readers are the `devtriggers`-gated seam and `shot::tick`
+    /// (both `all(hostsim, devtriggers)`), so the method follows them: a hostsim build without
+    /// devtriggers (the shipping Mac sim) compiles neither it nor its readers.
+    #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
     pub(crate) fn pending(&self) -> bool {
         !self.libtype_done
             || !self.libgrid.done
