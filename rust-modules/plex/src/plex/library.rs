@@ -208,13 +208,16 @@ impl Client {
     /// container holds a `Setting[]` — asked only after a successful response without preferences.
     /// Both requests share a 1500 ms budget: optional settings must not consume the ordinary
     /// bulk-read timeout on the play path. HTTP, transport and parse errors fall back immediately.
+    ///
+    /// A background read: it runs on every episode play and the viewer never opened the show's record,
+    /// so the first request also sends `skipRefresh=1` (`docs/pms-api.md`, "skipRefresh"). Measured on
+    /// one household PMS, `includePreferences=1&skipRefresh=1` still returned `Preferences` with the same
+    /// 11 settings as the read without it (3 shows, HTTP 200 in each case).
     pub fn show_language_prefs(&self, show_rk: &str) -> Option<crate::plex::ShowLangPrefs> {
         if show_rk.is_empty() || !show_rk.bytes().all(|b| b.is_ascii_digit()) {
             return None; // a key is server data: only ever a plain ratingKey
         }
-        let path = QueryBuilder::new(format!("/library/metadata/{show_rk}"))
-            .int("includePreferences", 1)
-            .build();
+        let path = show_language_prefs_path(show_rk);
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
         let read = |path: &str| match self.get_json_with_headers_until(path, &[], deadline) {
             super::client::JsonDeadlineOutcome::Response { parsed, .. } => parsed,
@@ -241,9 +244,11 @@ impl Client {
     /// time, so anything it computed itself would change with the selected season tab. Verified live
     /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
     ///
-    /// This is the DETAIL read, the one a viewer asked for by opening an item, so it sends no
-    /// `skipRefresh` and PMS runs its usual synchronous refresh of the item. A read the viewer did
-    /// not ask for goes through [`Client::metadata_background`] instead.
+    /// This is the read of an item the viewer opened or is about to play, so it sends no `skipRefresh`
+    /// and PMS runs its usual synchronous refresh of the item. The detail page's own reads (the item, its
+    /// trailer and its on-deck episode, including the re-read after a read-back), the play-time read and
+    /// the re-read after the viewer's own subtitle write use it; a background lookup of the record the
+    /// viewer did not open, such as a guid, goes through [`Client::metadata_background`] instead.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
         self.get_json(&metadata_path(rating_key, false))?.metadata.into_iter().next()
     }
@@ -282,10 +287,11 @@ impl Client {
     /// module passes in. (The server silently KEEPS `Image`, `UltraBlurColors` and `Field` whatever
     /// you ask, so they are not listed — naming them would just read as if they went.)
     ///
-    /// **Always `skipRefresh=1`.** Every caller reads keys a listing already named, on a worker the
-    /// viewer is not waiting behind, and the spec's default (false) has PMS run its synchronous local
-    /// media agent and analysis refresh on a `GET /library/metadata/{ids}`, which a field log on a
-    /// remote link read as 4 to 9 s per Home row (`docs/pms-api.md`, "skipRefresh").
+    /// **Always `skipRefresh=1`.** Every caller is a background read, on a worker the viewer is not
+    /// waiting behind, and never the item a viewer opened: a listing's keys read again, or the view-state
+    /// read-back after Mark Watched or a stopped play. The spec's default (false) has PMS run its
+    /// synchronous local media agent and analysis refresh on a `GET /library/metadata/{ids}`, which a
+    /// field log on a remote link read as 4 to 9 s per Home row (`docs/pms-api.md`, "skipRefresh").
     ///
     /// Absent from `docs/plex-openapi.json`, which documents only the single-key form.
     pub fn metadata_many(&self, rating_keys: &[&str]) -> Option<MediaContainer> {
@@ -441,8 +447,17 @@ fn metadata_path(rating_key: &str, skip_refresh: bool) -> String {
         .build()
 }
 
+/// The path of [`Client::show_language_prefs`]'s first read: the show with its `Preferences`. A
+/// background read, so it carries `skipRefresh=1`.
+fn show_language_prefs_path(show_rk: &str) -> String {
+    QueryBuilder::new(format!("/library/metadata/{show_rk}"))
+        .int("includePreferences", 1)
+        .int("skipRefresh", 1)
+        .build()
+}
+
 /// The path of [`Client::metadata_many`]: the CSV of keys, trimmed to the tag arrays. Every caller is a
-/// background read of keys a listing already named, so it always carries `skipRefresh=1`.
+/// background read and never the item a viewer opened, so it always carries `skipRefresh=1`.
 fn metadata_many_path(rating_keys: &[&str]) -> String {
     const EXCLUDE_ELEMENTS: &str =
         "Media,Genre,Country,Collection,Director,Writer,Producer,Similar,Chapter,Marker,Guid,Rating,Review,Extras";
@@ -613,6 +628,13 @@ mod tests {
     #[test]
     fn skip_refresh_the_detail_read_does_not_carry_it() {
         assert_eq!(metadata_path("12", false), "/library/metadata/12?includeChapters=1&includeMarkers=1&includeOnDeck=1");
+    }
+
+    /// The show's language-settings read runs on every episode play and the viewer never opened that
+    /// record, so it is a background read and carries `skipRefresh=1` like the others.
+    #[test]
+    fn skip_refresh_the_show_preferences_read_asks_the_server_not_to_refresh() {
+        assert_eq!(show_language_prefs_path("42"), "/library/metadata/42?includePreferences=1&skipRefresh=1");
     }
 
     /// A directory read without terms is byte-identical to what it always was, and the terms

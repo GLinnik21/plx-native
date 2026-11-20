@@ -1003,9 +1003,11 @@ GET /library/metadata/{rk}?includeMarkers=1&includeChapters=1
 
 `plex-openapi.json` describes `skipRefresh=1` on `GET /library/metadata/{ids}` as skipping the synchronous
 local media agent and analysis refresh, which the default (false) runs. This client's background reads by
-key (`plex::Client::metadata_many`, which a Home row re-read, a hub or listing page's batch and a person's
-filmography go through, and `Client::metadata_background`) send `skipRefresh=1`; the detail read
-(`Client::metadata`), which a viewer opened, sends none. Plex Web 4.162.1 sends `skipRefresh=1` on its
+key (`plex::Client::metadata_many`, which a Home row re-read, a hub or listing page's batch, the
+view-state read-back after Mark Watched or a stopped play and a person's filmography go through,
+`Client::metadata_background`, and the `includePreferences=1` show-preferences read of every episode play)
+send `skipRefresh=1`; the preferences read still returns the same `Preferences` with it (3 shows on one
+PMS). The detail read (`Client::metadata`), which a viewer opened, sends none. Plex Web 4.162.1 sends `skipRefresh=1` on its
 re-reads by key and never takes the refresh. On one household PMS the first batch read without it took 138
 to 948 ms in four of five sets, and no read with it was slow; a field log over a remote link read 4 to 9 s
 per Home row, with a timeline "item processed" notification about once a second while Home scrolled

@@ -4354,8 +4354,10 @@ fn sync_roster(&mut self) -> bool {
         owner.close();
     }
 
-    /// Ten credits are one request, and it is the request the store made before chunking existed:
-    /// the same single `/library/metadata/{csv}` URL, the same keys in the same order.
+    /// Ten credits are one request, and its path is the one the store sent before chunking existed:
+    /// the same single `/library/metadata/{csv}`, the same keys in the same order. (The query behind
+    /// it has since gained `skipRefresh=1`, which this test does not pin: `plx_plex`'s
+    /// `skip_refresh_a_batched_read_…` does.)
     #[test]
     fn ten_credits_make_exactly_one_request_as_before() {
         let _g = plx_base::testlock::serial();
@@ -4372,7 +4374,7 @@ fn sync_roster(&mut self) -> bool {
         let csv: Vec<String> = (0..10).map(|i| i.to_string()).collect();
         assert!(
             paths[0].starts_with(&format!("/library/metadata/{}?", csv.join(","))),
-            "the single request is not today's: {}",
+            "the single request's path is not the pre-chunking one: {}",
             paths[0]
         );
         let p = owner.current().unwrap();
