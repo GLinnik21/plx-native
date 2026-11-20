@@ -41,7 +41,7 @@ fn one_server() -> (ServerId, &'static plx_plex::plex::Client) {
 fn controlled(replay: bool) -> crate::app::runtime_owners::Harness {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, replay);
     crate::app::runtime_owners::Harness::from_parts(runtime, retained)
 }
 

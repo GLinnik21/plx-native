@@ -1,24 +1,24 @@
 //! The platform the application runs on, as only the loop reads it.
 //!
-//! [`Platform`] is what the platform's entry installs once ([`install`]) before the loop starts. It
-//! carries three things, split by who reads them:
+//! [`Platform`] is the one value a platform's entry hands `run_application`, so an entry that forgot
+//! it does not compile. It carries three things, split by who reads them:
 //!
 //! - `services`: [`plx_os::tv::Services`], what the LOWER layers read through the private `tv`
-//!   accessors (identity, the secure store, Home and the toast, the legacy webOS media verbs). It
-//!   is installed into `tv` by [`install`] and read from nowhere in the app but there.
-//! - `shell`: the window and the bus, [`Shell`]. Its one consumer is the loop (`app::boot` brings
-//!   the window up, `app::run` drives it every frame), so it is not in the bottom layer's process
-//!   global.
-//! - `diag`: the six frame probes, [`FrameProbe`], read by the same loop and by the one clear hook
-//!   `app::boot` hands the renderer.
+//!   accessors (identity, the secure store, Home and the toast, the legacy webOS media verbs).
+//!   `run_application` installs it into `tv` once, and nothing else in the app reads it.
+//! - `shell`: the window and the bus, [`Shell`]. Its consumers are boot (`app::boot` brings the
+//!   window up with the platform it was handed), the loop (`app::run` drives it every frame, through
+//!   `App::platform`) and the bridge, which holds the shell for the dispatcher's two opaque-region
+//!   hooks.
+//! - `diag`: the six frame probes, [`FrameProbe`], read by the loop. The renderer's clear hook takes
+//!   plain functions, so the platform's entry installs it (`gfx::install_clear_probe`).
 //!
 //! `Shell`, `FrameProbe` and `Platform` are app-private on purpose: no type a platform's shell has
-//! to match leaves the application crate until the platform contract is settled. The webOS values
-//! are built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
+//! to match leaves the application crate until the platform contract is settled. The webOS value is
+//! built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
 //! privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) to `app/run.rs`.
 use plx_os::tv::Services;
 use std::os::raw::c_void;
-use std::sync::OnceLock;
 
 /// The platform's window and bus, as the frame loop drives them: the SDL window and its surface, the
 /// opaque-region hint, and the platform bus pump. Every call runs on the loop thread, and every
@@ -60,8 +60,8 @@ pub(crate) trait FrameProbe: Sync {
     fn fields(&self) -> String;
 }
 
-/// Everything the application needs from its platform. Built once by the platform's entry
-/// (`port.rs` for webOS) and installed before `run_application`.
+/// Everything the application needs from its platform. Built by the platform's entry (`port.rs` for
+/// webOS) and passed to `run_application`, which keeps it as `App::platform`.
 pub(crate) struct Platform {
     pub(crate) services: &'static Services,
     pub(crate) shell: &'static dyn Shell,
@@ -69,6 +69,7 @@ pub(crate) struct Platform {
 }
 
 /// The shell of a process with no platform: a host test, where nothing owns a window or a bus.
+#[cfg_attr(not(test), allow(dead_code))]
 struct HostShell;
 
 impl Shell for HostShell {
@@ -84,6 +85,7 @@ impl Shell for HostShell {
 }
 
 /// The frame probe of a process with no platform: always unarmed.
+#[cfg_attr(not(test), allow(dead_code))]
 struct HostProbe;
 
 impl FrameProbe for HostProbe {
@@ -98,25 +100,12 @@ impl FrameProbe for HostProbe {
 }
 
 impl Platform {
-    /// No platform installed: the loop's host tests, where nothing calls `plex_run`. Every entry is
-    /// what the no-port defaults answered before the shell and the probe left `tv`.
+    /// No platform: the loop's host tests, which build an `App` without an entry and say so by passing
+    /// this to it. Every entry is what the no-port defaults answered before the shell and the probe
+    /// left `tv`. No production path reads it: an entry that has no platform does not compile.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const HOST_TEST: Platform =
         Platform { services: &Services::HOST_TEST, shell: &HostShell, diag: &HostProbe };
-}
-
-static INSTALLED: OnceLock<&'static Platform> = OnceLock::new();
-
-/// Once, first thing the process does: install the platform's `tv` services for the lower layers and
-/// keep the platform for the loop. A second call is refused and changes nothing.
-pub(crate) fn install(platform: &'static Platform) {
-    let _ = plx_os::tv::install(platform.services);
-    let _ = INSTALLED.set(platform);
-}
-
-/// The installed platform, or [`Platform::HOST_TEST`] when none was (a host test, where every
-/// entry is a no-op). The loop reads its shell and its frame probe through this.
-pub(crate) fn platform() -> &'static Platform {
-    INSTALLED.get().copied().unwrap_or(&Platform::HOST_TEST)
 }
 
 #[cfg(test)]
@@ -152,14 +141,5 @@ mod tests {
         p.waiting();
         p.acquired();
         assert_eq!(p.fields(), "", "an unarmed probe has nothing to log");
-    }
-
-    /// Nothing is installed in a test process, so the loop reads the host-test platform.
-    #[test]
-    fn an_uninstalled_process_reads_the_host_test_platform() {
-        assert!(INSTALLED.get().is_none(), "no test installs a platform; the platform's own entry does");
-        let Platform { shell: s, diag: p, .. } = *platform();
-        s.pump_bus();
-        assert_eq!(p.fields(), "");
     }
 }

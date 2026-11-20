@@ -58,7 +58,7 @@ fn controlled_remaining_commands_refuse_before_any_resource_execution() {
     let _guard = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, true);
     let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut rig = harness.bridge();
     let before = rig.session_subhash();

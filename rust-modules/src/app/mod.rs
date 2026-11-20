@@ -406,6 +406,11 @@ pub(crate) struct App {
     pub(crate) runtime: runtime_owners::RuntimeOwners,
     /// Retained publications and IO bookkeeping; each turn borrows these alongside `runtime`.
     pub(crate) bridge: bridge::BridgeRetained,
+    /// **The platform this process runs on**, handed to `run_application` by the entry and kept here so
+    /// the loop reads its shell (the window, the opaque region, the bus pump) and its frame probes from
+    /// the value it was given. There is no process-global copy: a missing one is a compile error, not
+    /// a television that boots with no window. A host test builds an `App` with [`platform::Platform::HOST_TEST`].
+    platform: &'static platform::Platform,
 }
 
 impl App {
@@ -442,10 +447,10 @@ impl App {
         self.instr.present_interval_ms()
     }
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
-    pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
-        pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
+    pub(crate) unsafe fn from_init(platform: &'static platform::Platform, initial: bootstrap::Initial,
+        mode: bootstrap::Preflight, pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
         deferred: Option<plx_plex::plex::session::DeferredLoad>) -> Result<Self, Exit> {
-        boot::construct(pms_host, pms_port, mt, mode, Some(initial), deferred)
+        boot::construct(platform, pms_host, pms_port, mt, mode, Some(initial), deferred)
     }
     /// **Which page is on top** (spec §15.2) — the container's answer, and since D1 the ONLY one.
     ///
@@ -610,7 +615,8 @@ pub fn synthetic_home_initial(seed: u32, port: u16, settings: Option<String>)
     serde_json::to_string_pretty(&initial).map_err(|_| "cannot encode synthetic initial inputs")
 }
 
-fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,Exit> {
+fn enter_application(platform: &'static platform::Platform, pms_host: *const c_char, pms_port: c_int)
+    -> Result<App,Exit> {
     // What `plx_plex` reports as `X-Plex-Version` is this build's `PLX_VERSION`, which a
     // `cargo:rustc-env` makes visible to this crate only; before anything can build a header.
     plx_plex::plex::identity::set_version(env!("PLX_VERSION"));
@@ -646,17 +652,18 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,Exi
     // Diagnostics probes `app_dir()` on its worker, so starting it earlier races that preamble.
     plx_os::storage::diagnostics::start(env!("PLX_VERSION"));
     let main_thread = unsafe { plx_base::task::MainThread::assume() };
-    let mut app = unsafe { boot(pms_host,pms_port,main_thread,preflight) }?;
+    let mut app = unsafe { boot(platform, pms_host,pms_port,main_thread,preflight) }?;
     if telemetry_guard.is_some() { app.telemetry_guard = telemetry_guard; }
     Ok(app)
 }
 
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
-pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> Exit {
+pub(crate) fn run_application(platform: &'static platform::Platform, pms_host: *const c_char, pms_port: c_int) -> Exit {
     // Returns how it ended and drops nothing: an early-boot refusal has live workers (diagnostics,
     // capability probe, telemetry) just as a played session does, so `exit::entry` leaks the `App`.
     // Ending the process is the entry's (`port::plex_run`); a hosted entry never does.
-    exit::entry(|| enter_application(pms_host,pms_port), |app| unsafe { run_and_shutdown(app) })
+    let _ = plx_os::tv::install(platform.services); // once, before anything below reads `tv`
+    exit::entry(|| enter_application(platform, pms_host, pms_port), |app| unsafe { run_and_shutdown(app) })
 }
 
 

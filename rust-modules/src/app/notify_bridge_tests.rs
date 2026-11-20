@@ -67,7 +67,7 @@ fn direct_stream_bypasses_supplied_home_ledger_and_tape_in_record_and_replay() {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     for replay in [false, true] {
         let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-        let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, replay);
         let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
         let mut bridge = harness.bridge();
         boot(&mut bridge, false); capture(&mut bridge, &[a], true);

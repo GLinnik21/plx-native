@@ -598,7 +598,7 @@ pub extern \"C\" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int 
     plex_main(pms_host, pms_port)
 }
 fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
-    plx_base::process::exit_now(crate::app::run_application(pms_host, pms_port).code)
+    plx_base::process::exit_now(crate::app::run_application(&PLATFORM, pms_host, pms_port).code)
 }
 const _: fn(*const c_char, c_int) -> ! = plex_main;
 ";

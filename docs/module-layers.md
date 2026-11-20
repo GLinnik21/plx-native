@@ -350,8 +350,8 @@ L15's 44 entries, 205 references of which 95 were in production code. The port's
 their layers, so none of this held up the split.
 
 L15 moved every one of those references behind an interface in `os`'s new `tv` module that
-the port fills at boot. `tv::Services` is a table of function pointers in four groups (`identity`, `secure`, `system` and `legacy_webos_media`), installed once as the first
-statement of `port::plex_main`, through `app::platform::install`, before anything that reads it. With nothing installed (host unit
+the port fills at boot. `tv::Services` is a table of function pointers in four groups (`identity`, `secure`, `system` and `legacy_webos_media`), installed once by `app::run_application` (from the `Platform` its entry hands it) before anything
+that reads it. With nothing installed (host unit
 tests, where nothing calls `plex_run`) `tv::Services::HOST_TEST` answers what the host arms answered before; a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
@@ -376,7 +376,7 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
 | locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
 | sound output | `tv::sound::{output, parse_output, Reply}`, filled by `Services.identity.sound_output` (`webos::sound_output`); a blocking read, so never on the frame thread, and asked only on a stack whose lead follows the output (`liblxa` and 2018's `audiosink_new`; `devcaps::audio_stack`; the `lgaudiosink` stack's lead does not depend on the output, and the others have none, so they never ask) | `player::threads` (through `player::engine`, which owns the lead table) |
-| window, surface, video plane, bus pump and frame probe | `app::platform::{Shell, FrameProbe}`, in the application crate beside the loop that is their one consumer; `port.rs` implements them over `crate::system` | `app::boot`, `app::run` |
+| window, surface, video plane, bus pump and frame probe | `app::platform::{Shell, FrameProbe}`, in the application crate beside the loop that is their one consumer; `port.rs` implements them over `crate::system`, and `run_application` takes the `Platform` that holds them (kept as `App::platform`, and as the shell `BridgeRetained` holds for the dispatcher's two opaque-region hooks) | `app::boot`, `app::run`, `app::bridge` |
 | home key | `tv::home::{go_home, poll, take_root_press, release_root_press}` | `app::input`, `app::run`, `app::adapters::session`, `app::lifecycle`'s tests |
 | system toast | `tv::toast::{toast, send, Identity, Outcome, Sent}` | `app::clock_notice`, `dev::scenarios::toast_probe` |
 
@@ -412,7 +412,7 @@ order or its interleaving, and its log lines are graded on the television. A ver
 can be graded by comparing the television's log before and after; a redesign that changes where
 those stages run, and when, is its own step's scope and risk.
 
-The simulator runs the same tables. Under `hostsim` `port.rs` installs a `SERVICES` and a `PLATFORM` whose fields point
+The simulator runs the same tables. Under `hostsim` `port.rs` builds a `SERVICES` and a `PLATFORM` whose fields point
 at the same `webos`, `keymanager` and `system` functions, whose `hostsim` arms answer on the host,
 and whose sink is `HostSink`. So the simulator behaves as it did, but it is not yet a second
 implementation of the interfaces.

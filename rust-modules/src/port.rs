@@ -1,10 +1,10 @@
-//! The webOS port: the two tables that fill the platform, and the C entry that installs them.
+//! The webOS port: the two tables that fill the platform, and the C entry that hands them over.
 //!
 //! `plx_os::tv::Services` is what the lower layers read, and `app::platform::Platform` adds the shell
 //! and the frame probe the loop alone reads. Everything outside this module reaches the television
 //! through those; this is the only place that names `webos`, `keymanager`, `system` and the native
 //! video sink together. Its functions keep their own `cfg(any(hostsim, test))` arms, so the
-//! simulator installs these same tables and behaves as it always did.
+//! simulator runs on these same tables and behaves as it always did.
 use crate::app::platform::{FrameProbe, Platform, Shell};
 use std::os::raw::{c_char, c_int, c_void};
 
@@ -104,7 +104,8 @@ impl FrameProbe for WebosProbe {
     }
 }
 
-/// The webOS platform, installed once by `plex_main` before anything reads it.
+/// The webOS platform: what `plex_main` hands `app::run_application`, which installs its services
+/// for the lower layers and keeps it for the loop.
 static PLATFORM: Platform = Platform { services: &SERVICES, shell: &WebosShell, diag: &WebosProbe };
 
 /// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`). The `-> c_int` is only
@@ -114,8 +115,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     plex_main(pms_host, pms_port)
 }
 
-/// The process entry: install the platform, hand over to `app::run_application`, then end the process
-/// with the status it returned.
+/// The process entry: hand the platform to `app::run_application`, then end the process with the
+/// status it returned. The renderer's clear hook (`gfx::install_clear_probe`) takes plain functions, so
+/// it is installed here, with the webOS frame probe's own, on the thread the app boots and draws on.
 ///
 /// The executable owns the process end: `exit_now` (`_exit`, never libc's `exit`, #1115) right after
 /// the app returns, in the order the app always ended in. A process that hosts the app never calls it.
@@ -128,10 +130,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 /// `run_application` and `run_and_shutdown` when those started to return an `Exit`: a later edit that
 /// lets this return does not compile.
 fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
-    crate::app::platform::install(&PLATFORM);
     #[cfg(target_os = "linux")]
     let _ = plx_os::storage::client::install_activator(plx_os::webos::activate_storage_helper);
-    plx_base::process::exit_now(crate::app::run_application(pms_host, pms_port).code)
+    plx_gfx::gfx::install_clear_probe(crate::system::frame_probe_waiting, crate::system::frame_probe_acquired);
+    plx_base::process::exit_now(crate::app::run_application(&PLATFORM, pms_host, pms_port).code)
 }
 
 const _: fn(*const c_char, c_int) -> ! = plex_main;

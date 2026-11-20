@@ -129,7 +129,7 @@ fn the_controlled_discovery_arm_records_a_refused_launch_as_not_admitted() {
     one_server();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, false);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, false);
     let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut bridge = owner.bridge();
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {

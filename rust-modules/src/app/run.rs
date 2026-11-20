@@ -34,7 +34,7 @@ use super::*;
 
 use plx_ui::dispatch::Rig as _;
 use super::bridge::AppHost;
-use super::platform::platform;
+use super::platform::Shell;
 use super::exit::{release_of, Release};
 
 /// One lazy product frame-tail hash path for recording and replay grading alike.
@@ -172,7 +172,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
         if crate::dev::framedump::requested() {
             crate::dev::framedump::iteration_begin(app);
         }
-        platform().shell.pump_bus();
+        app.platform.shell.pump_bus();
         plx_os::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         self.clock_notice.poll();
@@ -334,7 +334,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
         unsafe { update(app, fr); }
         app.rec.content_results();
         app.instr.mark(plx_base::diag::heartbeat::Phase::TickDrain); // tick_drain
-        platform().diag.prepare_begin();
+        app.platform.diag.prepare_begin();
         publish_resources(app, fr);
     }
     fn admit(&mut self, demand: bool) -> bool {
@@ -349,7 +349,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
     }
     fn draw_and_swap(&mut self) -> bool {
         finish_prepare(self.app);
-        platform().diag.prepare_end();
+        self.app.platform.diag.prepare_end();
         unsafe { present_and_swap(self.app, &mut self.fr,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             self.wslg_frame_budget.take()); }
@@ -357,7 +357,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
     }
     fn skipped(&mut self) {
         finish_prepare(self.app);
-        platform().diag.prepare_end();
+        self.app.platform.diag.prepare_end();
         unsafe { present_and_swap(self.app, &mut self.fr,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             self.wslg_frame_budget.take()); }
@@ -719,7 +719,7 @@ fn finish_prepare(app: &mut App) {
     // there is nothing else in the loop that would carry it: a `return` above, or a term that
     // only ran on player frames, would leave the compositor believing our surface is still
     // opaque with an ordinary UI on it.
-    platform().shell.opaque_route(app.player.video_plane_bound);
+    app.platform.shell.opaque_route(app.player.video_plane_bound);
     app.instr.mark(plx_base::diag::heartbeat::Phase::Prepare); // prepare
     // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
     // settled screen must never run untimed work at the loop rate (spec §8.3).
@@ -848,20 +848,20 @@ fn publish_player_model(app: &mut App) {
 /// move. `Bridge::opaque_route`/`Bridge::clear_opaque_region` call these instead of naming
 /// the platform's `shell` directly, which is what keeps the OS-facing text — the thing the `frame`
 /// gate greps for — in this ONE file rather than split across the loop and the bridge. Each is a
-/// pure pass-through: the loop's own per-frame call above (`platform().shell.opaque_route`, from
-/// `fr`) and the dispatcher's `Rig` hook (from `Bridge`'s own copy of the same bit) are two
-/// independent callers of one primitive, not two implementations of it. `ls2_pump` needs no
+/// pure pass-through: the loop's own per-frame call above (`app.platform.shell.opaque_route`, from
+/// `app`) and the dispatcher's `Rig` hook (from `Bridge`'s own copy of the same bit and the shell it
+/// was constructed with) are two independent callers of one primitive, not two implementations of it. `ls2_pump` needs no
 /// twin here — `Bridge::ls2_pump` is or stays a no-op, since the dispatcher does not yet run a
 /// phase this early in the frame.
-pub(crate) fn rig_opaque_route(video_plane_bound: bool) {
-    platform().shell.opaque_route(video_plane_bound);
+pub(crate) fn rig_opaque_route(shell: &dyn Shell, video_plane_bound: bool) {
+    shell.opaque_route(video_plane_bound);
 }
 
 /// See [`rig_opaque_route`]. The `if self.video_plane` guard stays on `Bridge`'s side — this is
 /// the OS call alone, exactly what `tv::window::clear_opaque_region` was before the shell moved to
 /// `app::platform`.
-pub(crate) fn rig_clear_opaque_region() {
-    platform().shell.clear_opaque_region();
+pub(crate) fn rig_clear_opaque_region(shell: &dyn Shell) {
+    shell.clear_opaque_region();
 }
 
 /// **Simulator only: the television's compositor, over the frame the straighten pass just made.** The
@@ -973,7 +973,7 @@ unsafe fn present_and_swap(
             }
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
-            platform().diag.request();
+            app.platform.diag.request();
             SDL_GL_SwapWindow(app.win);
         }
         app.window_activity.presented(fr.player);
@@ -1173,7 +1173,8 @@ fn window_step(stage: plx_telemetry::telemetry::window::Stage, playing: Option<b
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
-    ingest_sdl_event_with_window(app, fr, |win| platform().shell.grab_surface(win));
+    let shell = app.platform.shell;
+    ingest_sdl_event_with_window(app, fr, |win| shell.grab_surface(win));
 }
 
 /// The window reacquisition is a platform operation, supplied separately so the
@@ -1296,7 +1297,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         app.runtime.bridge(&mut app.bridge).notify_suspend();
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
-        release_borrowed_window(|| platform().shell.release_surface());
+        release_borrowed_window(|| app.platform.shell.release_surface());
         // A trailer preview is not parked: the OS taking the screen ends it, like any other way
         // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
         // left Abandoning, and a preview session is never parked for the foreground reload —
@@ -3120,7 +3121,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // read of loop state, so the closure only borrows; nothing is moved out of the loop.
             // An empty selected phase provides the profiler floor for this build; it
             // deliberately issues no GL commands between its two boundaries.
-            let App { runtime, bridge: retained, player, pages, glass, diagnostics, lab_toast,
+            let App { runtime, bridge: retained, player, pages, glass, diagnostics, lab_toast, platform,
                 #[cfg(feature = "threadcheck")] boot_initial,
                 #[cfg(feature = "devtools")] buffer_flip_count,
                 #[cfg(feature = "devtools")] fps_shown,
@@ -3141,9 +3142,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // wait for a free back buffer: spanned like every other route's `clear`.
                         // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
                         // and, from the acquired buffer to the swap, over the commit phase.
-                        platform().diag.waiting();
+                        platform.diag.waiting();
                         plx_base::diag::spans::span("clear", || glClear(GL_COLOR_BUFFER_BIT));
-                        platform().diag.acquired();
+                        platform.diag.acquired();
                         // ONE resolve of which surface owns the "pipeline is working" signal,
                         // handed to both the transport and the read-out, so the centred read-out
                         // and the transport's inline spinner can never both light in the same
@@ -3546,7 +3547,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     plx_ui::glassload::step_index(),
                     bridge.home_snap_target(&app.pages),
                     bridge.home_snap_pos(&app.pages),
-                    platform().diag.fields()
+                    app.platform.diag.fields()
                 )
             }) {
                 log(&line);
@@ -3981,6 +3982,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
         plx_play_feed::ff_test_support::reset_session_for_test(&mut plx_media::player::reset_common_for_test);
         let (runtime, bridge) = super::super::bridge::BridgeRetained::for_test(|| 0);
         let mut app = App {
+            platform: &crate::app::platform::Platform::HOST_TEST,
             last_input: Default::default(),
             loop_t: Default::default(),
             iters_ct: Default::default(),
@@ -11207,7 +11209,7 @@ mod video_plane_gate_tests {
         // 200-line budget, so "the loop body's own depth" is now two claims: the call is at
         // `prepare_window`'s own body depth (four spaces, never inside that function's one
         // `if fr.present`), and `prepare_window` itself is called at the loop body's (eight).
-        const CALL: &str = "    platform().shell.opaque_route(app.player.video_plane_bound);";
+        const CALL: &str = "    app.platform.shell.opaque_route(app.player.video_plane_bound);";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,

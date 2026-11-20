@@ -10390,11 +10390,11 @@ impl PersonOwnerGateFixture {
         chain broken onto a continuation line."""
         plants = [
             ("_check_deps_selftest_frame_receiver.rs",
-             "pub fn pump() {\n    platform().shell.pump_bus();\n}\n", None),
+             "pub fn pump(app: &App) {\n    app.platform.shell.pump_bus();\n}\n", None),
             ("_check_deps_selftest_frame_path.rs",
              "pub fn route(shell: &dyn Shell) {\n    Shell::opaque_route(shell, true);\n}\n", None),
             ("_check_deps_selftest_frame_chain.rs",
-             "pub fn clear() {\n    platform()\n        .shell\n        .clear_opaque_region();\n}\n", None),
+             "pub fn clear(app: &App) {\n    app.platform\n        .shell\n        .clear_opaque_region();\n}\n", None),
         ]
         r = self._plant_all(plants)
         self._assert_flagged(r, "frame", [
@@ -10411,8 +10411,8 @@ impl PersonOwnerGateFixture {
             "_check_deps_selftest_frame_ok.rs",
             "pub fn forward(bridge: &mut Bridge) {\n    bridge.opaque_route(true);\n"
             "    self.bridge.clear_opaque_region();\n}\n"
-            'pub const PIN: &str = "    platform().shell.opaque_route(bound);";\n'
-            "// platform().shell.pump_bus();\n",
+            'pub const PIN: &str = "    app.platform.shell.opaque_route(bound);";\n'
+            "// app.platform.shell.pump_bus();\n",
         )
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)

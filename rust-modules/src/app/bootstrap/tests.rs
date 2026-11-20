@@ -109,10 +109,10 @@ fn controlled_boot_binds_policy_and_keeps_legacy_default_explicit() {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();
     initial.runtime_policy = Some(RuntimePolicy { harness_driven: true, lookahead_rows: 0 });
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, true);
     let first = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     initial.runtime_policy = Some(RuntimePolicy { harness_driven: false, lookahead_rows: 4 });
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, true);
     let second = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     assert!(first.views().inputs.runtime_policy.harness_driven);
     assert_eq!(first.views().inputs.runtime_policy.lookahead_rows, 0);
@@ -122,7 +122,7 @@ fn controlled_boot_binds_policy_and_keeps_legacy_default_explicit() {
     assert!(!first.views().native_preview_available && !second.views().native_preview_available,
         "controlled owners never expose a native preview port, independent of harness policy");
     initial.runtime_policy = None;
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, true);
     let legacy = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     assert_eq!(legacy.views().inputs.runtime_policy, plx_screens::inputs::RuntimePolicy::default());
     assert!(crate::app::recorder::Recplay::recording_with_sink(&initial, Box::new(plx_ui::rec::MemSink::default())).is_err());
@@ -439,7 +439,7 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = Initial::synthetic_home(19,9,None).unwrap();
     let (runtime, retained) = super::super::bridge::BridgeRetained::new(
-        ||0, initial.session.clone(), initial.consent.clone(), &mt);
+        ||0, crate::app::platform::Platform::HOST_TEST.shell, initial.session.clone(), initial.consent.clone(), &mt);
     let mut live_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut live = live_owner.bridge();
     activate(&mut live);
@@ -450,7 +450,7 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     let ambient = plx_plex::plex::session::current_snapshot();
     plx_plex::plex::reset_servers_for_test();
     plx_plex::plex::Client::restore_generation_seed(initial.primary_client).unwrap();
-    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0,&initial,&mt,true);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0, crate::app::platform::Platform::HOST_TEST.shell, &initial,&mt,true);
     let mut controlled_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut controlled = controlled_owner.bridge();
     let retained = controlled.profile_resource_view().unwrap();
@@ -492,7 +492,7 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     });
     plx_data::stores::tape::init(initial.person_credits(), false);
     plx_machine::landgate::arm_recording();
-    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0,&initial,&mt,false);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0, crate::app::platform::Platform::HOST_TEST.shell, &initial,&mt,false);
     let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut bridge = harness.bridge();
     let sid = plx_plex::plex::ServerId::UNSET;

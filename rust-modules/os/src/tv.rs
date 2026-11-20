@@ -117,7 +117,8 @@ impl Services {
 
 static INSTALLED: OnceLock<&'static Services> = OnceLock::new();
 
-/// Once, first thing the process does. A second call is refused and changes nothing.
+/// Once, by the application's entry, before anything reads them. A second call is refused and changes
+/// nothing.
 pub fn install(services: &'static Services) -> Result<(), &'static Services> { INSTALLED.set(services) }
 
 /// The installed services. Only `tv`'s own modules read them, so no other module can issue a

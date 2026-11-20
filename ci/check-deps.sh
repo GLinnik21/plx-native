@@ -1083,7 +1083,7 @@ want ladder && gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn 
 want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/app"
 
 # frame: the three privileged OS-primitive calls — `pump_bus`, `opaque_route` and `clear_opaque_region`
-# on the platform's `Shell` (`app::platform`, installed by `port.rs`) — ZERO-TOLERANCE outside
+# on the platform's `Shell` (`app::platform`, passed to `run_application` by `port.rs`) — ZERO-TOLERANCE outside
 # `app/run.rs` (D4) — no allowlist file, because there is exactly one legitimate home once D1 lands:
 # `app/run.rs` is the frame loop, and `app/bridge.rs`'s `Rig` impl delegates to `run::rig_opaque_route`/
 # `rig_clear_opaque_region` (a one-line pass-through) rather than naming the `shell` itself,
@@ -1093,10 +1093,10 @@ want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub
 #
 # The method names alone are NOT the pin: `Rig` has `opaque_route` and `clear_opaque_region` too, and
 # `Bridge`'s forwarding (`self.bridge.opaque_route(..)`) is not an OS call. So the pin is the RECEIVER:
-# a call on something named `shell` (`platform().shell.pump_bus()`, `p.shell.opaque_route(..)`), on the
+# a call on something named `shell` (`app.platform.shell.pump_bus()`, `p.shell.opaque_route(..)`), on the
 # trait by path (`Shell::pump_bus(..)`, `<dyn Shell>::pump_bus(..)`), or a continuation line of a
 # chain that begins on the line before (`.pump_bus(`, which rustfmt may break out of
-# `platform().shell`). A shell held in a differently named local does not match: this is a text gate
+# `app.platform.shell`). A shell held in a differently named local does not match: this is a text gate
 # on the loop's own call shape, and the no-op `Platform::HOST_TEST` shell is driven that way by its pin
 # test.
 #
@@ -1170,7 +1170,7 @@ fi
 fi # route
 
 # fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
-# plex_main (port.rs: install, hand over, end the process) <= 10 — counted by brace
+# plex_main (port.rs: the clear hook, hand the platform over, end the process) <= 10 — counted by brace
 # depth from the `fn` line to its matching close, not by grep pattern.
 fn_body_lines() {
   # fn_body_lines <file> <fn-name-pattern> — prints the line count of the first matching fn's body

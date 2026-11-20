@@ -25,7 +25,7 @@ use plx_screens::registry::ItemMenuReq;
 fn refused(replay: bool, fx: AppFx) -> (Option<&'static str>, crate::app::runtime_owners::Harness, usize) {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, replay);
     let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut bridge = harness.bridge();
     let mut emitted = Vec::new();

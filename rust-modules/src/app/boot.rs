@@ -3,7 +3,7 @@
 //! verbatim in phase 1a of the UI restructure (a pure move; `pub(crate)` widening only).
 
 use super::*;
-use super::platform::platform;
+use super::platform::Platform;
 
 /// What a DESKTOP window is asked to be, before the display's pixel density is known.
 #[cfg(any(feature = "hostsim", test))]
@@ -526,7 +526,7 @@ mod seam_order_tests {
             "one production hand-in; a second could name a different version"
         );
         assert_eq!(
-            source.matches(concat!("enter_application(", "pms_host,pms_port)")).count(),
+            source.matches(concat!("enter_application(", "platform, pms_host, pms_port)")).count(),
             1,
             "enter_application has one caller, run_application"
         );
@@ -555,7 +555,7 @@ mod seam_order_tests {
         let telemetry = body
             .find(".then(pre_boot_diagnostics)")
             .expect("telemetry's boot load");
-        let boot = body.find("boot(pms_host").expect("application boot");
+        let boot = body.find("boot(platform, pms_host").expect("application boot");
         assert!(
             eraser < telemetry && eraser < boot,
             "the eraser must be installed before telemetry loads and before anything can play"
@@ -601,7 +601,7 @@ mod seam_order_tests {
         let diagnostics = body
             .find("plx_os::storage::diagnostics::start(")
             .expect("diagnostics start");
-        let boot = body.find("boot(pms_host").expect("application boot");
+        let boot = body.find("boot(platform, pms_host").expect("application boot");
         assert!(identity < diagnostics && diagnostics < boot);
     }
 
@@ -1382,6 +1382,7 @@ pub(super) fn install_pms_owned(
 /// `&MainThread` (which is `!Send`, so `task::spawn` rejects any closure that captured one), and
 /// the native session slot takes the adapter itself. See `task::MainThread` and `player::adapter`.
 pub(crate) unsafe fn boot(
+    platform: &'static Platform,
     pms_host: *const c_char,
     pms_port: c_int,
     mt: plx_base::task::MainThread,
@@ -1390,8 +1391,6 @@ pub(crate) unsafe fn boot(
     // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
     // so it is handed over here, before any playback can land. Replay boots take it too.
     plx_media::route::install_up_next_still_warm(super::playback::warm_up_next_still);
-    // The dev frame probe's clock is `os`'s, which `gfx` does not depend on.
-    plx_gfx::gfx::install_clear_probe(|| platform().diag.waiting(), || platform().diag.acquired());
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
         super::bootstrap::Preflight::Record => {
@@ -1404,8 +1403,8 @@ pub(crate) unsafe fn boot(
         super::bootstrap::Preflight::Replay { initial, .. } => Some((initial.clone(), None)),
     };
     match initial {
-        Some((initial, deferred)) => App::from_init(initial, preflight, pms_host, pms_port, mt, deferred),
-        None => construct(pms_host, pms_port, mt, preflight, None, None),
+        Some((initial, deferred)) => App::from_init(platform, initial, preflight, pms_host, pms_port, mt, deferred),
+        None => construct(platform, pms_host, pms_port, mt, preflight, None, None),
     }
 }
 
@@ -1451,7 +1450,7 @@ pub(super) fn resume_stored(pages: &mut plx_ui::dispatch::Dispatcher<super::brid
 }
 
 pub(crate) unsafe fn construct(
-    pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
+    platform: &'static Platform, pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
     deferred: Option<plx_plex::plex::session::DeferredLoad>,
 ) -> Result<App, Exit> {
@@ -1645,7 +1644,7 @@ pub(crate) unsafe fn construct(
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
-    platform().shell.bind_window(win);
+    platform.shell.bind_window(win);
     let wflags = SDL_GetWindowFlags(win);
     log(&format!(
         "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -1654,11 +1653,11 @@ pub(crate) unsafe fn construct(
         i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)
     ));
 
-    platform().shell.grab_surface(win);
+    platform.shell.grab_surface(win);
     // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
-    platform().shell.arm_opaque_region();
+    platform.shell.arm_opaque_region();
     // A required shader the driver refuses is a refusal like any other (`Exit::from(GfxFault)`):
     // the same status the process always ended with, returned instead of `exit_now`'d from inside GL.
     plx_gfx::gfx::init_gl()?;
@@ -1832,10 +1831,10 @@ pub(crate) unsafe fn construct(
             captured_dev_sources(&dev_servers.unwrap_or_default())),
     };
     let (mut runtime, mut retained) = if controlled {
-        super::bridge::BridgeRetained::controlled_home(plx_base::diag::heartbeat::now_us,
+        super::bridge::BridgeRetained::controlled_home(plx_base::diag::heartbeat::now_us, platform.shell,
             initial.as_ref().expect("controlled initialization"), &mt, preflight.replay())
     } else {
-        super::bridge::BridgeRetained::new(plx_base::diag::heartbeat::now_us, session_init,
+        super::bridge::BridgeRetained::new(plx_base::diag::heartbeat::now_us, platform.shell, session_init,
             plx_telemetry::telemetry::consent::current().unwrap_or_default(), &mt)
     };
     let mut bridge = runtime.bridge(&mut retained);
@@ -2406,6 +2405,7 @@ pub(crate) unsafe fn construct(
     // End the bootstrap capability before moving its physical owners into App.
     drop(bridge);
     let mut app = App {
+        platform,
         last_input,
         loop_t,
         iters_ct,

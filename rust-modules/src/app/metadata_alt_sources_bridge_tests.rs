@@ -116,7 +116,7 @@ fn entering_controlled_home_never_reuses_a_live_detail_source_override() {
     }));
     let initial = super::super::bootstrap::Initial::synthetic_home(41, 17, None).unwrap();
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, false);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, false);
     let mut controlled_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let controlled = controlled_owner.bridge();
     assert_eq!(live.metadata_view().current().unwrap().source(), "live-only");
