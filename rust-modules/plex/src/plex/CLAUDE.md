@@ -634,10 +634,13 @@ a dead source is **absent** from Home and states itself in its own library secti
   `cleanup_after_confirmed_clear`, `cleanup_temporaries`) and hands it to the `*_via(authority, helper, ..)`
   form, so a test passes the authority it grades and, for `Helper`, a transport of its own (an in-memory
   `Backend` or a closure); the real `NativeTransport` is named by the public forms only, because on a Linux
-  host it waits out a 12 s start deadline with no helper behind it. There is no process-global override. A
-  helper that cannot answer is a blocked read, never a reason to use files. `clear_for_erase`,
-  `read_into_cache_locked` and `install_preferences::keeps_language_file` read the same value; the
-  telemetry sweep after a durable clear runs only under `Helper`.
+  host it waits out a 12 s start deadline with no helper behind it. There is no process-global override.
+  Under `Helper` the dispatchers never answer for a helper that cannot answer (a blocked read stays blocked,
+  and a legacy file is neither imported nor retired on its word); the files a television does keep beside DB8
+  are `session.rs`'s own: the marked fallback `save_legacy_fallback_locked` writes when a commit is not
+  durable, which `read_legacy_filtered_locked` serves as transient state, and the legacy migration inputs.
+  `clear_for_erase`, `read_into_cache_locked` and `install_preferences::keeps_language_file` read the same
+  value; the telemetry sweep after a durable clear runs only under `Helper`.
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
   grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
   `persistence::commit_session_with` measures the projected document (the os layer's own

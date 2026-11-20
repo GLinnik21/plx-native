@@ -1421,7 +1421,7 @@ fn a_helper_authority_reads_and_clears_through_the_helper_and_keeps_no_file() {
     assert_eq!(
         with_io_for_test(|| persistence::cleanup_after_confirmed_clear_via(Authority::Helper, &mut transport, Vec::new())),
         persistence::ClearCleanupOutcome::Confirmed);
-    assert_eq!(std::fs::read_dir(&state.dir).unwrap().count(), 0, "the helper arm never writes a file of the app's own");
+    assert_eq!(std::fs::read_dir(&state.dir).unwrap().count(), 0, "the helper arm leaves no record file under the state root");
 }
 
 /// The files arm for a platform with no helper (the desktop, a host test, Tizen): the record is the
@@ -1455,10 +1455,12 @@ fn a_files_authority_keeps_the_record_in_files_and_never_asks_the_helper() {
     assert!(matches!(boot.state, CanonicalRead::Cleared { revision: 4, .. }), "the record the files hold is read as it is");
 }
 
-/// A helper that cannot answer is a blocked canonical store, never a licence to use files: not for a
-/// read, not for a write, not for a migration, and a legacy file is neither imported nor retired.
+/// At this layer a helper that cannot answer is a blocked canonical store: no read, write or
+/// migration is answered from the record files, and a legacy file is neither imported nor retired.
+/// (The session layer above writes its own marked fallback after a non-durable commit; that file is
+/// not the record and is not exercised here.)
 #[test]
-fn a_helper_authority_never_falls_back_to_files_when_the_helper_cannot_answer() {
+fn a_helper_authority_never_answers_from_the_record_files_when_the_helper_cannot_answer() {
     use plx_os::storage::StoreError;
     let _serial = plx_base::testlock::serial();
     let state = TempCanonicalState::new("authority-helper-down");
@@ -1490,5 +1492,5 @@ fn a_helper_authority_never_falls_back_to_files_when_the_helper_cannot_answer() 
         persistence::cleanup_after_confirmed_clear_via(Authority::Helper, &mut down, vec![legacy.path.clone()]),
         persistence::ClearCleanupOutcome::AuthorityNotConfirmed);
     assert!(legacy.path.exists(), "an unconfirmed clear retires nothing");
-    assert_eq!(std::fs::read_dir(&state.dir).unwrap().count(), 0, "no file of the app's own was created");
+    assert_eq!(std::fs::read_dir(&state.dir).unwrap().count(), 0, "no record file was created under the state root");
 }
