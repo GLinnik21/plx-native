@@ -188,10 +188,30 @@ jobs:
         uses: ./.github/actions/deps-cache
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          workspaces: rust-modules -> target-sim-ci
+          workspaces: |
+            rust-modules -> target-sim-ci
+            rust-modules -> target-sim-ci-macapp
           key: simulator-macos
       - name: Build native macOS simulator
         run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
+      - name: Link the macOS app's feature set
+        # What `make macapp` ships: `--no-default-features --features hostsim,play-feed` (the
+        # release build in `ci/mkmacapp.py`, linked here in DEBUG: the harder case for the reliance
+        # below, and cheaper than a release build). The desktop platform (`platform_desktop`) never
+        # names the television's code, but the crate still COMPILES it (`system.rs`'s Wayland and
+        # SDL-private externs, `webos`, `keymanager`): a host executable links only because nothing
+        # references those items and the linker drops them (`-dead_strip` here, `--gc-sections` on
+        # Linux). A change that makes one reachable from the desktop entry fails this link on
+        # libwayland, glib or luna-service2, which the default-features build above may not show. This
+        # step guards that reliance until the platform crates split and the desktop build no longer
+        # contains `webos` (docs/platform-ports.md, W7). It has its own target dir because cargo does
+        # not hash its output: in `target-sim-ci` it would overwrite the binary the steps below run.
+        # The host FFmpeg and libass it links were staged by the step above.
+        run: |
+          CARGO_INCREMENTAL=0 cargo "+$(make -s print-rust-toolchain)" build \
+            --manifest-path rust-modules/Cargo.toml \
+            --target-dir rust-modules/target-sim-ci-macapp \
+            --no-default-features --features hostsim,play-feed --bin plxnative-sim
       - name: Replay all committed product recordings
         # 960x540, not the driver's 1920x1080 default. The runner has no GPU (the log says `GL:
         # Apple Software Renderer`), so a replay is CPU-bound in the rasteriser and costs what the

@@ -14,7 +14,7 @@
 #   present  — the present gate's worker door: ONE atomic static in machine/src/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
-#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs, port.rs and app/adapters/backends.rs
+#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs, port.rs, platform_desktop.rs and app/adapters/backends.rs
 #              (step L15: the Starfish/ACB verbs are the player's alone).
 #
 # Phase 4 rule (D3 rewrite, phase 12):
@@ -1140,8 +1140,8 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 fi # frame
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
-# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which names one)
-# and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
+# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` and `platform_desktop.rs` (which
+# name one each) and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
 # `app/adapters/backends.rs`, the boot composition that resolves the installed display once for the
 # ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
 # driver set is built). Every other module reaches the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
@@ -1156,12 +1156,12 @@ while IFS= read -r line; do
   case "$p" in "$SRC_PLAY_FEED"/*|"$SRC_PLAY_URI"/*)
     case "$line" in *tv::sink::installed*|*tv::sink::display_installed*) ;; *) continue ;; esac ;;
   esac
-  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_OS"/tv/*|"$SRC_OS"/tv.rs|"$SRC_OS"/webos/*|"$SRC"/port.rs|"$SRC"/app/adapters/backends.rs) continue ;; esac
+  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_OS"/tv/*|"$SRC_OS"/tv.rs|"$SRC_OS"/webos/*|"$SRC"/port.rs|"$SRC"/platform_desktop.rs|"$SRC"/app/adapters/backends.rs) continue ;; esac
   if is_wholly_test "$p"; then continue; fi
   echo "    $line"; sink_bad=$((sink_bad+1))
 done < <(grep_code 'tv::sink::(installed|display_installed)|\b(VideoSink|DisplaySink)\b' "$SRC" "$SRC_OS" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_OWP")
 if [ "$sink_bad" -eq 0 ]; then ok "sink"
-else fail "sink: $sink_bad line(s) naming the video sink outside playback execution, port.rs, tv.rs and tv/"; fi
+else fail "sink: $sink_bad line(s) naming the video sink outside playback execution, port.rs, platform_desktop.rs, tv.rs and tv/"; fi
 fi # sink
 
 # route: `Route::` in app/ = 0, and `enum Route` gone from the whole tree (D1/D4). No allowlist:

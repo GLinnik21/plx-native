@@ -1373,8 +1373,9 @@ pub(super) fn install_pms_owned(
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
-/// refusal returns its `Exit` (the entry ends the process with its code, `port::plex_run`; a hosted
-/// entry reports it and stays alive).
+/// refusal returns its `Exit` (the entry ends the process with its code: `port::plex_run` on the
+/// television, `src/bin/sim.rs` after `platform_desktop::run` on a desktop; a hosted entry reports it
+/// and stays alive).
 ///
 /// `mt`, THE main-thread token, is minted once by `plex_run` itself (`plx_base::task::MainThread::
 /// assume()` — that function IS the SDL main thread) and MOVES into `App.adapters.player` here,

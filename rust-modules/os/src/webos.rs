@@ -45,7 +45,7 @@ use crate::tv::device::{Hardware, Info, NyxFile, Platform, WebosDetail};
 pub mod jail_repair;
 pub mod caps;
 pub mod toast;
-#[cfg(all(not(feature = "hostsim"), not(test)))]
+#[cfg(not(test))]
 pub mod video_sink;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
@@ -142,7 +142,8 @@ fn plex_platform(release: &str) -> Platform {
 }
 
 /// The files `devcaps::probe` parses, read from the file system: webOS's own paths, named by the
-/// model. The simulator's host has none of them and so answers "unreadable", as it always did.
+/// model. A host that is not a television has none of them and so answers "unreadable"; the simulator does not
+/// read them at all, its platform states `Files::NONE`.
 pub const DEVICE_FILES: crate::tv::device::Files = crate::tv::device::Files {
     read: |path| std::fs::read_to_string(path),
     exists: |path| std::path::Path::new(path).exists(),
@@ -214,7 +215,7 @@ fn os_release_value<'a>(s: &'a str, key: &str) -> Option<&'a str> {
 /// [`OS_RELEASE_FIRST_MAJOR`]: no firmware older than that writes this file, so such a text is not
 /// this set's own, and a major 1 to 4 would flip the decisions that read it (the credential
 /// default, VP9 10-bit, the DV platform gate, the old-ABI seek). The ID check is what keeps a Linux
-/// host that runs the simulator from reading its distribution's `VERSION_ID` as a firmware.
+/// host that runs this probe (the unit tests, a CI runner) from reading its distribution's `VERSION_ID` as a firmware.
 ///
 /// The file carries no codename, API version or build id, so those stay empty rather than invented;
 /// in particular [`Info::build`] stays empty, not the release, so that this boot and a nyx boot of
@@ -486,7 +487,7 @@ pub fn poll_home() {
 /// minimize leg instead of leaving the user on a screen whose BACK did nothing.
 const HOME_APP_ID: &str = "com.webos.app.home";
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 fn launch_home() -> bool {
     plx_base::eventlog::log(&format!(
         "gohome: no LS2 bus off-device — the root press would launch {HOME_APP_ID} on a television"
@@ -494,22 +495,22 @@ fn launch_home() -> bool {
     true
 }
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 fn minimize() {}
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 fn ls2_probe() {
     plx_base::eventlog::log("gohome: no LS2 bus off-device — nothing to probe");
 }
 
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn ls2_probe() {
     ls2::probe();
 }
 
 /// Grade only the allowlisted fields in the LS2 wake reply. The raw platform JSON never enters a
 /// report or the local snapshot.
-#[cfg(any(test, all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))]
+#[cfg(any(test, all(target_os = "linux", target_arch = "arm")))]
 fn storage_activation_reply(reply: &str) -> crate::storage::wire::failure::Detail {
     use crate::storage::wire::failure::{Detail, Stage};
     if reply.len() > 4096 { return Detail::new(Stage::ActivationInvalidReply, None); }
@@ -531,7 +532,7 @@ fn storage_activation_reply(reply: &str) -> crate::storage::wire::failure::Detai
 /// The helper publishes readiness from its startup path, so neither a successful method reply nor
 /// delivery of `/wake` is required; the result is retained only as diagnostics and the authenticated
 /// Unix-socket `Hello` is the sole readiness proof.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(all(target_os = "linux", target_arch = "arm", not(any(test, feature = "test-support"))))]
 pub fn activate_storage_helper(service: &str) -> crate::storage::wire::failure::Detail {
     use crate::storage::wire::failure::{Detail, Stage};
     let uri = format!("luna://{service}/wake");
@@ -549,7 +550,7 @@ pub fn activate_storage_helper(service: &str) -> crate::storage::wire::failure::
 /// Hosts and the simulator have no storage helper to wake: the same answer an absent port gives.
 #[cfg(all(
     target_os = "linux",
-    not(all(target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))
+    not(all(target_arch = "arm", not(any(test, feature = "test-support"))))
 ))]
 pub fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure::Detail {
     use crate::storage::wire::failure::{Detail, Stage};
@@ -559,7 +560,7 @@ pub fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure:
 /// One `getSystemSettings` round trip on a fresh anonymous registration (any thread: the
 /// registration owns its glib context). `None` when the bus refused or timed out. `budget` bounds
 /// the call only: registration and unregistration are not bounded by it (`ls2`'s own doc says so).
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> {
     ls2::register()
         .map_err(ls2::Fail::from)
@@ -570,7 +571,7 @@ fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> 
 /// What the platform's settings service says about the locale; `i18n` owns the parse and the log
 /// lines. The same 600 ms bus budget as a root press, and for the same reason: the caller is the
 /// main thread at boot.
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn system_locale() -> crate::tv::LocaleReply {
     match settings_reply(r#"{"keys":["localeInfo"]}"#, std::time::Duration::from_millis(600)) {
         Some(raw) => crate::tv::LocaleReply::Reply(raw),
@@ -578,7 +579,7 @@ pub fn system_locale() -> crate::tv::LocaleReply {
     }
 }
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn system_locale() -> crate::tv::LocaleReply {
     crate::tv::LocaleReply::NoPlatform
 }
@@ -597,7 +598,7 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 /// before `Load` is ever called, for as long as the hub takes: this Load is delayed by that, and is
 /// failed by the pump's `NATIVE_LOAD_BUDGET` if the wait outlasts it. A hub that answers the
 /// registration and then stays silent costs the call's 300 ms and keeps the 400 ms default.
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn sound_output() -> crate::tv::sound::Reply {
     use crate::tv::sound::Reply;
     match settings_reply(r#"{"category":"sound","keys":["soundOutput"]}"#, std::time::Duration::from_millis(300)) {
@@ -606,12 +607,12 @@ pub fn sound_output() -> crate::tv::sound::Reply {
     }
 }
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn sound_output() -> crate::tv::sound::Reply {
     crate::tv::sound::Reply::NoPlatform
 }
 
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn launch_home() -> bool {
     let payload = format!("{{\"id\":\"{HOME_APP_ID}\"}}");
     let started = std::time::Instant::now();
@@ -653,7 +654,7 @@ fn launch_home() -> bool {
     }
 }
 
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn minimize() {
     let win = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     if win.is_null() {
@@ -666,11 +667,11 @@ fn minimize() {
     plx_base::eventlog::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
 }
 
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 static WINDOW: std::sync::atomic::AtomicPtr<std::os::raw::c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 extern "C" {
     fn SDL_MinimizeWindow(win: *mut std::os::raw::c_void);
 }
@@ -678,21 +679,21 @@ extern "C" {
 /// Hand this module the SDL window, once, at boot — `textinput::bind`'s shape and for its reason:
 /// the window is created deep inside `plex_run` and the platform call needs it a long way from
 /// there.
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn bind_window(win: *mut std::os::raw::c_void) {
     WINDOW.store(win, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
 /// The URI media pipe the port installs (`tv::LegacyWebosMedia::uri_media`): the explicitly enabled bus
-/// worker on the television, or `NoUriMedia` in a feature-off build, simulator or test.
+/// worker on the television, or `NoUriMedia` in a feature-off build or a test.
 /// This does not select the URI playback route.
-#[cfg(all(feature = "uri-transport", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(all(feature = "uri-transport", not(any(test, feature = "test-support"))))]
 pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &ls2::uri::Transport;
 
-#[cfg(not(all(feature = "uri-transport", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
+#[cfg(not(all(feature = "uri-transport", not(any(test, feature = "test-support")))))]
 pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
 
 /// One LS2 request/reply, on the calling thread.
@@ -728,7 +729,7 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 /// caller's log line instead of being freed. Anonymous clients do not
 /// collide with each other, so nothing here is serialised; a registration lives for one caller's
 /// use and is unregistered on drop, as both copies always did.
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub mod ls2 {
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_int, c_void};
@@ -1409,8 +1410,8 @@ mod tests {
         }
     }
 
-    /// The probe also runs in the simulator, which installs the webOS port's table: on a Linux
-    /// host `/usr/lib/os-release` is the host's, and Ubuntu's `VERSION_ID` is numeric. Only a file
+    /// The probe also runs on a Linux host that is not a television (the unit tests, a CI runner): there
+    /// `/usr/lib/os-release` is the host's, and Ubuntu's `VERSION_ID` is numeric. Only a file
     /// that says it is webOS TV's (`ID=starfish`, on every firmware image checked from 5.5 to
     /// 11.2) may name a firmware.
     #[test]

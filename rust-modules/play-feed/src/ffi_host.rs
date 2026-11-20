@@ -61,7 +61,7 @@
 //! # How it is reached
 //!
 //! The verbs below are private; [`HostSink`] is the simulator's own `tv::sink::VideoSink`, one
-//! method per verb, installed by `port.rs` for the `hostsim` build (the application builds it in
+//! method per verb, held by `platform_desktop.rs`'s `SERVICES` for the `hostsim` build (the application builds it in
 //! `app::adapters::hostsim`, with the simulator's picture) and returned directly by the media
 //! tests' composition (`player::test_physical`) and the application's (`app::adapters::backends`)
 //! in the hostsim tests. The `*_for_test` hooks stay here, next to the statics

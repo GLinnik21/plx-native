@@ -3,7 +3,8 @@
 //! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
 //! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`
-//! and, when it returns its `Exit` (`exit.rs`), ends the process.
+//! and, when it returns its `Exit` (`exit.rs`), ends the process. The desktop executable
+//! (`src/bin/sim.rs`) enters through `platform_desktop::run` instead and ends the process itself.
 //! The only application subsystems left in C are the starfish.c C++ Feed seam and the video_plane.c
 //! ACB / exported-window display binding (the engine itself is Rust: plx_media::player).
 #![allow(non_upper_case_globals)]
@@ -573,7 +574,8 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
 /// reason as [`pre_boot_diagnostics`] (D4): `run_application` stays a ten-line skeleton naming only
 /// the THREE real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
 ///
-/// It RETURNS how the session ended; ending the process is the executable entry's (`port::plex_run`).
+/// It RETURNS how the session ended; ending the process is the executable entry's (`port::plex_run` on
+/// the television, `src/bin/sim.rs` after `platform_desktop::run` on a desktop).
 /// The `App` is leaked by the caller (`exit::entry`), so the last thing this does is the one `Drop`
 /// that persists something.
 unsafe fn run_and_shutdown(app: &mut App) -> Exit {
@@ -660,7 +662,8 @@ fn enter_application(platform: &'static platform::Platform, pms_host: *const c_c
 pub(crate) fn run_application(platform: &'static platform::Platform, pms_host: *const c_char, pms_port: c_int) -> Exit {
     // Returns how it ended and drops nothing: an early-boot refusal has live workers (diagnostics,
     // capability probe, telemetry) just as a played session does, so `exit::entry` leaks the `App`.
-    // Ending the process is the entry's (`port::plex_run`); a hosted entry never does.
+    // Ending the process is the entry's (`port::plex_run` on the television, `src/bin/sim.rs` after
+    // `platform_desktop::run` on a desktop); a hosted entry never does.
     platform.install_services(); // once, before anything below reads `tv`
     exit::entry(|| enter_application(platform, pms_host, pms_port), |app| unsafe { run_and_shutdown(app) })
 }

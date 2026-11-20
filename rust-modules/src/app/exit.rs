@@ -3,9 +3,10 @@
 //! [`run_application`](super::run_application) RETURNS an [`Exit`]; it never ends the process.
 //! An early-boot refusal returns its code, and a played session returns after `run::shutdown` and
 //! the telemetry guard drop. Ending the process is the EXECUTABLE entry's: `port::plex_main` (the C
-//! shim and the simulator both enter through `plex_run`, which only calls it) calls
+//! shim enters through `plex_run`, which only calls it) calls
 //! `plx_base::process::exit_now(exit.code)` right after, in the order the app always ended in, so a
-//! television behaves as before. A process that HOSTS the application never calls `exit_now` or
+//! television behaves as before; the simulator's `main` calls `platform_desktop::run`, which returns the
+//! code, and ends the process the same way. A process that HOSTS the application never calls `exit_now` or
 //! `exit`: libc's `exit` runs OpenSSL's cleanup under the detached curl workers (#1115), and a host
 //! would be killed under its own runtime. No exit a hosted process can reach remains in the tree:
 //! the graphics boot returns a [`GfxFault`](plx_gfx::gfx::GfxFault) ([`Exit::from`]) where it used

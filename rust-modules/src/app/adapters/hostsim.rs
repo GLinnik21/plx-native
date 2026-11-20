@@ -1,4 +1,4 @@
-//! The simulator's side of the playback seam: the host sink its port table holds, and the decoded
+//! The simulator's side of the playback seam: the host sink the desktop platform's `SERVICES` holds, and the decoded
 //! picture that sink is built with. The sink itself is the Feed backend's stand-in
 //! (`plx_play_feed::ffi_host`); what lives here is what only the application may name, because it
 //! draws: `sim_video` composites the picture under the finished UI frame with `plx_gfx`. The media
@@ -10,8 +10,8 @@ mod sim_video;
 
 use plx_play_feed::ffi_host::{HostSink, Hooks};
 
-/// The simulator's video sink, built with the simulator's decoded picture. The port table holds
-/// it as `Services.legacy_webos_media.sink`; a hostsim test binary of this crate reads it directly.
+/// The simulator's video sink, built with the simulator's decoded picture. The desktop platform
+/// (`platform_desktop.rs`) holds it as `Services.legacy_webos_media.sink`; a hostsim test binary of this crate reads it directly.
 pub(crate) static HOST_SINK: HostSink = HostSink::new(Hooks::over(&sim_video::SimVideo));
 
 /// The render thread's half of the simulator's picture, once per bound-plane frame, after the
