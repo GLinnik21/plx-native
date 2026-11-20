@@ -170,4 +170,21 @@ mod tests {
             "display_installed() is the host sink");
         assert_eq!(std::ptr::from_ref(media.sink).cast::<()>(), host, "so is the video sink");
     }
+
+    /// The desktop's own `media.compose`, the one `run_application` calls, composes the Feed and no
+    /// URI driver: published, the session offers the adapter's set (no `Uri` in it) and holds no
+    /// resolver. A resolver here would describe a driver this platform never installed.
+    #[test]
+    fn the_desktop_platform_composes_the_feed_and_no_resolver() {
+        use plx_media::player::adapter::PlayerAdapter;
+        let mut adapter = PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut session = plx_media::route::PlaybackSession::IDLE;
+        let composed = (PLATFORM.media.compose)(&mut adapter, false);
+        crate::app::platform::publish_composition(&mut session, &adapter, composed);
+        assert_eq!(session.backends(), adapter.composed_backends());
+        assert!(!session.backends().uri);
+        assert!(session.uri_preflight_port().is_none());
+        #[cfg(feature = "play-feed")]
+        assert!(session.backends().feed, "the Feed is the desktop's driver");
+    }
 }

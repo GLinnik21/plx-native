@@ -523,8 +523,9 @@ pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter, produc
 /// A host rig's composition of the product URI driver over its own ports, published as the boot
 /// publishes: the install, then [`publish_composition`](crate::app::platform::publish_composition)
 /// with the resolver it returned (the session learns the adapter's whole set, Feed included).
-/// Whether the driver installed.
-#[cfg(all(test, feature = "play-uri"))]
+/// Whether the driver installed. Gated as its only caller is: the lifecycle rig's
+/// `uri_boot_tests`, which `run.rs` builds under `hostsim` and `play-feed`.
+#[cfg(all(test, feature = "hostsim", feature = "play-feed", feature = "play-uri"))]
 pub(crate) fn install_and_publish_uri_product(adapter: &mut PlayerAdapter,
     session: &mut plx_media::route::PlaybackSession, product: UriProduct,
     transport: &'static dyn plx_os::tv::uri::UriMedia,
@@ -823,8 +824,20 @@ mod tests {
         assert!(acb.contains(" major=4 evidence=none\n"), "{acb}");
     }
 
-    /// The composition the boot runs, over a fresh adapter and session, published as the boot
-    /// publishes it. `install_uri` stands for the platform's URI installer.
+    /// The television's own composition ([`compose_native`], which is what `Platform::media` names
+    /// for webOS, with the product installer behind it) over a fresh adapter and session, published
+    /// as the boot publishes it.
+    #[cfg(feature = "play-uri")]
+    fn composed_natively(controlled: bool) -> (PlayerAdapter, plx_media::route::PlaybackSession) {
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut session = plx_media::route::PlaybackSession::IDLE;
+        let composed = compose_native(&mut adapter, controlled);
+        crate::app::platform::publish_composition(&mut session, &adapter, composed);
+        (adapter, session)
+    }
+
+    /// The composition over an injected URI installer, for the one outcome the product installer
+    /// cannot be made to produce here: a refused install.
     #[cfg(feature = "play-uri")]
     fn composed_and_published(controlled: bool,
         install_uri: impl FnOnce(&mut PlayerAdapter) -> Option<ResolvePort>)
@@ -836,18 +849,10 @@ mod tests {
         (adapter, session)
     }
 
-    /// The URI installer a normal boot runs, over ports that take any driver: the product with no
-    /// window path, which installs and answers a resolver.
-    #[cfg(feature = "play-uri")]
-    fn product_over_null_ports(adapter: &mut PlayerAdapter) -> Option<ResolvePort> {
-        install_uri_product_with_ports(adapter, UriProduct::production(UriBinding::Unbound),
-            &plx_os::tv::uri::NoUriMedia, &sink::NoSink)
-    }
-
     #[test]
     #[cfg(feature = "play-uri")]
     fn a_composed_uri_driver_is_published_with_its_resolver() {
-        let (adapter, session) = composed_and_published(false, product_over_null_ports);
+        let (adapter, session) = composed_natively(false);
         assert!(adapter.composed_backends().uri, "the product driver installed");
         assert_eq!(session.backends(), adapter.composed_backends(), "the session is told the adapter's set");
         assert!(session.uri_preflight_port().is_some(), "and the resolver that driver comes with");
@@ -871,26 +876,15 @@ mod tests {
 
     #[test]
     #[cfg(feature = "play-uri")]
-    fn a_controlled_boot_composes_no_uri_driver_and_never_asks_for_one() {
-        let (adapter, session) = composed_and_published(true, |_| {
-            panic!("a controlled run touches no native port, so it installs no URI driver")
-        });
+    fn a_controlled_boot_composes_no_uri_driver_and_no_resolver() {
+        // The same composition as the normal boot's test above, with the one flag a replay or a
+        // scripted Home sets: it touches no native port, so the product driver is not installed.
+        let (adapter, session) = composed_natively(true);
         assert!(!adapter.composed_backends().uri);
         assert!(!session.backends().uri);
         assert!(session.uri_preflight_port().is_none());
         assert_eq!(session.backends(), adapter.composed_backends(),
             "the Feed is composed as in a normal boot (or the build has none)");
-    }
-
-    #[test]
-    fn the_desktop_composition_is_the_feed_and_no_resolver() {
-        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
-        let mut session = plx_media::route::PlaybackSession::IDLE;
-        compose_feed(&mut adapter);
-        crate::app::platform::publish_composition(&mut session, &adapter, Composition::default());
-        assert_eq!(session.backends(), adapter.composed_backends());
-        assert!(!session.backends().uri);
-        assert!(session.uri_preflight_port().is_none());
     }
 
     #[cfg(feature = "play-uri")]
