@@ -179,8 +179,12 @@ tap, else where the Engine was aimed. The reloaded Load carries the node and the
 (#1166) arms as for any declared direct play; a withdrawal later in the play is not undone, because the
 route declares a stream's RPUs once.
 
-**Limits.** Every play of such a file pays one extra Load (nothing remembers the finding), a remux the
-server makes of it is not declared, and the URI engine is not covered. Not yet compared on a set
+**Limits.** Every play of such a file pays one extra Load (nothing remembers the finding), and the URI
+engine is not covered. A remux the server makes of it is declared like a direct play: the copy keeps the
+RPUs and the file's frozen capability (`copied_video_dv`), so the demuxer finds them and the route
+declares them, a Profile 5 included, which is what keeps a remuxed Profile 5 from showing its base
+layer; only a re-encode, whose frozen capability is `Unknown`, stays undeclared. A remux has not been
+measured on a set. Not yet compared on a set
 against the same film with its record.
 
 ---

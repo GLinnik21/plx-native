@@ -1090,6 +1090,27 @@ fn rpu_dovi_declares_only_what_the_record_would_have_declared() {
 }
 
 #[test]
+fn rpu_dovi_is_declared_on_a_server_remux_as_on_direct_play() {
+    use plx_plex::plex::session::DolbyVisionMode;
+    // A remux copies the video, RPUs included, and keeps the file's frozen capability, so the demuxer
+    // finds them in the copy and the route declares them as it would on a direct play. For a Profile 5
+    // that is the point: the plan re-encodes a declared one rather than remux it into its base layer,
+    // and the server, which saw no record, remuxed this one anyway.
+    let p5 = plx_playback_contract::feed::RpuDovi { profile: 5, bl_compat: 0 };
+    for (rpu, profile) in [(RPU_P81, 8), (p5, 5)] {
+        let mut ps = undeclared_route("hevc", DvCapability::Supported);
+        crate::route::install_transcode_for_test(&mut ps, true, false);
+        assert!(crate::route::declare_rpu_dovi(&mut ps, rpu, DolbyVisionMode::Auto), "{rpu:?}");
+        assert_eq!(crate::route::stream_dv_presentation(&ps).declared().map(|n| n.profile_id), Some(profile));
+    }
+    // A re-encode freezes no capability: the RPUs it may carry are not declared.
+    let mut ps = undeclared_route("hevc", DvCapability::Unknown);
+    crate::route::install_transcode_for_test(&mut ps, false, false);
+    assert!(!crate::route::declare_rpu_dovi(&mut ps, RPU_P81, DolbyVisionMode::Auto));
+    assert_eq!(crate::route::stream_dv_presentation(&ps), DvPresentation::NotDv);
+}
+
+#[test]
 fn rpu_dovi_follows_into_the_stored_original_candidate() {
     use plx_plex::plex::session::DolbyVisionMode;
     let mut ps = undeclared_route("hevc", DvCapability::Supported);
