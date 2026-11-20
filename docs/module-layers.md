@@ -330,13 +330,13 @@ proves the references are gone and nothing more; L15b is open.
 | **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume machine is `player::lifecycle`, its drivers `player::foreground` and the transport-pause contract `player::transport` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
 | **L13** tests move up to the layer that owns their parts — **done** | 41 / 96 | Part a moved the auth, plex, i18n, task and fontcov tests that named upper layers to `app/` (`session_*_tests.rs`), `screens/login_text_fit_tests.rs`, `plex`, `auth::owner` and `storage::client`, and moved `fontcov`'s `Measure` impl beside the trait, with `ui::machine`'s new `BareArg`/`BareMeasure` fixtures for the rest; part b moved the data, media and ui ones to `app/` (`dispatch_return_tests.rs`, `overscan_audit_tests.rs`) and `screens/` (`plaintext_question`, `library/labels_tests.rs`, `search/tests.rs`, `player`), and rewrote two against their own layer. |
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
-| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[platform webos]` reaches the television through the `tv` interfaces in `os` that the port fills at boot: `tv::{device, native_video, secure, home, toast}` (the window, the bus pump and the frame probe are `app::platform`'s `Shell` and `FrameProbe` since W2), `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `plx_os::webos::video_sink::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
-| **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it, the simulator as its own port, and the webOS facts the gate cannot see. See below. |
+| **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[platform webos]` reaches the television through the `tv` interfaces in `os` that the port fills at boot: `tv::{device, native_video, secure, home, toast}` (the window, the bus pump and the frame probe are `app::platform`'s `Shell` and `FrameProbe` since W2), `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `plx_os::webos::video_sink::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral (L15b). |
+| **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it and the webOS facts the gate cannot see; the simulator became its own platform in W4. See below. |
 | **L15c** the platform value and the three contracts — **done** | — | Wave R (the rename that gave this page `os` and `[platform webos]`) landed as #1474; W2 landed (`tv::Port` became `tv::Services`, with four groups of hooks; the shell and the frame probes moved to `app::Platform`), and so did the three contracts, W3a to W3c: who may persist credentials (#1477), what evidence admits a URI player (#1478), who ends the process (#1479). See "L15c to L15h" below. |
-| **L15d** neutral types and the simulator as its own platform (L15b item 2) — **W3d landed, W4 planned** | — | W3d has landed (the opaque `Backend` tag, `sandbox` to `native_video`, identity publishes a platform name and version, `device::Info` keeps its webOS fields in `WebosDetail`, and `devcaps` reads its files through the platform), and what is planned is W4 (a second fence section, `[platform desktop]`, with its own value; the simulator's host arms leave `system` and `port`, the other `hostsim` terms of the fence go, and the simulator's stand-ins in `webos` and `keymanager` stay, compiled for tests and `test-support`: `docs/platform-ports.md`, W4). The desktop platform is the second implementation. |
+| **L15d** neutral types and the simulator as its own platform (L15b item 2) — **W3d and W4 landed** | — | W3d landed (the opaque `Backend` tag, `sandbox` to `native_video`, identity publishes a platform name and version, `device::Info` keeps its webOS fields in `WebosDetail`, and `devcaps` reads its files through the platform), and so did W4: `platform_desktop` (`rust-modules/src/platform_desktop.rs`, a second fence section, `[platform desktop]`) is the simulator's and the macOS app's own platform value, which `src/bin/sim.rs` enters through; the `hostsim` terms of the television's fence are gone, so the television's code is compiled into every build and the linker drops it from a desktop executable (`simulators.yml` links the macapp feature set to guard that until W7), and the stand-ins in `webos` and `keymanager` are test seams, compiled for tests and `test-support` (`docs/platform-ports.md`, W4). The desktop platform is the second implementation. |
 | **L15e** events, the shell and composition — **planned** | — | W5 (`HostEvent` with `Option<Action>`), W6b (platform-supplied composition in two boot phases), W6 (`plx_shell_sdl`, a `[shell_sdl]` layer) and W6c (a URI-only and a two-driver composition play an ordinary title). |
 | **L15f** extract the platform crates — **planned** | — | W7: a narrow public `host` module in the application crate, `rust-modules/platform-webos` and `platform-desktop` as crates above `app`, and the gate learning "a platform is a crate above `app`". After L15d, before L15g and L15h. |
-| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **planned** | — | W8: the `target_arch = "arm"` and `target_os = "linux"` sites sorted into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays), then the library name lists, `paths`, the packaging and the 363 `feature = "hostsim"` lines outside the fence (360 cfg lines and three doc comments). |
+| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **planned** | — | W8: the `target_arch = "arm"` and `target_os = "linux"` sites sorted into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays), then the library name lists, `paths`, the packaging and the `feature = "hostsim"` lines left in the tree (none of them in the fence now; `git grep -h 'feature = "hostsim"' -- '*.rs' | wc -l` counts them). |
 | **L15h** the OS-neutral Feed sink (L15b item 1) — **planned** | — | W11: `plx_acb` (an `[acb]` layer) takes the ACB plane owner and the URI media verbs out of `os`, the Feed-side ACB results become neutral, and the bind sequence moves behind a neutral sink. Needs the television. |
 
 ### L15: the webOS port
@@ -356,8 +356,8 @@ tests, where nothing calls `plex_run`) `tv::Services::HOST_TEST` answers what th
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
-`player/`, `play-uri/`, `os`'s `tv/`, `tv.rs` and `webos/`, `port.rs` and
-`app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and the URI media pipe through
+`player/`, `play-uri/`, `os`'s `tv/`, `tv.rs` and `webos/`, `port.rs`, `platform_desktop.rs` (each platform's table names its own
+sink) and `app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and the URI media pipe through
 `tv::uri::installed()`, resolved once by the composition (`app/adapters/backends.rs::install_uri_product`, every build with the
 `play-uri` feature) and, in a `devtriggers` build, again by the media wrapper `player::uriprobe_drive` for the developer probe. The independent
 `play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
@@ -381,10 +381,11 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | system toast | `tv::toast::{toast, send, Identity, Outcome, Sent}` | `app::clock_notice`, `dev::scenarios::toast_probe` |
 
 `tv` may name only `base`, `machine` and `os`. `port.rs` holds `plex_run` and the `SERVICES` and `PLATFORM` tables
-that point each hook at the `webos`, `keymanager` and `system` function behind it. The C shim and
-the simulator both enter through `port::plex_run`: it calls `app::run_application`, which returns
+that point each hook at the `webos`, `keymanager` and `system` function behind it. The C shim
+enters through `port::plex_run`: it calls `app::run_application`, which returns
 how the session ended as an `Exit` (a status and whether the teardown released everything), and then
-ends the process with that status. `lib.rs` declares the port but re-exports nothing from it, because a re-export would
+ends the process with that status. The simulator enters through `platform_desktop::run`, which hands the desktop
+platform to `run_application` and returns that status; the simulator's `main` ends the process. `lib.rs` declares the port but re-exports nothing from it, because a re-export would
 be a reference from the crate root into the port, which the gate refuses.
 
 The video sink landed as a verb-level cut. `tv::sink::VideoSink` has one method per verb of the
@@ -412,21 +413,22 @@ order or its interleaving, and its log lines are graded on the television. A ver
 can be graded by comparing the television's log before and after; a redesign that changes where
 those stages run, and when, is its own step's scope and risk.
 
-The simulator runs the same tables. Under `hostsim` `port.rs` builds a `SERVICES` and a `PLATFORM` whose fields point
-at the same `webos`, `keymanager` and `system` functions, whose `hostsim` arms answer on the host,
-and whose sink is `HostSink`. So the simulator behaves as it did, but it is not yet a second
-implementation of the interfaces.
+The simulator does not run the television's tables. `platform_desktop.rs` states its own `SERVICES` and `PLATFORM`: the
+shared `NONE` groups where a host has nothing to say, its own bodies for the capability probe, the root press and the
+toast, `HostSink` as the sink, and a `Shell` and a `FrameProbe` that do nothing. `port.rs` is the webOS port only. The
+desktop build still compiles the television's code, and the linker drops what nothing reaches, which `simulators.yml`
+guards with a link step until the platform crates split (W7).
 
 L15 is gate-complete: no entry carries its tag, `plex_run`, which the C shim calls, lives in the
 port, and the gate fails on a new reference into it. That is all the gate can see. L15 also set out
-to put an OS-neutral sink with the bind sequence behind it and the simulator's stand-ins in their
-own port. Neither landed, so L15 is not called done. They are L15b.
+to put an OS-neutral sink with the bind sequence behind it and the simulator in its own port. The
+sink did not land, so L15 is not called done; it is L15b. The simulator did, in W4.
 
 ### L15b: the OS-neutral port
 
 Open. L15 made every reference to the webOS code visible and one-directional. It did not make the
 interfaces something another OS could implement, because the verbs and several types in them are
-still webOS's. Three things are left:
+still webOS's. Three things were left, and item 2 is done:
 
 1. **An OS-neutral video sink.** A sink another OS can implement takes codec configuration and
    timestamped access units, and it seeks, flushes, pauses and reports events. The ACB bind
@@ -434,13 +436,13 @@ still webOS's. Three things are left:
    `sf_on_event`/`acb_on_event` and `sink_counter_kind(ty, major)` in `player/mod.rs` move behind
    it, into the port. This changes where the stages and the callback decode live and when they
    run, so it needs the television: see the reasons above.
-2. **The simulator as its own port.** `ffi_host` and the simulator's arms of `system` and `port`
-   become a second `Port` table, a second implementation of the same interfaces, instead of the
-   webOS table running its host arms. That keeps both honest. The stand-ins in `webos` and
-   `keymanager` do not move: the nine `any(hostsim, test, test-support)` items are what the
-   simulator runs today (`launch_home`, `system_locale`, `sound_output`, `bind_window`, the
-   keymanager client, `deliver`, `call_hbc` among them), and they stay compiled for tests and
-   `test-support` with only their `hostsim` term gone (`docs/platform-ports.md`, W4). The
+2. **The simulator as its own platform (done, W4).** `platform_desktop` is a second implementation of the
+   same interfaces: it states every hook of `tv::Services` (the shared `NONE` groups where a host has
+   nothing to say, its own capability probe, root press, toast and sink) with a no-op `Shell` and
+   `FrameProbe`, and `src/bin/sim.rs` enters through it, so the webOS table no longer runs host arms. The
+   `hostsim` terms are gone from `system`, `port`, `webos` and `keymanager`. The stand-ins in `webos` and
+   `keymanager` are test seams only, `cfg(any(test, feature = "test-support"))`: a simulator run executes
+   none of them (`docs/platform-ports.md`, W4). The
    webOS-shaped types in `tv` needed neutral shapes then, and have them since W3d: `tv::secure::Backend`
    is an opaque tag that stays a string on the wire (the two webOS spellings are constants, and a tag no
    installed platform knows is refused on open), `tv::sandbox` is `tv::native_video` with a verdict that is
@@ -463,13 +465,13 @@ still webOS's. Three things are left:
      crate (`rust-modules/storage`, an LS2 service over DB8), and the Makefile's NDK cross-build
      and `.ipk` packaging.
 
-L15b is done when the sink is OS-neutral, the simulator is its own port, and these facts are the
-port's. The port does not wait for all three before it leaves its layers. The order, amended 2026-11-20, is item 2
-(the simulator as its own port), then the extraction, then item 3 and item 1 ("L15c to L15h" below). Extracted, the
+L15b is done when the sink is OS-neutral and these facts are the
+port's (the simulator became its own platform in W4). The port does not wait for both before it leaves its layers. The
+order, amended 2026-11-20, is item 2 (the simulator as its own platform, done), then the extraction, then item 3 and item 1 ("L15c to L15h" below). Extracted, the
 port is a crate of its own on top: it names `app` to start it, and nothing names it. `plx_platform_webos`
 produces the staticlib the Makefile links, and `plxnative-modules` stays the application crate beneath it. Another TV
 OS is another platform in that position. The simulator binary, `src/bin/sim.rs`, is already a separate crate there,
-and enters through `port::plex_run` until W4 gives it its own platform value.
+and enters through `platform_desktop::run`.
 
 ### L15c to L15h: the platform plan
 

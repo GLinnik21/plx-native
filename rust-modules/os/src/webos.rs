@@ -142,7 +142,8 @@ fn plex_platform(release: &str) -> Platform {
 }
 
 /// The files `devcaps::probe` parses, read from the file system: webOS's own paths, named by the
-/// model. The simulator's host has none of them and so answers "unreadable", as it always did.
+/// model. A host that is not a television has none of them and so answers "unreadable"; the simulator does not
+/// read them at all, its platform states `Files::NONE`.
 pub const DEVICE_FILES: crate::tv::device::Files = crate::tv::device::Files {
     read: |path| std::fs::read_to_string(path),
     exists: |path| std::path::Path::new(path).exists(),
@@ -214,7 +215,7 @@ fn os_release_value<'a>(s: &'a str, key: &str) -> Option<&'a str> {
 /// [`OS_RELEASE_FIRST_MAJOR`]: no firmware older than that writes this file, so such a text is not
 /// this set's own, and a major 1 to 4 would flip the decisions that read it (the credential
 /// default, VP9 10-bit, the DV platform gate, the old-ABI seek). The ID check is what keeps a Linux
-/// host that runs the simulator from reading its distribution's `VERSION_ID` as a firmware.
+/// host that runs this probe (the unit tests, a CI runner) from reading its distribution's `VERSION_ID` as a firmware.
 ///
 /// The file carries no codename, API version or build id, so those stay empty rather than invented;
 /// in particular [`Info::build`] stays empty, not the release, so that this boot and a nyx boot of
@@ -687,7 +688,7 @@ pub fn bind_window(win: *mut std::os::raw::c_void) {
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
 /// The URI media pipe the port installs (`tv::LegacyWebosMedia::uri_media`): the explicitly enabled bus
-/// worker on the television, or `NoUriMedia` in a feature-off build, simulator or test.
+/// worker on the television, or `NoUriMedia` in a feature-off build or a test.
 /// This does not select the URI playback route.
 #[cfg(all(feature = "uri-transport", not(any(test, feature = "test-support"))))]
 pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &ls2::uri::Transport;
@@ -1409,8 +1410,8 @@ mod tests {
         }
     }
 
-    /// The probe also runs in the simulator, which installs the webOS port's table: on a Linux
-    /// host `/usr/lib/os-release` is the host's, and Ubuntu's `VERSION_ID` is numeric. Only a file
+    /// The probe also runs on a Linux host that is not a television (the unit tests, a CI runner): there
+    /// `/usr/lib/os-release` is the host's, and Ubuntu's `VERSION_ID` is numeric. Only a file
     /// that says it is webOS TV's (`ID=starfish`, on every firmware image checked from 5.5 to
     /// 11.2) may name a firmware.
     #[test]

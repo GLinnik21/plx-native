@@ -250,7 +250,7 @@ const START_HOOKS: StartHooks = StartHooks {
     play_url: plx_play_feed::playurl::playurl,
 };
 
-/// The television's (and the simulator's, whose port table holds the host sink) hooks: the
+/// The television's (and the simulator's, whose platform table holds the host sink) hooks: the
 /// installed port's sink and the Feed's own monotonic clock.
 #[cfg(feature = "play-feed")]
 const TV_HOOKS: NativeHooks =
