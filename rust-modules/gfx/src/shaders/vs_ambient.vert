@@ -25,7 +25,13 @@
 attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
-uniform vec4 u_atl, u_atr, u_abr, u_abl;
+// One name per declaration, here and in every shader: the Samsung TV 10.0 emulator's GL translation
+// (YaGL) mishandles `uniform vec4 a, b;`, and a host test in `gfx.rs` keeps the sources this way. The
+// uniforms are found by name, so a driver that reads either spelling sees the same program.
+uniform vec4 u_atl;
+uniform vec4 u_atr;
+uniform vec4 u_abr;
+uniform vec4 u_abl;
 varying vec4 v_col;
 #ifdef PLX_DITHER_NC
 // The dither tile's coordinate (`shaders/dither.glsl`, cost rule 4): target px / NOISE_DIM, linear
