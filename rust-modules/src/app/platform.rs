@@ -72,13 +72,11 @@ pub(crate) trait FrameProbe: Sync {
 /// What a platform's composition installed that the route session also has to know: the resolver the
 /// planner asks before it offers a URI source. `Some` only when the physical URI install succeeded,
 /// so it is present exactly when the composed set holds a URI driver.
+///
+/// `Composition::default()` is a platform that composed no URI driver (the Feed or nothing): no resolver.
+#[derive(Default)]
 pub(crate) struct Composition {
     pub(crate) resolver: Option<ResolvePort>,
-}
-
-impl Composition {
-    /// A platform that composed no URI driver: Feed or nothing, and no resolver.
-    pub(crate) const NONE: Composition = Composition { resolver: None };
 }
 
 /// A platform's two playback steps at boot. Both are plain functions: the platform's entry states
@@ -195,7 +193,7 @@ fn host_test_early_init(_mt: &MainThread) {}
 
 #[cfg(test)]
 fn host_test_compose(_adapter: &mut PlayerAdapter, _controlled: bool) -> Composition {
-    Composition::NONE
+    Composition::default()
 }
 
 #[cfg(test)]
@@ -259,7 +257,7 @@ mod tests {
         assert_eq!(session.backends(), plx_playback_contract::BackendSet::FEED,
             "the session starts on the Feed-only default");
         let adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
-        publish_composition(&mut session, &adapter, Composition::NONE);
+        publish_composition(&mut session, &adapter, Composition::default());
         assert_eq!(session.backends(), plx_playback_contract::BackendSet::NONE);
         assert!(session.uri_preflight_port().is_none());
     }

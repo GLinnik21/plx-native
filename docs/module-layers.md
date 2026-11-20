@@ -358,8 +358,8 @@ Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
 `player/`, `play-uri/`, `os`'s `tv/`, `tv.rs` and `webos/`, `port.rs`, `platform_desktop.rs` (each platform's table names its own
 sink) and `app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and the URI media pipe through
-`tv::uri::installed()`, resolved once by the composition (`app/adapters/backends.rs::install_uri_product`, every build with the
-`play-uri` feature) and, in a `devtriggers` build, again by the media wrapper `player::uriprobe_drive` for the developer probe. The independent
+`tv::uri::installed()`, resolved once by the webOS platform's composition (`app/adapters/backends.rs::compose_native`, which calls
+`install_uri_product`, in a build with the `play-uri` feature; the desktop platform composes the Feed only and never resolves it) and, in a `devtriggers` build, again by the media wrapper `player::uriprobe_drive` for the developer probe. The independent
 `play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
 does not read the webOS port registry or the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are

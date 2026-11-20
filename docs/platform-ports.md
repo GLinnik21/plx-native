@@ -1016,8 +1016,9 @@ Ecore names to `remote_token_key` pairs".
     webOS-only. `PLAYBACK_BACKENDS` maps per platform (Tizen: its own `uri` feature; `play-uri` never). The
     `feature = "play-uri"` sites in `rust-modules/src` (37 when this was written, 51 at W6b: #1478 added 14 to
     `backends.rs`) are sorted in W6b: the 10 in `playback.rs` and `run.rs` read the installed drivers at run
-    time (the attempt's backend, the adapter's queues, the resolver's offer) and lost their gate; the other 41 name
-    ACB or the URI product (`backends.rs` 35, `dev.rs`, `lib.rs`'s ARM guard, two test files) and keep theirs.
+    time (the attempt's backend, the adapter's queues, the resolver's offer) and lost their gate; every site that
+    remains names ACB or the URI product and keeps it (`git grep -n 'feature = "play-uri"' -- rust-modules/src`
+    lists them: `backends.rs`, `dev.rs`, `lib.rs`'s ARM guard and two test files).
     Composition is a SEAM until W11a, not a move: `port.rs` fills `Platform.media` with
     `backends::acb_init` and `backends::compose_native`, and the bodies stay in `app/adapters/backends.rs`. They
     cannot go to `port` yet, because `dev/uri_product.rs`, `dev/uri_exported.rs`, `run_uri_boot_tests.rs` and
@@ -1598,7 +1599,7 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   `Platform.media` with `backends::acb_init` and `backends::compose_native`; the bodies stay in
   `app/adapters/backends.rs` until W11a, because dev and the tests name `UriProduct` and its siblings and the fence
   forbids them naming `port`. `early_init` is called at the old `acb_init` line and `compose` at the old
-  `compose_backends` line, so neither phase moved. `dev.rs`, `lib.rs`, `dev/uriprobe_tests.rs` and the `sink`
+  `compose_backends` line, so neither phase moved. `dev.rs`, `lib.rs` and the `sink`
   rule are unchanged (`backends.rs` stays an allowed path). The desktop composes the Feed over the host sink and no
   URI driver; its `early_init` is a no-op.
 

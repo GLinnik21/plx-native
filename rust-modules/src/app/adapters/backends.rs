@@ -887,7 +887,7 @@ mod tests {
         let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
         let mut session = plx_media::route::PlaybackSession::IDLE;
         compose_feed(&mut adapter);
-        crate::app::platform::publish_composition(&mut session, &adapter, Composition::NONE);
+        crate::app::platform::publish_composition(&mut session, &adapter, Composition::default());
         assert_eq!(session.backends(), adapter.composed_backends());
         assert!(!session.backends().uri);
         assert!(session.uri_preflight_port().is_none());

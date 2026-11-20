@@ -39,7 +39,8 @@ const SINK: &dyn plx_os::tv::sink::VideoSink = &crate::app::adapters::hostsim::H
 #[cfg(not(feature = "play-feed"))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::tv::sink::NoSink;
 
-/// The display binding the player's plane boot resolves: the same sink, so the plane is the host's.
+/// The display binding the table must state. The desktop runs no plane boot, so nothing reads it in
+/// production; it is the host sink only so that the hook is never `NoSink`.
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 
 /// What the lower layers read from the desktop platform. Every hook is stated, as `tv` requires: a
@@ -132,7 +133,7 @@ fn media_early_init(_mt: &plx_base::task::MainThread) {}
 
 fn media_compose(adapter: &mut plx_media::player::adapter::PlayerAdapter, _controlled: bool) -> Composition {
     crate::app::adapters::backends::compose_feed(adapter);
-    Composition::NONE
+    Composition::default()
 }
 
 /// The desktop platform: what [`run`] hands `app::run_application`.
@@ -157,9 +158,9 @@ pub fn run(pms_host: &CStr, pms_port: u16) -> c_int {
 mod tests {
     use super::*;
 
-    /// The Feed's sink and the display the plane reads (`display_installed()`, this table's
-    /// `display_sink`) are the one host sink in the simulator, never `NoSink`: a Feed that read
-    /// `NoSink` would report no plane and nothing in a simulator run would say so.
+    /// The video sink the Feed runs over and the display binding the table states are the one host
+    /// sink in the simulator, never `NoSink`: a Feed that ran over `NoSink` would show no picture
+    /// and nothing in a simulator run would say so.
     #[cfg(feature = "play-feed")]
     #[test]
     fn the_simulator_port_display_is_the_host_sink() {
