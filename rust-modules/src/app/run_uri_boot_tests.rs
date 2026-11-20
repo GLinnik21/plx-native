@@ -250,6 +250,97 @@ mod uri_boot_tests {
             request.contains("/decision?")), "qualified original bypassed Feed MDE");
     }
 
+    // ---- W6c: the compositions a platform can supply, through the real boot publisher ----
+
+    /// A bare adapter in the rig, the way a platform that composes no Feed starts: nothing installed.
+    fn bare_adapter(rig: &mut Rig) {
+        rig.app.adapters.player = plx_media::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+    }
+
+    /// The URI product composed over the rig's fake bus and display, as `compose` returns it, and
+    /// published with the adapter's set by `publish_composition`. Certified for everyone, so no
+    /// viewer opt-in is part of the play.
+    fn compose_self_certified(rig: &mut Rig) -> &'static Bus {
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
+        bus
+    }
+
+    /// URI only, no Feed driver anywhere: the set the session was told is URI alone, an ordinary
+    /// title resolves to a URI offer with the viewer's setting Off, and its Start is the driver's
+    /// native Load. No Feed decision is asked of the server.
+    #[test]
+    fn a_uri_only_boot_plays_an_ordinary_title_with_no_feed_driver() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        bare_adapter(&mut rig);
+        let bus = compose_self_certified(&mut rig);
+        assert_eq!(rig.app.player.session.backends(), plx_playback_contract::BackendSet::URI);
+        assert_eq!(rig.app.adapters.player.composed_backends(), plx_playback_contract::BackendSet::URI);
+        assert_eq!(plx_media::route::uri_engine(), plx_plex::plex::session::UriEngine::Off);
+        rig.request();
+        let offer = resolve_pending(&mut rig).uri_offer.expect("the ordinary title is a URI offer");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session, offer).is_ok());
+        let started = plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player);
+        assert!(matches!(started, plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let at = rig.app.adapters.player.backend_tick();
+        let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        assert!(bus.load_payload().is_some(), "the Start became the driver's native Load");
+        assert!(!rig.requests.lock().unwrap().iter().any(|request| request.contains("/decision?")),
+            "no Feed decision for a platform with no Feed");
+    }
+
+    /// Zero drivers (`Composition::default()` over a bare adapter): the boot publishes `NONE` and
+    /// no resolver, and an ordinary title is refused with the typed verdict instead of falling to
+    /// a Feed nothing installed.
+    #[test]
+    fn a_boot_that_composed_no_driver_refuses_an_ordinary_title() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        bare_adapter(&mut rig);
+        crate::app::platform::publish_composition(&mut rig.app.player.session,
+            &rig.app.adapters.player, crate::app::platform::Composition::default());
+        assert_eq!(rig.app.player.session.backends(), plx_playback_contract::BackendSet::NONE);
+        assert!(rig.app.player.session.uri_preflight_port().is_none());
+        rig.request();
+        rig.release.send(()).unwrap();
+        poll_until("the refusal did not land", || {
+            let _ = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.runtime.metadata_mut());
+            plx_media::route::play_verdict(&rig.app.player.session).is_some()
+        });
+        assert_eq!(plx_media::route::play_verdict(&rig.app.player.session).as_deref(),
+            Some(plx_os::i18n::msg::widgets_reason_open()),
+            "the typed NoQualifiedBackend verdict, worded by the catalog");
+        assert!(!rig.requests.lock().unwrap().iter().any(|request| request.contains("/decision?")));
+    }
+
+    /// Two drivers (the rig's Feed and the product URI driver): the session holds both, and the
+    /// planner's choice for a title the URI driver qualifies is the URI original.
+    #[test]
+    fn a_boot_with_both_drivers_offers_the_qualified_uri_original_first() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let _bus = compose_self_certified(&mut rig);
+        assert_eq!(rig.app.player.session.backends(), plx_playback_contract::BackendSet::BOTH);
+        rig.request();
+        let offer = resolve_pending(&mut rig).uri_offer.expect("the URI original is offered");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session, offer).is_ok());
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Uri));
+    }
+
     /// The product the composition builds for a viewer who opted in to the URI engine, over the
     /// exported-window `Display`: the binding of a major the product's exported-window table,
     /// `EXPORTED_STRATA`, has not admitted (`Unbound`: the host has no handle and the major is not
