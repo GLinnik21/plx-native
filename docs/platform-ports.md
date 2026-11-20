@@ -140,7 +140,10 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   - `system.rs` 53, `webos.rs` 22, `webos/caps.rs` 8, `port.rs` 7;
   - `webos/toast.rs` 5, `webos/jail_repair.rs` 5, `keymanager.rs` 2, `webos/video_sink.rs` 0.
 
-  The other 363 `hostsim` cfg lines are outside, so L15b item 2 alone does not retire `hostsim`.
+  The other 363 `feature = "hostsim"` lines are outside, so L15b item 2 alone does not retire `hostsim`. Of
+  those 363, 360 are cfg lines and three are doc comments (`base/src/paths.rs:1347`,
+  `src/app/session_picker_regression_tests.rs:326`, `src/app/surface_navigation_tests.rs:4`; `git grep -n
+  'feature = "hostsim"' -- '*.rs' | grep -E ':[0-9]+:\s*//'` finds them).
 - F11. `hostsim` is forwarded to ten crates (`rust-modules/Cargo.toml:179`). Its comment relies on
   the app crate being "a leaf with no dependents, so feature unification can never enable it behind
   someone's back". `make check` DOES resolve the whole workspace at once:
@@ -1183,8 +1186,8 @@ Ecore names to `remote_token_key` pairs".
   staticlib `main.c` links.
 - `[platform desktop]`: crate `plx_platform_desktop`: the desktop value, the 5 host arms of the fence that only the
   simulator uses (W4: two stubs in `system.rs`, the two `SINK` arms and the table's test in `port.rs`; the other 97
-  lines are television gates, test seams or TV-side lines and stay) and the sim bin. `HostSink` stays in
-  `play_feed`.
+  lines are television gates, the simulator's stand-ins kept for tests and `test-support`, or TV-side lines and
+  stay) and the sim bin. `HostSink` stays in `play_feed`.
 - `[platform tizen]`: crate `plx_platform_tizen` plus top-level `tizen/` (C# host, manifest, sysroot scripts).
 - The bottom layer is `[os]`, crate `plx_os` in `rust-modules/os`: Wave R (Decision 1, B; owner 2026-11-20: first
   and alone) renames it with its directory, its 12 manifests and its references (F36), keeping the inner `tv`
@@ -1493,7 +1496,8 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - Goal: a second fence section, `[platform desktop]` (no gate code: Wave R already switched the keyword, F1), with
   member `platform_desktop` (a module of the app crate until W7) and its own `Platform` value; the simulator's host
   arms (5 of the fence's 102 `hostsim` lines, sorted by the rule below) move out of `system` and `port` into it; the
-  other `hostsim` terms of `webos`, `keymanager`, `system` and `port` go; `sim.rs` names it (F7).
+  other `hostsim` terms of `webos`, `keymanager`, `system` and `port` go (the simulator's stand-ins in `webos` and
+  `keymanager` stay, compiled for tests and `test-support`: see the rule below); `sim.rs` names it (F7).
 - Rule for the three configurations. The 102 fenced `hostsim` lines (F10) are cfg lines of both polarities, not 102
   host arms. Each was read and classified by what it gates (the same counts at `e9924f0f9` and on `main` after Wave R).
   - 77 carry a negated `hostsim` (`git grep -h 'feature = "hostsim"' -- <F10's files> | grep -c -e 'not(feature =
@@ -1506,10 +1510,13 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
     table's test (`port.rs:79`, `all(test, hostsim, play-feed)`: it names `app::adapters::hostsim::HOST_SINK`, which
     exists only under `all(hostsim, play-feed)`, so dropping the term would break the plain test build).
   - The other 20 stay:
-    - 10 are test seams and lose only the `hostsim` term: nine `any(feature = "hostsim", test, feature =
-      "test-support")` (`keymanager.rs:198`, `webos.rs` six times, `webos/jail_repair.rs:44`, `webos/toast.rs:55`),
-      which become `cfg(any(test, feature = "test-support"))`, and `port.rs:22`'s `any(hostsim, test)`, which
-      becomes `cfg(test)`.
+    - 10 lose only the `hostsim` term. Nine are the simulator's stand-ins for the television's services,
+      `any(feature = "hostsim", test, feature = "test-support")` (`keymanager.rs:198`, `webos.rs` six times,
+      `webos/jail_repair.rs:44`, `webos/toast.rs:55`): what the simulator runs today (`launch_home`,
+      `system_locale`, `sound_output`, `bind_window`, the keymanager client, `deliver` and `call_hbc` among
+      them), so more than test seams. They stay in `webos` and `keymanager`, compiled for tests and
+      `test-support` as `cfg(any(test, feature = "test-support"))`. The tenth, `port.rs:22`'s `any(hostsim,
+      test)`, becomes `cfg(test)`.
     - 6 are the frame-probe no-op stubs (`system.rs:761-772`, `any(feature = "hostsim", not(feature =
       "devtriggers"))`). Every TV build without `devtriggers` compiles them, a RELEASE build included, and
       `app/run.rs` reaches them through the port, so they are re-gated as `cfg(not(feature = "devtriggers"))`.
@@ -1521,11 +1528,11 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   `ci/check-deps.sh` (the `sink` rule's paths, F25), `ci/mkmacapp.py`, `ci/test_sim_backend.py`,
   `ci/test_test_crate.py`, `.github/workflows/ci.yml:379`.
 - Test: `make test-hostsim`; the fenced `hostsim` count (F10's grep) falls from 102 to 0 (77 television gates lose a
-  term, 10 seams do too, 6 stubs are re-gated on `devtriggers`, 4 lines stay with their TV items, 5 host arms move; the
-  five numbers, each with the grep that gives it, in the PR); the discovered-test diff; `make sim-macos` and
-  `make macapp` booting to Home under ui-sim; replay fixtures unchanged; a build-bench table; fw-compat-reviewer
-  (`system.rs`'s Wayland and SDL externs are split). TV: none beyond the wave's. Risk: the 363 non-fence `hostsim` cfg
-  lines remain (W8); F11's mechanism lands in W7.
+  term, 10 stand-ins kept for tests do too, 6 stubs are re-gated on `devtriggers`, 4 lines stay with their TV items,
+  5 host arms move; the five numbers, each with the grep that gives it, in the PR); the discovered-test diff;
+  `make sim-macos` and `make macapp` booting to Home under ui-sim; replay fixtures unchanged; a build-bench table;
+  fw-compat-reviewer (`system.rs`'s Wayland and SDL externs are split). TV: none beyond the wave's. Risk: the 363
+  non-fence `feature = "hostsim"` lines (360 cfg lines) remain (W8); F11's mechanism lands in W7.
 
 ### W5 (N, W5b also T). The event contract (one lane: W5a -> W5b -> W5c)
 - Goal: `HostEvent` with `Option<Action>` (Target shape 2), app-private, consumed by the loop. `drain_sdl`
@@ -1623,8 +1630,9 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - W8b, one row per fact: the library name lists (F27) become per-platform lists supplied through the
   platform (`dynlib!` stays shared); `paths`'s fallback install prefix becomes a platform value; the
   storage helper is packaged only by `PLATFORM=webos`; `main.c` and `starfish.c` are webOS-only.
-- W8c, the 363 non-fence `hostsim` cfg lines, sorted per crate: a host difference becomes a platform value or
-  runner; simulator tooling goes under a renamed `sim` feature; a test seam goes to `test-support`.
+- W8c, the 363 non-fence `feature = "hostsim"` lines (360 cfg lines and three doc comments), sorted per crate: a
+  host difference becomes a platform value or runner; simulator tooling goes under a renamed `sim` feature; a test
+  seam goes to `test-support`.
 - Verify: the F9/F12 grep count before and after; `ci/check-ledger-ratchet.py` at or below every family
   total (a host difference that needs IO becomes a runner, never a `forks/` line); fw-compat-reviewer on
   W8b; a build-bench table for W8b. Risk: size. W8c blocks nothing Tizen needs; only W8a does.
