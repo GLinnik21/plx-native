@@ -532,7 +532,7 @@ fn a_restore_whose_section_is_gone_falls_back_to_the_default() {
 
 /// A restore retires once focus sits on the place it resolves to: with no driver that is the default
 /// below the row, not the Play the spot named, so the page does not keep re-seating a focus that
-/// already landed.
+/// already landed. Focus on any other place of the page leaves it armed.
 #[test]
 fn a_restore_retires_once_focus_is_on_the_place_the_page_resolves_it_to() {
     let sid = ServerId::UNSET;
@@ -544,6 +544,10 @@ fn a_restore_retires_once_focus_is_on_the_place_the_page_resolves_it_to() {
         let lands = if no_driver { extras::elem(0).expect("an extras card") } else { hero::ELEM_PLAY };
         screen.restore(&Spot { section: 0, col: 0, ..Default::default() }, test_store().view());
         assert!(screen.restore_intent.is_some(), "premise: the restore is armed");
+        // Focus on any other place of the page (the bookmark disc is a stop either way) is not where
+        // the restore resolves to: it stays armed and keeps seating.
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(hero::ELEM_WATCHLIST));
+        assert!(screen.restore_intent.is_some(), "no_driver={no_driver}: focus on the bookmark is not the restore's target");
         step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(lands));
         assert!(screen.restore_intent.is_none(), "no_driver={no_driver}: focus is on {lands}, the restore's target");
         clear();
