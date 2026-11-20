@@ -12,6 +12,7 @@ use plx_base::task::MainThread;
 use plx_os::tv::plane::{Refusal, Shown};
 use plx_os::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_os::tv::uri::{Shape, UriMedia};
+use plx_playback_contract::uri::DisplayEvidence;
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
     ContentTime, DispatchResult, DriverEvent, DriverSet, EvidenceSource, ExitDisposition,
     Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
@@ -22,15 +23,45 @@ use std::os::raw::c_int;
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
 pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 
-/// The display path the URI executor is composed with (`Binding` is the contract's value). `Acb`
-/// is the webOS 4.x plane: the paced bind sequence of `acb_bind` through the one plane owner,
-/// released by `UNLOADED` and its completion fence. The executor refuses to start on it unless the
-/// display is in ACB mode and the gate (`acb_bind::gate`) passes, and it forwards only a descriptor
-/// the service itself reported. Routed in production only for a viewer who turned on Settings > Playback
-/// engine > Experimental: nothing else is offered to it. A `devtriggers` build can compose a dev qualifier and
-/// certified capabilities for it (the app's `dev::uri_product`); its attempt then also writes the
+/// The display path the URI executor is composed with. This is the LG driver's own detail: the
+/// shared contract carries only what the driver says of it ([`display_evidence`]), and the
+/// application that composes the driver names this type to configure it. `Acb` is the webOS 4.x
+/// plane: the paced bind sequence of `acb_bind` through the one plane owner, released by `UNLOADED`
+/// and its completion fence. The executor refuses to start on it unless the display is in ACB mode
+/// and the gate (`acb_bind::gate`) passes, and it forwards only a descriptor the service itself
+/// reported. `Exported` is the exported window at a canvas size; `Unbound` is no certified path.
+/// Routed in production only for a viewer who turned on Settings > Playback engine > Experimental:
+/// nothing else is offered to it. A `devtriggers` build can compose a dev qualifier and certified
+/// capabilities for it (the app's `dev::uri_product`); its attempt then also writes the
 /// `uri-trace:` stream (`uri_trace`).
-pub use plx_playback_contract::uri::Binding;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binding { Exported { canvas: (c_int, c_int) }, Acb, Unbound }
+
+/// The display tags the driver names ([`DisplayEvidence::tag`]): one per [`Binding`].
+pub const TAG_ACB: &str = "acb";
+pub const TAG_EXPORTED: &str = "exported-window";
+pub const TAG_UNBOUND: &str = "unbound";
+
+/// What the driver reports of its display path ([`UriDriver::display`]), a pure function of how it is
+/// composed and of the display's window mode. The path is ready when it can show a source at all:
+/// the ACB plane (whose handle is made later, on demand, and checked by [`UriDriver::ready_to_start`]),
+/// or the exported window with a real canvas on a display in the mode that exports it (`VP_EXPORTED`).
+/// An unbound executor shows nothing. This is only the path: what may be offered through it is still
+/// decided by the capabilities the product certifies. The preview rectangle is never placeable.
+pub fn display_evidence(binding: Binding, display_mode: i32) -> DisplayEvidence {
+    match binding {
+        Binding::Acb => DisplayEvidence::ready(TAG_ACB),
+        Binding::Exported { canvas: (w, h) } if display_mode == VP_EXPORTED && w > 0 && h > 0 =>
+            DisplayEvidence::ready(TAG_EXPORTED),
+        Binding::Exported { .. } => DisplayEvidence::unavailable(TAG_EXPORTED),
+        Binding::Unbound => DisplayEvidence::unavailable(TAG_UNBOUND),
+    }
+}
+
+/// Why [`UriDriver::ready_to_start`] declines on an ACB display, as the offer's decline line says it
+/// (`uri: original declined (<reason>)`): the URI engine's own ACB handle (player type 0) could not
+/// be created or initialized.
+pub const ACB_HANDLE_UNAVAILABLE: &str = "the ACB handle for the URI engine could not be created";
 
 /// The display path composition chooses for the executor, a pure function of what the set and the
 /// boot report:
@@ -105,7 +136,8 @@ pub const EXPORTED_STRATA: &[u32] = &[
     // pause=froze (pause_basis=paused_event_and_resume), seek=hit and audio_at_load=0, and the
     // product run's pause, seek and sound answered, so amendment (1) is not used. The earlier
     // four-audio-track run's audio-track switch failed; such a file now starts in Standard (#1314,
-    // amendment (2); `exported_uri_leaves_multi_audio_originals_on_standard` pins the route).
+    // amendment (2); the application's `exported_uri_leaves_multi_audio_originals_on_standard` pins
+    // the route).
     5,
     // Firmware major 6 (the 6.5.3 image): `docs/uri-mode.md` Results row "webOS 6.5.3 (firmware major
     // 6)", #1064. Bracketed, no tester run. (a) the 6.5.3 image (HE_DTV_W21O_AFABATAA, libplayerAPIs
@@ -1107,6 +1139,10 @@ impl DriverSet for UriBackend {
 /// The adapter's view of this driver beyond `DriverSet`: the contract names no driver crate, so the
 /// player holds `Box<dyn UriDriver>` and the composition root boxes a [`UriBackend`] into it.
 impl UriDriver for UriBackend {
+    fn display(&self) -> DisplayEvidence {
+        display_evidence(self.config.binding, self.config.display.window_mode())
+    }
+
     fn stage_source(&mut self, attempt: AttemptId, key: SourceKey, source: UriSource)
         -> Result<(), Failure> {
         UriBackend::stage_source(self, attempt, key, source)
@@ -1127,12 +1163,56 @@ impl UriDriver for UriBackend {
         }
         let gate = acb_drive::uri_handle_gate(mt, self.config.display, self.config.plane,
             &self.config.app_id, false, false);
-        if gate.ready { Ok(()) } else { Err(UriNotReady::AcbHandle) }
+        if gate.ready { Ok(()) } else { Err(UriNotReady::Driver(ACB_HANDLE_UNAVAILABLE)) }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// What the driver reports of its display path, for every binding on every display mode: the
+    /// table the route's evidence used to compute from a `Binding` and `VP_EXPORTED` itself. The ACB
+    /// plane is ready whatever the mode says (its handle is made later and asked about by
+    /// `ready_to_start`); the exported window only on a display in the mode that exports it and
+    /// with a real canvas; an unbound executor never; and no path places a preview rectangle.
+    #[test]
+    fn the_display_a_driver_reports_follows_its_binding_and_the_display_mode() {
+        use plx_os::tv::sink::VP_NONE;
+        use plx_playback_contract::uri::{DisplayReadiness, UriNotReady};
+        let modes = [VP_ACB, VP_EXPORTED, VP_NONE];
+        for mode in modes {
+            let acb = display_evidence(Binding::Acb, mode);
+            assert!(acb.is_ready(), "the ACB plane is ready on mode {mode}");
+            assert_eq!(acb.tag, TAG_ACB);
+            let unbound = display_evidence(Binding::Unbound, mode);
+            assert_eq!(unbound.readiness, DisplayReadiness::NotReady(UriNotReady::DisplayUnavailable),
+                "an unbound executor shows nothing on mode {mode}");
+            assert_eq!(unbound.tag, TAG_UNBOUND);
+            for evidence in [acb, unbound, display_evidence(Binding::Exported { canvas: EXPORTED_CANVAS }, mode)] {
+                assert!(!evidence.preview_rectangle, "no path places a preview rectangle");
+            }
+        }
+        let exported = Binding::Exported { canvas: EXPORTED_CANVAS };
+        assert!(display_evidence(exported, VP_EXPORTED).is_ready(), "the exported window on its own mode");
+        assert_eq!(display_evidence(exported, VP_EXPORTED).tag, TAG_EXPORTED);
+        for mode in [VP_ACB, VP_NONE] {
+            assert!(!display_evidence(exported, mode).is_ready(),
+                "the exported window needs the display mode that exports it (mode {mode})");
+        }
+        for canvas in [(0, 1080), (1920, 0), (0, 0), (-1, 1080)] {
+            assert!(!display_evidence(Binding::Exported { canvas }, VP_EXPORTED).is_ready(),
+                "an exported window needs a real canvas: {canvas:?}");
+        }
+    }
+
+    /// The driver's text for a handle it could not make is what the offer's decline line has always
+    /// said, byte for byte: nothing else pins it.
+    #[test]
+    fn the_acb_handle_reason_reads_as_the_decline_line_always_did() {
+        assert_eq!(ACB_HANDLE_UNAVAILABLE, "the ACB handle for the URI engine could not be created");
+        assert_eq!(UriNotReady::Driver(ACB_HANDLE_UNAVAILABLE).log_name(),
+            "the ACB handle for the URI engine could not be created");
+    }
+
     #[test]
     fn composition_selects_the_acb_plane_on_an_acb_display_before_its_handle_exists() {
         use plx_os::tv::sink::{VP_ACB, VP_NONE};
@@ -2406,8 +2486,9 @@ mod tests {
     fn readiness_after_a_failed_create_says_so_and_is_not_retried() {
         let (sink, plane) = boot_without_the_uri_handle(&[]);
         let mut rig = Rig::with(Binding::Acb, sink, plane);
-        assert_eq!(rig.driver.ready_to_start(&rig.mt), Err(UriNotReady::AcbHandle));
-        assert_eq!(rig.driver.ready_to_start(&rig.mt), Err(UriNotReady::AcbHandle));
+        let declined = Err(UriNotReady::Driver(ACB_HANDLE_UNAVAILABLE));
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), declined);
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), declined);
         assert_eq!(sink.created_player_types(), [0], "one attempt");
         assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported), "the backstop");
         assert_eq!(sink.created_player_types(), [0]);
@@ -2781,6 +2862,26 @@ mod tests {
             let plane = Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
             (Self::with(Binding::Exported { canvas: FULL }, sink, plane), sink)
         }
+    }
+
+    /// The driver reports exactly what `display_evidence` computes from how it is composed and from
+    /// the display it was given: an ACB driver is ready, an exported driver over a display in the
+    /// exported mode is ready, and an exported driver over a display that is not, or an unbound
+    /// one, is not.
+    #[test]
+    fn the_driver_reports_the_display_its_binding_and_its_sink_compose() {
+        let (acb, _, _) = Rig::acb();
+        assert_eq!(acb.driver.display(), display_evidence(Binding::Acb, VP_ACB));
+        assert!(acb.driver.display().is_ready());
+        let (exported, sink) = Rig::exported();
+        assert_eq!(exported.driver.display(),
+            display_evidence(Binding::Exported { canvas: FULL }, sink.window_mode()));
+        assert!(exported.driver.display().is_ready(), "the scripted window sink is in the exported mode");
+        assert!(!Rig::new().driver.display().is_ready(), "an unbound driver shows nothing");
+        let plane = Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
+        let elsewhere = Rig::with(Binding::Exported { canvas: FULL }, Box::leak(Box::new(NoSink)), plane);
+        assert!(!elsewhere.driver.display().is_ready(),
+            "an exported binding over a display that is not in the exported mode shows nothing");
     }
 
     #[test]

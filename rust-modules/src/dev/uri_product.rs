@@ -2,12 +2,12 @@
 //! set, playing a URL a developer names. Debug builds only: this file is compiled with
 //! `devtriggers` and `play-uri` (see `dev.rs`), so a release binary carries none of it.
 //!
-//! **What it is.** Production certifies no source: its evidence is `ProductEvidence::unqualified_on`
-//! (nothing certified) and its qualifier is `ProductQualifier` (`Unknown` unless the viewer opted in to
+//! **What it is.** Production certifies no source: its product (`UriProduct::production`) certifies
+//! nothing and its qualifier is `ProductQualifier` (`Unknown` unless the viewer opted in to
 //! the URI engine in Settings, and then only for a file Standard would direct-play: its video, Dolby Vision, audio
 //! and container verdicts, not the server's own decision), so a real resolve of a viewer who has not opted in never
 //! offers the URI backend. This module is the one place that composes the other
-//! answer for a test run: [`compose`] swaps in dev evidence (the four capabilities a URL carrier
+//! answer for a test run: [`compose`] swaps in dev certification (the four capabilities a URL carrier
 //! needs, certified) and a dev [`OriginalQualifier`] that answers a certified `ProgressiveUri`
 //! verdict whose source is the trigger's URL. Everything else is the real route: the resolve
 //! worker, `ResolvePort::qualify`'s own checks, the plan landing, the offer, the backend policy,
@@ -42,8 +42,9 @@
 //! one. The log prefix is `uri-dev:`, and every refusal contains `ignored`, the word the
 //! harness's `no_error` grade keys on.
 
+use crate::app::adapters::backends::UriProduct;
 use plx_media::route::uri_preflight::{KnownSource, OriginalQualifier, OriginalRequest,
-    ProductEvidence, UriDecline, Verdict};
+    UriDecline, Verdict};
 use plx_plex::plex::Origin;
 use plx_play_uri::backend::Binding;
 use plx_playback_contract::Capabilities;
@@ -224,28 +225,28 @@ pub(crate) fn decide(binding: Binding, trigger: Option<&str>) -> Decision {
 }
 
 /// The dev route's composition. With no trigger, a trigger that does not parse, or a display that
-/// is not ACB-bound, `evidence` and `qualifier` come back untouched (and the reason is logged
-/// unless there was no trigger). Armed on an ACB display they come back as dev evidence and the
-/// dev qualifier.
-pub(crate) fn compose(evidence: ProductEvidence, qualifier: Arc<dyn OriginalQualifier>,
-    trigger: Option<String>) -> (ProductEvidence, Arc<dyn OriginalQualifier>) {
-    let decision = decide(evidence.binding, trigger.as_deref());
+/// is not ACB-bound, `product` comes back untouched (and the reason is logged unless there was no
+/// trigger). Armed on an ACB display it comes back with the dev certification and the dev
+/// qualifier.
+pub(crate) fn compose(product: UriProduct, trigger: Option<String>) -> UriProduct {
+    let decision = decide(product.binding, trigger.as_deref());
     if let Some(line) = decision.line() {
         plx_base::eventlog::log(&line);
     }
     match decision {
-        Decision::Armed(trigger) => (dev_evidence(evidence), Arc::new(DevQualifier { trigger })),
-        Decision::Unarmed | Decision::Ignored(_) => (evidence, qualifier),
+        Decision::Armed(trigger) => dev_product(product, trigger),
+        Decision::Unarmed | Decision::Ignored(_) => product,
     }
 }
 
-/// `base` with the four capabilities a URL carrier needs certified; the display path, what is
-/// callable and the preview rectangle are the composition's own.
-fn dev_evidence(base: ProductEvidence) -> ProductEvidence {
-    ProductEvidence {
+/// `base` with the four capabilities a URL carrier needs certified and the dev qualifier; the
+/// display path and what is callable are the composition's own.
+fn dev_product(base: UriProduct, trigger: Trigger) -> UriProduct {
+    UriProduct {
         certified: Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: false,
             audio_off: false, subtitle_off: false },
+        qualifier: Arc::new(DevQualifier { trigger }),
         ..base
     }
 }
@@ -269,9 +270,9 @@ mod tests {
     use super::*;
     use plx_play_uri::backend::NativeTrackIndex;
     use plx_playback_contract::{Fidelity, SourceKind, TrackChoice, TrackKind, TrackSelection};
-    use plx_media::route::uri_preflight::{ProductQualifier, ResolvePort, StandardDirectPlay};
+    use plx_media::route::uri_preflight::{ProductEvidence, ResolvePort, StandardDirectPlay};
     use plx_media::route::SourceSelection;
-    use plx_os::tv::sink::VP_ACB;
+    use plx_playback_contract::uri::DisplayEvidence;
 
     const GOOD: &str = "acb part=991001 pms=192.0.2.5:32499 \
         url=http://10.1.2.3:8080/pipe_hls_720p24_20m/index.m3u8";
@@ -448,8 +449,15 @@ mod tests {
 
     // ---- compose ----
 
-    fn today(binding: Binding) -> ProductEvidence {
-        ProductEvidence::unqualified_on(VP_ACB, binding)
+    /// The product production composes for a driver bound as `binding`.
+    fn today(binding: Binding) -> UriProduct {
+        UriProduct::production(binding)
+    }
+
+    /// The route's evidence for `product` over a display the driver reports ready.
+    fn evidence_of(product: &UriProduct) -> ProductEvidence {
+        ProductEvidence { display: DisplayEvidence::ready("test"), callable: product.callable,
+            certified: product.certified }
     }
 
     fn certified_names(c: Capabilities) -> Vec<&'static str> {
@@ -460,20 +468,17 @@ mod tests {
             .into_iter().filter(|(_, on)| *on).map(|(name, _)| name).collect()
     }
 
-    fn same_evidence(a: &ProductEvidence, b: &ProductEvidence) -> bool {
-        a.display_exported == b.display_exported && a.binding == b.binding
-            && a.callable == b.callable && a.certified == b.certified
-            && a.preview_rectangle == b.preview_rectangle
-    }
-
-    /// Whatever `compose` hands back for an unarmed boot is the very pair it was given.
+    /// Whatever `compose` hands back for an unarmed boot is the very product it was given.
     fn assert_untouched(binding: Binding, trigger: Option<&str>) {
         let before = today(binding);
-        let qualifier: Arc<dyn OriginalQualifier> = Arc::new(ProductQualifier);
-        let (evidence, after) = compose(before, qualifier.clone(), trigger.map(str::to_owned));
-        assert!(same_evidence(&evidence, &before), "{binding:?} {trigger:?}");
-        assert!(Arc::ptr_eq(&qualifier, &after), "{binding:?} {trigger:?}: the qualifier changed");
-        assert!(certified_names(evidence.certified).is_empty(), "production certifies nothing");
+        let qualifier = before.qualifier.clone();
+        let (callable, certified) = (before.callable, before.certified);
+        let after = compose(before, trigger.map(str::to_owned));
+        assert!(after.binding == binding && after.callable == callable && after.certified == certified,
+            "{binding:?} {trigger:?}");
+        assert!(Arc::ptr_eq(&qualifier, &after.qualifier),
+            "{binding:?} {trigger:?}: the qualifier changed");
+        assert!(certified_names(after.certified).is_empty(), "production certifies nothing");
     }
 
     #[test]
@@ -496,14 +501,13 @@ mod tests {
     #[test]
     fn armed_on_acb_certifies_exactly_the_url_carrier_capabilities_and_swaps_the_qualifier() {
         let before = today(Binding::Acb);
-        let qualifier: Arc<dyn OriginalQualifier> = Arc::new(ProductQualifier);
-        let (evidence, after) = compose(before, qualifier.clone(), Some(GOOD.to_owned()));
-        assert_eq!(evidence.binding, Binding::Acb, "the binding is taken, never forced");
-        assert_eq!(certified_names(evidence.certified),
+        let (qualifier, callable) = (before.qualifier.clone(), before.callable);
+        let after = compose(before, Some(GOOD.to_owned()));
+        assert_eq!(after.binding, Binding::Acb, "the binding is taken, never forced");
+        assert_eq!(certified_names(after.certified),
             ["progressive_uri", "pause", "seek", "audio_track"]);
-        assert!(evidence.callable == before.callable && evidence.display_exported
-            == before.display_exported && evidence.preview_rectangle == before.preview_rectangle);
-        assert!(!Arc::ptr_eq(&qualifier, &after));
+        assert!(after.callable == callable, "what is callable is the composition's own");
+        assert!(!Arc::ptr_eq(&qualifier, &after.qualifier));
     }
 
     // ---- the dev qualifier ----
@@ -521,7 +525,7 @@ mod tests {
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
             standard: StandardDirectPlay { video: true, dolby_vision: true, audio: true,
                 container: true },
-            audio_codec: "aac".to_owned(), audio_ordinal, has_multiple_audio_tracks: false, binding: Binding::Unbound,
+            audio_codec: "aac".to_owned(), audio_ordinal, has_multiple_audio_tracks: false,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
@@ -536,11 +540,12 @@ mod tests {
         request_at(part, server, audio_sid, (audio_sid > 0).then_some(0))
     }
 
-    fn armed_pair() -> (ProductEvidence, Arc<dyn OriginalQualifier>) {
-        let (evidence, qualifier) = compose(today(Binding::Acb), Arc::new(ProductQualifier),
-            Some(GOOD.to_owned()));
-        assert!(certified_names(evidence.certified).contains(&"progressive_uri"), "armed");
-        (evidence, qualifier)
+    /// The product armed on an ACB display, and the qualifier it carries.
+    fn armed_pair() -> (UriProduct, Arc<dyn OriginalQualifier>) {
+        let product = compose(today(Binding::Acb), Some(GOOD.to_owned()));
+        assert!(certified_names(product.certified).contains(&"progressive_uri"), "armed");
+        let qualifier = product.qualifier.clone();
+        (product, qualifier)
     }
 
     #[test]
@@ -657,13 +662,14 @@ mod tests {
     #[test]
     fn the_armed_port_passes_the_resolve_ports_own_checks_and_the_unarmed_port_does_not() {
         let off = plx_base::task::OffFrame::for_test();
-        let (evidence, qualifier) = armed_pair();
-        let armed = ResolvePort::new(evidence, qualifier);
+        let (product, qualifier) = armed_pair();
+        let armed = ResolvePort::new(evidence_of(&product), qualifier);
         assert!(matches!(armed.qualify(&off, request(991001, &mock_origin(), 42)),
             Verdict::Known(_)));
         assert!(matches!(armed.qualify(&off, request(991001, &Origin::http("192.0.2.6", 32499), 42)),
             Verdict::Unknown(UriDecline::NotCertified)));
-        let unarmed = ResolvePort::new(today(Binding::Acb), Arc::new(ProductQualifier));
+        let production = today(Binding::Acb);
+        let unarmed = ResolvePort::new(evidence_of(&production), production.qualifier);
         assert!(matches!(unarmed.qualify(&off, request(991001, &mock_origin(), 42)),
             Verdict::Unknown(UriDecline::NotOptedIn)), "the production qualifier answers only an opt-in");
     }

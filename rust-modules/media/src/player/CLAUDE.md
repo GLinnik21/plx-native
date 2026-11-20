@@ -27,7 +27,7 @@ set, not production source, control or release coverage. Boot now installs a pro
 and source qualification port. The port's production qualifier returns Unknown (but for a viewer's own
 Playback engine opt-in, `OriginalRequest::uri_opt_in`, below) and the evidence it reports has no certified
 capabilities, so ordinary routes still choose Feed. The driver itself is configured with what an opted-in
-viewer certifies (`ProductEvidence::opted_in`), and only a qualification ever offers it a source. Host fixtures inject qualified source
+viewer certifies (`ProductEvidence::opt_in_certifies`, which `ProductEvidence::opted_in` applies to the evidence's own pair), and only a qualification ever offers it a source. Host fixtures inject qualified source
 and firmware evidence to exercise source, control and release logic.
 
 The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
@@ -44,11 +44,16 @@ accepted pause/resume to the plane once the bind has completed. Release is `UNLO
 plane owner's fence on that call's completion callback, pumped from the backend's `poll`
 (`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
 outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
-composition (an ACB display; the URI engine's own handle, player type 0, is created ON DEMAND when the first source is OFFERED (`UriDriver::ready_to_start`, asked by `offer_qualified_uri`, runs `PlaneOwner::ensure_handle`; the driver's gate `Op::Check` makes it if nothing did), while the boot creates only Feed's player type 10 handle, each created once and never destroyed, and the plane owner binds one at a time across both; a create or initialize that fails DECLINES the offer, `uri: original declined (the ACB handle for the URI engine could not be created)`, and Feed plays the title; the failure is recorded, so a later offer declines without a new attempt, and the Start's own gate stays the backstop); media's `uri_preflight` only receives the result as
-`ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
-`ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
-canvas, but only through `certified` capabilities: the production evidence certifies nothing and
-`ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
+composition (an ACB display; the URI engine's own handle, player type 0, is created ON DEMAND when the first source is OFFERED (`UriDriver::ready_to_start`, asked by `offer_qualified_uri`, runs `PlaneOwner::ensure_handle`; the driver's gate `Op::Check` makes it if nothing did), while the boot creates only Feed's player type 10 handle, each created once and never destroyed, and the plane owner binds one at a time across both; a create or initialize that fails DECLINES the offer, `uri: original declined (the ACB handle for the URI engine could not be created)` (the driver's own reason, `UriNotReady::Driver`), and Feed plays the title; the failure is recorded, so a later offer declines without a new attempt, and the Start's own gate stays the backstop); media's `uri_preflight` never sees the binding.
+The driver reports the display path it can show a source on as `DisplayEvidence` (`UriDriver::display`: whether
+the display is ready, whether it can place a preview rectangle, and an opaque tag the boot log prints; the
+exported window, the ACB plane and the window mode that exports it are the LG driver's own detail, compared
+only inside `plx_play_uri`), and the composition joins it to the product's callable and certified
+capabilities as `ProductEvidence { display, callable, certified }`. `ProductEvidence::permits` and
+`ResolvePort::could_qualify_pms` read only whether that display is ready, and offer a source only through
+`certified` capabilities: the production evidence certifies nothing and the product's `ProductQualifier`
+(`app/adapters/backends.rs`, which also holds LG's one display rule, a Part with several audio tracks stays
+on Standard on the exported window) answers `Unknown`, which is what keeps the ACB binding from being offered a source.
 The one exception is a viewer who turned on Settings > Video & playback > Playback engine > Experimental
 (`UriEngine::On`, per profile, off by default): the route snapshots it into `ResolveEnv::uri_engine`,
 `OriginalRequest::uri_opt_in` carries it to the worker, `ProductQualifier` then answers the original

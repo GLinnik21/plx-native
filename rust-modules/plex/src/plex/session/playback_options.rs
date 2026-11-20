@@ -36,7 +36,7 @@ impl InstantDpadSeeking {
 /// Which engine plays the viewer's direct-play videos — one per profile. `Off` (the default, and what
 /// absence means) is the Feed engine every build before the preference had. `On` is the viewer's own
 /// opt-in to the URI engine, the television's media pipeline fetching the file itself: the opt-in IS
-/// the qualification of a URI source for this viewer (`route::uri_preflight::ProductQualifier`), so
+/// the qualification of a URI source for this viewer (the application's `ProductQualifier`), so
 /// nobody who has not turned it on is ever routed to URI. A URI failure still takes the one handoff
 /// to Feed.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
