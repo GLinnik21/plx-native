@@ -1466,8 +1466,10 @@ impl DetailScreen {
     /// below the row, which that group's own `seat` picks, exactly as the engine would have seated
     /// it from the group's head. A page whose item has not landed has no section below; its row
     /// stops on the watched toggle alone, which presses nothing until the item is there
-    /// (`activate_hero`), and the toggle is the last resort ([`hero::first_stop`]). A reflex OK on a
-    /// page that has just appeared never writes to someone's account.
+    /// (`activate_hero`), and the toggle is the last resort ([`hero::first_stop`]). That seat is
+    /// provisional: the restore every navigation arrives with (and a fresh open without one arms in
+    /// its `Enter`) re-seats the page by this same rule when the item lands, so a reflex OK on a page
+    /// that has just appeared never writes to someone's account.
     fn default_elem<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, cx: &Cx<'_, H>) -> u32 {
         let stops = self.stops(cx);
         let set = self.hero_set(<H as crate::registry::MetadataLike>::metadata(cx));
@@ -2297,6 +2299,17 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 // resumes from what the stop committed, not from the `viewOffset` the page
                 // opened with.
                 let fresh_open = matches!(kind, Enter::Fresh { .. });
+                // The page is seated before its item lands (the item is requested right here). With
+                // no playback driver that first seat is the watched toggle, the row's only stop
+                // until the item is there, and it must not stay there: it writes the moment the item
+                // lands. A navigation arrives with a restore armed at the default spot (`DetailSeed`,
+                // `registry`), and the landing then seats the page's default (`default_elem`); a
+                // fresh open that came with none gets the same one.
+                if fresh_open && self.restore_intent.is_none() && !self.return_pending
+                    && self.detail(meta).is_none() && !H::screen_inputs(cx).can_play()
+                {
+                    self.restore(&plx_data::metadata::Spot::default(), meta);
+                }
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
                     || refresh == DetailRefreshPhase::None

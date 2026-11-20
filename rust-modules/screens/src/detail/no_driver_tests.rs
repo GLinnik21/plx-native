@@ -257,7 +257,8 @@ fn a_row_with_a_stop_that_does_not_write_opens_on_it() {
 
 /// A page with no item yet offers Play and the watch disc. With no driver the watch disc is the
 /// row's only stop and there is no section below to seat on, so the page opens on it: a control that
-/// writes, but one that presses nothing until the item is there (`activate_hero`).
+/// writes, but one that presses nothing until the item is there (`activate_hero`), and not one focus
+/// stays on once it is (`a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does`).
 #[test]
 fn a_page_whose_item_has_not_landed_opens_on_the_watch_disc_with_no_driver() {
     let sid = ServerId::UNSET;
@@ -270,6 +271,47 @@ fn a_page_whose_item_has_not_landed_opens_on_the_watch_disc_with_no_driver() {
         let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_MARK_WATCHED), Some(first));
         assert!(!effects.iter().any(|e| matches!(e.fx, Fx::App(AppFx::Store(StoreId::ViewState, _)))),
             "no_driver={no_driver}: OK on the watch disc before the item is there writes nothing");
+        clear();
+    }
+}
+
+/// **The real order: the page is seated BEFORE its item lands** (the item is requested on every fresh
+/// open). With no driver the first seat can only be the watched toggle, the row's one stop until the
+/// item is there, and it must not stay there once the toggle is live. Every navigation arrives with a
+/// restore armed at the default spot (`DetailSeed`), and a fresh open that came with none arms one
+/// itself, so the landing seats the page's default instead of leaving focus on a write control.
+#[test]
+fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
+    let sid = ServerId::UNSET;
+    let measure = plx_ui::fixture::FixtureMeasure;
+    // with a restore armed by the mount (a navigation's seed), and with none (a fresh open without one)
+    for (no_driver, seeded) in [(true, true), (true, false), (false, true), (false, false)] {
+        let guard = install(Detail { sid, rk: "other".into(), ..Default::default() });
+        let _driver = NoDriver::set(no_driver);
+        let mut screen = bare(&guard, sid, "movie");
+        if seeded {
+            screen.restore(&Spot::default(), test_store().view());
+        }
+        step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+            focus: FocusTarget::FirstInGroup(hero::HERO_GROUP),
+        }), None);
+        let mut engine = FocusEngine::new();
+        let first = if no_driver { hero::ELEM_MARK_WATCHED } else { hero::ELEM_PLAY };
+        match engine.enter::<TestHost>(OWNER, &screen, FocusTarget::FirstInGroup(hero::HERO_GROUP), None, &cx(&measure, None)) {
+            Outcome::Moved { to, .. } => assert_eq!(to.elem, first, "no_driver={no_driver}: before the item lands"),
+            other => panic!("an entry moves focus onto something: {other:?}"),
+        }
+        // The item lands, and the engine's reconcile runs after the landing, as `Dispatcher` does.
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(resumable(sid)));
+        step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), 1), Some(first));
+        let landed = Cx { focus: engine.read(OWNER), ..cx(&measure, None) };
+        let after = match engine.reconcile::<TestHost>(OWNER, &screen, &landed) {
+            Outcome::Moved { to, .. } => to.elem,
+            Outcome::Nothing => first,
+            other => panic!("{other:?}"),
+        };
+        let want = if no_driver { first_extra(&screen) } else { hero::ELEM_PLAY };
+        assert_eq!(after, want, "no_driver={no_driver} seeded={seeded}: where focus stands once the item is there");
         clear();
     }
 }
