@@ -1,0 +1,7 @@
+{
+  "library_header.collections": "Kolekcije",
+  "library_header.recommended": "Preporučeno",
+  "library_header.sort_filter": "Sortiranje i filtri",
+  "library_header.filtered_of": "{shown} od {total}",
+  "library_header.show": "Prikaži"
+}

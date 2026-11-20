@@ -1,0 +1,6 @@
+{
+  "player.hud.play_pause": "Pokreni/Pauziraj",
+  "player.hud.skip_back": "Premotaj natrag",
+  "player.hud.skip_forward": "Premotaj naprijed",
+  "player.up_next.seconds_left": "Sljedeća epizoda · {seconds} s"
+}

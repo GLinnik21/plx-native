@@ -290,6 +290,8 @@ fn month_names(language: Language, width: MonthWidth) -> (&'static [&'static str
         (Language::Hu, MonthWidth::Long) => (&HU_LONG, " "),
         (Language::Nl, MonthWidth::Medium) => (&NL_MEDIUM, " "),
         (Language::Nl, MonthWidth::Long) => (&NL_LONG, " "),
+        (Language::Hr, MonthWidth::Medium) => (&HR_MEDIUM, ". "),
+        (Language::Hr, MonthWidth::Long) => (&HR_GENITIVE, ". "),
     }
 }
 
@@ -430,6 +432,14 @@ const RU_GENITIVE: [&str; 12] = [
 /// format form except "март", "май", "июнь" and "июль", which it spells out.
 const RU_STANDALONE: [&str; 12] = [
     "янв.", "февр.", "март", "апр.", "май", "июнь", "июль", "авг.", "сент.", "окт.", "нояб.", "дек.",
+];
+/// CLDR `hr` format months: abbreviated without dots, full names in the genitive after a day.
+const HR_MEDIUM: [&str; 12] = [
+    "sij", "velj", "ožu", "tra", "svi", "lip", "srp", "kol", "ruj", "lis", "stu", "pro",
+];
+const HR_GENITIVE: [&str; 12] = [
+    "siječnja", "veljače", "ožujka", "travnja", "svibnja", "lipnja", "srpnja", "kolovoza",
+    "rujna", "listopada", "studenoga", "prosinca",
 ];
 
 /// CLDR `hu` abbreviated format months, with their dots.

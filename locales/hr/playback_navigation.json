@@ -1,0 +1,13 @@
+{
+  "settings.playback.instant_dpad_seeking": "Premotavanje strelicama",
+  "settings.playback.instant_dpad_seeking.copy": "Dok su kontrole skrivene, lijevo/desno premotava za odabrani interval. Dok su kontrole prikazane, OK potvrđuje. „Isključeno“ zadržava navigaciju s prvo prikazanim kontrolama.",
+  "settings.playback.instant_dpad_seeking.off": "Isključeno",
+  "settings.playback.instant_dpad_seeking.on": "Uključeno",
+  "settings.playback.dolby_vision": "Dolby Vision",
+  "settings.playback.dolby_vision.copy": "Automatski koristi Dolby Vision ako ga televizor podržava. „Isključeno“ reproducira HDR10 sloj. Datoteke bez HDR10 sloja pretvara Plex poslužitelj i možda se neće moći reproducirati.",
+  "settings.playback.dolby_vision.off": "Isključeno",
+  "settings.playback.uri_engine": "Mehanizam reprodukcije",
+  "settings.playback.uri_engine.copy": "„Eksperimentalno“ omogućuje televizoru da izravno prenosi datoteku. Kontrole ostaju iste. Ako ne uspije, video se ponovno pokreće u standardnom načinu. Neki se videozapisi uvijek reproduciraju standardno.",
+  "settings.playback.uri_engine.off": "Standardno",
+  "settings.playback.uri_engine.on": "Eksperimentalno"
+}

@@ -97,7 +97,7 @@ UI_ENUMS = {
     'dolby_vision_mode': ('auto', 'off'),
     'deck_press': ('details', 'play'),
 }
-LANGUAGE_ENUM = ('system', 'en', 'es', 'be', 'ca', 'fr', 'it', 'pt', 'de', 'hu', 'ru', 'pl', 'nl')
+LANGUAGE_ENUM = ('system', 'en', 'es', 'be', 'ca', 'fr', 'it', 'pt', 'de', 'hu', 'ru', 'pl', 'nl', 'hr')
 POSTER_LADDER = ('year_length', 'genre', 'video', 'age_rating_score', 'none')
 POSTER_PARTS = {
     'detail_parts': ('year', 'length', 'genre', 'video_quality', 'age_rating', 'score'),
