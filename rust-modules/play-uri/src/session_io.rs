@@ -3,8 +3,8 @@
 use crate::uri_lifecycle::{Event, Fx};
 use crate::uri_protocol::{build_load, Message};
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::DisplaySink;
-use plx_platform::tv::uri::UriMedia;
+use plx_os::tv::sink::DisplaySink;
+use plx_os::tv::uri::UriMedia;
 use std::ffi::CStr;
 use std::os::raw::c_int;
 

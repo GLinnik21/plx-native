@@ -467,12 +467,12 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     }
 }
 
-struct SavedLanguageForTest(plx_platform::i18n::Preference);
+struct SavedLanguageForTest(plx_os::i18n::Preference);
 impl SavedLanguageForTest {
-    fn new(value: plx_platform::i18n::Preference) -> Self { Self(plx_platform::i18n::saved_preference_for_test(value)) }
+    fn new(value: plx_os::i18n::Preference) -> Self { Self(plx_os::i18n::saved_preference_for_test(value)) }
 }
 impl Drop for SavedLanguageForTest {
-    fn drop(&mut self) { plx_platform::i18n::saved_preference_for_test(self.0); }
+    fn drop(&mut self) { plx_os::i18n::saved_preference_for_test(self.0); }
 }
 
 /// **Settings > Libraries > Under posters, walked with the remote** (`routes.md` R13): from the

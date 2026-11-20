@@ -6,14 +6,14 @@
 //! takes the raw sink instead.
 //!
 //! A [`SinkFence`] is a `const` the composition builds from the raw sink it chose and a refusing
-//! sink in front of that same raw sink (`plx_platform::tv::sink::RefusingSink`, whose three memoized
+//! sink in front of that same raw sink (`plx_os::tv::sink::RefusingSink`, whose three memoized
 //! queries keep the raw answer). It holds no state: the one thing it reads is the process's
 //! [`FEED_SHARED`], which is why it lives here and not in the composition.
 //!
 //! [`PhysicalShared::native_releasing`]: crate::shared::PhysicalShared::native_releasing
 
 use crate::shared::FEED_SHARED;
-use plx_platform::tv::sink::VideoSink;
+use plx_os::tv::sink::VideoSink;
 
 /// The raw sink and the refusing one in front of it. See the module doc.
 pub struct SinkFence {

@@ -17,8 +17,8 @@ use plx_ui::icons::Icon;
 /// The reason line and glyph for why key mode cannot help, or `None` when nothing says it cannot.
 pub fn reason_for(blocked: Option<Blocked>) -> Option<(&'static CStr, Icon)> {
     let reason = match blocked? {
-        Blocked::NoKey => plx_platform::i18n::msg::browse_clock_no_key_c(),
-        Blocked::KeyChanged => plx_platform::i18n::msg::browse_clock_key_changed_c(),
+        Blocked::NoKey => plx_os::i18n::msg::browse_clock_no_key_c(),
+        Blocked::KeyChanged => plx_os::i18n::msg::browse_clock_key_changed_c(),
     };
     Some((reason, Icon::ClockBadgeAlert))
 }
@@ -55,7 +55,7 @@ mod tests {
     use super::*;
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_ui::fit::HEADROOM;
-    use plx_platform::i18n::{language_on_this_thread_for_test, msg};
+    use plx_os::i18n::{language_on_this_thread_for_test, msg};
 
     use plx_ui::widgets::StatusOverlay;
 
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn both_reasons_fit_the_two_line_slot_in_every_shipped_language() {
         let mut out = Vec::new();
-        for language in plx_platform::i18n::SHIPPED {
+        for language in plx_os::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for cause in [Blocked::NoKey, Blocked::KeyChanged] {
                 let (reason, _) = reason_for(Some(cause)).expect("a cause has a reason");

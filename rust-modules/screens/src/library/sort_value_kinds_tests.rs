@@ -186,7 +186,7 @@ fn the_focused_episode_shows_its_value_and_not_the_air_date_twice() {
 fn every_episode_and_season_value_fits_its_card_in_every_shipped_language() {
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_machine::machine::Measure;
-    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
     let _guard = plx_base::testlock::serial();
     let episode_w = layout::Layout::new(true, 10).with_episodes(true).card_w();
     let season_w = layout::Layout::new(true, 10).card_w();

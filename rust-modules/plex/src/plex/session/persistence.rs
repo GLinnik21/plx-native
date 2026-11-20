@@ -4,13 +4,13 @@
 //! filename candidates. Canonical helper loads, typed migration, and exact readback share this
 //! adapter; no unavailable helper response authorizes a file-backend fallback.
 
-use plx_platform::storage::{
+use plx_os::storage::{
     CommitReceipt, CommitStage, Record, RecordKey, RecordState, RecordStore, StoreError,
 };
 use std::path::{Path, PathBuf};
 
-use plx_platform::storage::wire::ProtectionRequest;
-use plx_platform::storage::{
+use plx_os::storage::wire::ProtectionRequest;
+use plx_os::storage::{
     client::{self, Load as HelperLoad},
     state::{self, Generation, MigrationProgress, Status},
     wire::{AuthLoad, CommitStatus, MigrationMutation, Response, WireMutation},
@@ -39,7 +39,7 @@ pub enum CanonicalRead {
     Locked {
         revision: u64,
         public: super::Session,
-        protection: Option<plx_platform::storage::wire::ProtectionOutcome>,
+        protection: Option<plx_os::storage::wire::ProtectionOutcome>,
     },
     /// An earlier canonical migration already owns these opaque bytes. Never search other files.
     Pending {
@@ -51,20 +51,20 @@ pub enum CanonicalRead {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProtectionFailure {
-    pub failure: plx_platform::storage::wire::KeymanagerFailure,
-    pub preservation: plx_platform::storage::wire::AuthPreservation,
+    pub failure: plx_os::storage::wire::KeymanagerFailure,
+    pub preservation: plx_os::storage::wire::AuthPreservation,
     pub db8_commit_verified: bool,
 }
 
 /// Payload-free evidence owned by the completion, including any legacy candidate errno numbers.
-pub type HelperEvidence = (plx_platform::storage::wire::failure::HelperFailure, [Option<i32>; 8]);
+pub type HelperEvidence = (plx_os::storage::wire::failure::HelperFailure, [Option<i32>; 8]);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CanonicalCommit {
     Durable {
         revision: u64,
         verified: bool,
-        protection: Option<plx_platform::storage::wire::ProtectionOutcome>,
+        protection: Option<plx_os::storage::wire::ProtectionOutcome>,
     },
     Uncertain {
         stage: CommitStage,
@@ -109,10 +109,10 @@ pub fn cleanup_temporaries() -> Result<(), StoreError> {
 
 fn store() -> Result<impl RecordStore, StoreError> {
     plx_base::paths::ensure_persistent_state_root().map_err(|error| StoreError::Io {
-        stage: plx_platform::storage::CommitStage::ParentOpen,
+        stage: plx_os::storage::CommitStage::ParentOpen,
         errno: error.raw_os_error().unwrap_or(0),
     })?;
-    plx_platform::storage::open(root())
+    plx_os::storage::open(root())
 }
 
 /// Read the versioned JSON record used by the pre-DB8 0.6.6 candidates without creating it.
@@ -130,7 +130,7 @@ fn load_legacy_json_at(root: PathBuf) -> CanonicalRead {
         }),
         Ok(metadata) if !metadata.is_dir() => CanonicalRead::Blocked(StoreError::RootNotDirectory),
         Ok(_) => {
-            let store = match plx_platform::storage::open(root) {
+            let store = match plx_os::storage::open(root) {
                 Ok(store) => store,
                 Err(error) => return CanonicalRead::Blocked(error),
             };
@@ -209,8 +209,8 @@ fn helper_error(error: client::ClientError) -> StoreError {
     }
 }
 
-fn helper_rejection(code: plx_platform::storage::wire::ErrorCode) -> StoreError {
-    use plx_platform::storage::wire::ErrorCode;
+fn helper_rejection(code: plx_os::storage::wire::ErrorCode) -> StoreError {
+    use plx_os::storage::wire::ErrorCode;
     match code {
         ErrorCode::Unavailable | ErrorCode::Timeout | ErrorCode::Capability => {
             StoreError::HelperUnavailable
@@ -541,7 +541,7 @@ const GCM_TAG: usize = 16;
 ///
 /// The two were once folded into one "whichever is larger, plus 512" figure, which overstated an
 /// ACL write (every credential change on a 4.x set) by the base64 expansion, and so evicted memory
-/// from a write the platform would have stored.
+/// from a write the os layer would have stored.
 pub(super) fn sealed_envelope_estimate(state: &state::CanonicalState, plaintext: &str, seal: Seal) -> usize {
     use serde_json::{json, Value};
     let mut context = state.auth_context();
@@ -661,7 +661,7 @@ pub(super) fn projected_document(
 /// **The document guard.** DB8 keeps the whole state in one document that may not pass
 /// `MAX_LOGICAL_BYTES`, and past it EVERY write fails (`LogicalTooLarge`): quality, pins, consent,
 /// all of it, because per-profile memory grew. So before a write that carries `public` is sent, its
-/// projected document is measured with the platform's own counting rule (`state::logical_size`;
+/// projected document is measured with the os layer's own counting rule (`state::logical_size`;
 /// the loaded envelope, ledger and any pending refresh are in hand, and future preference keys
 /// preserved above count), and if it would not fit, per-profile memory is shed from the payload —
 /// `track_memory`, then `subtitle_offsets`, then `library_sorts`, each oldest-first from the record
@@ -669,7 +669,7 @@ pub(super) fn projected_document(
 ///
 /// Returns the lists that lost entries and how many. Nothing is ever refused here: if everything
 /// sheddable is gone and the document still does not fit, the write goes out as it would have and
-/// the platform refuses it as before. A stored document already over the cap never reaches this
+/// the os layer refuses it as before. A stored document already over the cap never reaches this
 /// (it fails to load), and the file backend has no cap and no guard.
 pub(super) fn fit_document(
     state: &state::CanonicalState,
@@ -689,7 +689,7 @@ pub(super) fn fit_document(
 }
 
 /// The one line that reports what a write is about to put in DB8: the whole projected document
-/// and the share `track_memory` holds of it, both in the platform's logical bytes, against the
+/// and the share `track_memory` holds of it, both in the os layer's logical bytes, against the
 /// cap. It is what the device check reads to see how close memory sits to the budget; the write's
 /// own latency is the line `session.rs` logs after the helper answers.
 pub(super) fn document_size_line(total: usize, preferences: &serde_json::Value) -> String {
@@ -715,7 +715,7 @@ pub(super) fn projected_size(
     };
     let projected = size(write)?;
     if write == DocumentWrite::Staged {
-        // The platform also validates the document the pending refresh WOULD become
+        // The os layer also validates the document the pending refresh WOULD become
         // (`pending_candidate`), and that is what stands once it is promoted.
         return Some(projected.max(size(DocumentWrite::Replace(Seal::Keymanager))?));
     }
@@ -763,7 +763,7 @@ fn commit_session(
         session,
         migration,
         authority,
-        plx_platform::tv::device::info().major,
+        plx_os::tv::device::info().major,
         &mut client::NativeTransport,
     )
 }
@@ -824,7 +824,7 @@ pub fn commit_session_with(
                     Ok(value) => value,
                     Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
                 },
-                auth_plaintext: plx_platform::storage::wire::SecretString(protected),
+                auth_plaintext: plx_os::storage::wire::SecretString(protected),
                 protection: protection_for_auth_write(major, true, false, false),
             },
         },
@@ -836,7 +836,7 @@ pub fn commit_session_with(
                 Ok(value) => value,
                 Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
             },
-            payload: plx_platform::storage::wire::SecretString(protected),
+            payload: plx_os::storage::wire::SecretString(protected),
             protection: protection_for_auth_write(major, may_fallback, false, false),
         },
         HelperLoad::Present(_) if migration => WireMutation::AdvanceMigration {
@@ -845,7 +845,7 @@ pub fn commit_session_with(
                     Ok(value) => value,
                     Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
                 },
-                auth_plaintext: plx_platform::storage::wire::SecretString(protected),
+                auth_plaintext: plx_os::storage::wire::SecretString(protected),
                 protection: protection_for_auth_write(major, true, false, false),
             },
         },
@@ -873,7 +873,7 @@ pub fn commit_session_with(
                         Ok(value) => value,
                         Err(_) => return CanonicalCommit::Failed(StoreError::InvalidSchema),
                     },
-                    payload: plx_platform::storage::wire::SecretString(protected),
+                    payload: plx_os::storage::wire::SecretString(protected),
                     protection: protection_for_auth_write(
                         major,
                         may_fallback,
@@ -991,7 +991,7 @@ fn helper_commit_with(
     operation: Generation,
     mutation: WireMutation,
 ) -> CanonicalCommit {
-    plx_platform::storage::wire::failure::clear();
+    plx_os::storage::wire::failure::clear();
     match client::commit_with(transport, expected, operation, mutation) {
         Ok(Response::Commit {
             status: CommitStatus::Committed,
@@ -1012,7 +1012,7 @@ fn helper_commit_with(
             None => CanonicalCommit::Failed(StoreError::InvalidSchema),
         },
         Ok(Response::Reconcile {
-            status: plx_platform::storage::wire::ReconcileStatus::Applied,
+            status: plx_os::storage::wire::ReconcileStatus::Applied,
             applied: Some(applied),
             protection,
             ..
@@ -1030,12 +1030,12 @@ fn helper_commit_with(
             ..
         })
         | Ok(Response::Reconcile {
-            status: plx_platform::storage::wire::ReconcileStatus::Unknown,
+            status: plx_os::storage::wire::ReconcileStatus::Unknown,
             ..
         }) => CanonicalCommit::Uncertain {
             stage: CommitStage::Readback,
             errno: 0,
-            helper: plx_platform::storage::wire::failure::last().map(|failure| (failure, [None; 8])),
+            helper: plx_os::storage::wire::failure::last().map(|failure| (failure, [None; 8])),
         },
         Ok(Response::Error { code }) => {
             plx_base::eventlog::log(&format!(
@@ -1079,11 +1079,11 @@ mod db8_policy_tests {
     #[test]
     fn helper_timeout_is_unavailable_not_invalid_schema() {
         assert_eq!(
-            helper_rejection(plx_platform::storage::wire::ErrorCode::Timeout),
+            helper_rejection(plx_os::storage::wire::ErrorCode::Timeout),
             StoreError::HelperUnavailable
         );
         assert_eq!(
-            helper_rejection(plx_platform::storage::wire::ErrorCode::Corrupt),
+            helper_rejection(plx_os::storage::wire::ErrorCode::Corrupt),
             StoreError::InvalidSchema
         );
     }
@@ -1156,7 +1156,7 @@ mod db8_policy_tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let store = plx_platform::storage::open(root.clone()).unwrap();
+        let store = plx_os::storage::open(root.clone()).unwrap();
         let payload = r#"{"client_id":"legacy-client","account_token":"legacy-token"}"#;
         assert_eq!(
             store.commit(RecordKey::Session, &Record::data(7, payload.into())),
@@ -1330,7 +1330,7 @@ mod db8_policy_tests {
     /// leave at that shared path. **RED observed live, not simulated:** with the original
     /// `redirect_for_test(None)` restored and, immediately before the first assertion, a stray
     /// file written to `super::super::fallback_file()` with permissive (group/other-writable)
-    /// mode bits — plausible residue, since `plx_platform::storage::read_owned_bytes` treats such a mode
+    /// mode bits — plausible residue, since `plx_os::storage::read_owned_bytes` treats such a mode
     /// as untrusted — `cargo test --lib
     /// plex::session::persistence::db8_policy_tests::cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one`
     /// failed the SECOND assertion: `left: LegacyRetireFailed, right: Confirmed`. That is this
@@ -1491,7 +1491,7 @@ fn decode_legacy_at_depth(
         .remove(super::FALLBACK_MARKER);
     match value.get("format").and_then(serde_json::Value::as_str) {
         Some("plxnative-record") => {
-            match plx_platform::storage::parse_record(bytes, RecordKey::Session)?.state {
+            match plx_os::storage::parse_record(bytes, RecordKey::Session)?.state {
                 RecordState::Data { payload } => {
                     decode_legacy_at_depth(payload.as_bytes(), opener, depth + 1)
                 }
@@ -1623,7 +1623,7 @@ pub fn bootstrap_with(
     }
     let fallback_revoked = super::fallback_revoked_at(candidates);
     for candidate in candidates {
-        let bytes = match plx_platform::storage::read_owned_bytes(candidate) {
+        let bytes = match plx_os::storage::read_owned_bytes(candidate) {
             Ok(None) => continue,
             Ok(Some((bytes, true))) => bytes,
             Ok(Some((_, false))) => return blocked_bootstrap(StoreError::RecordUnsafeMode),
@@ -1710,7 +1710,7 @@ fn blocked_bootstrap(error: StoreError) -> Bootstrap {
 }
 
 fn retire_exact_candidate(path: &Path, expected: &[u8]) -> bool {
-    if !matches!(plx_platform::storage::read_owned_bytes(path), Ok(Some((ref current,true))) if current == expected)
+    if !matches!(plx_os::storage::read_owned_bytes(path), Ok(Some((ref current,true))) if current == expected)
     {
         return false;
     }
@@ -1748,7 +1748,7 @@ pub fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
         bootstrap_with(
             &mut HelperMigration {
                 transport: &mut client::NativeTransport,
-                major: plx_platform::tv::device::info().major,
+                major: plx_os::tv::device::info().major,
             },
             opener,
             &candidates,
@@ -1813,11 +1813,11 @@ pub fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
     };
     let mut complete = super::retry_pending_retirements_locked();
     for candidate in candidates {
-        match plx_platform::storage::read_owned_bytes(&candidate) {
+        match plx_os::storage::read_owned_bytes(&candidate) {
             Ok(None) => {}
             Ok(Some((bytes, true))) => {
                 // Preserve the exact-source fence used by migration retirement.
-                complete &= matches!(plx_platform::storage::read_owned_bytes(&candidate),
+                complete &= matches!(plx_os::storage::read_owned_bytes(&candidate),
                     Ok(Some((ref current, true))) if current == &bytes)
                     && super::retire_session_candidate(&candidate);
             }
@@ -1833,9 +1833,9 @@ pub fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn uncertain_helper_reply_for_test(reconcile: bool) -> super::async_persistence::CompletionOutcome {
-    use plx_platform::storage::wire::{failure, ReconcileStatus};
+    use plx_os::storage::wire::{failure, ReconcileStatus};
     let mut transport = |request| {
-        if reconcile && matches!(request, plx_platform::storage::wire::Request::Commit { .. }) {
+        if reconcile && matches!(request, plx_os::storage::wire::Request::Commit { .. }) {
             return Err(client::ClientError::Unavailable);
         }
         failure::remember(failure::Stage::Wire, None);
@@ -1888,7 +1888,7 @@ mod commit_flavor_tests {
 
     #[test]
     fn uncertain_reply_without_evidence_does_not_borrow_a_previous_failure() {
-        use plx_platform::storage::wire::failure::{self, Stage};
+        use plx_os::storage::wire::failure::{self, Stage};
         failure::remember(Stage::Db8, Some(-3963));
         let mut transport = |_request| Ok(Response::Commit { status: CommitStatus::Unavailable,
             db_rev: None, state: None, applied: None, verified: false, protection: None });
@@ -1902,7 +1902,7 @@ mod commit_flavor_tests {
         let mut transport = |request| {
             assert!(matches!(
                 request,
-                plx_platform::storage::wire::Request::Commit { .. }
+                plx_os::storage::wire::Request::Commit { .. }
             ));
             Ok(Response::Commit {
                 status: CommitStatus::Committed,

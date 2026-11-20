@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// signed in: the language, and the window size `construct` asks `SDL_CreateWindow` for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Retained {
-    pub language: plx_platform::i18n::Preference,
+    pub language: plx_os::i18n::Preference,
     pub ui_resolution: UiResolution,
 }
 
@@ -29,7 +29,7 @@ impl Retained {
 #[serde(deny_unknown_fields)]
 struct Saved {
     version: u8,
-    language: plx_platform::i18n::Preference,
+    language: plx_os::i18n::Preference,
     /// Absent (every file written before the setting) is Automatic, and Automatic is not written, so
     /// a file for an owner who never chose is byte-identical to one an older build wrote. Soft:
     /// a spelling this build does not know costs the resolution, never the language.
@@ -80,7 +80,7 @@ pub(super) fn save(kept: Retained) -> bool {
 /// Delete every candidate, including a stale earlier fallback. No credential resource is read.
 pub(super) fn erase() -> Vec<String> {
     candidates().into_iter().filter_map(|path| {
-        plx_platform::storage::remove_file_or_prove_absent(&path)
+        plx_os::storage::remove_file_or_prove_absent(&path)
             .err().map(|error| format!("{}: {error}", path.display()))
     }).collect()
 }

@@ -13,7 +13,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use plx_base::fontcov::advances::ShippedMeasure;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, LocaleContext, Preference};
+use plx_os::i18n::{language_on_this_thread_for_test, msg, LocaleContext, Preference};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::Rect;
 

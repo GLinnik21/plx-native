@@ -48,7 +48,7 @@ impl Resources {
             self.query = q.into();
             self.caret = caret;
             self.run = if q.trim().is_empty() {
-                plx_platform::i18n::msg::browse_search_placeholder_c().into()
+                plx_os::i18n::msg::browse_search_placeholder_c().into()
             } else {
                 cstring(q)
             };
@@ -230,7 +230,7 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
         if ghost_shown(&data.query) {
             let y = plx_gfx::text::baseline_y(theme::size::BODY, 0, theme::size::HERO, 1, text_y);
             p.text(
-                plx_platform::i18n::msg::browse_search_one_more_c().as_ptr(),
+                plx_os::i18n::msg::browse_search_one_more_c().as_ptr(),
                 rect.x + caret_dx + CARET_W + GHOST_GAP,
                 y,
                 theme::size::BODY,
@@ -257,7 +257,7 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
 fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
     let env = Env::inert();
     Label::new(
-        plx_platform::i18n::msg::browse_search_recents_c().as_ptr(),
+        plx_os::i18n::msg::browse_search_recents_c().as_ptr(),
         theme::size::CAPTION,
         theme::TEXT_TERTIARY,
     )
@@ -313,7 +313,7 @@ fn recents<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p
         stop(screen, *elem, ElemKind::Bare, f, p);
     }
     let rect = layout::clear(shown, screen.stack.scroll(), f.cx.measure);
-    Button::new(plx_platform::i18n::msg::browse_search_clear_c().as_ptr(), theme::size::BODY, rect)
+    Button::new(plx_os::i18n::msg::browse_search_clear_c().as_ptr(), theme::size::BODY, rect)
         .focused(f.cx.focus.current == Some(screen.key(CLEAR)))
         .draw(&env, p);
     stop(screen, CLEAR, ElemKind::Control, f, p);
@@ -330,8 +330,8 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
     let mut rect = layout::empty_band(screen.editing);
     rect.y -= screen.stack.scroll();
     if empty == EmptyState::Fault {
-        StatusOverlay::new(rect, plx_platform::i18n::msg::browse_search_failed_c(), StatusKind::Failed)
-            .reason(plx_platform::i18n::msg::browse_search_failed_detail_c())
+        StatusOverlay::new(rect, plx_os::i18n::msg::browse_search_failed_c(), StatusKind::Failed)
+            .reason(plx_os::i18n::msg::browse_search_failed_detail_c())
             .draw(&Env::inert(), p);
         return;
     }
@@ -339,7 +339,7 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
     let statement = if empty == EmptyState::NoResults {
         let shell =
             f.cx.measure
-                .width_str(&plx_platform::i18n::msg::browse_search_no_results(""), theme::size::TITLE, true);
+                .width_str(&plx_os::i18n::msg::browse_search_no_results(""), theme::size::TITLE, true);
         no_results_line(&elide(
             screen.draft.query().trim(),
             1200.0 - shell,
@@ -348,7 +348,7 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
             f.cx.measure,
         ))
     } else {
-        plx_platform::i18n::msg::browse_search_not_yet().into()
+        plx_os::i18n::msg::browse_search_not_yet().into()
     };
     let statement = cstring(&statement);
     let hh = f.cx.measure.cap_h(theme::size::CAPTION);
@@ -513,19 +513,19 @@ fn empty_state(state: plx_data::search::State, has_shelves: bool) -> Option<Empt
 
 fn header_of(state: EmptyState) -> &'static CStr {
     match state {
-        EmptyState::NoResults => plx_platform::i18n::msg::browse_search_results_c(),
-        _ => plx_platform::i18n::msg::browse_search_recents_c(),
+        EmptyState::NoResults => plx_os::i18n::msg::browse_search_results_c(),
+        _ => plx_os::i18n::msg::browse_search_recents_c(),
     }
 }
 
 fn no_results_line(q: &str) -> String {
-    plx_platform::i18n::msg::browse_search_no_results(q)
+    plx_os::i18n::msg::browse_search_no_results(q)
 }
 
 fn source_label(source: &ScopeSource) -> String {
     if source.household {
         return if source.name.is_empty() {
-            plx_platform::i18n::msg::browse_search_your_server().into()
+            plx_os::i18n::msg::browse_search_your_server().into()
         } else {
             source.name.clone()
         };
@@ -540,15 +540,15 @@ fn source_label(source: &ScopeSource) -> String {
     } else if !source.handle.is_empty() {
         source.handle.clone()
     } else {
-        plx_platform::i18n::msg::browse_search_shared_server().into()
+        plx_os::i18n::msg::browse_search_shared_server().into()
     }
 }
 fn join(names: &[String]) -> String {
     match names {
         [] => String::new(),
         [one] => one.clone(),
-        [a, b] => plx_platform::i18n::msg::browse_search_join(a, b),
-        _ => plx_platform::i18n::msg::browse_search_join(&names[..names.len() - 1].join(", "), names.last().unwrap()),
+        [a, b] => plx_os::i18n::msg::browse_search_join(a, b),
+        _ => plx_os::i18n::msg::browse_search_join(&names[..names.len() - 1].join(", "), names.last().unwrap()),
     }
 }
 fn name_set(sources: &[&ScopeSource]) -> String {
@@ -577,9 +577,9 @@ fn name_set(sources: &[&ScopeSource]) -> String {
         .map(|source| source_label(source))
         .collect();
     names.push(if libraries > 0 {
-        plx_platform::i18n::msg::browse_search_shared_libraries(libraries as i64)
+        plx_os::i18n::msg::browse_search_shared_libraries(libraries as i64)
     } else {
-        plx_platform::i18n::msg::browse_search_shared_sources(shares.len() as i64)
+        plx_os::i18n::msg::browse_search_shared_sources(shares.len() as i64)
     });
     join(&names)
 }
@@ -589,7 +589,7 @@ fn scope_text(sources: &[ScopeSource]) -> Option<String> {
     }
     let (live, down): (Vec<_>, Vec<_>) = sources.iter().partition(|source| source.live);
     if down.is_empty() {
-        let mut line = plx_platform::i18n::msg::browse_search_searching(&name_set(&live));
+        let mut line = plx_os::i18n::msg::browse_search_searching(&name_set(&live));
         let mut shares = live
             .iter()
             .filter(|source| !source.household && !source.handle.is_empty());
@@ -601,9 +601,9 @@ fn scope_text(sources: &[ScopeSource]) -> Option<String> {
         }
         Some(line)
     } else if live.is_empty() {
-        Some(plx_platform::i18n::msg::browse_search_unreachable(&name_set(&down)))
+        Some(plx_os::i18n::msg::browse_search_unreachable(&name_set(&down)))
     } else {
-        Some(plx_platform::i18n::msg::browse_search_partial(&name_set(&live), &name_set(&down)))
+        Some(plx_os::i18n::msg::browse_search_partial(&name_set(&live), &name_set(&down)))
     }
 }
 
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn translated_count_messages_follow_belarusian_grammar_with_separate_number_formatting() {
-        use plx_platform::i18n::{LocaleContext, Preference, msg};
+        use plx_os::i18n::{LocaleContext, Preference, msg};
         let be = LocaleContext::resolve(Preference::Be, None, Some("en-US"), None, None);
         for (count, expected) in [(0, "0 вынікаў"), (1, "1 вынік"), (2, "2 вынікі"),
             (11, "11 вынікаў"), (21, "21 вынік"), (22, "22 вынікі"), (12345, "12,345 вынікаў")] {
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn translated_search_templates_preserve_user_values_and_sentence_order() {
-        use plx_platform::i18n::{LocaleContext, Preference, msg};
+        use plx_os::i18n::{LocaleContext, Preference, msg};
         let be = LocaleContext::resolve(Preference::Be, None, None, None, None);
         assert_eq!(msg::browse_search_no_results_in(&be, "Кіна {query}"), "Няма вынікаў для «Кіна {query}»");
         let es = LocaleContext::resolve(Preference::Es, None, None, None, None);

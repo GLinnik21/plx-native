@@ -15,8 +15,8 @@ use super::test_support::apply_plan;
 #[cfg(feature = "devtriggers")]
 fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
     let mut ps = crate::route::PlaybackSession::IDLE;
-    let caps = plx_platform::devcaps::Caps::assumed();
-    let dv = plx_data::metadata::Dovi::default().presentation(true, plx_platform::devcaps::dv::DvCapability::Unknown, true);
+    let caps = plx_os::devcaps::Caps::assumed();
+    let dv = plx_data::metadata::Dovi::default().presentation(true, plx_os::devcaps::dv::DvCapability::Unknown, true);
     // The two ends of the gate, at a UHD raster this device's table admits.
     assert!(
         video_direct_plays("hevc", 3840, 2160, dv, &caps),
@@ -206,7 +206,7 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
         23.976,
         p8(),
         true,
-        plx_platform::devcaps::dv::DvCapability::Supported,
+        plx_os::devcaps::dv::DvCapability::Supported,
     ));
     let frozen = stream_dv_decision(&ps);
     assert!(frozen.presentation.declared().is_some());
@@ -258,7 +258,7 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
         23.976,
         p8(),
         false,
-        plx_platform::devcaps::dv::DvCapability::Supported,
+        plx_os::devcaps::dv::DvCapability::Supported,
     ));
     // The copy rule itself (`copied_video_dv`) is covered in `plan_dolby_vision_tests.rs`.
 
@@ -2262,10 +2262,10 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
                 fps: 23.976,
                 dovi: p8(),
                 dv_decision: plx_data::metadata::DvDecision {
-                    capability: plx_platform::devcaps::dv::DvCapability::Supported,
+                    capability: plx_os::devcaps::dv::DvCapability::Supported,
                     presentation: p8().presentation(
                         true,
-                        plx_platform::devcaps::dv::DvCapability::Supported,
+                        plx_os::devcaps::dv::DvCapability::Supported,
                         true,
                     ),
                 },

@@ -4,7 +4,7 @@
 //! machine per data store), `pms` (the Home catalog), `browse` (the per-section library catalog),
 //! `metadata` (the item detail), `person`, `collection`, `search` and `viewstate` (the view-state
 //! writes). It is the `data` layer of `ci/module-layers.ini`: it uses `base`, `machine`,
-//! `platform`, `net`, `plex` and `telemetry` and nothing above them, so it names no screen, widget
+//! `os`, `net`, `plex` and `telemetry` and nothing above them, so it names no screen, widget
 //! or application type.
 //!
 //! `test-support` exposes the seams the layers above drive their tests through

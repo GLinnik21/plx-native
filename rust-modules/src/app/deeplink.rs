@@ -17,7 +17,7 @@
 //!   the app was. Elsewhere (webOS 4.x to 6.x) only a cold launch does, and a caller closes the app first
 //!   (`com.webos.applicationManager/closeByAppId`), then launches.
 //!
-//! The payload arrives raw through `plx_platform::tv::launch` (`argv[1]`, or a relaunch event). This
+//! The payload arrives raw through `plx_os::tv::launch` (`argv[1]`, or a relaunch event). This
 //! module waits until
 //! there is a signed-in profile with Home at the root, makes sure Home is alone on the stack, asks
 //! for the item's metadata and hands the landing to the shared menu-play wait
@@ -372,7 +372,7 @@ pub(crate) fn link_inputs(
     session_stands: bool,
     now: u32,
 ) -> (LinkEvent, LinkEnv<'static>) {
-    let event = fold_arrivals(&plx_platform::tv::launch::take_all());
+    let event = fold_arrivals(&plx_os::tv::launch::take_all());
     let root = match pages.nav.tabs.stack.entries.first().map(|e| &e.arg) {
         Some(AppArg::Login) => Root::Login,
         Some(AppArg::Home) => Root::Home,

@@ -150,7 +150,7 @@ class MandatoryCohort(unittest.TestCase):
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source, destination)
             # Source-backed generated layouts require the actual producers and dynamic input.
-            for relative in ('platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs', '../locales/languages.json'):
+            for relative in ('os/build.rs', 'os/build_support/catalog.rs', 'build_support/install_identities.rs', '../locales/languages.json'):
                 destination = modules / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / 'rust-modules' / relative, destination)

@@ -11,7 +11,7 @@ module makes to another out of the Rust tokens. This script fails when
   * a reference — production or `cfg(test)` — names a layer its own layer does not `use`, and
     ci/allow/layers.txt has no entry for that (file, member) pair;
   * a reference from outside a PORT names one of its members, with no entry either. A
-    `[port <name>]` section is not a layer: its members stay placed in their layers, and the
+    `[platform <name>]` section is not a layer: its members stay placed in their layers, and the
     port fences one platform's code off from the rest (docs/module-layers.md, step L15). Its
     entries do not hold up any layer's extraction;
   * an allowlist entry no longer matches any such reference (the list only shrinks), or the
@@ -65,21 +65,21 @@ class Layers:
         parser.optionxform = str
         with open(path, encoding='utf-8') as f:
             parser.read_file(f)
-        self.order = [s for s in parser.sections() if not s.startswith('port ')]
+        self.order = [s for s in parser.sections() if not s.startswith('platform ')]
         self.uses, self.members, self.errors = {}, {}, []
         # A PORT is a set of members, still placed in their layers, that nothing outside the port
         # may name: the boundary of one platform's code (docs/module-layers.md, step L15).
         self.ports, self.port_members = {}, {}
         for section in parser.sections():
-            if not section.startswith('port '): continue
-            port = section[len('port '):].strip()
+            if not section.startswith('platform '): continue
+            port = section[len('platform '):].strip()
             unknown = set(parser[section]) - {'members'}
             if unknown: self.errors.append(f'[{section}] has unknown key(s) {sorted(unknown)}')
             self.ports[port] = []
             for member in parser[section].get('members', '').split():
                 key = tuple(member.split('::'))
                 if key in self.port_members:
-                    self.errors.append(f'{member} is listed in [port {self.port_members[key]}] and [{section}]')
+                    self.errors.append(f'{member} is listed in [platform {self.port_members[key]}] and [{section}]')
                 self.ports[port].append(key)
                 self.port_members[key] = port
         for layer in self.order:
@@ -161,7 +161,7 @@ def config_errors(crate, layers):
             errors.append(f'{member_name(member)} is listed in [{layers.members[member]}] but is not a module of the crate')
     for member, port in layers.port_members.items():
         if member not in crate.modules:
-            errors.append(f'{member_name(member)} is listed in [port {port}] but is not a module of the crate')
+            errors.append(f'{member_name(member)} is listed in [platform {port}] but is not a module of the crate')
     for module in sorted(crate.modules):
         if layers.member_of(module) is None:
             errors.append(f'module {member_name(module)} belongs to no layer: add it (or its top-level module) to ci/module-layers.ini')
@@ -419,7 +419,7 @@ def main(argv=None):
         if key not in allow and key not in found:
             file, member = key
             port = layers.port_of(refs[0].target)[1]
-            errors.append(f'{file} names {member} from outside [port {port}], which only the port itself may '
+            errors.append(f'{file} names {member} from outside [platform {port}], which only the port itself may '
                           f'name: {describe(refs)}')
     for key in sorted(set(allow) - named):
         errors.append(f'stale allowlist entry {key[0]}\t{key[1]} — it no longer names that layer or port; '
@@ -437,7 +437,7 @@ def main(argv=None):
         return 1
     where = args.allow.relative_to(REPO) if args.allow.is_relative_to(REPO) else args.allow
     ports = ''.join(f', {sum(1 for key in ported if key[1] in {member_name(m) for m in members})} of them '
-                    f'into [port {port}]' for port, members in layers.ports.items())
+                    f'into [platform {port}]' for port, members in layers.ports.items())
     print(f'check-module-layers: green — {len(layers.order)} layers, {len(crate.modules)} modules, '
           f'{cargo_edges} Cargo layer declarations, '
           f'{len(allow)} migration entries left in {where}{ports}; '

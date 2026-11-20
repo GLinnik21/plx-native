@@ -105,7 +105,7 @@ struct Window {
 /// invalidates formatting; walking focus only changes the shared component's presentation.
 #[derive(Default)]
 struct CaptionCache {
-    language: Option<plx_platform::i18n::Language>,
+    language: Option<plx_os::i18n::Language>,
     format: String,
     sort: String,
     /// The calendar date the labels were worded for: "Today" and "Yesterday" go stale at midnight.
@@ -622,7 +622,7 @@ impl GridSrc<'_, '_> {
         let Some(item) = self.view.item(i) else { return read(&ui_cards::TileLabel::default()) };
         if self.values {
             let key = sort_key(&self.view);
-            let locale = plx_platform::i18n::current();
+            let locale = plx_os::i18n::current();
             let mut cache = self.captions.borrow_mut();
             if cache.language != Some(locale.language()) || cache.format != locale.format_locale() || cache.sort != key
                 || cache.today != self.today {
@@ -839,7 +839,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
 mod caption_cache_review_tests {
     use super::*;
     use plx_data::{browse::view::ListingSnapshot, pms::PmsMovie};
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference};
 
     #[test]
     fn review_caption_cache_borrows_words_and_invalidates_stale_publications() {
@@ -862,7 +862,7 @@ mod caption_cache_review_tests {
         {
             let _ru = language_on_this_thread_for_test(Preference::Ru);
             src.with_tile_label(0, |_| {});
-            assert_eq!(cache.borrow().language, Some(plx_platform::i18n::current().language()));
+            assert_eq!(cache.borrow().language, Some(plx_os::i18n::current().language()));
         }
         let changed = listing.clone().with_page(0, vec![PmsMovie { title: "Replaced".into(), ..Default::default() }]);
         src.view = changed.view();

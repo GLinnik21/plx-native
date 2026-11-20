@@ -9,7 +9,7 @@ pub const CONTRIBUTE_URL: &str =
     "https://github.com/GLinnik21/plx-native/blob/main/docs/localization.md";
 
 // `Preference`, `Language`, `SHIPPED` and every table over them are generated from
-// `locales/languages.json` (see `platform/build_support/catalog.rs`); this file holds only the
+// `locales/languages.json` (see `os/build_support/catalog.rs`); this file holds only the
 // behavior around them. A shipped tag is never renamed: it is what the preferences store.
 include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 impl<'de> Deserialize<'de> for Preference {
@@ -746,7 +746,7 @@ mod catalog_tests;
 mod tests;
 
 /// **Today's calendar date in the operating system's timezone** — the ONE wall-clock read for
-/// calendar display, here in the platform layer and never in a machine (`screens/`, `ui/`,
+/// calendar display, here in the os layer and never in a machine (`screens/`, `ui/`,
 /// `data/src/stores`). It reads `SystemTime::now`, so a machine that called it would be reading the
 /// clock, and the `wall` gate does not cover it: that pattern (`Instant::now`, `SystemTime::now`,
 /// `.elapsed()`) names the raw reads and is not run over this crate, so a call to THIS function from
@@ -814,7 +814,7 @@ fn civil_date_of(stamp: libc::time_t) -> Option<[i32; 3]> {
 /// and the smallest answer that passes the check above is returned. A host test cannot settle what the
 /// television's own `mktime` says for these days, which is why its answer is verified and not trusted.
 ///
-/// Like [`local_calendar_date`] this is the platform layer's read of the OS time zone, not a
+/// Like [`local_calendar_date`] this is the os layer's read of the OS time zone, not a
 /// machine's: its caller is the application's runner, which hands it to a data job as a plain `fn`
 /// (`plx_data::browse::bands::Zone`), so no machine reads the zone and the `wall` gate has nothing
 /// to see. The data job asks it once per band edge, because the clock change is per edge.

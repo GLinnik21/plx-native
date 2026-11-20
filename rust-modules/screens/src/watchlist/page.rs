@@ -383,7 +383,7 @@ impl Page {
         use std::hash::{Hash, Hasher};
         let count = self.count();
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
+        (std::ptr::from_ref(plx_os::i18n::current()) as usize).hash(&mut h);
         self.options.hash(&mut h);
         header::Count::narrowed(count).hash(&mut h);
         self.header_rows.get_replacing(

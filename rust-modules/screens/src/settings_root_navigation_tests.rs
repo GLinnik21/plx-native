@@ -702,9 +702,9 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
 
 fn inputs_for(signed_in: bool) -> RootInputs {
     RootInputs {
-        trace: plx_platform::playback_trace::Status::Off,
+        trace: plx_os::playback_trace::Status::Off,
         signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
-        language: plx_platform::i18n::Preference::System,
+        language: plx_os::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
 }
@@ -720,7 +720,7 @@ fn the_interface_resolution_row_is_signed_in_only_and_reads_each_option() {
         real.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).expect("the row exists").value.clone()
     };
     assert_eq!(row_value(false, UiResolution::Auto), None, "the signed-out root is the sign-in path's short list");
-    assert_eq!(row_value(true, UiResolution::Auto).as_deref(), Some(plx_platform::i18n::msg::settings_resolution_auto()));
+    assert_eq!(row_value(true, UiResolution::Auto).as_deref(), Some(plx_os::i18n::msg::settings_resolution_auto()));
     assert_eq!(row_value(true, UiResolution::Hd900).as_deref(), Some("1600x900"));
     assert_eq!(row_value(true, UiResolution::Hd720).as_deref(), Some("1280x720"));
     assert_eq!(row_value(true, UiResolution::Sd540).as_deref(), Some("960x540"));
@@ -760,7 +760,7 @@ fn the_interface_resolution_row_is_offered_on_webos_1_to_3_only() {
     }
     // the rule the flag is fed from
     for (major, offered) in [(0, false), (1, true), (2, true), (3, true), (4, false), (5, false), (6, false), (22, false)] {
-        assert_eq!(plx_platform::tv::device::offers_ui_resolution(major), offered, "webOS major {major}");
+        assert_eq!(plx_os::tv::device::offers_ui_resolution(major), offered, "webOS major {major}");
     }
     // a host test has no television: the real page is the webOS 4+ shape and has no such row
     let _g = plx_base::testlock::serial();
@@ -896,7 +896,7 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
 /// (`settings_diagnostics.rs`, `settings_v2_tests.rs`).
 #[test]
 fn the_root_diagnostics_row_reads_the_status_the_runner_answers() {
-    use plx_platform::playback_trace::Status;
+    use plx_os::playback_trace::Status;
     let _serial = plx_base::testlock::serial();
     let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let mut present = plx_machine::present::Present::new();
@@ -905,9 +905,9 @@ fn the_root_diagnostics_row_reads_the_status_the_runner_answers() {
     assert_eq!(root.state.trace, Status::Off);
     root.step(&ScreenEvent::App(super::super::registry::AppMsg::PlaybackTrace(Status::Recording)), &cx(None), &mut fx);
     assert_eq!(root.state.trace, Status::Recording);
-    assert_eq!(diagnostics::root_value(Status::Recording), plx_platform::i18n::msg::widgets_toggle_on());
+    assert_eq!(diagnostics::root_value(Status::Recording), plx_os::i18n::msg::widgets_toggle_on());
     for not_recording in [Status::Off, Status::Saved, Status::Saving, Status::Exported, Status::Unavailable, Status::Failed] {
-        assert_eq!(diagnostics::root_value(not_recording), plx_platform::i18n::msg::widgets_toggle_off(),
+        assert_eq!(diagnostics::root_value(not_recording), plx_os::i18n::msg::widgets_toggle_off(),
             "{not_recording:?} is not a recording, and Off is the toggle's own word");
     }
     // opening it is a Nav row's own job, and no root row dispatches a trace command any more
@@ -1007,9 +1007,9 @@ fn a_success_receipt_waits_for_the_next_captured_authority() {
 #[test]
 fn adjacent_root_rows_use_independent_retained_profile_and_install_facts() {
     use plx_plex::plex::session::{ProfilePrefs, UnderPosters};
-    use plx_platform::i18n::Preference;
+    use plx_os::i18n::Preference;
     let _serial = plx_base::testlock::serial();
-    let before = plx_platform::i18n::saved_preference_for_test(Preference::En);
+    let before = plx_os::i18n::saved_preference_for_test(Preference::En);
     let off = UnderPosters { title: false, ..UnderPosters::DEFAULT };
     let a = crate::registry::ScreenInputs { install_language: Preference::Be,
         preferences: Some(ProfilePrefs { under_posters: Some(off), ..Default::default() }), ..Default::default() };
@@ -1020,7 +1020,7 @@ fn adjacent_root_rows_use_independent_retained_profile_and_install_facts() {
         let _step = plx_base::step::StepScope::enter();
         (RootPage::new(EntryId(1), directory, &a), RootPage::new(EntryId(2), directory, &b))
     };
-    plx_platform::i18n::saved_preference_for_test(before);
+    plx_os::i18n::saved_preference_for_test(before);
     assert_eq!(first.state.language, Preference::Be);
     assert_eq!(second.state.language, Preference::Es);
     assert_eq!(first.state.under_posters, off);
@@ -1029,10 +1029,10 @@ fn adjacent_root_rows_use_independent_retained_profile_and_install_facts() {
 
 #[test]
 fn adjacent_root_pending_install_pick_refreshes_with_unchanged_cache_and_profile() {
-    use plx_platform::i18n::Preference;
+    use plx_os::i18n::Preference;
     let _serial = plx_base::testlock::serial();
     let mut inputs = crate::registry::ScreenInputs::default();
-    inputs.install_language = plx_platform::i18n::saved_preference();
+    inputs.install_language = plx_os::i18n::saved_preference();
     let mut context = cx(None);
     context.views.inputs = &inputs;
     let mut page = RootPage::new(EntryId(0), context.views.directory, &inputs);

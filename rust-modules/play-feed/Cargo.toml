@@ -32,9 +32,9 @@ plx_media_codecs = { path = "../media-codecs" }
 plx_net = { path = "../net" }
 libc = "0.2"
 plx_base = { path = "../base" }
-plx_platform = { path = "../platform" }
+plx_os = { path = "../os" }
 # The sourceInfo envelope rewrite (`vp9_hdr`) and the dev-trigger Load payload (`playurl`) are JSON
-# text. The same specs as plx_platform and plx_net, so the lockfile gains no crate.
+# text. The same specs as plx_os and plx_net, so the lockfile gains no crate.
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 

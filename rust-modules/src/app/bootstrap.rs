@@ -201,9 +201,9 @@ pub(crate) struct Initial {
     pub ui_preferences: Option<plx_plex::plex::session::ProfilePrefs>,
     /// V11: explicit install fact, not a profile preference. Historical boots use captured Session.language.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub install_language: Option<plx_platform::i18n::Preference>,
+    pub install_language: Option<plx_os::i18n::Preference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub running_language: Option<plx_platform::i18n::Preference>,
+    pub running_language: Option<plx_os::i18n::Preference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_hold_hint: Option<InstallHoldHint>,
     pub session: plx_session::auth::SessionInit,

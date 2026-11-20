@@ -16,7 +16,7 @@
 use super::native_seek_pump_tests::{preroll_at_reload, reloads, Rig, TARGET_NS, V_STEP_NS};
 use super::*;
 use plx_data::metadata::Dovi;
-use plx_platform::devcaps::{apply_exclusions, dv::DvCapability, Caps, EXCLUSIONS};
+use plx_os::devcaps::{apply_exclusions, dv::DvCapability, Caps, EXCLUSIONS};
 use plx_play_feed::dv_start::{Guard, Mode};
 use plx_play_feed::native_audio::{self, Kind};
 use plx_play_feed::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};

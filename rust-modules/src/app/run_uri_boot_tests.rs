@@ -8,8 +8,8 @@ mod uri_boot_tests {
     use plx_play_uri::backend::{Binding, NativeTrackIndex, UriSource};
     use plx_playback_contract::{BackendKind, Capabilities, Fidelity, Requirements,
         SourceKind, TrackChoice, TrackKind, TrackSelection};
-    use plx_platform::tv::sink::{DisplaySink, NoSink, VP_EXPORTED};
-    use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriMedia,
+    use plx_os::tv::sink::{DisplaySink, NoSink, VP_EXPORTED};
+    use plx_os::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriMedia,
         UriPoll, UriReply};
     use std::ffi::{c_char, c_int, c_long, CStr};
 
@@ -172,7 +172,7 @@ mod uri_boot_tests {
             NoSink.plane_probe_connect_dass(mt)
         }
         unsafe fn plane_finish(&self, mt: &plx_base::task::MainThread)
-            -> plx_platform::tv::sink::PlaneFinish {
+            -> plx_os::tv::sink::PlaneFinish {
             NoSink.plane_finish(mt)
         }
         unsafe fn plane_bind(&self, mt: &plx_base::task::MainThread, id: *const c_char) {
@@ -187,9 +187,9 @@ mod uri_boot_tests {
             NoSink.plane_start(mt, x, y, w, h)
         }
         unsafe fn plane_unload(&self, mt: &plx_base::task::MainThread)
-            -> plx_platform::tv::sink::PlaneUnload { NoSink.plane_unload(mt) }
+            -> plx_os::tv::sink::PlaneUnload { NoSink.plane_unload(mt) }
         fn plane_completions(&self, mt: &plx_base::task::MainThread)
-            -> Vec<plx_platform::tv::sink::PlaneCompletion> { NoSink.plane_completions(mt) }
+            -> Vec<plx_os::tv::sink::PlaneCompletion> { NoSink.plane_completions(mt) }
         unsafe fn plane_pause(&self, mt: &plx_base::task::MainThread) {
             NoSink.plane_pause(mt)
         }
@@ -490,7 +490,7 @@ mod uri_boot_tests {
     #[cfg(feature = "devtriggers")]
     fn acb_port(trigger: Option<&str>) -> ResolvePort {
         use crate::dev::uri_product as dev_route;
-        let evidence = ProductEvidence::unqualified_on(plx_platform::tv::sink::VP_ACB,
+        let evidence = ProductEvidence::unqualified_on(plx_os::tv::sink::VP_ACB,
             Binding::Acb);
         let (evidence, qualifier) = dev_route::compose(evidence,
             Arc::new(plx_media::route::uri_preflight::ProductQualifier),
@@ -1448,7 +1448,7 @@ mod uri_boot_tests {
             NoSink.plane_probe_connect_dass(mt)
         }
         unsafe fn plane_finish(&self, mt: &plx_base::task::MainThread)
-            -> plx_platform::tv::sink::PlaneFinish { NoSink.plane_finish(mt) }
+            -> plx_os::tv::sink::PlaneFinish { NoSink.plane_finish(mt) }
         unsafe fn plane_bind(&self, mt: &plx_base::task::MainThread, id: *const c_char) {
             NoSink.plane_bind(mt, id)
         }
@@ -1461,9 +1461,9 @@ mod uri_boot_tests {
             NoSink.plane_start(mt, x, y, w, h)
         }
         unsafe fn plane_unload(&self, mt: &plx_base::task::MainThread)
-            -> plx_platform::tv::sink::PlaneUnload { NoSink.plane_unload(mt) }
+            -> plx_os::tv::sink::PlaneUnload { NoSink.plane_unload(mt) }
         fn plane_completions(&self, mt: &plx_base::task::MainThread)
-            -> Vec<plx_platform::tv::sink::PlaneCompletion> { NoSink.plane_completions(mt) }
+            -> Vec<plx_os::tv::sink::PlaneCompletion> { NoSink.plane_completions(mt) }
         unsafe fn plane_pause(&self, mt: &plx_base::task::MainThread) { NoSink.plane_pause(mt) }
         unsafe fn plane_resume(&self, mt: &plx_base::task::MainThread) { NoSink.plane_resume(mt) }
     }
@@ -1625,7 +1625,7 @@ mod uri_boot_tests {
         assert_eq!(windows(), held, "premise: the quarantined driver still holds its window");
         // The viewer asks for the title again.
         assert!(plx_media::route::request_play(&mut rig.app.player.session,
-            rig.app.runtime.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
+            rig.app.runtime.metadata_mut(), plx_os::devcaps::caps(), rig.sid, "1",
             "/library/parts/1/file.mkv", "h264", "aac", "First", "", None, ""));
         let mut resolved = None;
         poll_until("the new request did not resolve", || {
@@ -1649,9 +1649,9 @@ mod uri_boot_tests {
     /// The URI driver composed over a scripted ACB display (`create_ids` is what its creates answer)
     /// with production's ACB evidence and `qualifier` standing in for the viewer's engine choice.
     fn compose_acb(rig: &mut Rig, create_ids: &[c_long], qualifier: Arc<dyn OriginalQualifier>)
-        -> (&'static Bus, &'static plx_platform::tv::sink::ScriptedPlaneSink) {
-        use plx_platform::tv::sink::{PlaneUnload, ScriptedPlaneSink};
-        plx_platform::tv::plane::installed().reset_for_test();
+        -> (&'static Bus, &'static plx_os::tv::sink::ScriptedPlaneSink) {
+        use plx_os::tv::sink::{PlaneUnload, ScriptedPlaneSink};
+        plx_os::tv::plane::installed().reset_for_test();
         plx_plex::plex::client_for(rig.sid).unwrap()
             .set_link(plx_plex::plex::probe::Location::Local);
         let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
@@ -1728,7 +1728,7 @@ mod uri_boot_tests {
         let resolved = resolve_pending(&mut rig);
         let (offered, log) = offer_with_log(&mut rig, resolved.uri_offer.expect("original offered"));
         assert!(offered.is_ok());
-        assert_eq!(display.created_player_types(), [plx_platform::tv::plane::URI_PLAYER_TYPE],
+        assert_eq!(display.created_player_types(), [plx_os::tv::plane::URI_PLAYER_TYPE],
             "the offer made the handle, before any Start");
         assert!(log.contains("acb handle=uri ptype=0 create=22 initialized=true\n"), "{log}");
         assert!(bus.shapes().is_empty(), "nothing is opened by an offer");
@@ -1738,7 +1738,7 @@ mod uri_boot_tests {
         window_frame(&mut rig);
         assert_eq!(bus.shapes(), [Shape::Named], "the service is opened over the handle the offer made");
         assert_eq!(display.created_player_types(), [0], "the Start made no second handle");
-        plx_platform::tv::plane::installed().reset_for_test();
+        plx_os::tv::plane::installed().reset_for_test();
     }
 
     /// A create that fails declines the offer with the reason, and the same play goes to Feed.
@@ -1757,7 +1757,7 @@ mod uri_boot_tests {
         assert_eq!(rig.app.adapters.player.backend_snapshot().backend, Some(BackendKind::Feed));
         assert!(bus.shapes().is_empty(), "the URI service was never opened");
         assert_eq!(display.created_player_types(), [0], "one attempt");
-        plx_platform::tv::plane::installed().reset_for_test();
+        plx_os::tv::plane::installed().reset_for_test();
     }
 
     /// The failed create is recorded: a later offer in the same process declines at once and makes
@@ -1774,7 +1774,7 @@ mod uri_boot_tests {
         plx_media::player::stop_playback(&mut rig.app.player.session, &mut rig.app.adapters.player);
         assert_eq!(display.created_player_types(), [0]);
         assert!(plx_media::route::request_play(&mut rig.app.player.session,
-            rig.app.runtime.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
+            rig.app.runtime.metadata_mut(), plx_os::devcaps::caps(), rig.sid, "1",
             "/library/parts/1/file.mkv", "h264", "aac", "First", "", None, ""));
         let resolved = resolve_pending(&mut rig);
         let (log, _) = decline_and_resolve_feed(&mut rig, resolved);
@@ -1782,7 +1782,7 @@ mod uri_boot_tests {
             "{log}");
         assert!(!log.contains("acb handle=uri"), "no second attempt is logged: {log}");
         assert_eq!(display.created_player_types(), [0], "a failed create is not retried");
-        plx_platform::tv::plane::installed().reset_for_test();
+        plx_os::tv::plane::installed().reset_for_test();
     }
 
     /// A viewer on Standard (the production qualifier answers `NotOptedIn`) is never offered the URI
@@ -1801,6 +1801,6 @@ mod uri_boot_tests {
         window_frame(&mut rig);
         assert!(display.created_player_types().is_empty(), "no handle was made for a Standard play");
         assert!(bus.shapes().is_empty());
-        plx_platform::tv::plane::installed().reset_for_test();
+        plx_os::tv::plane::installed().reset_for_test();
     }
 }

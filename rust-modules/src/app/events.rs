@@ -617,7 +617,7 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &plx_media::route::PlaybackSe
             None => false,
         }
     } else if tok == "diag" || tok == "diagnostics" {
-        if plx_platform::labcfg::menu_row_enabled() {
+        if plx_os::labcfg::menu_row_enabled() {
             crate::lab::request_upload("command", ps, pa);
             true
         } else {

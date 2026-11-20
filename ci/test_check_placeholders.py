@@ -52,7 +52,7 @@ class References(unittest.TestCase):
                      'theme::CARD_ABSENT', 'theme::white(SKEL_BAR_A)', 'COOL_850',
                      'widgets::Spinner::new(1.0, 2.0, 3.0)', 'Spinner::leading(x, y)',
                      'let s = Spinner { r: 1.0, ..d };',
-                     'plx_platform::i18n::msg::browse_home_loading_c()', 'msg::settings_audio_loading()',
+                     'plx_os::i18n::msg::browse_home_loading_c()', 'msg::settings_audio_loading()',
                      'pub fn skeleton_bar(p: Painter) {', 'fn skeleton_sheet(p: Painter) {'):
             with self.subTest(line=line):
                 self.assertEqual(only({'ui/src/a.rs': f'fn f() {{ {line} }}\n'}), 'UNACCOUNTED')

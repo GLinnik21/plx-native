@@ -3,7 +3,7 @@
 //! `plex` is the typed Plex API (PMS and plex.tv), the session store and the grant/probe logic that
 //! decide which origin may be asked for what; `http` is the one door out of the control plane,
 //! dispatching a request on its origin's scheme (`plx_net::stream` for http, `plx_net::net` for
-//! https). It is the `plex` layer of `ci/module-layers.ini`: it uses `base`, `machine`, `platform`
+//! https). It is the `plex` layer of `ci/module-layers.ini`: it uses `base`, `machine`, `os`
 //! and `net` and nothing above them.
 //!
 //! `test-support` exposes the session fixtures (`plex::session::TempSession`, the `*_for_test`

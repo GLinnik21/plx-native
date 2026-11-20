@@ -198,9 +198,9 @@ fn back_pops_the_page() {
 fn the_empty_read_out_fits_in_every_shipped_language() {
     use plx_base::fontcov::advances::ShippedMeasure;
     let _guard = plx_base::testlock::serial();
-    for language in plx_platform::i18n::SHIPPED {
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(language);
-        let text = plx_platform::i18n::msg::recommended_page_empty();
+    for language in plx_os::i18n::SHIPPED {
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(language);
+        let text = plx_os::i18n::msg::recommended_page_empty();
         assert!(!text.is_empty(), "{}: empty string", language.tag());
         let width = plx_machine::machine::Measure::width(&ShippedMeasure, &std::ffi::CString::new(text).unwrap(), plx_ui::theme::size::BODY, false);
         assert!(width <= plx_ui::widgets::StatusOverlay::REASON_W * 1.6,
@@ -342,7 +342,7 @@ fn the_title_row_is_the_crumb_with_the_library_as_the_link_back() {
     assert_eq!(library.ink, plx_ui::theme::CONTROL_TEXT_REST, "the link is 65% white");
     assert!(!library.bold);
     assert!((library.at.x - plx_ui::page_header::TEXT_X0).abs() < 0.5, "the root starts at x 96, as on the Collections page");
-    let page_name = at(plx_platform::i18n::msg::library_header_recommended());
+    let page_name = at(plx_os::i18n::msg::library_header_recommended());
     assert!(!page_name.bold, "no bold heading");
     assert!(page_name.at.x > library.at.x + library.at.w, "the page name follows the library and the chevron");
     assert!(runs.iter().all(|r| !r.text.contains('\u{b7}') || r.text.len() > 3), "the old 'Recommended · Movies' joined heading is gone");

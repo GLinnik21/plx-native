@@ -26,7 +26,7 @@
 //! Settings row saves it, and its parse policy. A row whose value is `Copy` is also a [`Setting`]
 //! (the `Stored` and `Value` types and the accessors); a list row (`Vec`) is a [`ListRow`], which
 //! only names its items and its field. [`DESCRIPTORS`] lists them all, and the tests hold that table
-//! to the struct and to platform's account-bound list, both ways, so a field without a row (or a row
+//! to the struct and to the os layer's account-bound list, both ways, so a field without a row (or a row
 //! without a field) fails instead of drifting.
 //!
 //! **The track memory row is a LIST that is not a [`ListRow`]**: `track_memory`, each profile's
@@ -853,7 +853,7 @@ pub trait MemoryEntry: Serialize + DeserializeOwned + Clone + PartialEq {
     /// `track_memory` was bound from its first write, so an unstamped record is nobody's and stays
     /// `false`.
     const ADOPTS_UNSTAMPED: bool = false;
-    /// The household budget, in logical bytes (platform's counting rule), for the whole list across
+    /// The household budget, in logical bytes (the os layer's counting rule), for the whole list across
     /// every profile. Over it, a write drops the oldest entry of the record holding the most
     /// entries until the list fits (see [`ProfileMemory::upsert_with`]). `None` is no budget.
     const BUDGET: Option<usize> = None;
@@ -1012,10 +1012,10 @@ fn adopt_unstamped<E: MemoryEntry>(list: &mut Vec<ProfileList<E>>, account: &str
 
 // ---- the household budget: one eviction rule, shared by the write door and the document guard ----
 
-/// The logical size (platform's counting rule) of anything serializable: the unit every byte
+/// The logical size (the os layer's counting rule) of anything serializable: the unit every byte
 /// figure in this section is in.
 fn logical<T: Serialize + ?Sized>(value: &T) -> usize {
-    serde_json::to_value(value).map(|v| plx_platform::storage::state::logical_size(&v)).unwrap_or(0)
+    serde_json::to_value(value).map(|v| plx_os::storage::state::logical_size(&v)).unwrap_or(0)
 }
 
 /// The logical size of a whole memory list as it serializes into the preferences.

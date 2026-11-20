@@ -332,13 +332,13 @@ class Gate(unittest.TestCase):
         code, out, _ = self.run_gate(self.CLEAN, LAYERS, '# count: 0\n', '--report')
         self.assertIn('low        ready', out)
 
-    PORT = LAYERS + '[port p]\nmembers = b c\n'
+    PORT = LAYERS + '[platform p]\nmembers = b c\n'
 
     def test_a_reference_into_a_port_from_outside_it_fails_even_down_the_graph(self):
         code, out, _ = self.run_gate(self.CLEAN, self.PORT, '# count: 0\n')
         self.assertEqual(code, 1)
-        self.assertIn('a.rs names c from outside [port p], which only the port itself may name: a.rs:1 c::g', out)
-        self.assertIn('a.rs names b from outside [port p]', out)
+        self.assertIn('a.rs names c from outside [platform p], which only the port itself may name: a.rs:1 c::g', out)
+        self.assertIn('a.rs names b from outside [platform p]', out)
         self.assertNotIn('names a', out, 'the port may name what its layer may')
 
     def test_port_entries_are_allowlisted_pruned_and_do_not_hold_up_the_split(self):
@@ -346,7 +346,7 @@ class Gate(unittest.TestCase):
         code, out, _ = self.run_gate(self.CLEAN, self.PORT, '# count: 2\n' + entries)
         self.assertEqual(code, 0, out)
         self.assertIn('2 migration entries left in', out)
-        self.assertIn('2 of them into [port p]', out)
+        self.assertIn('2 of them into [platform p]', out)
         code, _, remaining = self.run_gate(self.CLEAN, self.PORT, '# count: 2\n' + entries, '--prune')
         self.assertEqual((code, remaining), (0, gate.ALLOW_HEADER.format(count=2) + entries))
         code, out, _ = self.run_gate(self.CLEAN, self.PORT, '# count: 2\n' + entries, '--report')
@@ -359,9 +359,9 @@ class Gate(unittest.TestCase):
 
     def test_port_config_errors_fail(self):
         for layers, message in [
-            (LAYERS + '[port p]\nmembers = ghost\n', 'ghost is listed in [port p] but is not a module'),
-            (LAYERS + '[port p]\nmembers = c\n[port q]\nmembers = c\n', 'c is listed in [port p] and [port q]'),
-            (LAYERS + '[port p]\nmembers = c\nuses = low\n', "[port p] has unknown key(s) ['uses']"),
+            (LAYERS + '[platform p]\nmembers = ghost\n', 'ghost is listed in [platform p] but is not a module'),
+            (LAYERS + '[platform p]\nmembers = c\n[platform q]\nmembers = c\n', 'c is listed in [platform p] and [platform q]'),
+            (LAYERS + '[platform p]\nmembers = c\nuses = low\n', "[platform p] has unknown key(s) ['uses']"),
         ]:
             with self.subTest(message=message):
                 code, out, _ = self.run_gate(self.CLEAN, layers, '# count: 0\n')

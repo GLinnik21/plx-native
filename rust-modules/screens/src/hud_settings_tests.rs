@@ -6,7 +6,7 @@ use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::hudpacks::{Meta, Source};
 use plx_machine::machine::{FocusRead, PressId, PressRead, Stamped, Tick};
 use plx_machine::present::Present;
-use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
 use plx_ui::fixture::FixtureMeasure;
 
 fn context(focus: u32) -> Cx<'static, InnerHost> {
@@ -154,8 +154,8 @@ fn key_of(page: &HudPage, id: &HudId) -> u32 {
 #[test]
 fn the_crumb_names_the_page_it_is_pushed_from() {
     let page = HudPage::new(EntryId(0));
-    let parent = plx_platform::i18n::msg::settings_playback_title();
-    assert_ne!(parent, plx_platform::i18n::msg::settings_title(), "premise: the two titles differ");
+    let parent = plx_os::i18n::msg::settings_playback_title();
+    assert_ne!(parent, plx_os::i18n::msg::settings_title(), "premise: the two titles differ");
     assert_eq!(page.view().header.crumb, Some(parent), "the header's crumb");
     assert_eq!(page.crumb(&context(0)).as_deref(), Some(parent), "the screen's own crumb says the same");
 }
@@ -254,12 +254,12 @@ fn the_unfit_reason_names_the_language_and_the_selection_is_still_shown_checked(
     l.unfit = vec![Sha::of(&[1])];
     l.language = "Deutsch".into();
     let facts = facts_of(&l.entries[1], &l);
-    assert!(facts.iter().all(|f| *f != plx_platform::i18n::msg::settings_hud_unfit_language("Deutsch")), "the reason is the row's value, not a sub-line: {facts:?}");
+    assert!(facts.iter().all(|f| *f != plx_os::i18n::msg::settings_hud_unfit_language("Deutsch")), "the reason is the row's value, not a sub-line: {facts:?}");
     let (page, _tx) = page_with(l);
     let rows = shown(&page);
     let alpha = rows.iter().find(|r| r.0 == HudId::Pack("com.example.a".into())).expect("the package's row");
     assert!(alpha.3, "the unfit package is still the checked row: the selection is kept");
-    assert_eq!(value_of(&page, &alpha.0), Some(plx_platform::i18n::msg::settings_hud_unfit_language("Deutsch")), "{alpha:?}");
+    assert_eq!(value_of(&page, &alpha.0), Some(plx_os::i18n::msg::settings_hud_unfit_language("Deutsch")), "{alpha:?}");
     assert!(row_of(&page, &alpha.0).disabled, "and it wears the ghost state");
     let classic = rows.iter().find(|r| r.0 == HudId::Pack(BUILTIN_CLASSIC.into())).expect("the built-in's row");
     assert!(!classic.3, "and the built-in is not");
@@ -275,7 +275,7 @@ fn the_builtin_row_is_named_built_in_and_says_no_trust_fact_under_it() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        let built_in = plx_platform::i18n::msg::settings_hud_builtin();
+        let built_in = plx_os::i18n::msg::settings_hud_builtin();
         for selected in [false, true] {
             let mut l = list();
             l.entries = vec![builtin(selected), pack("com.example.a", "Alpha", 1, !selected)];
@@ -287,7 +287,7 @@ fn the_builtin_row_is_named_built_in_and_says_no_trust_fact_under_it() {
             assert_eq!(row.3, selected, "{tag}: the checkmark still follows the selection");
             let alpha = rows.iter().find(|r| r.0 == HudId::Pack("com.example.a".into())).expect("the package's row");
             assert_eq!(alpha.1, "Alpha", "{tag}: a package keeps the author's name");
-            assert_eq!(alpha.2, plx_platform::i18n::msg::settings_hud_unreviewed(), "{tag}: and a sideload its trust tier");
+            assert_eq!(alpha.2, plx_os::i18n::msg::settings_hud_unreviewed(), "{tag}: and a sideload its trust tier");
         }
         let mut registry = pack("com.example.r", "Registry", 5, false);
         registry.trust = Trust::Registry;
@@ -317,7 +317,7 @@ fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
     let rows = shown(&page);
     let huge = rows.iter().find(|r| r.1 == "huge.plxhud").expect("the file is on the page");
     assert_eq!(huge.2, "", "no sub-line: the reason is the value");
-    assert_eq!(value_of(&page, &huge.0).as_deref(), Some(plx_platform::i18n::msg::settings_hud_too_large()));
+    assert_eq!(value_of(&page, &huge.0).as_deref(), Some(plx_os::i18n::msg::settings_hud_too_large()));
     assert!(row_of(&page, &huge.0).disabled);
     let key = page.form.key_at(page.form.index_of(&huge.0).unwrap()).unwrap().0;
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
@@ -327,25 +327,25 @@ fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
 #[test]
 fn the_notice_replaces_the_line_under_the_title_only_while_there_is_one() {
     let mut l = list();
-    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_copy());
+    assert_eq!(copy_of(&l, None), plx_os::i18n::msg::settings_hud_copy());
     l.notice = Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::BuiltinId });
-    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_cant_install());
+    assert_eq!(copy_of(&l, None), plx_os::i18n::msg::settings_hud_cant_install());
     l.notice = Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::Invalid });
-    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_not_a_hud());
+    assert_eq!(copy_of(&l, None), plx_os::i18n::msg::settings_hud_not_a_hud());
     l.notice = Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) });
-    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_not_saved());
+    assert_eq!(copy_of(&l, None), plx_os::i18n::msg::settings_hud_not_saved());
     for (reason, say) in [
-        (FetchError::NotFound, plx_platform::i18n::msg::settings_hud_fetch_not_found()),
-        (FetchError::TooLarge, plx_platform::i18n::msg::settings_hud_too_large()),
-        (FetchError::Unreachable, plx_platform::i18n::msg::settings_hud_fetch_unreachable()),
-        (FetchError::Certificate, plx_platform::i18n::msg::settings_hud_fetch_certificate()),
+        (FetchError::NotFound, plx_os::i18n::msg::settings_hud_fetch_not_found()),
+        (FetchError::TooLarge, plx_os::i18n::msg::settings_hud_too_large()),
+        (FetchError::Unreachable, plx_os::i18n::msg::settings_hud_fetch_unreachable()),
+        (FetchError::Certificate, plx_os::i18n::msg::settings_hud_fetch_certificate()),
     ] {
         l.notice = Some(Notice::FetchFailed { reason });
         assert_eq!(copy_of(&l, None), say, "{reason:?}");
     }
-    assert!(plx_platform::i18n::msg::settings_hud_fetch_certificate().len() > 10, "the certificate refusal is named, not folded into 'could not connect'");
+    assert!(plx_os::i18n::msg::settings_hud_fetch_certificate().len() > 10, "the certificate refusal is named, not folded into 'could not connect'");
     l.notice = Some(Notice::NotWritten { sha: None });
-    assert_eq!(copy_of(&l, Some(AddressError::Form)), plx_platform::i18n::msg::settings_hud_address_form(), "a refused address outranks a notice");
+    assert_eq!(copy_of(&l, Some(AddressError::Form)), plx_os::i18n::msg::settings_hud_address_form(), "a refused address outranks a notice");
 }
 
 /// Every refusal the store can give a file, for the tests that must cover each: the match has no wildcard, so a
@@ -401,7 +401,7 @@ fn every_row_fits_its_column_in_every_language() {
             every.entries.push(gone);
         }
         every.unfit = vec![Sha::of(&[3])];
-        every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
+        every.language = SHIPPED.iter().map(|l| plx_os::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
         every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
         every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
@@ -428,7 +428,7 @@ fn every_row_fits_its_column_in_every_language() {
 /// never taller than the room between the title and the action band, and short enough to read as a note.
 #[test]
 fn the_line_under_the_title_fits_the_column_in_every_language() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     const MAX_COPY_LINES: usize = 5;
     let layout = RouteLayout::screen();
     let mut out = Vec::new();
@@ -441,7 +441,7 @@ fn the_line_under_the_title_fits_the_column_in_every_language() {
                 .leading(size as f32 + theme::space::XS)
                 .max_lines(12)
                 .with_measure(&ShippedMeasure);
-            let top = layout.narrative_copy_frame(true, plx_platform::i18n::msg::settings_hud_title(), layout.action.y, &ShippedMeasure).y;
+            let top = layout.narrative_copy_frame(true, plx_os::i18n::msg::settings_hud_title(), layout.action.y, &ShippedMeasure).y;
             let room = layout.action.y - theme::space::XL - top;
             let (lines, h) = (view.line_count(layout.narrative.w), view.measure_h(layout.narrative.w));
             if view.truncates(layout.narrative.w) {
@@ -501,7 +501,7 @@ fn keyboards(emitted: &[Stamped<InnerHost>]) -> Vec<bool> {
 
 fn address_row(page: &HudPage) -> (String, String, bool) {
     let rows = page.form.table.sections.iter().flat_map(|s| s.rows.iter());
-    let row = rows.into_iter().find(|r| r.label == plx_platform::i18n::msg::settings_hud_address()).expect("the address row");
+    let row = rows.into_iter().find(|r| r.label == plx_os::i18n::msg::settings_hud_address()).expect("the address row");
     (row.label.clone(), row.detail.clone(), row.dim)
 }
 
@@ -510,7 +510,7 @@ fn address_row(page: &HudPage) -> (String, String, bool) {
 #[test]
 fn the_address_row_types_into_its_detail_line_and_ok_sends_the_parsed_address() {
     let (mut page, _tx) = page_with(list());
-    assert_eq!(address_row(&page).1, plx_platform::i18n::msg::settings_hud_address_hint());
+    assert_eq!(address_row(&page).1, plx_os::i18n::msg::settings_hud_address_hint());
     let key = key_of(&page, &HudId::Address);
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
     assert_eq!(keyboards(&emitted), [true], "OK on the row raises the keyboard");
@@ -531,7 +531,7 @@ fn the_address_row_types_into_its_detail_line_and_ok_sends_the_parsed_address() 
         other => panic!("one fetch, got {}", other.len()),
     }
     assert!(!page.state.editing);
-    assert_eq!(address_row(&page).1, plx_platform::i18n::msg::settings_hud_address_hint());
+    assert_eq!(address_row(&page).1, plx_os::i18n::msg::settings_hud_address_hint());
 }
 
 /// A refused address sends nothing and says why under the title (the forms, or the LAN rule for a public `http://`);
@@ -541,9 +541,9 @@ fn a_refused_address_is_said_under_the_title_and_back_sends_nothing() {
     let (mut page, _tx) = page_with(list());
     let key = key_of(&page, &HudId::Address);
     for (text, say) in [
-        ("ftp://example.com/x", plx_platform::i18n::msg::settings_hud_address_form()),
-        ("http://example.com/x", plx_platform::i18n::msg::settings_hud_address_lan()),
-        ("http://127.0.0.1/x", plx_platform::i18n::msg::settings_hud_address_lan()),
+        ("ftp://example.com/x", plx_os::i18n::msg::settings_hud_address_form()),
+        ("http://example.com/x", plx_os::i18n::msg::settings_hud_address_lan()),
+        ("http://127.0.0.1/x", plx_os::i18n::msg::settings_hud_address_lan()),
     ] {
         drive(&mut page, ScreenEvent::Activate(key), key);
         drive(&mut page, input(InputKind::Text(TextEdit::Clear)), key);
@@ -554,7 +554,7 @@ fn a_refused_address_is_said_under_the_title_and_back_sends_nothing() {
         assert_eq!(page.copy, say, "{text}");
     }
     drive(&mut page, ScreenEvent::Activate(key), key);
-    assert_eq!(page.copy, plx_platform::i18n::msg::settings_hud_copy(), "raising the field again clears the refusal");
+    assert_eq!(page.copy, plx_os::i18n::msg::settings_hud_copy(), "raising the field again clears the refusal");
     let emitted = drive(&mut page, press(Key::Back), key);
     assert!(huds(&emitted).is_empty() && keyboards(&emitted) == [false] && !page.state.editing, "BACK lowers the keyboard and sends nothing");
 
@@ -569,7 +569,7 @@ fn the_address_row_is_busy_while_a_fetch_runs() {
     let mut l = list();
     l.fetching = true;
     let (mut page, _tx) = page_with(l);
-    assert_eq!(address_row(&page).1, plx_platform::i18n::msg::settings_hud_fetching());
+    assert_eq!(address_row(&page).1, plx_os::i18n::msg::settings_hud_fetching());
     assert!(address_row(&page).2, "dimmed");
     let key = key_of(&page, &HudId::Address);
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
@@ -687,8 +687,8 @@ fn the_offer_prompt_says_what_it_is_about() {
     let (page, _tx) = page_with(l);
     let text = page.prompt.body_for_test();
     assert_eq!(text[0], "Fetched 1.0.0");
-    assert_eq!(text[1], join(&[plx_platform::i18n::msg::settings_hud_offer_from("192.168.1.20"), plx_platform::i18n::msg::settings_hud_offer_dev().to_owned(), plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()]));
-    assert_eq!(text[2], plx_platform::i18n::msg::settings_hud_offer_body());
+    assert_eq!(text[1], join(&[plx_os::i18n::msg::settings_hud_offer_from("192.168.1.20"), plx_os::i18n::msg::settings_hud_offer_dev().to_owned(), plx_os::i18n::msg::settings_hud_unreviewed().to_owned()]));
+    assert_eq!(text[2], plx_os::i18n::msg::settings_hud_offer_body());
 }
 
 #[test]
@@ -850,7 +850,7 @@ fn gallery_is_shared_navigation_and_hides_incompatible_or_unfit_packages() {
     index.entries[1].unfit=vec![plx_data::hudpacks::catalog::FitChange {from:"0.9.0".into(),langs:vec!["en".into()]}];
     page.list.catalog.index=Some(std::sync::Arc::new(index));page.rebuild(None);
     assert_eq!(page.form.table.n_rows(),0);
-    assert_eq!(page.copy,plx_platform::i18n::msg::settings_hud_empty());
+    assert_eq!(page.copy,plx_os::i18n::msg::settings_hud_empty());
 }
 
 #[test]
@@ -864,7 +864,7 @@ fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
     let mut entry=pack(&package.id,&package.name,1,false);entry.sha=Some(sha);
     page.list.entries.push(entry);page.list.notice=Some(Notice::Installed {id:package.id.clone(),version:package.version.clone(),sha,until_restart:false});
     page.rebuild(Some(HudId::Use));
-    assert_eq!(page.copy, plx_platform::i18n::msg::settings_hud_copy(), "Use changes the choice; only installation preserves it");
+    assert_eq!(page.copy, plx_os::i18n::msg::settings_hud_copy(), "Use changes the choice; only installation preserves it");
     let fx=drive(&mut page,ScreenEvent::Activate(1),1);
     assert!(matches!(huds(&fx).as_slice(),[HudCmd::Select(id)] if *id == package.id));
     assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::PopToArg(SettingsPage::PlayerHud)))));
@@ -1104,7 +1104,7 @@ fn withdrawn_list() -> HudList {
 /// what Remove does), and the fade is heading for whatever it says.
 #[test]
 fn the_sentence_follows_the_focused_row_and_a_row_with_none_shows_the_pages() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let (mut page, _tx) = page_with(withdrawn_list());
     let alpha = HudId::Pack("com.example.a".into());
     let page_copy = msg::settings_hud_copy();
@@ -1124,7 +1124,7 @@ fn the_sentence_follows_the_focused_row_and_a_row_with_none_shows_the_pages() {
 /// A refusal or a failed fetch in force is the sentence whichever row has focus; the row's own comes back once it clears.
 #[test]
 fn a_notice_in_force_outranks_every_rows_sentence() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let mut l = withdrawn_list();
     l.notice = Some(Notice::FetchFailed { reason: FetchError::Unreachable });
     let (mut page, _tx) = page_with(l);
@@ -1140,7 +1140,7 @@ fn a_notice_in_force_outranks_every_rows_sentence() {
 /// be picked, the removal row names it ("Remove Alpha") with no sub-line, and Install from address keeps its field hint.
 #[test]
 fn a_withdrawn_hud_is_a_ghost_row_with_its_reason_as_the_value() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let (mut page, _tx) = page_with(withdrawn_list());
     let alpha = HudId::Pack("com.example.a".into());
     let row = row_of(&page, &alpha);
@@ -1162,7 +1162,7 @@ fn a_withdrawn_hud_is_a_ghost_row_with_its_reason_as_the_value() {
 /// focus lands on it and reads why, and OK (or a click, which is the same `Activate`) does nothing.
 #[test]
 fn a_hud_that_does_not_fit_the_language_is_a_disabled_row_and_ok_is_inert() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let mut l = list();
     l.unfit = vec![Sha::of(&[1])];
     l.language = "Français".into();
@@ -1183,7 +1183,7 @@ fn a_hud_that_does_not_fit_the_language_is_a_disabled_row_and_ok_is_inert() {
 /// A file the store refused says why as its value and what to do beside the table; one it can install keeps its sub-line.
 #[test]
 fn a_refused_file_is_a_ghost_row_and_an_installable_one_keeps_its_sub_line() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let mut l = list();
     l.drops = vec![drop_file("ok.plxhud", 9, Ok(())), drop_file("bad.plxhud", 3, Err(Refusal::Invalid)), drop_file("new.plxhud", 4, Err(Refusal::Unloadable(Unloadable::NewerFormat)))];
     let (mut page, _tx) = page_with(l);
@@ -1208,7 +1208,7 @@ fn with_index(page: &mut HudPage, edit: impl FnOnce(&mut plx_data::hudpacks::cat
 /// **Package page, update waiting** (board 4.2): focus on Update, the sentence describes Update; move focus and it changes.
 #[test]
 fn the_package_pages_sentence_follows_update_and_the_rows() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let list = gallery_list();
     let package = list.catalog.index.as_ref().unwrap().entries.iter().find(|p| p.name == "Reference").unwrap().clone();
     let sha = package.sha();
@@ -1238,7 +1238,7 @@ fn the_package_pages_sentence_follows_update_and_the_rows() {
 /// language's says what to do.
 #[test]
 fn an_uninstallable_package_page_row_is_a_ghost_with_its_reason() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let list = gallery_list();
     let sha = list.catalog.index.as_ref().unwrap().entries[0].sha();
     let mut page = gallery_page(SettingsPage::HudDetail(sha));
@@ -1262,7 +1262,7 @@ fn an_uninstallable_package_page_row_is_a_ghost_with_its_reason() {
 /// a package an equal or newer version of which is installed (the same version under another hash) says so as the value.
 #[test]
 fn a_package_pages_state_outranks_its_rows_and_a_disabled_install_says_why() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let list = gallery_list();
     let package = list.catalog.index.as_ref().unwrap().entries.iter().find(|p| p.name == "Reference").unwrap().clone();
     let sha = package.sha();
@@ -1331,7 +1331,7 @@ fn the_gallery_picture_follows_the_focused_hud() {
     assert!(!b.is_empty());
     assert_ne!(a, b, "another HUD, another picture");
     assert!(b.iter().all(|url| index.entries[1].previews.iter().any(|p| p.url == *url)), "the second HUD's own frames");
-    assert_eq!(page.sentence(), plx_platform::i18n::msg::settings_hud_gallery_copy(), "and the sentence is the page's own");
+    assert_eq!(page.sentence(), plx_os::i18n::msg::settings_hud_gallery_copy(), "and the sentence is the page's own");
     let about = gallery_page(SettingsPage::HudAbout(index.entries[0].sha()));
     assert!(about.picture().is_none());
 }
@@ -1339,7 +1339,7 @@ fn the_gallery_picture_follows_the_focused_hud() {
 /// **Empty gallery** (board 4.3): no rows and no picture; the description carries the whole message.
 #[test]
 fn an_empty_gallery_has_no_rows_no_picture_and_its_message_as_the_sentence() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let mut page = gallery_page(SettingsPage::HudGallery);
     with_index(&mut page, |index| index.entries.clear());
     assert_eq!(page.form.table.n_rows(), 0);
@@ -1351,7 +1351,7 @@ fn an_empty_gallery_has_no_rows_no_picture_and_its_message_as_the_sentence() {
 /// the catalog date, and the picture stays.
 #[test]
 fn an_offline_gallery_says_the_saved_catalog_with_its_date_and_keeps_the_picture() {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let mut page = gallery_page(SettingsPage::HudGallery);
     page.list.catalog.refresh_failed = true;
     page.list.catalog_date = "3 Nov".into();
@@ -1376,7 +1376,7 @@ fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
         let mut every = list();
-        every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
+        every.language = SHIPPED.iter().map(|l| plx_os::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
         every.end_time = Some(true);
         every.unfit = vec![Sha::of(&[3])];
         let mut unfit = pack("com.example.c", "Gamma", 3, false);

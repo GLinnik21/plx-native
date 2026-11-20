@@ -2,7 +2,7 @@
 //! same value can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs
 //! "0 hr 45 min" drift this replaces).
 
-use plx_platform::i18n::{msg, LocaleContext, MonthWidth};
+use plx_os::i18n::{msg, LocaleContext, MonthWidth};
 
 pub fn converts_on_server() -> &'static str { msg::core_converts_on_server() }
 
@@ -12,7 +12,7 @@ pub fn converts_on_server() -> &'static str { msg::core_converts_on_server() }
 /// spelled-out one ("14 min"), and which a value wore depended on the screen it was on; the shape
 /// has one home now and the minutes-first split lives in [`duration_minutes_in`] only.
 pub fn duration(ms: i64) -> String {
-    duration_in(plx_platform::i18n::current(), ms)
+    duration_in(plx_os::i18n::current(), ms)
 }
 
 /// [`duration`] for a context other than the thread's (a caption that carries its own).
@@ -42,9 +42,9 @@ fn split_hours(mins: i64) -> (i64, i64) {
 pub fn secs_short(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 10_000 {
-        plx_platform::i18n::msg::core_seconds(&plx_platform::i18n::current().decimal(ms / 100, 1))
+        plx_os::i18n::msg::core_seconds(&plx_os::i18n::current().decimal(ms / 100, 1))
     } else {
-        plx_platform::i18n::msg::core_seconds(&plx_platform::i18n::current().number(ms / 1_000))
+        plx_os::i18n::msg::core_seconds(&plx_os::i18n::current().number(ms / 1_000))
     }
 }
 
@@ -53,7 +53,7 @@ pub fn secs_short(ms: i64) -> String {
 #[cfg(test)]
 mod one_shape_tests {
     use super::*;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
 
     const MINUTE: i64 = 60_000;
 
@@ -64,7 +64,7 @@ mod one_shape_tests {
             (0, "0m"), (-5 * MINUTE, "0m"), (134 * MINUTE + 59_999, "2h 14m")] {
             assert_eq!(duration(ms), want, "{ms} ms");
         }
-        let cx = plx_platform::i18n::current();
+        let cx = plx_os::i18n::current();
         assert_eq!(duration_minutes_in(cx, 134), duration_in(cx, 134 * MINUTE), "minutes and milliseconds are one rule");
         assert_eq!(time_left(8 * MINUTE), "8m left");
         assert_eq!(time_left(62 * MINUTE), "1h 2m left");
@@ -79,7 +79,7 @@ mod one_shape_tests {
         for language in SHIPPED {
             let tag = language.tag();
             let _g = language_on_this_thread_for_test(language);
-            let cx = plx_platform::i18n::current();
+            let cx = plx_os::i18n::current();
             for minutes in [8, 62] {
                 let (left, length) = (time_left_minutes_in(cx, minutes), duration_minutes_in(cx, minutes));
                 assert!(left.contains(&length), "{tag}: {left:?} does not carry the duration {length:?}");
@@ -131,7 +131,7 @@ fn seconds_scale_durations_keep_the_distinctions_that_matter() {
 /// Time-remaining for a Continue-Watching item — "8m left" / "1h 2m left" (rounded up to
 /// the next whole minute, floored at 1). `remaining_ms` is duration − viewOffset.
 pub fn time_left(remaining_ms: i64) -> String {
-    time_left_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+    time_left_minutes_in(plx_os::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 fn remaining_minutes(remaining_ms: i64) -> i64 {
@@ -140,7 +140,7 @@ fn remaining_minutes(remaining_ms: i64) -> i64 {
 
 /// Time remaining inside a playback control: the compact duration without the word “left”.
 pub fn remaining_duration(remaining_ms: i64) -> String {
-    duration_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+    duration_minutes_in(plx_os::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 /// [`time_left`] from whole minutes, in a given context; at least a minute (the line promises
@@ -155,7 +155,7 @@ pub fn time_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
 /// shares 388 px with an episode tag and a progress bar). Rounded up to the next whole minute and
 /// never zero, as [`time_left`] is. The Home Resume pill uses [`remaining_duration`].
 pub fn footer_left(remaining_ms: i64) -> String {
-    footer_left_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+    footer_left_minutes_in(plx_os::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 /// [`footer_left`] from whole minutes, in a given context.
@@ -180,7 +180,7 @@ pub fn footer_tag_in(cx: &LocaleContext, season: i64, index: i64) -> String {
 
 /// [`footer_tag_in`] in the thread's language.
 pub fn footer_tag(season: i64, index: i64) -> String {
-    footer_tag_in(plx_platform::i18n::current(), season, index)
+    footer_tag_in(plx_os::i18n::current(), season, index)
 }
 
 /// **The one release-date phrase** — "Coming 12 Mar" — for an unreleased title: the Watchlist's focus
@@ -196,7 +196,7 @@ pub fn coming_on(release: &str, width: MonthWidth) -> Option<String> {
     if parts.next().is_some() {
         return None;
     }
-    let date = plx_platform::i18n::current().month_day(month, day, width)?;
+    let date = plx_os::i18n::current().month_day(month, day, width)?;
     Some(msg::watchlist_state_coming_on(&date))
 }
 
@@ -239,7 +239,7 @@ pub fn clock(ms: i64) -> String {
 /// apart deliberately: this one is a printed mark on artwork, sized and inked as its own line,
 /// while the ordinal is a run inside sentences elsewhere in the app.
 pub fn episode_address(season: i64, index: i64) -> String {
-    episode_address_in(plx_platform::i18n::current(), season, index)
+    episode_address_in(plx_os::i18n::current(), season, index)
 }
 
 /// [`episode_address`] in `cx`'s language, for the formatters that carry a locale.
@@ -260,7 +260,7 @@ pub fn episode_address_in(cx: &LocaleContext, season: i64, index: i64) -> String
 /// title (a specials folder). A number that is not positive is no number, so it is never printed
 /// as one ("Season 0").
 pub fn season_identity(number: i64, own: &str) -> String {
-    season_identity_in(plx_platform::i18n::current(), number, own)
+    season_identity_in(plx_os::i18n::current(), number, own)
 }
 
 /// [`season_identity`] in `cx`'s language, for the formatters that carry a locale.
@@ -280,7 +280,7 @@ pub fn season_identity_in(cx: &LocaleContext, number: i64, own: &str) -> String 
 /// every collection tile's caption (shelf, Collections page) and the search hit, so a collection is
 /// never "6 items" on one screen and "6 films" on the next.
 pub fn collection_count(subtype: Option<&str>, n: i64) -> String {
-    collection_count_in(plx_platform::i18n::current(), subtype, n)
+    collection_count_in(plx_os::i18n::current(), subtype, n)
 }
 
 /// [`collection_count`] in `cx`'s language, for the formatters that carry a locale.
@@ -315,7 +315,7 @@ pub fn item_count(n: i64) -> String {
 /// number (the server sent none, or numbered the specials 0), so it is never printed as one:
 /// "S1, E0" is not an address. [`episode_address_in`] is the same rule for the printed mark.
 pub fn episode_ordinal(season: i64, index: i64) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match (season > 0, index > 0) {
         (true, true) => msg::core_episode_ordinal(index, season),
         (false, true) => msg::core_episode(index),
@@ -343,9 +343,9 @@ pub fn episode_context(show: &str, season: i64, index: i64) -> String {
 /// rung is this card's own row).
 pub fn episode_card_kicker(index: i64) -> String {
     if index > 0 {
-        plx_platform::i18n::msg::browse_detail_episode_number(index)
+        plx_os::i18n::msg::browse_detail_episode_number(index)
     } else {
-        plx_platform::i18n::msg::browse_kind_episode().to_uppercase()
+        plx_os::i18n::msg::browse_kind_episode().to_uppercase()
     }
 }
 
@@ -368,7 +368,7 @@ pub fn episode_card_kicker(index: i64) -> String {
 /// read-out. It was written twice with two different empty-handle behaviours and interpolated a
 /// third time inline — exactly the drift this module exists to prevent.
 pub fn shared_by(handle: &str) -> Option<String> {
-    (!handle.is_empty()).then(|| plx_platform::i18n::msg::core_shared_by(handle))
+    (!handle.is_empty()).then(|| plx_os::i18n::msg::core_shared_by(handle))
 }
 
 /// The separator between the episode's numbering and its title in [`episode_kicker`] (`"S2, E3 · Laura"`):
@@ -444,18 +444,18 @@ mod tests {
     /// card's kicker) leave the empty part out rather than print "S1, E0" or a trailing dot.
     #[test]
     fn an_unnumbered_episode_never_prints_a_zero_address() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         for language in SHIPPED {
             let _g = language_on_this_thread_for_test(language);
             let tag = language.tag();
-            assert_eq!(episode_ordinal(1, 3), plx_platform::i18n::msg::core_episode_ordinal(3, 1), "{tag}");
+            assert_eq!(episode_ordinal(1, 3), plx_os::i18n::msg::core_episode_ordinal(3, 1), "{tag}");
             for (season, index) in [(1, 0), (0, 3), (0, 0), (-1, -1), (2, -1)] {
                 let ordinal = episode_ordinal(season, index);
                 assert!(!ordinal.contains('0') && !ordinal.contains("-1"), "{tag}: ({season}, {index}) read {ordinal:?}");
             }
             assert_eq!(episode_ordinal(0, 0), "", "{tag}");
-            assert_eq!(episode_ordinal(0, 3), plx_platform::i18n::msg::core_episode(3), "{tag}: no season, the episode alone");
-            assert_eq!(episode_ordinal(2, 0), plx_platform::i18n::msg::core_season(2), "{tag}: no episode, the season alone");
+            assert_eq!(episode_ordinal(0, 3), plx_os::i18n::msg::core_episode(3), "{tag}: no season, the episode alone");
+            assert_eq!(episode_ordinal(2, 0), plx_os::i18n::msg::core_season(2), "{tag}: no episode, the season alone");
             assert_eq!(episode_kicker(1, 0, "Pilot"), format!("{} \u{b7} Pilot", episode_ordinal(1, 0)), "{tag}");
             assert_eq!(episode_kicker(0, 0, "Pilot"), "Pilot", "{tag}: nothing numbered leaves the title alone");
             assert_eq!(episode_kicker(0, 0, ""), "", "{tag}");
@@ -463,9 +463,9 @@ mod tests {
             assert_eq!(episode_context("Show", 1, 3), format!("Show  \u{b7}  {}", episode_ordinal(1, 3)), "{tag}");
             let kicker = episode_card_kicker(0);
             assert!(!kicker.contains('0') && !kicker.is_empty(), "{tag}: the card's kicker without a number is {kicker:?}");
-            assert_eq!(kicker, plx_platform::i18n::msg::browse_kind_episode().to_uppercase(), "{tag}: the kind word");
-            assert_eq!(episode_card_kicker(3), plx_platform::i18n::msg::browse_detail_episode_number(3), "{tag}");
-            assert_eq!(season_identity_in(plx_platform::i18n::current(), 0, ""), plx_platform::i18n::msg::browse_detail_specials(), "{tag}");
+            assert_eq!(kicker, plx_os::i18n::msg::browse_kind_episode().to_uppercase(), "{tag}: the kind word");
+            assert_eq!(episode_card_kicker(3), plx_os::i18n::msg::browse_detail_episode_number(3), "{tag}");
+            assert_eq!(season_identity_in(plx_os::i18n::current(), 0, ""), plx_os::i18n::msg::browse_detail_specials(), "{tag}");
         }
     }
 
@@ -475,7 +475,7 @@ mod tests {
     /// "фильм" with "1 фильм", but not the whole noun with "2 фильма" or "5 фильмов".
     #[test]
     fn the_collection_heading_names_the_noun_the_count_uses() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         for language in SHIPPED {
             let _g = language_on_this_thread_for_test(language);
             for subtype in [Some("movie"), Some("show"), Some("episode"), None] {
@@ -495,15 +495,15 @@ mod tests {
     /// this, so "6 items" and "6 films" cannot name one collection.
     #[test]
     fn a_collection_is_counted_in_the_noun_of_its_subtype() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         assert_eq!(collection_count(Some("movie"), 6), "6 films");
         assert_eq!(collection_count(Some("movie"), 1), "1 film");
         assert_eq!(collection_count(Some("show"), 3), "3 shows");
         assert_eq!(collection_count(Some("episode"), 12), "12 items", "a subtype with no noun of its own is items");
         assert_eq!(collection_count(None, 12), "12 items", "before the subtype is known");
         assert_eq!(super::item_count(1), "1 item");
-        let de = plx_platform::i18n::LocaleContext::resolve(plx_platform::i18n::Preference::De, None, None, None, None);
-        assert_eq!(collection_count_in(&de, Some("movie"), 6), plx_platform::i18n::msg::browse_person_films_in(&de, 6));
+        let de = plx_os::i18n::LocaleContext::resolve(plx_os::i18n::Preference::De, None, None, None, None);
+        assert_eq!(collection_count_in(&de, Some("movie"), 6), plx_os::i18n::msg::browse_person_films_in(&de, 6));
     }
 
     /// The mapping is fed PMS's own values, and PMS string-encodes them — including the ones that
@@ -571,7 +571,7 @@ fn pretty_date_with(iso: &str, year: i64, named_month: bool) -> String {
             parts[2].parse::<i64>(),
         ) {
             if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
-                let cx = plx_platform::i18n::current();
+                let cx = plx_os::i18n::current();
                 if let Some(date) = if named_month { cx.date_medium(y, m, d) } else { cx.date(y, m, d) } { return date; }
             }
         }
@@ -600,7 +600,7 @@ pub enum RatingScale {
 /// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
 pub fn rating_score(scale: RatingScale, value: f64) -> String {
     match scale {
-        RatingScale::OutOfTen => plx_platform::i18n::current().decimal((value * 10.0).round() as i64, 1),
+        RatingScale::OutOfTen => plx_os::i18n::current().decimal((value * 10.0).round() as i64, 1),
         RatingScale::Percent => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
     }
 }
@@ -608,20 +608,20 @@ pub fn rating_score(scale: RatingScale, value: f64) -> String {
 /// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (German,
 /// Spanish and Belarusian set it off with a no-break space; English does not).
 pub fn percent(value: i64) -> String {
-    plx_platform::i18n::msg::core_percent(&plx_platform::i18n::current().number(value))
+    plx_os::i18n::msg::core_percent(&plx_os::i18n::current().number(value))
 }
 
 /// `value` rounded to `scale` fractional digits, in the UI locale's numerals and separators.
 pub fn decimal(value: f64, scale: i16) -> String {
     let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
-    plx_platform::i18n::current().decimal((value * factor).round() as i64, scale)
+    plx_os::i18n::current().decimal((value * factor).round() as i64, scale)
 }
 
 /// [`decimal`] that always carries a sign, as a delta is written (`+0.4`, `-1.2`).
 pub fn signed_decimal(value: f64, scale: i16) -> String {
     let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
     let scaled = (value * factor).round() as i64;
-    let digits = plx_platform::i18n::current().decimal(scaled, scale);
+    let digits = plx_os::i18n::current().decimal(scaled, scale);
     if scaled >= 0 {
         format!("+{digits}")
     } else {
@@ -633,9 +633,9 @@ pub fn signed_decimal(value: f64, scale: i16) -> String {
 /// locale's numerals and unit spelling.
 pub fn bitrate(kbps: i64) -> String {
     if kbps >= 1000 {
-        plx_platform::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
+        plx_os::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
     } else {
-        plx_platform::i18n::msg::widgets_tracks_kbps(&plx_platform::i18n::current().number(kbps))
+        plx_os::i18n::msg::widgets_tracks_kbps(&plx_os::i18n::current().number(kbps))
     }
 }
 
@@ -643,7 +643,7 @@ pub fn bitrate(kbps: i64) -> String {
 /// `scales` is the number of fractional digits for GB, MB and kB respectively; a count below a
 /// kilobyte is whole bytes (`B`).
 pub fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     const K: f64 = 1024.0;
     let b = bytes as f64;
     if b >= K * K * K {
@@ -653,7 +653,7 @@ pub fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
     } else if b >= K {
         msg::core_unit_kb(&decimal(b / K, scales.2))
     } else {
-        msg::core_unit_b(&plx_platform::i18n::current().number(bytes))
+        msg::core_unit_b(&plx_os::i18n::current().number(bytes))
     }
 }
 

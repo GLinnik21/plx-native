@@ -8,8 +8,8 @@
 //! and the unknown-key rule (item 3), the per-profile offset record pruning (item 4) and what the
 //! file backend keeps at sign-out (item 15).
 use super::*;
-use plx_platform::storage::state::PublicPayload;
-use plx_platform::storage::{client, state, wire::*};
+use plx_os::storage::state::PublicPayload;
+use plx_os::storage::{client, state, wire::*};
 use serde_json::json;
 
 // ---- fixtures ----------------------------------------------------------------------------------
@@ -388,7 +388,7 @@ fn nested_lists_are_soft_for_offsets_and_views_and_strict_for_last_library() {
 fn a_bad_language_reads_system_in_the_legacy_file() {
     for bad in [json!("future"), json!(42), Value::Null] {
         let s = legacy_from(json!({"language": bad}));
-        assert_eq!(s.language, plx_platform::i18n::Preference::System);
+        assert_eq!(s.language, plx_os::i18n::Preference::System);
     }
 }
 
@@ -455,7 +455,7 @@ fn a_future_canonical_preference_does_not_ride_through_the_session_object() {
 struct Db8 {
     record: Option<Value>,
 }
-impl plx_platform::storage::keymanager::Rpc for Db8 {
+impl plx_os::storage::keymanager::Rpc for Db8 {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         match uri {
             "luna://com.palm.db/get" => {
@@ -476,10 +476,10 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
     }
 }
 
-type Store = plx_platform::storage::backend::Backend<Db8>;
+type Store = plx_os::storage::backend::Backend<Db8>;
 
 fn store() -> Store {
-    plx_platform::storage::backend::Backend::new(
+    plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
 }
 
@@ -676,10 +676,10 @@ impl Drop for Root {
 /// narrow.
 #[test]
 fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
-    use plx_platform::i18n::Preference;
+    use plx_os::i18n::Preference;
     let _serial = plx_base::testlock::serial();
     let root = Root::new("signout-keeps-language");
-    let saved = plx_platform::i18n::saved_preference();
+    let saved = plx_os::i18n::saved_preference();
     redirect_for_test(None);
     redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
 
@@ -691,9 +691,9 @@ fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
 
     // A new process has neither the session cache nor the confirmed-preference atomic.
     redirect_for_test(None);
-    plx_platform::i18n::set_saved_preference(Preference::System);
+    plx_os::i18n::set_saved_preference(Preference::System);
     let fresh = load_with_id(|| "new-install-id".into());
-    plx_platform::i18n::set_saved_preference(saved);
+    plx_os::i18n::set_saved_preference(saved);
 
     assert_eq!(fresh.language, Preference::Be, "language is kept");
     assert_eq!(fresh.ui_resolution(), UiResolution::Hd720, "and so is the Interface resolution");
@@ -715,10 +715,10 @@ fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
 /// outlives a sign-out here.
 #[test]
 fn file_backend_sign_out_then_in_reads_the_defaults() {
-    use plx_platform::i18n::Preference;
+    use plx_os::i18n::Preference;
     let _serial = plx_base::testlock::serial();
     let root = Root::new("signout-profile-prefs");
-    let saved = plx_platform::i18n::saved_preference();
+    let saved = plx_os::i18n::saved_preference();
     redirect_for_test(None);
     redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
 
@@ -731,9 +731,9 @@ fn file_backend_sign_out_then_in_reads_the_defaults() {
     assert!(matches!(clear(), ClearOutcome::Durable { .. }));
 
     redirect_for_test(None);
-    plx_platform::i18n::set_saved_preference(Preference::System);
+    plx_os::i18n::set_saved_preference(Preference::System);
     let fresh = load_with_id(|| "new-install-id".into());
-    plx_platform::i18n::set_saved_preference(saved);
+    plx_os::i18n::set_saved_preference(saved);
 
     assert!(fresh.prefs.profile_prefs.is_empty(), "the profile's own picks did not survive");
     let seat = Seat::Seated { user: "u1".into(), stamp: crate::plex::grant::account_key("another-account") };

@@ -20,18 +20,18 @@ default = []
 # Forwarded from the application crate, which is the only one that sets them. Each is named here
 # only because some code in this crate has a `cfg` on it (the dev-trigger origin override in
 # `plex::origin`, the simulator's session paths in `plex::session`).
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers"]
-hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim"]
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_os/devtriggers"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_os/hostsim"]
 # The `cfg(test)` seams other crates' tests use (`plex::session::TempSession` and its
 # `*_for_test` hooks, `plex::grant`'s reset and evidence seams, `plex::serverinfo::store_for_test`)
 # plus the test-mode arms `cfg(test)` alone cannot give a dependent. Enabled from the dependents'
 # `[dev-dependencies]`; never in a shipped build.
-test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_net/test-support"]
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_os/test-support", "plx_net/test-support"]
 
 [dependencies]
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
-plx_platform = { path = "../platform" }
+plx_os = { path = "../os" }
 plx_net = { path = "../net" }
 libc = "0.2"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
@@ -40,7 +40,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 [dev-dependencies]
 plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
-plx_platform = { path = "../platform", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
 plx_net = { path = "../net", features = ["test-support"] }
 
 [lints]

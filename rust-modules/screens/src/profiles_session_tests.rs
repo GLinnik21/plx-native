@@ -799,7 +799,7 @@ fn the_readout_answers_ids_for_its_back_and_its_sign_out() {
         let sign_out = Focusable::<SessionHost>::a11y(&s, &FOOTER, &c).unwrap();
         assert_eq!(
             sign_out.label.as_deref(),
-            plx_platform::i18n::msg::settings_account_sign_out_c().to_str().ok()
+            plx_os::i18n::msg::settings_account_sign_out_c().to_str().ok()
         );
     }
 }

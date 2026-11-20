@@ -46,7 +46,7 @@
 use std::os::raw::c_int;
 
 use plx_data::pms::{PmsMovie, KIND_EPISODE, KIND_MOVIE, KIND_SEASON, KIND_SHOW};
-use plx_platform::i18n::{current, msg, MonthWidth};
+use plx_os::i18n::{current, msg, MonthWidth};
 use plx_ui::{cards::{SortValue, TileLabel}, fmt};
 
 /// The en dash a poster shows when it has no value for the sort.
@@ -141,7 +141,7 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
     // A show's or a season's own row has no length, progress or media: those are one episode's, or none.
     let container = matches!(item.kind, KIND_SHOW | KIND_SEASON);
     let facts = item.sort_info.as_ref();
-    let date = |stamp: Option<i64>| stamp.and_then(plx_platform::i18n::local_calendar_date).and_then(|date| date_value(date, today));
+    let date = |stamp: Option<i64>| stamp.and_then(plx_os::i18n::local_calendar_date).and_then(|date| date_value(date, today));
     // Never played: the row carries its sort facts and nothing on it says the item was ever started or
     // watched (a watched row whose count was cleared for the read-back is not this: it reads as the
     // dash until the count lands). Empty values that mean something say it; the dash is for data the
@@ -257,7 +257,7 @@ fn civil_days([year, month, day]: [i32; 3]) -> i64 {
 mod tests {
     use super::*;
     use plx_data::pms::SortInfo;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Language, Preference, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, Language, Preference, SHIPPED};
 
     const TODAY: [i32; 3] = [2026, 10, 30];
     const ALL_KEYS: [&str; 13] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
@@ -267,7 +267,7 @@ mod tests {
     /// read as text rather than through the compiled catalogue: a plain string, or the object of plural
     /// forms. English wraps its entry (`{"value": .., "description": ..}`); the other languages do not.
     fn catalogue_entry(file: &str, key: &str) -> serde_json::Value {
-        let tag = plx_platform::i18n::current().language().tag();
+        let tag = plx_os::i18n::current().language().tag();
         let path = format!("{}/../../locales/{tag}/{file}.json", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
         let catalogue: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -282,7 +282,7 @@ mod tests {
         let form = match entry {
             serde_json::Value::String(text) => text,
             forms => {
-                let category = format!("{:?}", plx_platform::i18n::current().plural(i64::from(count))).to_lowercase();
+                let category = format!("{:?}", plx_os::i18n::current().plural(i64::from(count))).to_lowercase();
                 forms.get(&category).or_else(|| forms.get("other")).and_then(|form| form.as_str())
                     .unwrap_or_else(|| panic!("no {category} or other form in {forms}"))
             }
@@ -305,13 +305,13 @@ mod tests {
                 let drawn = line(n);
                 assert_eq!(drawn, catalogue_phrase(&entry, n), "{preference:?} {n}");
                 assert!(drawn.starts_with(&format!("{n}\u{a0}")) && !drawn.contains(' '), "{preference:?} {n}: {drawn:?}");
-                categories.insert(format!("{:?}", plx_platform::i18n::current().plural(i64::from(n))));
+                categories.insert(format!("{:?}", plx_os::i18n::current().plural(i64::from(n))));
             }
             // `many` in Spanish, Catalan, French, Italian and Portuguese is the millions alone. A line is
             // never drawn for a million (and would be grouped, `1,000,000`), so the million is asked of
             // the language's rule only, which is the rule every drawn count above follows.
-            categories.insert(format!("{:?}", plx_platform::i18n::current().plural(1_000_000)));
-            let language = plx_platform::i18n::current().language();
+            categories.insert(format!("{:?}", plx_os::i18n::current().plural(1_000_000)));
+            let language = plx_os::i18n::current().language();
             let declared = Language::PLURALS.iter().find(|(l, _)| *l == language).expect("declared plurals").1;
             assert_counts_meet_every_declared_category(&format!("{preference:?}"), &categories, declared);
         }
@@ -615,7 +615,7 @@ mod tests {
         // The day turning over rebuilds the same stamp's label: Today, then Yesterday, then a date.
         let m = movie();
         let on_day = |today: [i32; 3]| read(&m, "addedAt", Some(today)).text;
-        let day = plx_platform::i18n::local_calendar_date(1_793_275_200).unwrap();
+        let day = plx_os::i18n::local_calendar_date(1_793_275_200).unwrap();
         let next = |d: [i32; 3], by: i32| [d[0], d[1], d[2] + by];
         assert_eq!(on_day(day), "Today");
         assert_eq!(on_day(next(day, 1)), "Yesterday");
@@ -916,7 +916,7 @@ fn review_preserves_main_rating_marks() {
 fn review_timestamp_dates_follow_timezone() {
     // Each timezone gets a fresh process: libc's timezone state is not changed under other tests.
     if let Ok(expected) = std::env::var("PLX_SORT_DATE_TEST_DAY") {
-        let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _locale = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let stamp = 1_793_233_800; // 2026-10-29 00:30 UTC
         let item = PmsMovie { added_at: Some(stamp),
             sort_info: Some(plx_data::pms::SortInfo { last_viewed_at: Some(stamp), ..Default::default() }),

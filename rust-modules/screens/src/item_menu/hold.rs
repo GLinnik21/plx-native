@@ -53,8 +53,8 @@ impl HoldRowId {
 /// `ContentArg::Catalog`; the table lists it for the unmatched states.
 pub fn rows_for(state: TileState, kind: Kind) -> Vec<ItemMenuRow> {
     let label = match kind {
-        Kind::Movie => plx_platform::i18n::msg::browse_menu_go_movie(),
-        Kind::Show => plx_platform::i18n::msg::browse_menu_go_show(),
+        Kind::Movie => plx_os::i18n::msg::browse_menu_go_movie(),
+        Kind::Show => plx_os::i18n::msg::browse_menu_go_show(),
     };
     let go = match state {
         TileState::Available | TileState::ComingSoonMatched => (HoldRowId::GoToDetail, label),
@@ -66,7 +66,7 @@ pub fn rows_for(state: TileState, kind: Kind) -> Vec<ItemMenuRow> {
         ItemMenuRow { id: go.0, label: go.1, icon: Icon::Episode, destructive: false },
         ItemMenuRow {
             id: HoldRowId::Remove,
-            label: plx_platform::i18n::msg::watchlist_action_remove(),
+            label: plx_os::i18n::msg::watchlist_action_remove(),
             icon: Icon::Close,
             destructive: true,
         },

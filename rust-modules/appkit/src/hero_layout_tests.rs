@@ -144,14 +144,14 @@ fn proposal_play_capsule_keeps_its_minimum_and_grows_for_translations() {
 #[test]
 fn pdf_proposal_movie_facts_use_year_and_remaining_time() {
     let d = Detail { year: 2024, aired: "2024-03-09".into(), dur_ms: 112 * 60_000, resume_ms: 74 * 60_000, ..Default::default() };
-    assert_eq!(meta_facts(&d, None), ("2024".into(), Some(plx_platform::i18n::msg::browse_detail_minutes_left(38))));
+    assert_eq!(meta_facts(&d, None), ("2024".into(), Some(plx_os::i18n::msg::browse_detail_minutes_left(38))));
     let fresh = Detail { resume_ms: 0, ..d };
     assert_eq!(meta_facts(&fresh, None), ("2024".into(), Some(plx_ui::fmt::duration(112 * 60_000))));
 }
 
 #[test]
 fn pdf_proposal_episode_facts_use_a_named_month_and_validate_resume() {
-    let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _locale = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     assert_eq!(time_facts(2024, "2024-03-02", true, 48 * 60_000, 10 * 60_000),
         ("Mar 2, 2024".into(), Some("38 min left".into())));
     assert_eq!(time_facts(2024, "2024-02-30", true, 48 * 60_000, 49 * 60_000),

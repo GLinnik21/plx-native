@@ -4051,17 +4051,17 @@ fn status_read(
     Some(match view.state {
         plx_data::pms::HubState::Loading => {
             // placeholder-exempt: builds the value only; counted where drawn (StatusOverlay::draw_geometry, Working)
-            (plx_platform::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
+            (plx_os::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
         }
         plx_data::pms::HubState::Failed => (
-            plx_platform::i18n::msg::browse_home_failed_c(),
+            plx_os::i18n::msg::browse_home_failed_c(),
             StatusKind::Failed,
-            Some(plx_platform::i18n::msg::browse_action_retry_c()),
+            Some(plx_os::i18n::msg::browse_action_retry_c()),
         ),
         plx_data::pms::HubState::Ready => (
-            plx_platform::i18n::msg::browse_home_empty_c(),
+            plx_os::i18n::msg::browse_home_empty_c(),
             StatusKind::Empty,
-            Some(plx_platform::i18n::msg::browse_home_refresh_c()),
+            Some(plx_os::i18n::msg::browse_home_refresh_c()),
         ),
     })
 }
@@ -4461,7 +4461,7 @@ fn hero_action(hero: &PmsMovie) -> (std::borrow::Cow<'static, std::ffi::CStr>, O
 
 fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
     use plx_data::pms::{KIND_EPISODE, KIND_MOVIE, KIND_SHOW};
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     use plx_ui::fmt;
     let is_episode = hero.kind == KIND_EPISODE;
     let is_show = hero.kind == KIND_SHOW;

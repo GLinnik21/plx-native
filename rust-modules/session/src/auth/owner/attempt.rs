@@ -279,7 +279,7 @@ impl Attempt {
     pub(super) fn discovery_retry(&self) -> Option<super::super::DiscoveryRetryProgress> { self.retained_signin().retry }
     pub(super) fn plaintext(&self) -> Option<&super::super::PlaintextVerdict> { self.retained_signin().plaintext.as_ref() }
     pub(super) fn signin_account(&self) -> Option<&str> { self.retained_signin().account.as_deref() }
-    pub(super) fn readout_account(&self) -> Option<&str> { self.signin_account().filter(|_| self.phase() == Phase::Error && self.picker_data().error == plx_platform::i18n::msg::browse_auth_no_servers()) }
+    pub(super) fn readout_account(&self) -> Option<&str> { self.signin_account().filter(|_| self.phase() == Phase::Error && self.picker_data().error == plx_os::i18n::msg::browse_auth_no_servers()) }
     pub(super) fn roster_readout_up(&self) -> bool { is_roster_readout(self.phase(), &self.picker_data().users, &self.picker_data().error) }
     fn authorization(&self) -> Authorization {
         match self {
@@ -584,7 +584,7 @@ impl Attempt {
     pub(super) fn ready_exhausted(self) -> Self {
         let authorization = self.authorization();
         fn destination(qr: QrHistory, mut picker: PickerPresentation, mut residue: ImportedIntent, signin: SignInHistory, authorization: Authorization) -> Attempt {
-            residue.0 = false; picker.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
+            residue.0 = false; picker.error = plx_os::i18n::msg::browse_auth_switch_retry().into();
             Attempt::Profiles(ProfilesData { setup: PickerStage::Idle, choice: authorization, qr_history: qr, picker, residue, signin })
         }
         match self {
@@ -598,7 +598,7 @@ impl Attempt {
             Self::Error(d) => destination(d.qr_history, d.picker, d.residue, d.signin, authorization),
             Self::Deleted(d) => destination(d.history.qr, d.history.picker, d.residue, d.signin, authorization),
             Self::Erasing(mut d) => {
-                d.residue.0 = false; d.history.picker.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
+                d.residue.0 = false; d.history.picker.error = plx_os::i18n::msg::browse_auth_switch_retry().into();
                 d.prior_phase = Phase::Profiles;
                 Self::Erasing(d)
             }
@@ -607,7 +607,7 @@ impl Attempt {
     pub(super) fn switch_commit_refused(self) -> Self {
         let authorization = self.authorization();
         fn destination(qr: QrHistory, mut picker: PickerPresentation, mut residue: ImportedIntent, signin: SignInHistory, authorization: Authorization) -> Attempt {
-            residue.0 = false; picker.error = plx_platform::i18n::msg::browse_auth_switch_failed().into();
+            residue.0 = false; picker.error = plx_os::i18n::msg::browse_auth_switch_failed().into();
             Attempt::Profiles(ProfilesData { setup: PickerStage::Idle, choice: authorization, qr_history: qr, picker, residue, signin })
         }
         match self {
@@ -621,7 +621,7 @@ impl Attempt {
             Self::Error(d) => destination(d.qr_history, d.picker, d.residue, d.signin, authorization),
             Self::Deleted(d) => destination(d.history.qr, d.history.picker, d.residue, d.signin, authorization),
             Self::Erasing(mut d) => {
-                d.residue.0 = false; d.history.picker.error = plx_platform::i18n::msg::browse_auth_switch_failed().into();
+                d.residue.0 = false; d.history.picker.error = plx_os::i18n::msg::browse_auth_switch_failed().into();
                 d.prior_phase = Phase::Profiles;
                 Self::Erasing(d)
             }
@@ -629,7 +629,7 @@ impl Attempt {
     }
     pub(super) fn dev_commit_refused(self) -> Self {
         fn destination(qr: QrHistory, mut picker: PickerPresentation, mut residue: ImportedIntent, signin: SignInHistory) -> Attempt {
-            residue.0 = false; picker.error = plx_platform::i18n::msg::browse_auth_authority_failed().into();
+            residue.0 = false; picker.error = plx_os::i18n::msg::browse_auth_authority_failed().into();
             Attempt::Error(ErrorData { retry: RetryAuthority::Login, qr_history: qr, picker, residue, signin })
         }
         match self {
@@ -643,7 +643,7 @@ impl Attempt {
             Self::Error(d) => destination(d.qr_history, d.picker, d.residue, d.signin),
             Self::Deleted(d) => destination(d.history.qr, d.history.picker, d.residue, d.signin),
             Self::Erasing(mut d) => {
-                d.residue.0 = false; d.history.picker.error = plx_platform::i18n::msg::browse_auth_authority_failed().into();
+                d.residue.0 = false; d.history.picker.error = plx_os::i18n::msg::browse_auth_authority_failed().into();
                 d.prior_phase = Phase::Error;
                 Self::Erasing(d)
             }
@@ -652,7 +652,7 @@ impl Attempt {
     pub(super) fn switch_admission_refused(self) -> Self {
         let authorization = self.authorization();
         fn destination(qr: QrHistory, mut picker: PickerPresentation, residue: ImportedIntent, signin: SignInHistory, authorization: Authorization) -> Attempt {
-            picker.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
+            picker.error = plx_os::i18n::msg::browse_auth_switch_retry().into();
             Attempt::Profiles(ProfilesData { setup: PickerStage::Idle, choice: authorization, qr_history: qr, picker, residue, signin })
         }
         match self {
@@ -666,7 +666,7 @@ impl Attempt {
             Self::Error(d) => destination(d.qr_history, d.picker, d.residue, d.signin, authorization),
             Self::Deleted(d) => destination(d.history.qr, d.history.picker, d.residue, d.signin, authorization),
             Self::Erasing(mut d) => {
-                d.history.picker.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
+                d.history.picker.error = plx_os::i18n::msg::browse_auth_switch_retry().into();
                 d.prior_phase = Phase::Profiles;
                 Self::Erasing(d)
             }
@@ -766,7 +766,7 @@ impl Attempt {
     pub(super) fn switch_dropped(self) -> Self {
         let authorization = self.authorization();
         fn destination(qr: QrHistory, mut picker: PickerPresentation, residue: ImportedIntent, signin: SignInHistory, authorization: Authorization) -> Attempt {
-            picker.pin_denied = false; picker.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
+            picker.pin_denied = false; picker.error = plx_os::i18n::msg::browse_auth_switch_retry().into();
             Attempt::Profiles(ProfilesData { setup: PickerStage::Idle, choice: authorization, qr_history: qr, picker, residue, signin })
         }
         match self {
@@ -780,7 +780,7 @@ impl Attempt {
             Self::Error(d) => destination(d.qr_history, d.picker, d.residue, d.signin, authorization),
             Self::Deleted(d) => destination(d.history.qr, d.history.picker, d.residue, d.signin, authorization),
             Self::Erasing(mut d) => {
-                d.history.picker.pin_denied = false; d.history.picker.error = plx_platform::i18n::msg::browse_auth_switch_retry().into();
+                d.history.picker.pin_denied = false; d.history.picker.error = plx_os::i18n::msg::browse_auth_switch_retry().into();
                 d.prior_phase = Phase::Profiles;
                 Self::Erasing(d)
             }
@@ -1621,13 +1621,13 @@ mod tests {
                     let users = vec![UserTile { uuid: "new-roster".into(), ..Default::default() }];
                     let event = match case {
                         0 => { expected.phase = Phase::Profiles; expected.apply_pending = false;
-                            expected.error = plx_platform::i18n::msg::browse_auth_switch_retry().into(); AttemptEvent::ReadyExhausted }
+                            expected.error = plx_os::i18n::msg::browse_auth_switch_retry().into(); AttemptEvent::ReadyExhausted }
                         1 => { expected.phase = Phase::Profiles; expected.apply_pending = false;
-                            expected.error = plx_platform::i18n::msg::browse_auth_switch_failed().into(); AttemptEvent::SwitchCommitRefused }
+                            expected.error = plx_os::i18n::msg::browse_auth_switch_failed().into(); AttemptEvent::SwitchCommitRefused }
                         2 => { expected.phase = Phase::Error; expected.apply_pending = false;
-                            expected.error = plx_platform::i18n::msg::browse_auth_authority_failed().into(); AttemptEvent::DevCommitRefused }
+                            expected.error = plx_os::i18n::msg::browse_auth_authority_failed().into(); AttemptEvent::DevCommitRefused }
                         3 => { expected.phase = Phase::Profiles;
-                            expected.error = plx_platform::i18n::msg::browse_auth_switch_retry().into(); AttemptEvent::SwitchAdmissionRefused }
+                            expected.error = plx_os::i18n::msg::browse_auth_switch_retry().into(); AttemptEvent::SwitchAdmissionRefused }
                         4 => { expected.phase = Phase::Profiles; expected.users.clear();
                             expected.error = roster_refused().into(); AttemptEvent::OpenDevPicker }
                         5 => { expected.phase = Phase::Profiles; expected.error.clear(); expected.picker = Picker::Boot;
@@ -1636,7 +1636,7 @@ mod tests {
                             AttemptEvent::ReuseProfile }
                         7 => { expected.phase = Phase::Switching; expected.pin_denied = false; AttemptEvent::SelectProfile { req: 29 } }
                         8 => { expected.phase = Phase::Profiles; expected.pin_denied = false;
-                            expected.error = plx_platform::i18n::msg::browse_auth_switch_retry().into(); AttemptEvent::SwitchDropped }
+                            expected.error = plx_os::i18n::msg::browse_auth_switch_retry().into(); AttemptEvent::SwitchDropped }
                         9 => { expected.phase = Phase::Profiles; expected.error = "profile failure".into(); expected.pin_denied = false;
                             AttemptEvent::SwitchFailed { message: "profile failure".into(), denied: false } }
                         10 => { expected.phase = Phase::Profiles; expected.picker = Picker::SignedIn; expected.users = users.clone(); expected.signin_active = false;

@@ -25,7 +25,7 @@ mod tests {
     /// so a screen cannot count the same library in two words.
     #[test]
     fn a_count_wears_the_noun_of_what_the_listing_holds() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         for (ty, kind, n, want) in [
             (LibraryType::Primary, SecKind::Movie, 185, "185 films"),
             (LibraryType::Primary, SecKind::Movie, 1, "1 film"),

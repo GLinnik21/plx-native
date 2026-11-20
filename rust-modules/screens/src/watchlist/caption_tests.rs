@@ -5,7 +5,7 @@
 use plx_data::watchlist::model::TileState;
 use plx_plex::plex::session::{UnderPosters, UnderPostersLadder};
 use plx_plex::plex::ListingFacts;
-use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+use plx_os::i18n::{language_on_this_thread_for_test, Preference};
 
 use super::caption;
 use crate::registry::captions::TEST_UNDER_POSTERS;

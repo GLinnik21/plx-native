@@ -11,7 +11,7 @@ use plx_ui::table::Row;
 
 /// The list's heading: "Play Version".
 pub fn title() -> &'static str {
-    plx_platform::i18n::msg::browse_menu_play_version_title()
+    plx_os::i18n::msg::browse_menu_play_version_title()
 }
 
 /// **The list as one section**, in the server's order: row `n` is `versions[n]`, identified by
@@ -43,8 +43,8 @@ pub fn labels(versions: &[MediaVersion]) -> Vec<(String, String)> {
     let audio = |v: &MediaVersion| {
         let codec = plx_data::metadata::friendly_codec(&v.acodec);
         let channels = match v.channels {
-            1 => plx_platform::i18n::msg::widgets_tracks_mono().to_string(),
-            2 => plx_platform::i18n::msg::widgets_tracks_stereo().to_string(),
+            1 => plx_os::i18n::msg::widgets_tracks_mono().to_string(),
+            2 => plx_os::i18n::msg::widgets_tracks_stereo().to_string(),
             6 => "5.1".to_string(),
             8 => "7.1".to_string(),
             _ => String::new(),
@@ -115,7 +115,7 @@ mod tests {
     /// (here the video codec and HDR, and the size), never a fact they share (audio, container).
     #[test]
     fn a_version_row_says_what_differs() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let rows = labels(&sample());
         assert_eq!(rows[0].0, "25.2 Mbps \u{b7} 4K");
         assert_eq!(rows[1].0, "10.9 Mbps \u{b7} 1080p");
@@ -128,7 +128,7 @@ mod tests {
     /// The list fits a menu panel in every shipped language, measured with the device's advances.
     #[test]
     fn the_list_fits_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {

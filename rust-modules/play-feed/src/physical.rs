@@ -13,7 +13,7 @@
 
 use crate::control::FeedBackend;
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::VideoSink;
+use plx_os::tv::sink::VideoSink;
 use plx_playback_contract::feed::{FeedControl, PhysicalSet, UriOnlySet};
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,

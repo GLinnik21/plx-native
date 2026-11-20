@@ -452,7 +452,7 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 ///
 /// **Five sources in a lab build, four in every other, because the map has never been one:**
 /// 1. [`classify`] — every named [`Key`].
-/// 2. **The Lab Diagnostics trigger** ([`plx_platform::labcfg::is_trigger_key`]) — a key this build really
+/// 2. **The Lab Diagnostics trigger** ([`plx_os::labcfg::is_trigger_key`]) — a key this build really
 ///    does bind, read from `lab.json` rather than written here. `false` at COMPILE time in every
 ///    build without the `lab-diagnostics` feature, which is every build anyone can install. It has
 ///    to be in this predicate or pressing it would also wake the player HUD and abort an armed
@@ -481,7 +481,7 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 /// order — the exact duplication [`page_dir`] was written to end. A number key is also, unlike a
 /// colour button, a key this app really does bind, so calling it bound is honest.
 pub fn is_bound(sym: c_uint, wcode: c_uint) -> bool {
-    is_remote_bound(sym, wcode) || plx_platform::labcfg::is_trigger_key(sym, wcode)
+    is_remote_bound(sym, wcode) || plx_os::labcfg::is_trigger_key(sym, wcode)
 }
 
 /// The fixed key map, independent of a lab build's runtime diagnostics configuration.

@@ -56,7 +56,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     let uri_chosen = matches!(ps.backend_offer(),
         crate::route::backend_policy::Selection::Open(offer)
             if offer.backend == plx_playback_contract::BackendKind::Uri);
-    if !uri_chosen && plx_platform::tv::sandbox::blocks_native_video() {
+    if !uri_chosen && plx_os::tv::sandbox::blocks_native_video() {
         ps.jail_load_blocked = true;
         log("start_bufferfeed: refusing native video; affected chassis cannot read /dev/rtkmem");
         if let Some(ticket) = crate::route::begin_route_start() {

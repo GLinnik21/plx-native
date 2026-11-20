@@ -48,7 +48,7 @@ fn moved() -> Arc<Compiled> {
     let text = edit(text, r#""x_inset": 0"#, r#""x_inset": 100"#);
     let more = r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 64, "rest": "film", "focus": "accent" }"#;
     let text = edit(text, more, &format!(r#"{more}, {}"#, more.replace(r#""id": "more""#, r#""id": "extra""#)));
-    load(&fixtures::with_hud("classic", &text), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the edited package loads").compiled
+    load(&fixtures::with_hud("classic", &text), "test", plx_os::i18n::english(), &FixtureMeasure).expect("the edited package loads").compiled
 }
 
 /// The state the default page (`Discs`, no chapters, not paused) is in, as the compile reports it.
@@ -166,7 +166,7 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
 
 /// `builtin:classic`, the package the app hands the page today.
 fn classic() -> Arc<Compiled> {
-    load(CLASSIC_PACKAGE, "test", plx_platform::i18n::english(), &FixtureMeasure).expect("classic loads").compiled
+    load(CLASSIC_PACKAGE, "test", plx_os::i18n::english(), &FixtureMeasure).expect("classic loads").compiled
 }
 
 /// The three openers (the Subtitles, Audio and `…` discs) and the failure read-out's quality entry, which
@@ -229,7 +229,7 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
 // ---------------------------------------------------------------------------------------------------
 
 fn reference() -> Arc<Compiled> {
-    load(include_bytes!("../../../appkit/src/hud_format/fixtures/reference.plxhud"), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
+    load(include_bytes!("../../../appkit/src/hud_format/fixtures/reference.plxhud"), "test", plx_os::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
 }
 
 /// The row's stable index of the control `id` in the reference's movie form.
@@ -309,7 +309,7 @@ fn a_failed_playback_seeds_no_folded_rows_into_more() {
     let minimal = load(
         include_bytes!("../../../appkit/src/hud_format/fixtures/minimal.plxhud"),
         "test",
-        plx_platform::i18n::english(),
+        plx_os::i18n::english(),
         &FixtureMeasure,
     )
     .expect("the minimal fixture loads")

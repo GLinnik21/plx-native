@@ -49,7 +49,7 @@
 //! refusal of a 1080p source has nothing to lower and still gets the encode); else, for a source of MORE
 //! than two channels (or of an unknown width), the app decode as the very last rung; else the failure
 //! read-out. The owner's rule (2026-10-28) is that the app never mixes a surround source down to stereo by
-//! default ([`plx_platform::devcaps::app_decode_mixes_down`] is its one predicate, shared with the route
+//! default ([`plx_os::devcaps::app_decode_mixes_down`] is its one predicate, shared with the route
 //! planner): a stereo track's app decode comes before the encode because it keeps the direct play, asks the
 //! server nothing and loses nothing; a surround track's comes after it, because the encode keeps the
 //! channels; and a Forced play takes the app decode only for a stereo track, else the read-out, and is never
@@ -83,8 +83,8 @@
 use std::sync::Arc;
 
 use plx_machine::machine::Handled;
-use plx_platform::devcaps::Caps;
-use plx_platform::devcaps::Facet;
+use plx_os::devcaps::Caps;
+use plx_os::devcaps::Facet;
 
 /// The most flights one play request starts through the facet rung and the both-facets rungs (and a
 /// failed source's HLS contingency): the facet's conversion, then the HLS contingency of a cold Auto
@@ -139,7 +139,7 @@ impl std::fmt::Display for LoadRefusal {
 /// lane, which a server conversion sets to the width it was asked for; 0 when unknown).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamAudio {
-    /// The codec in any spelling [`plx_platform::devcaps::audio_codec_id`] knows (`dca` for DTS).
+    /// The codec in any spelling [`plx_os::devcaps::audio_codec_id`] knows (`dca` for DTS).
     pub codec: String,
     pub channels: u32,
     /// The app decoded this audio itself and fed the pipeline PCM (a lossy codec the attempt's value
@@ -203,14 +203,14 @@ pub struct StreamVideo {
 }
 
 /// The audio a pipeline refusal puts under suspicion: outside the codecs every set decodes
-/// ([`plx_platform::devcaps::BASELINE_AUDIO`]: `aac`, `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which [`Caps::without`]
+/// ([`plx_os::devcaps::BASELINE_AUDIO`]: `aac`, `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which [`Caps::without`]
 /// reads as "not at all", the conservative choice. Audio the app decoded itself
 /// ([`StreamAudio::app_decoded_lossy`]) names nothing: the pipeline was fed PCM, and a facet of
 /// that codec would narrow, and could store as a refusal, the set's NATIVE decoder.
 fn suspect_audio(audio: Option<&StreamAudio>) -> Option<Facet> {
     let a = audio.filter(|a| !a.app_decoded_lossy)?;
-    let id = plx_platform::devcaps::audio_codec_id(&a.codec);
-    (!plx_platform::devcaps::BASELINE_AUDIO.contains(&&*id)).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
+    let id = plx_os::devcaps::audio_codec_id(&a.codec);
+    (!plx_os::devcaps::BASELINE_AUDIO.contains(&&*id)).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
 }
 
 /// The video a pipeline refusal puts under suspicion: the source's, at a raster the pipeline was fed
@@ -635,7 +635,7 @@ impl OpenRecovery {
     /// Auto reaches this rung only as the last one ([`Self::decide`]).
     fn app_decode_for(&self, refusal: LoadRefusal, facts: &OpenFacts) -> Option<Facet> {
         let audio = facts.audio.as_ref().filter(|a| !a.app_decoded_lossy)?;
-        let id = plx_platform::devcaps::audio_codec_id(&audio.codec);
+        let id = plx_os::devcaps::audio_codec_id(&audio.codec);
         (self.in_app.is_none()
             && refusal.names_pipeline()
             && facts.no_frames
@@ -684,14 +684,14 @@ impl OpenRecovery {
     /// evidence from this attempt's own value ([`OpenRecovery::attempt`]), never by elimination:
     /// * a pipeline refusal of an Engine that showed no picture, with audio [`suspect_audio`] puts under
     ///   suspicion (not AAC/AC-3/E-AC-3, not the app's own lossy decode);
-    /// * not a lossless PCM codec ([`plx_platform::devcaps::is_pcm_codec`]): the app decodes it and the
+    /// * not a lossless PCM codec ([`plx_os::devcaps::is_pcm_codec`]): the app decodes it and the
     ///   TV was fed PCM (scheme row 6);
     /// * a codec the set is NOT expected to play from the file under Force
     ///   ([`Caps::native_audio_track`] false): Opus on a table that lists it and DTS on a set with a
     ///   DTS row play (rows 2 and 3), so a refusal there says nothing about them;
     /// * and, for a numbered refusal, a video that is not itself a suspect: the test the facet rungs
     ///   use (`Caps::without` of its [`suspect_video`] changes the attempt, i.e. the raster is above
-    ///   [`plx_platform::devcaps::VIDEO_REFUSAL_FLOOR`], where the H.264 4K60 and 4K@30-limited
+    ///   [`plx_os::devcaps::VIDEO_REFUSAL_FLOOR`], where the H.264 4K60 and 4K@30-limited
     ///   `num=601` refusals live, `engine::sink_envelope`). A `Stalled` Load is audio's alone.
     fn refusal_attributable_to_audio(&self, refusal: LoadRefusal, facts: &OpenFacts) -> Option<String> {
         if !refusal.names_pipeline() || !facts.no_frames {
@@ -702,7 +702,7 @@ impl OpenRecovery {
         let set_plays_it = self.attempt.native_audio_track(&a.codec, i64::from(a.channels), 0, true);
         let video_may_be_it = matches!(refusal, LoadRefusal::Refused { .. })
             && suspect_video(facts.video.as_ref()).is_some_and(|f| self.attempt.without(&f) != *self.attempt);
-        (!plx_platform::devcaps::is_pcm_codec(&a.codec) && !set_plays_it && !video_may_be_it).then(|| a.codec.clone())
+        (!plx_os::devcaps::is_pcm_codec(&a.codec) && !set_plays_it && !video_may_be_it).then(|| a.codec.clone())
     }
 
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
@@ -739,7 +739,7 @@ impl OpenRecovery {
             return RecoveryDecision::AutoHls { audio, video };
         }
         // Keep stereo direct play before encoding; preserve surround until the last rung.
-        let mixes_down = facts.audio.as_ref().is_some_and(|a| plx_platform::devcaps::app_decode_mixes_down(i64::from(a.channels)));
+        let mixes_down = facts.audio.as_ref().is_some_and(|a| plx_os::devcaps::app_decode_mixes_down(i64::from(a.channels)));
         if !mixes_down {
             if let Some(audio) = self.app_decode_for(refusal, facts) {
                 return RecoveryDecision::Decode(audio);
@@ -995,7 +995,7 @@ mod tests {
 
     /// [`dts_start`] on a table that was read: the lossy policy admits the measured rows (DTS).
     fn measured_start() -> Arc<Caps> {
-        Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..(*dts_start()).clone() })
+        Arc::new(Caps { app_lossy: plx_os::devcaps::AppLossy::Measured, ..(*dts_start()).clone() })
     }
 
     /// A machine on [`measured_start`].
@@ -1259,7 +1259,7 @@ mod tests {
         let s = |codec: &str, channels| suspect(audio(codec, channels).as_ref(), None);
         assert_eq!(s("dca", 6), Some(dts6()));
         assert_eq!(s("opus", 6), Some(opus6()));
-        for known in plx_platform::devcaps::BASELINE_AUDIO {
+        for known in plx_os::devcaps::BASELINE_AUDIO {
             assert_eq!(s(known, 6), None, "{known}");
         }
         assert_eq!(suspect(None, None), None);
@@ -1421,7 +1421,7 @@ mod tests {
             assert_eq!(m.flights, 0, "{channels}ch: Forced converts nothing");
         }
         // A set with no DTS row does not play it, so the refusal reads out naming the codec.
-        let no_row = || OpenRecovery::new(Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..Caps::assumed() }));
+        let no_row = || OpenRecovery::new(Arc::new(Caps { app_lossy: plx_os::devcaps::AppLossy::Measured, ..Caps::assumed() }));
         for channels in [3, 6, 8, 0] {
             let (_, fx) = run(&mut no_row(), refused(SHUT, forced(channels)));
             assert_eq!(fx, forced_dts_error(), "{channels}ch: no DTS row: the codec is named");
@@ -1430,7 +1430,7 @@ mod tests {
             let (_, fx) = run(&mut measured_machine(), refused(SHUT, forced(channels)));
             assert_eq!(fx, [decode_dts_ch(SHUT, channels)], "{channels}ch: not a downmix");
         }
-        let all = OpenRecovery::new(Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::All, ..(*dts_start()).clone() }));
+        let all = OpenRecovery::new(Arc::new(Caps { app_lossy: plx_os::devcaps::AppLossy::All, ..(*dts_start()).clone() }));
         let (_, fx) = run(&mut all.clone(), refused(SHUT, forced(6)));
         assert_eq!(fx, [decode_dts(SHUT)], "the debug trigger is the explicit override");
     }

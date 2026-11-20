@@ -215,7 +215,7 @@ fn group_of(s: &Stream, i: usize, lang: &str) -> (LangGroup, Option<Cow<'static,
 /// groups by the same name it shows.
 fn display_lang(s: &Stream) -> String {
     if s.lang.trim().is_empty() {
-        plx_platform::i18n::msg::widgets_tracks_unknown().to_string()
+        plx_os::i18n::msg::widgets_tracks_unknown().to_string()
     } else {
         s.lang.clone()
     }
@@ -236,7 +236,7 @@ fn display_lang(s: &Stream) -> String {
 pub fn forced_only_readout(drawn: Option<&Stream>, audio: Option<&Stream>) -> String {
     match drawn.or(audio) {
         Some(s) => short_language(&display_lang(s)),
-        None => plx_platform::i18n::msg::widgets_tracks_unknown().to_string(),
+        None => plx_os::i18n::msg::widgets_tracks_unknown().to_string(),
     }
 }
 
@@ -720,13 +720,13 @@ mod tests {
         let nameless = stream(11, 0, "", "", "");
         assert_eq!(forced_only_readout(Some(&drawn), Some(&audio)), "Spanish", "the drawn track wins");
         assert_eq!(forced_only_readout(None, Some(&audio)), "English", "nothing drawn: the audio's language");
-        assert_eq!(forced_only_readout(None, Some(&nameless)), plx_platform::i18n::msg::widgets_tracks_unknown());
+        assert_eq!(forced_only_readout(None, Some(&nameless)), plx_os::i18n::msg::widgets_tracks_unknown());
         // a region qualifier is dropped and a long name is cut, so the label beside it stays whole
         let brazil = stream(3, 2, "Portuguese (Brazil)", "por", "");
         assert_eq!(forced_only_readout(Some(&brazil), None), "Portuguese");
         let bokmal = stream(4, 3, "Norwegian Bokm\u{e5}l", "nob", "");
         assert_eq!(forced_only_readout(Some(&bokmal), None), "Norwegian\u{2026}");
         assert_eq!(forced_only_readout(Some(&stream(5, 4, "Tagalog", "tgl", "")), None), "Tagalog", "a short name is untouched");
-        assert_eq!(forced_only_readout(None, None), plx_platform::i18n::msg::widgets_tracks_unknown());
+        assert_eq!(forced_only_readout(None, None), plx_os::i18n::msg::widgets_tracks_unknown());
     }
 }

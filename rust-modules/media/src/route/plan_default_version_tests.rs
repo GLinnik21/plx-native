@@ -1,8 +1,8 @@
 use super::*;
 use plx_data::metadata::Dovi;
 use plx_data::pms::MediaVersion;
-use plx_platform::devcaps::dv::DvCapability;
-use plx_platform::devcaps::{Caps, Facet};
+use plx_os::devcaps::dv::DvCapability;
+use plx_os::devcaps::{Caps, Facet};
 use plx_plex::plex::session::DolbyVisionMode;
 use plx_plex::plex::MediaId;
 

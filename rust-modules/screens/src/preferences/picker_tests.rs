@@ -345,10 +345,10 @@ fn the_local_subtitle_pickers_never_touch_the_plex_account() {
         assert!(!page.state.io.busy, "{field:?}: not busy");
         assert!(page.state.io.status.is_empty(), "{field:?}: no loading status");
         assert!(page.form.index_of_key(RowKey(RETRY_KEY)).is_none(), "{field:?}: no Retry row");
-        assert!(!page.copy.contains(plx_platform::i18n::msg::settings_audio_account_note()), "{field:?}: no account note");
+        assert!(!page.copy.contains(plx_os::i18n::msg::settings_audio_account_note()), "{field:?}: no account note");
         assert_eq!(field.kind(), Some(Kind::AudioSubtitles), "{field:?} is a Look row of the Audio & subtitles page");
         assert!(!field.is_account(), "{field:?} is this app's own, not a Plex account preference");
-        assert_eq!(field.parent_title(), plx_platform::i18n::msg::settings_audio_title(), "{field:?}: the crumb names the page it opened from");
+        assert_eq!(field.parent_title(), plx_os::i18n::msg::settings_audio_title(), "{field:?}: the crumb names the page it opened from");
     }
 }
 
@@ -362,10 +362,10 @@ fn the_interface_resolution_picker_writes_install_wide_and_reverts_on_a_refused_
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-resolution");
     assert_eq!(PickerKind::UiResolution.kind(), None, "listed by the Settings root, not a field list");
-    assert_eq!(PickerKind::UiResolution.parent_title(), plx_platform::i18n::msg::settings_title());
+    assert_eq!(PickerKind::UiResolution.parent_title(), plx_os::i18n::msg::settings_title());
     let options = field_options(PickerKind::UiResolution, Quality::Original, DirectPlayMode::Auto, None);
     assert_eq!(options, [
-        (plx_platform::i18n::msg::settings_resolution_auto().to_string(), Value::UiResolution(UiResolution::Auto)),
+        (plx_os::i18n::msg::settings_resolution_auto().to_string(), Value::UiResolution(UiResolution::Auto)),
         ("1600x900".to_string(), Value::UiResolution(UiResolution::Hd900)),
         ("1280x720".to_string(), Value::UiResolution(UiResolution::Hd720)),
         ("960x540".to_string(), Value::UiResolution(UiResolution::Sd540)),
@@ -394,7 +394,7 @@ fn the_interface_resolution_picker_writes_install_wide_and_reverts_on_a_refused_
         assert_eq!(page.state.io.status.is_empty(), ok);
         if !ok {
             assert_eq!(page.state.checked, 0, "the checkmark stays on the stored choice");
-            assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_save_failed());
+            assert_eq!(page.copy, plx_os::i18n::msg::settings_playback_save_failed());
         }
     }
 }

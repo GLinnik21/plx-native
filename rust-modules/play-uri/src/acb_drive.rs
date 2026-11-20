@@ -8,8 +8,8 @@
 use crate::acb_bind::{gate, Op};
 use crate::uri_protocol::{MediaId, VideoFacts};
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneHandle, PlaneOwner, Refusal, URI_PLAYER_TYPE};
-use plx_platform::tv::sink::{DisplaySink, VP_ACB};
+use plx_os::tv::plane::{BindPolicy, BindVerdict, PlaneHandle, PlaneOwner, Refusal, URI_PLAYER_TYPE};
+use plx_os::tv::sink::{DisplaySink, VP_ACB};
 
 /// How the caller dresses a log line: `Timed` lines carry the caller's own `t=` stamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,8 +124,8 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::plane::{HandleSeat, PlaneFacts};
-    use plx_platform::tv::sink::{PlaneUnload, ScriptedPlaneSink, VP_ACB};
+    use plx_os::tv::plane::{HandleSeat, PlaneFacts};
+    use plx_os::tv::sink::{PlaneUnload, ScriptedPlaneSink, VP_ACB};
 
     const VIDEO: VideoFacts = VideoFacts { width: 1280, height: 720, frame_rate: 24.0, bit_rate: None };
 
@@ -196,8 +196,8 @@ mod tests {
 
     #[test]
     fn the_display_step_goes_through_the_owner_which_then_waits_for_both_completions() {
-        use plx_platform::tv::plane::Shown;
-        use plx_platform::tv::sink::{SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
+        use plx_os::tv::plane::Shown;
+        use plx_os::tv::sink::{SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
         let mut world = World::new(0);
         world.run(&Op::MediaId { media_id: media("m1") }, fixture());
         assert_eq!(world.plane.shown(&world.sink, &world.mt), Shown::No, "no display step ran yet");
@@ -229,7 +229,7 @@ mod tests {
         let mut world = World::new(0);
         world.run(&Op::MediaId { media_id: media("m1") }, fixture());
         world.plane.unload(&world.sink, &world.mt);
-        assert_eq!(world.plane.phase(), plx_platform::tv::plane::Phase::Releasing);
+        assert_eq!(world.plane.phase(), plx_os::tv::plane::Phase::Releasing);
         let waiting = world.run(&Op::MediaId { media_id: media("m2") }, fixture());
         assert_eq!((waiting.verdict, waiting.touched), (Verdict::Deferred, false));
         let mut world = World::new(0);

@@ -51,8 +51,8 @@ impl Count {
     /// do (`LocaleContext::number`).
     pub fn readout(&self) -> Option<String> {
         let Count::Of { shown, total } = *self else { return None };
-        let locale = plx_platform::i18n::current();
-        Some(plx_platform::i18n::msg::library_header_filtered_of(
+        let locale = plx_os::i18n::current();
+        Some(plx_os::i18n::msg::library_header_filtered_of(
             &locale.number(shown as i64),
             &locale.number(total as i64),
         ))
@@ -83,7 +83,7 @@ impl Row {
     /// Build the row for `summary` (the sort in force: the sort control's criterion) and the
     /// read-out `count`.
     pub fn new(measure: &dyn Measure, summary: &str, count: Option<Count>) -> Self {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         let left = vec![HeaderItem {
             label: msg::watchlist_page_title().to_owned(),
             title: true,
@@ -181,7 +181,7 @@ impl Row {
 /// build, so nightly and stable cannot draw it (Q8: no toast, no notice for users).
 #[cfg(feature = "devtriggers")]
 pub fn dev_blocked_text() -> &'static std::ffi::CStr {
-    plx_platform::i18n::msg::watchlist_page_debug_write_blocked_c()
+    plx_os::i18n::msg::watchlist_page_debug_write_blocked_c()
 }
 
 /// Draw [`dev_blocked_text`] `dy` from the document origin: left on the title's text edge, centred

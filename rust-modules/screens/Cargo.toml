@@ -27,17 +27,17 @@ default = []
 # Forwarded from the application crate, which is the only one that sets it. Nothing in this crate
 # has a `cfg` on it; it is declared so that `cargo test -p plx_screens` (which dev-depends on this
 # crate with it) builds the layers below with the dev trigger surface, as the Makefile's suite does.
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers", "plx_net/devtriggers", "plx_ui/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers", "plx_session/devtriggers", "plx_media/devtriggers", "plx_appkit/devtriggers"]
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_os/devtriggers", "plx_gfx/devtriggers", "plx_net/devtriggers", "plx_ui/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers", "plx_session/devtriggers", "plx_media/devtriggers", "plx_appkit/devtriggers"]
 # The `cfg(test)` seams the application's tests use (`account_menu::overscan_rects`, the registry's
 # surface enumeration, the detail screen's read-backs, ...). Enabled from the dependents'
 # `[dev-dependencies]`; never in a shipped build. It enables the lower layers' own `test-support`
 # because the seams call into them.
-test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx/test-support", "plx_net/test-support", "plx_ui/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support", "plx_session/test-support", "plx_media/test-support", "plx_appkit/test-support"]
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_os/test-support", "plx_gfx/test-support", "plx_net/test-support", "plx_ui/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support", "plx_session/test-support", "plx_media/test-support", "plx_appkit/test-support"]
 
 [dependencies]
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
-plx_platform = { path = "../platform" }
+plx_os = { path = "../os" }
 plx_gfx = { path = "../gfx" }
 plx_net = { path = "../net" }
 plx_ui = { path = "../ui" }
@@ -55,7 +55,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 plx_screens = { path = ".", features = ["devtriggers"] }
 plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
-plx_platform = { path = "../platform", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
 plx_gfx = { path = "../gfx", features = ["test-support"] }
 plx_net = { path = "../net", features = ["test-support"] }
 plx_ui = { path = "../ui", features = ["test-support"] }

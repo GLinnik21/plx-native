@@ -233,11 +233,11 @@ fn the_card_kind_is_pinned_with_what_moves_pixels() {
 /// kind: no profile, and two art paths under one rating key are two cards.
 #[test]
 fn two_art_paths_under_one_rating_key_are_two_baked_identities() {
-    let key = |art: &str| plx_platform::imgcache::classify_baked("machine:abc", CARD_KIND, "605", art, 420, 236);
+    let key = |art: &str| plx_os::imgcache::classify_baked("machine:abc", CARD_KIND, "605", art, 420, 236);
     assert_ne!(key("/library/metadata/605/art/1"), key("/library/metadata/605/art/2"));
     assert_eq!(key("/library/metadata/605/art/1"), key("/library/metadata/605/art/1"));
     assert_ne!(
         key("/library/metadata/605/art/1"),
-        plx_platform::imgcache::classify_baked("machine:abc", "card.0", "605", "/library/metadata/605/art/1", 420, 236)
+        plx_os::imgcache::classify_baked("machine:abc", "card.0", "605", "/library/metadata/605/art/1", 420, 236)
     );
 }

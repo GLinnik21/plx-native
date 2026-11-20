@@ -1,7 +1,7 @@
 //! The URI-mode probe's driver (issue #1064, the first test): the loop which feeds
 //! [`UriProbe::step`] its events, executes the effects each step asks for, and feeds every effect
 //! that failed back as the next event. The machine, its events and its effects are
-//! [`super::uriprobe`]; the transport it talks through is [`plx_platform::tv::uri`]. The caller
+//! [`super::uriprobe`]; the transport it talks through is [`plx_os::tv::uri`]. The caller
 //! owns the session slot, the exact start attempt, and settlement; this file holds the IO while
 //! the machine stays pure.
 //!
@@ -25,9 +25,9 @@
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
 use super::uriprobe::{AbrBps, Config, Firmware, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::PlaneOwner;
-use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
-use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
+use plx_os::tv::plane::PlaneOwner;
+use plx_os::tv::sink::{DisplaySink, VP_EXPORTED};
+use plx_os::tv::uri::{CloseStatus, UriMedia, UriPoll};
 use std::collections::VecDeque;
 use std::os::raw::c_int;
 use std::time::Instant;
@@ -382,7 +382,7 @@ impl<A: Copy> UriSession<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::uri::{Shape, SessionId, RequestId, UriReply};
+    use plx_os::tv::uri::{Shape, SessionId, RequestId, UriReply};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -463,7 +463,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Status { Pending, Started, Failed }
 
-    static NO_SINK: plx_platform::tv::sink::NoSink = plx_platform::tv::sink::NoSink;
+    static NO_SINK: plx_os::tv::sink::NoSink = plx_os::tv::sink::NoSink;
     fn no_acb() -> &'static PlaneOwner { Box::leak(Box::new(PlaneOwner::new())) }
 
     /// A session over a scripted transport, with a local addressed start reducer.

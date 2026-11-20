@@ -4,7 +4,7 @@
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::watchlist::model::TileState;
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::theme;
 

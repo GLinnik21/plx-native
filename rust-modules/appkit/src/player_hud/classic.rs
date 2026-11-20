@@ -196,7 +196,7 @@ pub(super) const FOOTER_TOP: f32 = SCR_H - plx_ui::consts::MARGIN_Y - theme::spa
 
 impl FailureReadout {
     fn overlay(&self, labels: &[&'static std::ffi::CStr], focus: Option<usize>) -> StatusOverlay<'_> {
-        StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::widgets_status_failed_c(), StatusKind::Failed)
+        StatusOverlay::new(Rect::FULL, plx_os::i18n::msg::widgets_status_failed_c(), StatusKind::Failed)
             .page(self.glyph)
             .reason(&self.reason)
             .row(labels)
@@ -243,8 +243,8 @@ pub fn ctrl_row_hit_rect() -> Rect {
 /// tab the row does not carry.
 pub(super) fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
     [
-        Some(plx_platform::i18n::msg::widgets_player_info()),
-        has_chapters.then(plx_platform::i18n::msg::widgets_player_chapters),
+        Some(plx_os::i18n::msg::widgets_player_info()),
+        has_chapters.then(plx_os::i18n::msg::widgets_player_chapters),
     ]
 }
 
@@ -668,7 +668,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     let available = (sx + sw - el_r - 20.0).min(sw);
     let run = end_time_run(look.clock_size).measured(measure);
     let end = look.end_time_lane.zip(bar.end_time).and_then(|(lane, time)| {
-        let time = plx_platform::i18n::current().time_of_day(time)?;
+        let time = plx_os::i18n::current().time_of_day(time)?;
         let parts = [remaining.as_str(), time.as_str()];
         let actual = run.width(measure, &parts);
         // Keep the fit decision stable while duration digits tick, including proportional faces.

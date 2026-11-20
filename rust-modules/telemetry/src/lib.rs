@@ -2,7 +2,7 @@
 //!
 //! `telemetry` is consent, the opt-in crash and usage channels (Sentry and PostHog), the spool and
 //! the worker that drains it; `diag` is the typed usage-event schema they carry. It is the
-//! `telemetry` layer of `ci/module-layers.ini`: it uses `base`, `machine`, `platform`, `net` and
+//! `telemetry` layer of `ci/module-layers.ini`: it uses `base`, `machine`, `os`, `net` and
 //! `plex` and nothing above them.
 //!
 //! The release it reports (`plxnative@<version>`) is what the application hands to

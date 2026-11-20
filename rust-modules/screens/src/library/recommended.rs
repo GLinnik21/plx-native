@@ -1338,7 +1338,7 @@ impl RecommendedScreen {
         self.header_row.get(self.header_key(cx), || {
             let crumb = Crumb::new(
                 super::collections_page::root_label(Self::library_title(cx), self.kind),
-                plx_platform::i18n::msg::library_header_recommended());
+                plx_os::i18n::msg::library_header_recommended());
             let page = PageHeader::new(PageHeaderSpec { crumb: Some(crumb), ..Default::default() }, &[], cx.measure);
             let layout = page.layout(SCR_W, cx.measure);
             let root = layout.items.iter().position(|item| item.slot == Slot::CrumbRoot).unwrap_or(0);
@@ -1351,7 +1351,7 @@ impl RecommendedScreen {
     fn header_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
+        (std::ptr::from_ref(plx_os::i18n::current()) as usize).hash(&mut h);
         Self::library_title(cx).hash(&mut h);
         matches!(self.kind, SecKind::Movie).hash(&mut h);
         h.finish()
@@ -1404,7 +1404,7 @@ impl RecommendedScreen {
                 plx_ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0).phase(f.cx.tick.ms).draw(&env, f.painter.alpha(f.page_alpha));
             }
             Readout::Empty => {
-                let caption = std::ffi::CString::new(plx_platform::i18n::msg::recommended_page_empty()).unwrap_or_default();
+                let caption = std::ffi::CString::new(plx_os::i18n::msg::recommended_page_empty()).unwrap_or_default();
                 let frame = Rect::new(MARGIN_X, CONTENT_TOP + plx_ui::page_header::BLOCK_H, SCR_W - 2.0 * MARGIN_X, SCR_H - (CONTENT_TOP + plx_ui::page_header::BLOCK_H) - MARGIN_Y);
                 plx_ui::widgets::StatusOverlay::new(frame, &caption, plx_ui::widgets::StatusKind::Empty)
                     .phase(f.cx.tick.ms).draw_measured(&env, p, f.cx.measure);

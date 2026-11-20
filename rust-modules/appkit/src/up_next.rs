@@ -296,7 +296,7 @@ fn caption(u: &UpNext) -> String {
     } else {
         u.ep_title.clone()
     };
-    plx_platform::i18n::msg::widgets_next_caption(&episode)
+    plx_os::i18n::msg::widgets_next_caption(&episode)
 }
 
 /// Which of the offer's two pieces of decor a package draws (`up_next.still`, `up_next.caption`). The
@@ -403,7 +403,7 @@ fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMoti
     let e = Env::inert();
     // The focus pop is the CONTROL ROW's, not this card's: these two stand in the transport's own
     // slot and share its cursor, so they share its springs (`HudMotion::scale`).
-    let credits = Button::new(plx_platform::i18n::msg::widgets_next_credits_c().as_ptr(), theme::size::BODY, l.credits)
+    let credits = Button::new(plx_os::i18n::msg::widgets_next_credits_c().as_ptr(), theme::size::BODY, l.credits)
         .focused(focused && btn == BTN_CREDITS)
         // Both buttons on this card stand on LIVE CREDITS — the video plane, under this card's own
         // scrim — so both take the unkeyed ground (`ControlGround`). It is what the app's
@@ -418,8 +418,8 @@ fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMoti
     // with its numeric countdown. The compiler reserves the widest numeric label before drawing,
     // so neither the button nor its neighbouring controls resize as the seconds change.
     let label = if let Some(left) = timer.remaining_ms.filter(|_| look.countdown == CountdownFace::Numeric) {
-        plx_platform::i18n::msg::player_up_next_seconds_left(i64::from(left.div_ceil(1000)))
-    } else { plx_platform::i18n::msg::widgets_next_episode().to_owned() };
+        plx_os::i18n::msg::player_up_next_seconds_left(i64::from(left.div_ceil(1000)))
+    } else { plx_os::i18n::msg::widgets_next_episode().to_owned() };
     let Ok(label) = CString::new(label) else {
         return false;
     };
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn up_next_presentation_distinguishes_every_declared_countdown() {
         let _serial = plx_base::testlock::serial();
-        let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _en = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let row = crate::player_hud::motion::HudMotion::new();
         let up = Countdown { deadline: 11_000, ..Countdown::default() };
         let l = Layout { still: Rect::default(), caption: Rect::default(), credits: Rect::new(100.0, 800.0, 200.0, 64.0), next: Rect::new(316.0, 800.0, 420.0, 64.0) };
@@ -479,7 +479,7 @@ mod tests {
         let numeric = paint(CountdownFace::Numeric);
         assert_ne!(ring.0, fill.0, "ring must not draw the fill-sweep path");
         assert_ne!(bar.0, fill.0, "bar must not draw the fill-sweep path");
-        let expected = plx_platform::i18n::msg::player_up_next_seconds_left(i64::from(up.remaining_ms(now).div_ceil(1000)));
+        let expected = plx_os::i18n::msg::player_up_next_seconds_left(i64::from(up.remaining_ms(now).div_ceil(1000)));
         assert!(numeric.1.iter().any(|r| r.text == expected), "numeric countdown must paint its measured localized remaining seconds");
     }
 

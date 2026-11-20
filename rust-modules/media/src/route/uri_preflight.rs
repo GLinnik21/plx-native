@@ -42,7 +42,7 @@ impl ProductEvidence {
     /// names the display path an offer would use; it certifies nothing. `certified` stays all
     /// false, so `permits` and `could_qualify_pms` offer no source through any binding.
     pub fn unqualified_on(display_mode: i32, binding: Binding) -> Self {
-        let exported = display_mode == plx_platform::tv::sink::VP_EXPORTED;
+        let exported = display_mode == plx_os::tv::sink::VP_EXPORTED;
         let callable = Capabilities { progressive_uri: true, hls_uri: true, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn an_acb_binding_certifies_and_offers_nothing() {
-        use plx_platform::tv::sink::VP_ACB;
+        use plx_os::tv::sink::VP_ACB;
         // Configuring the executor with it certifies and offers nothing.
         let evidence = ProductEvidence::unqualified_on(VP_ACB, Binding::Acb);
         assert!(!evidence.permits(Requirements { source: SourceKind::ProgressiveUri, video: Fidelity::Exact,
@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn the_production_evidence_certifies_nothing_on_any_binding() {
-        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED};
+        use plx_os::tv::sink::{VP_ACB, VP_EXPORTED};
         for (mode, binding) in [(VP_ACB, Binding::Acb), (VP_EXPORTED, Binding::Acb),
             (VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }), (VP_ACB, Binding::Unbound)] {
             let evidence = ProductEvidence::unqualified_on(mode, binding);
@@ -859,7 +859,7 @@ mod tests {
     /// not a display that is not in the exported-window mode, not the preview rectangle).
     #[test]
     fn an_opted_in_viewer_is_permitted_exact_progressive_through_the_exported_window_only() {
-        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED};
+        use plx_os::tv::sink::{VP_ACB, VP_EXPORTED};
         let exported = Binding::Exported { canvas: (1920, 1080) };
         let production = ProductEvidence::unqualified_on(VP_EXPORTED, exported);
         assert!(!production.permits(PROGRESSIVE_EXACT, false), "without the opt-in nothing is certified");
@@ -1139,7 +1139,7 @@ mod tests {
 
     /// The production composition on an ACB set: nothing certified, `ProductQualifier`.
     fn production_port(binding: Binding) -> ResolvePort {
-        ResolvePort::new(ProductEvidence::unqualified_on(plx_platform::tv::sink::VP_ACB, binding),
+        ResolvePort::new(ProductEvidence::unqualified_on(plx_os::tv::sink::VP_ACB, binding),
             Arc::new(ProductQualifier))
     }
 
@@ -1169,7 +1169,7 @@ mod tests {
     fn exported_uri_leaves_multi_audio_originals_on_standard() {
         let off = OffFrame::for_test();
         let port = ResolvePort::new(ProductEvidence::unqualified_on(
-            plx_platform::tv::sink::VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }),
+            plx_os::tv::sink::VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }),
             Arc::new(ProductQualifier));
         let request = |ordinal, multiple| {
             let mut request = opt_in_request(true);
@@ -1478,7 +1478,7 @@ mod tests {
         let off = OffFrame::for_test();
         let through = |say: fn() -> Verdict| {
             let port = ResolvePort::new(ProductEvidence::unqualified_on(
-                plx_platform::tv::sink::VP_ACB, Binding::Acb).opted_in(), Arc::new(Says(say)));
+                plx_os::tv::sink::VP_ACB, Binding::Acb).opted_in(), Arc::new(Says(say)));
             answer(&port.qualify(&off, opt_in_request(true)))
         };
         assert_eq!(through(|| Verdict::Unknown(UriDecline::NotCertified)),

@@ -22,7 +22,7 @@
 use super::Listing;
 use plx_data::browse::LibraryType;
 use plx_data::stores::browse::SecKind;
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 use plx_ui::breadcrumb::Crumb;
 use plx_ui::page_header::PageHeaderSpec;
 

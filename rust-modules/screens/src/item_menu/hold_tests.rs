@@ -46,7 +46,7 @@ fn rows_map_to_results() {
 /// The "go" row names the tile's kind: a show reads "Go to Show", never "Go to Movie".
 #[test]
 fn the_go_row_names_the_kind() {
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference};
     let _guard = language_on_this_thread_for_test(Preference::En);
     for state in ALL {
         assert_eq!(rows_for(state, Kind::Movie)[0].label, "Go to Movie", "{state:?}");

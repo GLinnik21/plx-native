@@ -91,7 +91,7 @@ pub fn block_h() -> f32 {
 /// starts from its rest beat.
 pub fn draw_heading(p: Painter, top: f32, lift: f32, focused: bool) {
     p.text(
-        plx_platform::i18n::msg::browse_detail_cast_c().as_ptr(),
+        plx_os::i18n::msg::browse_detail_cast_c().as_ptr(),
         plx_ui::consts::MARGIN_X,
         top - lift,
         theme::size::HEADLINE,
@@ -208,9 +208,9 @@ mod tests {
     fn a_combined_crew_caption_is_one_role_line_resting_and_glides_whole_when_focused() {
         let _serial = plx_base::testlock::serial();
         let safe = plx_ui::consts::SAFE;
-        for preference in plx_platform::i18n::SHIPPED {
-            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            let caption = plx_platform::i18n::msg::browse_crew_director_writer_in(&locale);
+        for preference in plx_os::i18n::SHIPPED {
+            let locale = plx_os::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let caption = plx_os::i18n::msg::browse_crew_director_writer_in(&locale);
             for center in [safe.x + RowStyle::CAST.w * 0.5,
                 safe.x + safe.w - RowStyle::CAST.w * 0.5] {
                 let at = label_frame(center, 100.0, 0.0, &LabelMeasure);

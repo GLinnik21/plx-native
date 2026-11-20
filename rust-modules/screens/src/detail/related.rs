@@ -58,7 +58,7 @@ pub fn block_h(band: f32) -> f32 {
 /// The shelf's heading, `lift` being the row's live label lift (`Shelf::heading_lift`).
 pub fn draw_heading(p: Painter, top: f32, lift: f32) {
     p.text(
-        plx_platform::i18n::msg::browse_detail_related_c().as_ptr(),
+        plx_os::i18n::msg::browse_detail_related_c().as_ptr(),
         plx_ui::consts::MARGIN_X,
         top - lift,
         theme::size::HEADLINE,

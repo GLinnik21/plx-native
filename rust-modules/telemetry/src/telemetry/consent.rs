@@ -230,8 +230,8 @@ struct CanonicalIds {
 
 #[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
 /// Split consent into the three DB8-public slots the canonical state clears atomically on logout.
-pub fn split_canonical(consent: &Consent) -> Result<plx_platform::storage::state::ConsentPayload, ()> {
-    Ok(plx_platform::storage::state::ConsentPayload {
+pub fn split_canonical(consent: &Consent) -> Result<plx_os::storage::state::ConsentPayload, ()> {
+    Ok(plx_os::storage::state::ConsentPayload {
         consent: serde_json::to_value(CanonicalDecision {
             asked_version: consent.asked_version,
             errors: consent.errors,
@@ -255,7 +255,7 @@ pub fn split_canonical(consent: &Consent) -> Result<plx_platform::storage::state
 }
 
 #[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))), test, feature = "test-support"))]
-pub fn join_canonical(payload: &plx_platform::storage::state::ConsentPayload) -> Result<Consent, ()> {
+pub fn join_canonical(payload: &plx_os::storage::state::ConsentPayload) -> Result<Consent, ()> {
     let decision: CanonicalDecision = serde_json::from_value(payload.consent.clone()).map_err(|_| ())?;
     let scopes: CanonicalScopes = serde_json::from_value(payload.scopes.clone()).map_err(|_| ())?;
     let ids: CanonicalIds = serde_json::from_value(payload.ids.clone()).map_err(|_| ())?;

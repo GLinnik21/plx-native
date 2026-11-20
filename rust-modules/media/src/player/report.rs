@@ -361,7 +361,7 @@ pub fn refusal_recovered(recovered: &super::recovery::Recovered) {
 /// source failure is the demuxer's, never the television's refusal).
 fn refusal_recovered_context(recovered: &super::recovery::Recovered) -> Option<RefusalRecoveredContext> {
     use super::recovery::{LoadRefusal, Rung};
-    use plx_platform::devcaps::Facet;
+    use plx_os::devcaps::Facet;
     let error = match recovered.refusal {
         LoadRefusal::Refused { num } => RefusalError::Number(num),
         LoadRefusal::TimedOut => RefusalError::Timeout,
@@ -2148,7 +2148,7 @@ mod tests {
                 24.0,
                 Default::default(),
                 false,
-                plx_platform::devcaps::dv::DvCapability::Supported,
+                plx_os::devcaps::dv::DvCapability::Supported,
             ));
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             crate::player::reset_session_for_test();
@@ -2189,7 +2189,7 @@ mod tests {
                 24.0,
                 Default::default(),
                 false,
-                plx_platform::devcaps::dv::DvCapability::Supported,
+                plx_os::devcaps::dv::DvCapability::Supported,
             ));
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             crate::player::reset_session_for_test();
@@ -2292,7 +2292,7 @@ mod tests {
         Lane, Lanes, LoadRefusal, OpenFacts, OpenRecovery, Recovered, RecoveryEffect, RecoveryEvent, Rung,
         StreamAudio,
     };
-    use plx_platform::devcaps::{Caps, Facet};
+    use plx_os::devcaps::{Caps, Facet};
 
     /// A set whose table lists DTS at six channels, so refusing it narrows the attempt.
     fn dts_set() -> std::sync::Arc<Caps> {
@@ -3132,7 +3132,7 @@ mod tests {
         // layer crate split out of it. The list read `src` and `ui/src` of the application crate
         // until the media split moved this test, and the layers that had left before then were
         // not in it, so moving a directory had already moved it out of this scan.
-        let layers = ["base", "machine", "platform", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "appkit", "screens"];
+        let layers = ["base", "machine", "os", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "appkit", "screens"];
         let roots = [manifest.join("src"), manifest.join("../src")]
             .into_iter()
             .chain(layers.iter().map(|layer| manifest.join("..").join(layer).join("src")));

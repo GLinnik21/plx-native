@@ -11,7 +11,7 @@
 
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
-use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
 use plx_ui::route_screen::RouteLayout;
 use plx_ui::table::TableView;
 
@@ -22,8 +22,8 @@ fn overflowing(page: &str, table: &TableView, out: &mut Vec<String>) {
 }
 
 /// Every status the playback trace can be in; the Diagnostics Export row's value is `trace_label` of it.
-const ALL_TRACE_STATUSES: [plx_platform::playback_trace::Status; 7] = {
-    use plx_platform::playback_trace::Status::*;
+const ALL_TRACE_STATUSES: [plx_os::playback_trace::Status; 7] = {
+    use plx_os::playback_trace::Status::*;
     [Off, Recording, Saved, Exported, Saving, Unavailable, Failed]
 };
 
@@ -31,10 +31,10 @@ const ALL_TRACE_STATUSES: [plx_platform::playback_trace::Status; 7] = {
 /// product).
 fn base_root_inputs() -> RootInputs {
     RootInputs {
-        trace: plx_platform::playback_trace::Status::Off,
+        trace: plx_os::playback_trace::Status::Off,
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
-        language: plx_platform::i18n::Preference::System,
+        language: plx_os::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
 }
@@ -63,10 +63,10 @@ fn every_settings_row_fits_its_column_in_every_language() {
         }
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);
-        for trace in [plx_platform::playback_trace::Status::Off, plx_platform::playback_trace::Status::Recording,
-            plx_platform::playback_trace::Status::Saved, plx_platform::playback_trace::Status::Saving,
-            plx_platform::playback_trace::Status::Exported, plx_platform::playback_trace::Status::Unavailable,
-            plx_platform::playback_trace::Status::Failed] {
+        for trace in [plx_os::playback_trace::Status::Off, plx_os::playback_trace::Status::Recording,
+            plx_os::playback_trace::Status::Saved, plx_os::playback_trace::Status::Saving,
+            plx_os::playback_trace::Status::Exported, plx_os::playback_trace::Status::Unavailable,
+            plx_os::playback_trace::Status::Failed] {
             overflowing_root(&format!("{tag} diagnostics={trace:?}"),
                 &RootInputs { trace, ..base_root_inputs() }, &mut out);
         }
@@ -109,7 +109,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
                         &RootInputs { plaintext: vec![PlaintextRowInput {
                             machine: ServerMachineId("machine".into()),
                             name: if named { "some-server-machine-name-that-is-very-long".into() }
-                                  else { plx_platform::i18n::msg::settings_plaintext_server().into() },
+                                  else { plx_os::i18n::msg::settings_plaintext_server().into() },
                             named, on, connected,
                         }], ..base_root_inputs() }, &mut out);
                 }
@@ -147,7 +147,7 @@ fn the_restart_hint_fits_the_language_narrative_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        let message = plx_platform::i18n::msg::settings_language_restart_hint("\u{fffc}");
+        let message = plx_os::i18n::msg::settings_language_restart_hint("\u{fffc}");
         if message.matches('\u{fffc}').count() != 1 {
             out.push(format!("{tag}: needs exactly one key placeholder: {message:?}"));
         }
@@ -155,13 +155,13 @@ fn the_restart_hint_fits_the_language_narrative_in_every_language() {
         if w > layout.narrative.w {
             out.push(format!("{tag}: {w:.0}px wider than the {:.0}px narrative column", layout.narrative.w));
         }
-        let title = plx_platform::i18n::msg::settings_language_title();
+        let title = plx_os::i18n::msg::settings_language_title();
         let frame = layout.narrative_copy_frame(true, title, layout.action.y, &ShippedMeasure);
         for copy in [
-            plx_platform::i18n::msg::settings_language_copy(),
-            plx_platform::i18n::msg::settings_language_pending(),
-            plx_platform::i18n::msg::settings_language_saving(),
-            plx_platform::i18n::msg::settings_language_save_failed(),
+            plx_os::i18n::msg::settings_language_copy(),
+            plx_os::i18n::msg::settings_language_pending(),
+            plx_os::i18n::msg::settings_language_saving(),
+            plx_os::i18n::msg::settings_language_save_failed(),
         ] {
             let copy_h = TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
                 .leading(theme::size::LABEL as f32 + theme::space::XS)

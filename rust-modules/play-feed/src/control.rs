@@ -370,7 +370,7 @@ pub(crate) mod tests {
     use crate::send_ptr::SendPtr;
     use crate::shared::HlsUserPause;
     use crate::shared::{FEED_SHARED, FEED_TX};
-    use plx_platform::tv::sink::{NoSink, VideoSink};
+    use plx_os::tv::sink::{NoSink, VideoSink};
     use std::os::raw::c_char;
 
     fn sink() -> &'static dyn VideoSink { &NoSink }
@@ -395,7 +395,7 @@ pub(crate) mod tests {
         },
         release: ReleaseHooks {
             raw_sink: sink,
-            plane: plx_platform::tv::plane::installed(),
+            plane: plx_os::tv::plane::installed(),
             on_release_step: |_| {},
             on_exported_window_destroy: || {},
             spawn_unload: |_| None,

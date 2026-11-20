@@ -1539,7 +1539,7 @@ pub(crate) fn draw_sort_value(
 /// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
 pub fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
     use crate::caption_policy::join;
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let show = m.show_title;
     let is_episode = m.kind == TileKind::Episode;
     let address = (is_episode && m.ep_index > 0)

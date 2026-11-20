@@ -76,7 +76,7 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{msg, LocaleContext, Preference};
+use plx_os::i18n::{msg, LocaleContext, Preference};
 use plx_ui::consts::SAFE;
 use plx_ui::fmt::KICKER_SEPARATOR;
 use plx_ui::Rect;

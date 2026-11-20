@@ -48,7 +48,7 @@ fn a_new_logo_stamp_changes_both_the_transcode_and_composite_cache_keys() {
     let client = plx_plex::plex::client_for(sid).unwrap();
     let identity = |logo| {
         let request = logo_key(sid, logo).unwrap();
-        let transcode = plx_platform::imgcache::classify(&disk_namespace(client), &request).unwrap();
+        let transcode = plx_os::imgcache::classify(&disk_namespace(client), &request).unwrap();
         let composite = card_path(logo, ART).unwrap();
         assert_eq!(built_key(sid, &composite, 420, 236, false).as_deref(), Some(composite.as_str()));
         let (logo, art) = card_parts(&composite).unwrap();
@@ -264,7 +264,7 @@ fn a_cover_or_card_bake_is_not_persisted_across_a_retoken_or_a_profile_switch() 
     let cover = |c: &'static plx_plex::plex::Client| WorkerCoverIo {
         client: c,
         hex: HEX,
-        cache_gen: plx_platform::imgcache::generation(),
+        cache_gen: plx_os::imgcache::generation(),
         token_gen: c.token_gen(),
         profile: plx_plex::plex::session::current_profile_key(),
         disk: None,
@@ -277,7 +277,7 @@ fn a_cover_or_card_bake_is_not_persisted_across_a_retoken_or_a_profile_switch() 
         srv: sid,
         logo: "605",
         art: ART,
-        cache_gen: plx_platform::imgcache::generation(),
+        cache_gen: plx_os::imgcache::generation(),
         token_gen: c.token_gen(),
         disk: None,
     };
@@ -300,7 +300,7 @@ fn the_cover_io_asks_the_discover_memo_and_needs_a_client_identifier() {
     let mut io = WorkerCoverIo {
         client,
         hex: HEX,
-        cache_gen: plx_platform::imgcache::generation(),
+        cache_gen: plx_os::imgcache::generation(),
         token_gen: client.token_gen(),
         profile: String::new(),
         disk: None,
@@ -351,7 +351,7 @@ fn a_stale_no_cover_marker_reaches_the_refresh_lane_though_nothing_decoded() {
     let (_g, sid, _) = one_server();
     let client = plx_plex::plex::client_for(sid).unwrap();
     let marker_key = || {
-        plx_platform::imgcache::classify_baked(
+        plx_os::imgcache::classify_baked(
             &cover::namespace("en"),
             cover::COVER_KIND,
             HEX,
@@ -363,7 +363,7 @@ fn a_stale_no_cover_marker_reaches_the_refresh_lane_though_nothing_decoded() {
     };
     let queued = |accepted: bool, baked_final: bool, stale: bool| {
         refresh::arm_for_test();
-        let gen = plx_platform::imgcache::generation();
+        let gen = plx_os::imgcache::generation();
         queue_refresh(accepted, baked_final, stale.then(|| (client, marker_key())), cover_key(), gen, client.token_gen());
         refresh::take_queued_for_test()
     };

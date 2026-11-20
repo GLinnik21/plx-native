@@ -4,14 +4,14 @@
 
 /// The display sink the probe opens its window on, as media's `start` hands it: the simulator's
 /// host sink under hostsim, the port's installed sink otherwise.
-fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
+fn display() -> &'static dyn plx_os::tv::sink::DisplaySink {
     #[cfg(feature = "hostsim")]
     {
         &crate::app::adapters::hostsim::HOST_SINK
     }
     #[cfg(not(feature = "hostsim"))]
     {
-        plx_platform::tv::sink::display_installed()
+        plx_os::tv::sink::display_installed()
     }
 }
 
@@ -22,7 +22,7 @@ impl UriSession {
     /// production passes the process's own, a test a scripted transport and its own owner.
     #[allow(clippy::too_many_arguments)]
     fn open_with_ports(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
-        sink: &'static dyn plx_platform::tv::sink::DisplaySink, plane: &'static plx_platform::tv::plane::PlaneOwner,
+        sink: &'static dyn plx_os::tv::sink::DisplaySink, plane: &'static plx_os::tv::plane::PlaneOwner,
         attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, firmware: Firmware, url: &str) -> UriSession {
         let input = ProbeOpen {
             attempt, url, transport, display: sink, plane,
@@ -33,7 +33,7 @@ impl UriSession {
         };
         UriSession::open(input, variant, bps, firmware, mt)
     }
-    fn poll(&self) -> Result<plx_platform::tv::uri::UriPoll, String> { self.0.poll() }
+    fn poll(&self) -> Result<plx_os::tv::uri::UriPoll, String> { self.0.poll() }
     fn is_done(&self) -> bool { self.0.is_done() }
     #[cfg(feature = "hostsim")]
     fn window_created(&self) -> bool { self.0.window_created() }
@@ -43,7 +43,7 @@ impl UriSession {
     /// One frame at the clock the test names, with media's route half around it (what `drive` does
     /// at the real one).
     fn advance_at(&mut self, ps: &mut PlaybackSession, mt: &MainThread,
-        poll: Result<plx_platform::tv::uri::UriPoll, String>, now_ms: u64) {
+        poll: Result<plx_os::tv::uri::UriPoll, String>, now_ms: u64) {
         self.0.advance(&mut |attempt, how| settle(ps, attempt, settle_of(how)), mt, poll, now_ms);
         ingest_position(ps, self.0.attempt(), self.0.reported_position_ms());
     }
@@ -84,10 +84,10 @@ use super::*;
 use plx_media::player::attempt_view::Backend;
 use plx_media::player::uriprobe_drive::{drive, ingest_position, settle, stop_for_test as stop};
 use plx_media::route::PlaybackSession;
-use plx_platform::tv::uri::UriMedia;
+use plx_os::tv::uri::UriMedia;
 use std::cell::RefCell;
 use std::rc::Rc;
-use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriPoll, UriReply};
+use plx_os::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriPoll, UriReply};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -186,27 +186,27 @@ impl Rig {
 
     /// `refuse_open`: the text the transport answers `open` with, from the very first call.
     fn build(variant: Variant, refuse_open: Option<&str>) -> Rig {
-        Rig::build_on(variant, refuse_open, display(), plx_platform::tv::plane::installed())
+        Rig::build_on(variant, refuse_open, display(), plx_os::tv::plane::installed())
     }
 
     /// A session whose ACB plane is the one a test hands in (a scripted sink and its own plane
     /// owner), not the process-global pair other tests boot, reset and share.
     #[cfg(feature = "hostsim")]
-    fn on_plane(variant: Variant, sink: &'static dyn plx_platform::tv::sink::DisplaySink,
-        plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
+    fn on_plane(variant: Variant, sink: &'static dyn plx_os::tv::sink::DisplaySink,
+        plane: &'static plx_os::tv::plane::PlaneOwner) -> Rig {
         Rig::build_on(variant, None, sink, plane)
     }
 
     fn build_on(variant: Variant, refuse_open: Option<&str>,
-        sink: &'static dyn plx_platform::tv::sink::DisplaySink,
-        plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
+        sink: &'static dyn plx_os::tv::sink::DisplaySink,
+        plane: &'static plx_os::tv::plane::PlaneOwner) -> Rig {
         Rig::build_on_firmware(variant, refuse_open, sink, plane, Firmware::default())
     }
 
     /// [`build_on`](Rig::build_on) on a set that reported this firmware.
     fn build_on_firmware(variant: Variant, refuse_open: Option<&str>,
-        sink: &'static dyn plx_platform::tv::sink::DisplaySink,
-        plane: &'static plx_platform::tv::plane::PlaneOwner, firmware: Firmware) -> Rig {
+        sink: &'static dyn plx_os::tv::sink::DisplaySink,
+        plane: &'static plx_os::tv::plane::PlaneOwner, firmware: Firmware) -> Rig {
         let mut ps = PlaybackSession::IDLE;
         plx_media::route::reset_player_control_for_test(&ps);
         let pa = crate::app::adapters::backends::test_adapter();
@@ -332,7 +332,7 @@ fn uriprobe_driver_names_the_firmware_the_set_reported_on_the_armed_line() {
     let _serial = plx_base::testlock::serial();
     let log = logged(|| {
         let firmware = Firmware { release: "11.1.0".to_owned(), build: "11.1.0-3701".to_owned() };
-        let _rig = Rig::build_on_firmware(Variant::Drive, None, display(), plx_platform::tv::plane::installed(), firmware);
+        let _rig = Rig::build_on_firmware(Variant::Drive, None, display(), plx_os::tv::plane::installed(), firmware);
     });
     let armed = line_with(&log, " armed ");
     assert!(armed.contains("variant=drive") && armed.ends_with("fw=11.1.0 build=11.1.0-3701"), "{armed}");
@@ -746,8 +746,8 @@ mod hostsim {
     /// whatever the test queues, or `complete_at_once` queues the event-1 one with the dispatch.
     /// Closed through `stop` and one `drive`, as the engine's teardown does; the transport
     /// releases the bus at once.
-    fn acb_plane_closed(complete_at_once: bool) -> (Rig, &'static plx_platform::tv::sink::ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
-        use plx_platform::tv::{plane::{HandleSeat, PlaneFacts, PlaneHandle, PlaneOwner}, sink::{PlaneUnload, ScriptedPlaneSink}};
+    fn acb_plane_closed(complete_at_once: bool) -> (Rig, &'static plx_os::tv::sink::ScriptedPlaneSink, &'static plx_os::tv::plane::PlaneOwner) {
+        use plx_os::tv::{plane::{HandleSeat, PlaneFacts, PlaneHandle, PlaneOwner}, sink::{PlaneUnload, ScriptedPlaneSink}};
         let sink: &'static ScriptedPlaneSink = Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
         sink.complete_at_once.store(complete_at_once, Ordering::SeqCst);
         let plane: &'static PlaneOwner = Box::leak(Box::new(PlaneOwner::new()));
@@ -770,7 +770,7 @@ mod hostsim {
     /// bus is already released, so the exit leaves at once without waiting for it again.
     #[test]
     fn uri_acb_quarantined_plane_exits_without_waiting_again_for_released_bus() {
-        use plx_platform::tv::plane::{Phase, Why};
+        use plx_os::tv::plane::{Phase, Why};
         let _serial=plx_base::testlock::serial();
         let log=logged(|| {
             let (mut rig,sink,plane)=acb_plane_closed(false);
@@ -798,7 +798,7 @@ mod hostsim {
     /// released with it, and the exit has nothing to wait for and nothing quarantined to leave.
     #[test]
     fn uri_acb_released_plane_ends_ownership_and_the_exit_is_clean() {
-        use plx_platform::tv::plane::Phase;
+        use plx_os::tv::plane::Phase;
         let _serial=plx_base::testlock::serial();
         let log=logged(|| {
             let (mut rig,sink,plane)=acb_plane_closed(true);
@@ -818,7 +818,7 @@ mod hostsim {
     /// firmware takes: its own drive pumps the completion, ownership ends, and it leaves clean.
     #[test]
     fn uri_acb_exit_follows_a_releasing_plane_to_the_firmware_completion() {
-        use plx_platform::tv::plane::Phase;
+        use plx_os::tv::plane::Phase;
         let _serial=plx_base::testlock::serial();
         let log=logged(|| {
             let (mut rig,sink,plane)=acb_plane_closed(false);

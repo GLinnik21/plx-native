@@ -1,6 +1,6 @@
 //! Canonical schema and the shipping client/coordinator path, using synthetic helper transport.
 use super::*;
-use plx_platform::storage::{client, state, wire::*};
+use plx_os::storage::{client, state, wire::*};
 use persistence::CanonicalRead;
 
 fn fixture() -> Session {
@@ -290,7 +290,7 @@ struct MigrationFixture {
     pending: Option<String>,
     data: Option<String>,
     cleared: bool,
-    blocked: Option<plx_platform::storage::StoreError>,
+    blocked: Option<plx_os::storage::StoreError>,
     verified: bool,
     wrong_readback: bool,
     commits: usize,
@@ -448,15 +448,15 @@ fn canonical_cleared_blocked_and_existing_data_all_outrank_reappeared_legacy() {
             ..Default::default()
         },
         MigrationFixture {
-            blocked: Some(plx_platform::storage::StoreError::HelperUnavailable),
+            blocked: Some(plx_os::storage::StoreError::HelperUnavailable),
             ..Default::default()
         },
         MigrationFixture {
-            blocked: Some(plx_platform::storage::StoreError::AuthLocked),
+            blocked: Some(plx_os::storage::StoreError::AuthLocked),
             ..Default::default()
         },
         MigrationFixture {
-            blocked: Some(plx_platform::storage::StoreError::InvalidSchema),
+            blocked: Some(plx_os::storage::StoreError::InvalidSchema),
             ..Default::default()
         },
         MigrationFixture {
@@ -654,7 +654,7 @@ struct Db8 {
     puts: usize,
     gets: usize,
 }
-impl plx_platform::storage::keymanager::Rpc for Db8 {
+impl plx_os::storage::keymanager::Rpc for Db8 {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         match uri {
             "luna://com.palm.db/get" => {
@@ -685,7 +685,7 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
 
 #[test]
 fn production_client_coordinator_and_helper_backend_reconcile_committed_lost_reply() {
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(),
         state::Flavor::Stable,
         "com.beb.plxnative.storage".into(),
@@ -765,10 +765,10 @@ fn production_client_coordinator_and_helper_backend_reconcile_committed_lost_rep
 /// production coordinator and the real helper backend, without reviving any credential.
 #[test]
 fn helper_signout_retains_the_language_and_only_the_delete_all_reset_removes_it() {
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
     let mut transport = |request: Request| Ok(backend.dispatch(request));
-    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() }.with_ui_resolution(UiResolution::Hd720);
+    let session = Session { language: plx_os::i18n::Preference::Be, ..fixture() }.with_ui_resolution(UiResolution::Hd720);
     assert!(matches!(
         persistence::commit_session_with(&session, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
         persistence::CanonicalCommit::Durable { .. }));
@@ -776,7 +776,7 @@ fn helper_signout_retains_the_language_and_only_the_delete_all_reset_removes_it(
         persistence::CanonicalCommit::Durable { .. }));
     assert!(matches!(persistence::load_helper_with(&mut transport),
         CanonicalRead::Cleared {
-            kept: Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Hd720 }, ..
+            kept: Retained { language: plx_os::i18n::Preference::Be, ui_resolution: UiResolution::Hd720 }, ..
         }),
         "sign-out must keep the install-wide language and Interface resolution readable");
     let client::Load::Present(cleared) = client::load_with(&mut transport).unwrap() else {
@@ -787,7 +787,7 @@ fn helper_signout_retains_the_language_and_only_the_delete_all_reset_removes_it(
         persistence::CanonicalCommit::Durable { .. }));
     assert!(matches!(persistence::load_helper_with(&mut transport),
         CanonicalRead::Cleared {
-            kept: Retained { language: plx_platform::i18n::Preference::System, ui_resolution: UiResolution::Hd720 }, ..
+            kept: Retained { language: plx_os::i18n::Preference::System, ui_resolution: UiResolution::Hd720 }, ..
         }),
         "Delete all local data must reset the language (the cleared tenure accepts the removal of `language` alone)");
     let client::Load::Present(reset) = client::load_with(&mut transport).unwrap() else {
@@ -825,7 +825,7 @@ fn stored_preferences(transport: &mut dyn client::Transport) -> Value {
 /// reloaded the way the next boot reads it.
 #[test]
 fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite() {
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
     let mut transport = |request: Request| Ok(backend.dispatch(request));
     let base = fixture();
@@ -870,10 +870,10 @@ fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite
 /// a session with no key.
 #[test]
 fn helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none() {
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
     let mut transport = |request: Request| Ok(backend.dispatch(request));
-    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() };
+    let session = Session { language: plx_os::i18n::Preference::Be, ..fixture() };
     commit_fresh(&session, &mut transport);
 
     // A pin write: public-only, the auth half untouched.
@@ -925,10 +925,10 @@ fn helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_
 /// again rather than handed its earlier answer.
 #[test]
 fn helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again() {
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
     let mut transport = |request: Request| Ok(backend.dispatch(request));
-    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() };
+    let session = Session { language: plx_os::i18n::Preference::Be, ..fixture() };
     commit_fresh(&session, &mut transport);
 
     // An answer write: public-only, the auth half untouched.
@@ -997,7 +997,7 @@ fn pending_import_retries_only_its_recorded_envelope_and_never_another_legacy_fi
     );
     assert!(matches!(
         boot.state,
-        CanonicalRead::Blocked(plx_platform::storage::StoreError::AuthLocked)
+        CanonicalRead::Blocked(plx_os::storage::StoreError::AuthLocked)
     ));
     assert_eq!(store.pending.as_ref(), Some(&envelope));
     assert_eq!(store.commits, 0);
@@ -1040,7 +1040,7 @@ fn check_v1_extension_bootstrap_roundtrip(keys: &[String]) {
     }
     let extensions = auth["extensions"].clone();
     let protected = serde_json::to_string_pretty(&auth).unwrap();
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(),
         state::Flavor::Stable,
         "com.beb.plxnative.storage".into(),
@@ -1140,7 +1140,7 @@ fn helper_migration_keeps_opened_session_typed_through_exact_readback() {
         "typed-helper-readback",
         &serde_json::to_value(&expected).unwrap(),
     );
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(),
         state::Flavor::Stable,
         "com.beb.plxnative.storage".into(),
@@ -1220,8 +1220,8 @@ mod published_06 {
         }
     }
 
-    fn helper(record: Option<Value>) -> plx_platform::storage::backend::Backend<Db8> {
-        plx_platform::storage::backend::Backend::new(
+    fn helper(record: Option<Value>) -> plx_os::storage::backend::Backend<Db8> {
+        plx_os::storage::backend::Backend::new(
             Db8 { record, ..Default::default() },
             state::Flavor::Stable,
             "com.beb.plxnative.storage".into(),
@@ -1229,7 +1229,7 @@ mod published_06 {
     }
 
     fn boot(
-        backend: &mut plx_platform::storage::backend::Backend<Db8>,
+        backend: &mut plx_os::storage::backend::Backend<Db8>,
         opener: &mut Opener,
         candidates: &[std::path::PathBuf],
     ) -> persistence::Bootstrap {
@@ -1325,7 +1325,7 @@ fn fallback_written_file_migrates_into_recovered_missing_db8() {
         serde_json::to_value(session_from_read(&read_legacy_locked())).unwrap(),
         serde_json::to_value(&expected).unwrap()
     );
-    let mut backend = plx_platform::storage::backend::Backend::new(
+    let mut backend = plx_os::storage::backend::Backend::new(
         Db8::default(),
         state::Flavor::Stable,
         "com.beb.plxnative.storage".into(),

@@ -137,7 +137,7 @@ fn a_new_request_ends_the_standing_error_of_a_released_engine() {
     assert_eq!(unpresented_resume_ns(&ps), 60_000_000_000, "and a retry resumes from the playhead");
 
     assert!(request_play(
-        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None, "",
+        &mut ps, &mut meta, plx_os::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None, "",
     ));
     assert!(engine_failure(&ps).is_none(), "the new attempt ends the standing error");
     assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Error);
@@ -252,7 +252,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = plx_plex::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), &plx_platform::devcaps::caps(), "rk", 0, "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
+    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), &plx_os::devcaps::caps(), "rk", 0, "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());
@@ -580,7 +580,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "mde-p5-copy-client",
     );
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
-    env.dv_capability = plx_platform::devcaps::dv::DvCapability::Supported;
+    env.dv_capability = plx_os::devcaps::dv::DvCapability::Supported;
     let mut item = fourk_item(sid, vec![eac3_track()]);
     item.dovi = p5();
     env.cached_item = Some(item);
@@ -624,9 +624,9 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
     // The third row is the Settings > Playback > Dolby Vision Off: a set that says Supported plans
     // as Unsupported, because the mode rides `ResolveEnv` and is applied at the route.
     for (capability, mode) in [
-        (plx_platform::devcaps::dv::DvCapability::Unknown, DolbyVisionMode::Auto),
-        (plx_platform::devcaps::dv::DvCapability::Unsupported, DolbyVisionMode::Auto),
-        (plx_platform::devcaps::dv::DvCapability::Supported, DolbyVisionMode::Off),
+        (plx_os::devcaps::dv::DvCapability::Unknown, DolbyVisionMode::Auto),
+        (plx_os::devcaps::dv::DvCapability::Unsupported, DolbyVisionMode::Auto),
+        (plx_os::devcaps::dv::DvCapability::Supported, DolbyVisionMode::Off),
     ] {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _g = fresh_registry(&mut ps);
@@ -1705,11 +1705,11 @@ fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
 
 /// The dev set's table shape for DTS: the decoder is listed with a 6-channel ceiling.
 #[cfg(feature = "devtriggers")]
-fn dts_row_caps() -> plx_platform::devcaps::Caps {
-    plx_platform::devcaps::Caps {
+fn dts_row_caps() -> plx_os::devcaps::Caps {
+    plx_os::devcaps::Caps {
         audio: "aac,ac3,eac3,dts".into(),
         audio_channels: [("dts".into(), 6)].into(),
-        ..plx_platform::devcaps::Caps::assumed()
+        ..plx_os::devcaps::Caps::assumed()
     }
 }
 
@@ -1754,14 +1754,14 @@ fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
 
 
 /// **The profile PMS reads is built from the attempt's own capability value.** Two attempts in one
-/// process, one with a DTS row (`a`) and one narrowed by [`plx_platform::devcaps::Caps::without`]
+/// process, one with a DTS row (`a`) and one narrowed by [`plx_os::devcaps::Caps::without`]
 /// (`b`): the ProgressiveMkv transcode URL of `a` carries the `dca` copy lane and the one of `b`
 /// does not, from the `caps` each [`TranscodeSpec`] holds. No global is installed or read; before
 /// the attempt carried its value, both URLs came from the one process-wide answer.
 #[test]
 #[cfg(feature = "devtriggers")]
 fn a_transcode_profile_names_the_codecs_of_the_attempts_own_caps() {
-    use plx_platform::devcaps::{Caps, Facet};
+    use plx_os::devcaps::{Caps, Facet};
     let a = dts_row_caps();
     let b = a.without(&Facet::Audio { codec: "dts".into(), channels: 2 });
     let mut ps = crate::route::PlaybackSession::IDLE;

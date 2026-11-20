@@ -216,7 +216,7 @@ fn page_runs(page: SettingsPage, push: Option<PushFrame>) -> Vec<plx_ui::draw_ce
 #[test]
 fn the_narrative_frame_is_constant_and_the_list_travels_on_every_held_page() {
     let _serial = plx_base::testlock::serial();
-    let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let w = Rect::FULL.w;
     let (list, fade) = (0.25_f32, 0.75_f32);
     for page in held_pages() {

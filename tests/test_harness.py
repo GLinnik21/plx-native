@@ -8833,12 +8833,12 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA`, `SRC_SESSION` and `SRC_MEDIA`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_OS`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA`, `SRC_SESSION` and `SRC_MEDIA`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
         "rust-modules/net/src",
-        "rust-modules/platform/src",
+        "rust-modules/os/src",
         "rust-modules/gfx/src",
         "rust-modules/ui/src",
         "rust-modules/plex/src",
@@ -8862,8 +8862,8 @@ class DepGates(unittest.TestCase):
         "rust-modules/appkit/build.rs",
         "rust-modules/screens/Cargo.toml",
         "rust-modules/screens/build.rs",
-        "rust-modules/platform/Cargo.toml",
-        "rust-modules/platform/build.rs",
+        "rust-modules/os/Cargo.toml",
+        "rust-modules/os/build.rs",
         "rust-modules/gfx/Cargo.toml",
         "rust-modules/gfx/build.rs",
         "rust-modules/ui/Cargo.toml",
@@ -9071,8 +9071,8 @@ class DepGates(unittest.TestCase):
         match per offending file, so a file the rule did not scan (or the copy did not carry)
         is missing from the output and that input's subtest fails by name. Run one file at a
         time this was 17 of the 73 `ci/check-deps.sh` runs this class made when each ran every rule."""
-        inputs = ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/media/Cargo.toml", "rust-modules/appkit/Cargo.toml", "rust-modules/appkit/build.rs", "rust-modules/screens/Cargo.toml", "rust-modules/screens/build.rs", "rust-modules/platform/Cargo.toml",
-                  "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
+        inputs = ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/media/Cargo.toml", "rust-modules/appkit/Cargo.toml", "rust-modules/appkit/build.rs", "rust-modules/screens/Cargo.toml", "rust-modules/screens/build.rs", "rust-modules/os/Cargo.toml",
+                  "rust-modules/os/build.rs", "rust-modules/gfx/Cargo.toml",
                   "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
                   "rust-modules/storage/Cargo.toml",
                   "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile")
@@ -9913,28 +9913,28 @@ impl PersonOwnerGateFixture {
         r = self._plant_many({
             "_check_deps_selftest_qualified.rs": (
                 "pub fn qualified() {\n"
-                "    let _ = plx_platform::devcaps::caps();\n"
+                "    let _ = plx_os::devcaps::caps();\n"
                 "    let _ = plx_plex::plex::is_dp_audio(\"dca\", 6);\n"
                 "    let _ = plx_plex::plex::transcoder::is_dp_audio_track(\"dca\", 6, 48_000);\n"
                 "    let _ = plx_plex::plex::is_dp_audio_with(&c, \"dca\", 6);\n"
                 "    let _ = plx_plex::plex::is_dp_audio_track_with(&c, \"dca\", 6, 48_000);\n}\n"),
             "_check_deps_selftest_renamed.rs": (
-                "use plx_platform::devcaps as dc;\n"
-                "use plx_platform::devcaps::caps as device_caps;\n"
+                "use plx_os::devcaps as dc;\n"
+                "use plx_os::devcaps::caps as device_caps;\n"
                 "use plx_plex::plex::is_dp_audio as dp;\n\n"
                 "pub fn renamed() {\n    let _ = (dc::caps(), device_caps(), dp(\"dca\", 6));\n}\n"),
             "_check_deps_selftest_bare.rs": (
-                "use plx_platform::devcaps::{self, caps};\n"
+                "use plx_os::devcaps::{self, caps};\n"
                 "use plx_plex::plex::{is_dp_audio_track, is_dp_audio_with};\n\n"
                 "pub fn bare() {\n    let _ = caps();\n    let _ = it.caps();\n"
                 "    let _ = is_dp_audio_track(\"dca\", 6, 0);\n    let _ = is_dp_audio_with(&c, \"dca\", 6);\n}\n"),
             "_check_deps_selftest_globbed.rs": (
-                "use plx_platform::devcaps::*;\nuse plx_plex::plex::*;\n\n"
+                "use plx_os::devcaps::*;\nuse plx_plex::plex::*;\n\n"
                 "pub fn globbed() {\n    let _ = (caps(), is_dp_audio(\"dca\", 6));\n}\n"),
             "_check_deps_selftest_no_import.rs": (
                 "pub fn no_import(caps: &Caps) -> usize {\n    let n = caps.audio.len();\n    helper::caps(n)\n}\n"),
             "_check_deps_selftest_taken.rs": (
-                "use plx_platform::devcaps::Caps;\n\n"
+                "use plx_os::devcaps::Caps;\n\n"
                 "pub fn taken(caps: &Caps) -> bool {\n    caps.hevc\n}\n"),
         }, crate)
         out = r.stdout + r.stderr
@@ -10363,7 +10363,7 @@ impl PersonOwnerGateFixture {
         `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
         r = self._plant(
             "_check_deps_selftest_sink_out.rs",
-            "pub fn pause_it() {\n    let _ = plx_platform::tv::sink::installed();\n}\n",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
         )
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
@@ -10375,7 +10375,7 @@ impl PersonOwnerGateFixture {
         """GREEN: the same call from a file under `player/` leaves `sink` (and the script) green."""
         r = self._plant(
             "player/_check_deps_selftest_sink_in.rs",
-            "pub fn pause_it() {\n    let _ = plx_platform::tv::sink::installed();\n}\n",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
         )
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
@@ -10858,7 +10858,7 @@ static mut MUTABLE: u8 = 0;
         # The module-layer migration list (ci/check-module-layers.py, docs/module-layers.md): the
         # upward references that existed when the target crate graph was declared, 2026-10-02 (231),
         # less step L1's 72, which moved the event log out of lib.rs in the same change, less the
-        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[port webos]` was
+        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[platform webos]` was
         # declared (step L15), and the 42 (file, member) pairs that name it from outside became
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:

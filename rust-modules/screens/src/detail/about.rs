@@ -124,31 +124,31 @@ impl Rows {
         self.info.clear();
         let released = plx_ui::fmt::pretty_date(&d.aired, d.year);
         if !released.is_empty() {
-            self.info.push((plx_platform::i18n::msg::browse_detail_released(), released));
+            self.info.push((plx_os::i18n::msg::browse_detail_released(), released));
         }
         // A show's or season's `duration` is the agent's nominal per-episode figure, no episode's
         // (#814): only a leaf has a runtime to print.
         if plx_data::metadata::has_runtime(&d.kind) && !d.is_show && d.dur_ms > 0 {
             self.info.push((
-                plx_platform::i18n::msg::browse_detail_runtime(),
+                plx_os::i18n::msg::browse_detail_runtime(),
                 plx_ui::fmt::duration(d.dur_ms),
             ));
         }
         self.info.push((
-            plx_platform::i18n::msg::browse_detail_rated(),
+            plx_os::i18n::msg::browse_detail_rated(),
             if d.rating.is_empty() {
-                plx_platform::i18n::msg::browse_detail_unrated().into()
+                plx_os::i18n::msg::browse_detail_unrated().into()
             } else {
                 d.rating.clone()
             },
         ));
         if !d.countries.is_empty() {
             self.info
-                .push((plx_platform::i18n::msg::browse_detail_origins(), d.countries.join(", ")));
+                .push((plx_os::i18n::msg::browse_detail_origins(), d.countries.join(", ")));
         }
         self.orig_audio = d.audio.first().map(|a| {
             if a.lang.is_empty() {
-                plx_platform::i18n::msg::browse_detail_unknown().into()
+                plx_os::i18n::msg::browse_detail_unknown().into()
             } else {
                 a.lang.clone()
             }
@@ -159,7 +159,7 @@ impl Rows {
             .take(AUDIO_SUMMARY)
             .map(|a| {
                 let lang = if a.lang.is_empty() {
-                    plx_platform::i18n::msg::browse_detail_unknown()
+                    plx_os::i18n::msg::browse_detail_unknown()
                 } else {
                     &a.lang
                 };
@@ -170,17 +170,17 @@ impl Rows {
         self.access.clear();
         if !d.subs.is_empty() {
             self.access.push((
-                plx_platform::i18n::msg::widgets_badge_cc(),
-                plx_platform::i18n::msg::browse_detail_closed_captions(),
+                plx_os::i18n::msg::widgets_badge_cc(),
+                plx_os::i18n::msg::browse_detail_closed_captions(),
             ));
         }
         if d.subs.iter().any(|s| s.sdh) {
-            self.access.push((plx_platform::i18n::msg::widgets_badge_sdh(), plx_platform::i18n::msg::browse_detail_sdh()));
+            self.access.push((plx_os::i18n::msg::widgets_badge_sdh(), plx_os::i18n::msg::browse_detail_sdh()));
         }
         if d.audio.iter().any(|a| a.ad) {
             self.access.push((
-                plx_platform::i18n::msg::widgets_badge_ad(),
-                plx_platform::i18n::msg::browse_detail_audio_description(),
+                plx_os::i18n::msg::widgets_badge_ad(),
+                plx_os::i18n::msg::browse_detail_audio_description(),
             ));
         }
     }
@@ -252,7 +252,7 @@ impl Rows {
     ) {
         let x = plx_ui::consts::MARGIN_X;
         p.text(
-            plx_platform::i18n::msg::browse_detail_about_c().as_ptr(),
+            plx_os::i18n::msg::browse_detail_about_c().as_ptr(),
             x,
             top,
             theme::size::HEADLINE,
@@ -319,7 +319,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            plx_platform::i18n::msg::browse_detail_information(),
+            plx_os::i18n::msg::browse_detail_information(),
         );
         let mut flow = VFlow::new(y, 0.0);
         flow.push(Item::new(0.0).after(HEAD_TO_ROWS));
@@ -345,12 +345,12 @@ impl Rows {
                 theme::size::HEADLINE,
                 theme::TEXT_PRIMARY,
                 1,
-                plx_platform::i18n::msg::browse_detail_languages(),
+                plx_os::i18n::msg::browse_detail_languages(),
             );
             let items = self.languages_items(measure);
             let stack = VStack::new(&items, 0.0, Anchor::Top(y));
             if let (Some(orig), Some((yy, _))) = (&self.orig_audio, stack.span(1)) {
-                draw_pair(p, LANG_X, yy, plx_platform::i18n::msg::browse_detail_original_audio(), orig, measure);
+                draw_pair(p, LANG_X, yy, plx_os::i18n::msg::browse_detail_original_audio(), orig, measure);
             }
             if let Some((yy, _)) = stack.span(2) {
                 text_at(
@@ -360,7 +360,7 @@ impl Rows {
                     theme::size::CAPTION,
                     theme::TEXT_TERTIARY,
                     0,
-                    plx_platform::i18n::msg::browse_detail_audio(),
+                    plx_os::i18n::msg::browse_detail_audio(),
                 );
                 audio_view(&self.audio_list, measure)
                     .draw(p, Rect::new(LANG_X, yy + PAIR_VALUE_DY, LANG_W, 0.0));
@@ -393,7 +393,7 @@ impl Rows {
             theme::size::HEADLINE,
             theme::TEXT_PRIMARY,
             1,
-            plx_platform::i18n::msg::browse_detail_accessibility(),
+            plx_os::i18n::msg::browse_detail_accessibility(),
         );
         if self.access.is_empty() {
             text_at(
@@ -689,7 +689,7 @@ mod tests {
     /// prints no Runtime for a show or a season, and still prints a movie's or episode's.
     #[test]
     fn a_show_or_season_has_no_runtime_row_and_a_leaf_keeps_its_own() {
-        let runtime = plx_platform::i18n::msg::browse_detail_runtime();
+        let runtime = plx_os::i18n::msg::browse_detail_runtime();
         let has = |d: &Detail| {
             let mut rows = Rows::new();
             rows.update(d);
@@ -737,8 +737,8 @@ mod tests {
         assert!((y_of(&runs, "Rated") - (COL_Y + HEAD_TO_ROWS)).abs() < tol);
         let body = pair_body_h("PG", &measure);
         assert!((y_of(&runs, "Origins") - y_of(&runs, "Rated") - (body + PAIR_AIR)).abs() < tol);
-        let orig = y_of(&runs, plx_platform::i18n::msg::browse_detail_original_audio());
-        let audio = y_of(&runs, plx_platform::i18n::msg::browse_detail_audio());
+        let orig = y_of(&runs, plx_os::i18n::msg::browse_detail_original_audio());
+        let audio = y_of(&runs, plx_os::i18n::msg::browse_detail_audio());
         assert!((orig - (COL_Y + HEAD_TO_ROWS)).abs() < tol);
         assert!((audio - orig - (pair_body_h("English", &measure) + PAIR_AIR)).abs() < tol);
         // The plate is the same list's height: heading distance, the pair and its air, the audio block.
@@ -749,7 +749,7 @@ mod tests {
         // Absent original audio: the audio label stands right under the heading's distance.
         rows.orig_audio = None;
         let runs = draw(&rows);
-        let audio = y_of(&runs, plx_platform::i18n::msg::browse_detail_audio());
+        let audio = y_of(&runs, plx_os::i18n::msg::browse_detail_audio());
         assert!((audio - (COL_Y + HEAD_TO_ROWS)).abs() < tol);
     }
 
@@ -762,17 +762,17 @@ mod tests {
         let measure = plx_ui::fixture::FixtureMeasure;
         let d = Detail::default();
         let mut rows = Rows::new();
-        rows.access = vec![(plx_platform::i18n::msg::widgets_badge_cc(), plx_platform::i18n::msg::browse_detail_closed_captions())];
+        rows.access = vec![(plx_os::i18n::msg::widgets_badge_cc(), plx_os::i18n::msg::browse_detail_closed_captions())];
         let runs = plx_ui::draw_census::capture_runs(|| {
             rows.draw(Painter::recording(), &d, 0.0, false, &TextLift::new(), &TextLift::new(), &measure)
         });
         let y_of = |text: &str| runs.iter().find(|r| r.text == text).map(|r| r.at.y).unwrap_or_else(|| panic!("{text} not drawn"));
-        let head = y_of(plx_platform::i18n::msg::browse_detail_accessibility());
+        let head = y_of(plx_os::i18n::msg::browse_detail_accessibility());
         let desc = runs.iter().filter(|r| r.at.x == 1360.0 && r.at.y > head).map(|r| r.at.y).fold(f32::MAX, f32::min);
         assert!((head - COL_Y).abs() < 0.5, "the heading stands at the column top");
         // The same description drawn where Information's first row would stand its own body.
         let want = plx_ui::draw_census::capture_runs(|| {
-            TextView::new(plx_platform::i18n::msg::browse_detail_closed_captions(), theme::size::CAPTION, theme::TEXT_HEADING)
+            TextView::new(plx_os::i18n::msg::browse_detail_closed_captions(), theme::size::CAPTION, theme::TEXT_HEADING)
                 .with_measure(&measure)
                 .leading(30.0)
                 .max_lines(4)

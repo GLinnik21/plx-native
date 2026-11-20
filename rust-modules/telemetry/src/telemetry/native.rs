@@ -289,7 +289,7 @@ pub(super) const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "ker
 /// `sentry::attach_hardware_context` builds, and [`preview_event`] leaves it out because a real
 /// native crash event does not carry it.
 pub(super) const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "build", "codename", "api"];
-/// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`plx_platform::tv::sandbox::context`]) and `install`
+/// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`plx_os::tv::sandbox::context`]) and `install`
 /// (`devmode`/`homebrew`/`unknown`, from [`plx_base::paths::install_kind`]) ride on every native
 /// crash report beside the existing hardware compatibility class — the same two closed-enum
 /// sandbox facts PostHog's usage envelope carries as super-properties (`telemetry::posthog`'s
@@ -889,18 +889,18 @@ mod sdk {
         let Some(dist) = cstring(super::super::sentry::build_id()) else {
             return;
         };
-        let webos = plx_platform::tv::device::info();
+        let webos = plx_os::tv::device::info();
         let webos_name = cstring(webos.name.as_bytes());
         let webos_release = cstring(webos.release.as_bytes());
         let webos_codename = cstring(webos.codename.as_bytes());
         let webos_api = cstring(webos.api.as_bytes());
-        let hardware = plx_platform::tv::device::device();
+        let hardware = plx_os::tv::device::device();
         let model = cstring(hardware.model.as_bytes());
         let soc = cstring(hardware.board.as_bytes());
         let hardware_revision = cstring(hardware.hw_revision.as_bytes());
         // issue #74: the same two closed-enum sandbox facts the PostHog envelope carries, so a
         // native crash report can be graded by chassis AND sandbox without a second dashboard.
-        let rtkmem = cstring(plx_platform::tv::sandbox::context().as_bytes());
+        let rtkmem = cstring(plx_os::tv::sandbox::context().as_bytes());
         let install = cstring(plx_base::paths::install_kind().as_bytes());
         let ptr = |value: &Option<CString>| {
             value

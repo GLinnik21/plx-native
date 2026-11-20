@@ -1323,7 +1323,7 @@ pub fn sentry_body(
         }]});
     }
     body["tags"] = fault_tags(f);
-    if let Some(fp) = fault_fingerprint(f, &plx_platform::tv::device::info().build, &extra.modules, debug_id) {
+    if let Some(fp) = fault_fingerprint(f, &plx_os::tv::device::info().build, &extra.modules, debug_id) {
         body["fingerprint"] = serde_json::json!(fp);
     }
     stamp_release(&mut body, f.image.as_ref(), build_id);
@@ -1915,11 +1915,11 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
 
     vec![
         (
-            plx_platform::i18n::msg::core_preview_fault(),
+            plx_os::i18n::msg::core_preview_fault(),
             serde_json::to_vec(&fault_json).unwrap_or_default(),
         ),
         (
-            plx_platform::i18n::msg::core_preview_panic(),
+            plx_os::i18n::msg::core_preview_panic(),
             serde_json::to_vec(&panic_json).unwrap_or_default(),
         ),
     ]

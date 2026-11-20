@@ -6,7 +6,7 @@
 //! without an Engine borrow in hand, the executor's `feed_stream` downgrades them, and the player
 //! selects and clears them around a session.
 
-use plx_platform::tv::sink::{VideoSink, VP_ACB, VP_EXPORTED};
+use plx_os::tv::sink::{VideoSink, VP_ACB, VP_EXPORTED};
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 
@@ -100,7 +100,7 @@ pub fn set_seek_mode(mode: SeekMode) {
 /// composition's fenced sink: the mode is a fact about the StarfishMediaAPIs object that Load is
 /// about to construct.
 pub fn select_seek_mode_for_load(sink: &dyn VideoSink) {
-    let major = plx_platform::tv::device::info().major;
+    let major = plx_os::tv::device::info().major;
     let layout_known = inplace_layout_known(major, sink.feed_abi_is_cow());
     let old_abi_seek = old_abi_seek_tested(major);
     let mode = session_seek_mode(layout_known, old_abi_seek, sink.window_mode(), dev_seek_mode());
@@ -207,7 +207,7 @@ fn dev_seek_mode() -> Option<SeekMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::sink::VP_NONE;
+    use plx_os::tv::sink::VP_NONE;
 
     /// The mode a set on release `major` (old-ABI Feed when `cow`) gets from a window of kind
     /// `window_mode`, composed from the same facts [`select_seek_mode_for_load`] composes.

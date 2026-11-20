@@ -54,7 +54,7 @@ pub mod dv;
 /// without conservative device bounds.
 ///
 /// Defined here, not in `plex`, because this module is the one that intersects it with the
-/// device's own table and `plex` sits above the platform layer; `plex` re-exports it
+/// device's own table and `plex` sits above the os layer; `plex` re-exports it
 /// (`plex::DP_AUDIO_CODECS`) for the profile string and route's plan.
 ///
 /// `opus` is the one entry the table does not gate ([`PIPELINE_ONLY_AUDIO`]): umediaserver's
