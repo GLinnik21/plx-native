@@ -1158,7 +1158,7 @@ fi
 fi # route
 
 # fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
-# plex_run (port.rs: install, then hand over) <= 10 — counted by brace
+# plex_main (port.rs: install, hand over, end the process) <= 10 — counted by brace
 # depth from the `fn` line to its matching close, not by grep pattern.
 fn_body_lines() {
   # fn_body_lines <file> <fn-name-pattern> — prints the line count of the first matching fn's body
@@ -1178,9 +1178,15 @@ else fail "fnlen: app/run.rs::run is ${run_len:-unknown} lines, budget 200 — a
 runapp_len=$(fn_body_lines "$SRC/app/mod.rs" 'run_application')
 if [ -n "$runapp_len" ] && [ "$runapp_len" -le 10 ]; then ok "fnlen: run_application (app/mod.rs) ($runapp_len lines)"
 else fail "fnlen: run_application (app/mod.rs) is ${runapp_len:-unknown} lines, budget 10"; fi
+plexmain_len=$(fn_body_lines "$SRC/port.rs" 'plex_main')
+if [ -n "$plexmain_len" ] && [ "$plexmain_len" -le 10 ]; then ok "fnlen: plex_main (port.rs) ($plexmain_len lines)"
+else fail "fnlen: plex_main (port.rs) is ${plexmain_len:-unknown} lines, budget 10"; fi
+# plex_run is the one-line C wrapper over plex_main (the `-> !` entry the const beside it proves): its
+# signature, the call and the closing brace. `app::exit`'s lifecycle_no_production_exit test holds the
+# body to exactly that call.
 plexrun_len=$(fn_body_lines "$SRC/port.rs" 'plex_run')
-if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 10 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
-else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 10"; fi
+if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 3 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
+else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 3 — it only calls plex_main"; fi
 fi # fnlen
 
 # testmod: `#[cfg(test)] mod` count in app/mod.rs = 0 (D4/D8) — every test module named in D8's

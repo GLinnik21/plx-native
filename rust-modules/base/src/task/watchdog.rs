@@ -12,7 +12,7 @@ use std::{
     cell::Cell,
     marker::PhantomData,
     rc::Rc,
-    sync::{atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering}, OnceLock},
+    sync::{atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering}, Mutex, OnceLock, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -186,6 +186,49 @@ struct Signals {
     foreground: AtomicBool,
     progress: AtomicUsize,
     label: AtomicPtr<BlockingLabel>,
+    /// The thread a freeze probe (and the developer build's fatal abort) signals.
+    loop_thread: LoopThread,
+}
+
+/// **The loop owner's thread id, and whether anything may signal it.** Captured on the loop thread
+/// itself ([`LoopThread::arm`]) because it is the target of `pthread_kill`; cleared
+/// ([`LoopThread::disarm`]) whenever that id must not be used: a hosted loop thread that has
+/// returned leaves a dead id the system may hand to an unrelated thread, and a paused host has no
+/// loop to probe. The id sits behind a lock held for the length of a send, so once `disarm`
+/// returns no signal is in flight and none will start.
+struct LoopThread(Mutex<Option<usize>>);
+
+impl LoopThread {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<usize>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Capture the CALLING thread as the loop owner. Called on the loop thread, never on the
+    /// observer. A second call replaces the first: this is the re-capture.
+    fn arm(&self) {
+        // SAFETY: `pthread_self` takes no argument and cannot fail. libc supplies the native
+        // `pthread_t` ABI (pointer on Darwin, unsigned long on ARM Linux), widened to the word
+        // the slot stores.
+        *self.slot() = Some(unsafe { libc::pthread_self() } as usize);
+    }
+
+    fn disarm(&self) {
+        *self.slot() = None;
+    }
+
+    fn armed(&self) -> bool {
+        self.slot().is_some()
+    }
+
+    /// Run `send` against the armed loop thread while the slot is held; `None` (and `send` never
+    /// runs) when disarmed.
+    fn with<R>(&self, send: impl FnOnce(usize) -> R) -> Option<R> {
+        self.slot().map(send)
+    }
 }
 
 impl Signals {
@@ -196,6 +239,7 @@ impl Signals {
             foreground: AtomicBool::new(true),
             progress: AtomicUsize::new(0),
             label: AtomicPtr::new(&UNLABELED as *const BlockingLabel as *mut BlockingLabel),
+            loop_thread: LoopThread::new(),
         }
     }
 
@@ -221,6 +265,24 @@ static SIGNALS: Signals = Signals::new();
 /// The app's foreground state, written by the loop at its `LIFECYCLE` edges. Starts true.
 pub fn set_foreground(foreground: bool) {
     SIGNALS.foreground.store(foreground, Ordering::Release);
+}
+
+/// Stop the observer signalling the loop thread, for good or until [`arm`]. Returns once no signal
+/// is in flight. A hosted entry calls it before it reports its stop (the loop thread is about to
+/// end, and its id with it) and while the host is paused; `LoopWatch::start` arms again.
+pub fn disarm() {
+    SIGNALS.loop_thread.disarm();
+}
+
+/// Make the CALLING thread the one the observer signals: call it on the loop thread after a
+/// [`disarm`]. [`LoopWatch::start`] does the same at every loop start.
+pub fn arm() {
+    SIGNALS.loop_thread.arm();
+}
+
+/// Whether the observer may signal a loop thread right now.
+pub fn is_armed() -> bool {
+    SIGNALS.loop_thread.armed()
 }
 
 thread_local! {
@@ -494,24 +556,27 @@ impl LoopWatch {
             // task::spawn uses std::thread::Builder::spawn and logs EAGAIN as an error return.
             // Exactly one observer lives for this process; a failed start stays disabled.
             //
-            // The loop owner's thread is captured HERE, on the loop owner, never inside the
-            // observer: it is the target of the freeze probe (and of the developer build's fatal
-            // abort). libc supplies the native pthread_t ABI (pointer on Darwin, unsigned long on
-            // ARM Linux); fwcompat inventories export `pthread_self` and `pthread_kill` at
-            // GLIBC_2.4 across all releases: libpthread on older firmware, libc after the glibc
-            // pthread merge.
-            let main_thread = unsafe { libc::pthread_self() } as usize;
+            // The observer never captures the loop owner's thread: that id lives in
+            // `SIGNALS.loop_thread`, written on the loop owner below, because it is the target of
+            // the freeze probe (and of the developer build's fatal abort) and a hosted loop can
+            // end and start again on another thread. fwcompat inventories export `pthread_self`
+            // and `pthread_kill` at GLIBC_2.4 across all releases: libpthread on older firmware,
+            // libc after the glibc pthread merge.
             #[cfg(feature = "threadcheck")]
             let log_only = crate::devtrig::guard_log_only();
             #[cfg(feature = "threadcheck")]
-            let started = super::spawn("main-thread watchdog", move || observe_loop(main_thread, log_only)).is_some();
+            let started = super::spawn("main-thread watchdog", move || observe_loop(log_only)).is_some();
             #[cfg(not(feature = "threadcheck"))]
-            let started = super::spawn("main-thread watchdog", move || observe_loop(main_thread)).is_some();
+            let started = super::spawn("main-thread watchdog", observe_loop).is_some();
             if !started { crate::eventlog::log("main-thread watchdog: unavailable; hang detection disabled"); }
             started
         });
         if !started { return Self::disabled(); }
-        Self::attach(&SIGNALS)
+        let watch = Self::attach(&SIGNALS);
+        // Only the loop that attached becomes the signal target: a refused second loop must not
+        // retarget the first.
+        if watch.signals.is_some() { arm(); }
+        watch
     }
 
     fn attach(signals: &'static Signals) -> Self {
@@ -685,8 +750,9 @@ pub fn set_crash_phase(phase: CrashPhase) {
 /// at playback) is never signalled. Returns whether the signal was sent.
 fn probe_main_thread(main_thread: usize, seq: u32) -> bool {
     // SAFETY: `sigaction` with a null new action only reads the current disposition into `old`,
-    // a zeroed plain-data struct; `pthread_kill` on a thread id captured from the loop owner,
-    // which lives for the whole process, is the call the developer build's abort already makes.
+    // a zeroed plain-data struct; `pthread_kill` on a thread id captured from the loop owner
+    // ([`LoopThread`]; its caller holds the slot, so the id is the live loop's or this is not
+    // reached) is the call the developer build's abort already makes.
     unsafe {
         let mut old: libc::sigaction = std::mem::zeroed();
         if libc::sigaction(libc::SIGUSR2, std::ptr::null(), &mut old) != 0 {
@@ -705,6 +771,12 @@ fn probe_main_thread(main_thread: usize, seq: u32) -> bool {
         plx_freeze_seq.store(0, Ordering::Release);
         false
     }
+}
+
+/// [`probe_main_thread`] against the loop thread, if one is armed. The slot stays held for the send,
+/// so a [`disarm`] that returns has no probe still on its way to a thread that is gone.
+fn probe_loop(loop_thread: &LoopThread, seq: u32) -> bool {
+    loop_thread.with(|thread| probe_main_thread(thread, seq)).unwrap_or(false)
 }
 
 /// Whether `handler` lives in the same loaded object as this code, i.e. is the crash tracer's own
@@ -750,7 +822,7 @@ fn answer_probe(
     (sent, format!("main-thread freeze: {ms}ms without loop progress{at} (probe {seq}, recorded={sent})"))
 }
 
-fn observe_loop(main_thread: usize, #[cfg(feature = "threadcheck")] log_only: bool) {
+fn observe_loop(#[cfg(feature = "threadcheck")] log_only: bool) {
     let origin = Instant::now();
     let mut freezes = Freezes::default();
     // The probe whose recovery this thread must write down: set only when the probe was really
@@ -779,7 +851,7 @@ fn observe_loop(main_thread: usize, #[cfg(feature = "threadcheck")] log_only: bo
             Some(FreezeEvent::Probe { seq, ms }) => {
                 let crash_log = crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH);
                 let (sent, line) =
-                    answer_probe(&crash_log, seq, ms, current_leg(), |seq| probe_main_thread(main_thread, seq));
+                    answer_probe(&crash_log, seq, ms, current_leg(), |seq| probe_loop(&SIGNALS.loop_thread, seq));
                 if !sent {
                     freezes.unsent();
                 }
@@ -816,8 +888,9 @@ fn observe_loop(main_thread: usize, #[cfg(feature = "threadcheck")] log_only: bo
                 // stale sample; the next poll will rebase and discard its warning as well.
                 let sample_age = origin.elapsed().as_millis().saturating_sub(now as u128);
                 if sample_age <= MAX_POLL_GAP_MS as u128 && SIGNALS.progress() == progress {
-                    let rc = unsafe { libc::pthread_kill(main_thread as libc::pthread_t, libc::SIGABRT) };
-                    if rc != 0 { crate::eventlog::log(&format!("main-thread hang: pthread_kill failed: {rc}")); }
+                    // A disarmed loop has nobody to abort: `with` runs nothing.
+                    let rc = SIGNALS.loop_thread.with(|thread| unsafe { libc::pthread_kill(thread as libc::pthread_t, libc::SIGABRT) });
+                    if let Some(rc) = rc.filter(|rc| *rc != 0) { crate::eventlog::log(&format!("main-thread hang: pthread_kill failed: {rc}")); }
                 }
             }
         }
@@ -1533,4 +1606,60 @@ mod tests {
         assert_eq!(plx_freeze_seq.load(Ordering::Acquire), 0, "an unsent probe arms nothing");
     }
 
+    fn this_thread() -> usize {
+        unsafe { libc::pthread_self() as usize }
+    }
+
+    #[test]
+    fn a_disarmed_loop_thread_is_never_signalled() {
+        let loop_thread = LoopThread::new();
+        assert!(!loop_thread.armed());
+        let mut sent = false;
+        assert_eq!(loop_thread.with(|_| sent = true), None);
+        assert!(!sent, "nothing runs against a loop that was never armed");
+        assert!(!probe_loop(&loop_thread, 1), "and a probe is reported unsent");
+        loop_thread.arm();
+        assert!(loop_thread.armed());
+        loop_thread.disarm();
+        assert!(!loop_thread.armed());
+        assert_eq!(loop_thread.with(|_| sent = true), None);
+        assert!(!sent, "a disarmed loop is not signalled either");
+    }
+
+    #[test]
+    fn arming_captures_the_calling_thread_and_a_second_arm_recaptures() {
+        let loop_thread = std::sync::Arc::new(LoopThread::new());
+        loop_thread.arm();
+        assert_eq!(loop_thread.with(|thread| thread), Some(this_thread()));
+        let later = std::sync::Arc::clone(&loop_thread);
+        let theirs = std::thread::Builder::new().spawn(move || {
+            later.arm();
+            this_thread()
+        }).unwrap().join().unwrap();
+        assert_ne!(theirs, this_thread(), "the two threads are two ids");
+        assert_eq!(loop_thread.with(|thread| thread), Some(theirs),
+            "an arm from a new loop thread replaces the id of the one that ended");
+    }
+
+    #[test]
+    fn disarm_cannot_return_while_a_signal_is_in_flight() {
+        let loop_thread = LoopThread::new();
+        loop_thread.arm();
+        let held = loop_thread.with(|_| loop_thread.0.try_lock().is_err());
+        assert_eq!(held, Some(true),
+            "the slot is held for the whole send, so `disarm` waits for it and none follows it");
+        assert!(loop_thread.0.try_lock().is_ok(), "and is free again once the send ends");
+    }
+
+    #[test]
+    fn the_process_watchdog_arms_disarms_and_rearms() {
+        let _serial = crate::testlock::serial();
+        disarm();
+        assert!(!is_armed());
+        arm();
+        assert!(is_armed());
+        assert_eq!(SIGNALS.loop_thread.with(|thread| thread), Some(this_thread()));
+        disarm();
+        assert!(!is_armed(), "disarmed before a hosted stop is reported");
+    }
 }

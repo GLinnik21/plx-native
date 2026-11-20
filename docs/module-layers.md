@@ -382,8 +382,9 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 
 `tv` may name only `base`, `machine` and `os`. `port.rs` holds `plex_run` and the `PORT` table
 that points each hook at the `webos`, `keymanager` and `system` function behind it. The C shim and
-the simulator both enter through `port::plex_run`; `app::run_application` is the two-line body it
-hands over to. `lib.rs` declares the port but re-exports nothing from it, because a re-export would
+the simulator both enter through `port::plex_run`: it calls `app::run_application`, which returns
+how the session ended as an `Exit` (a status and whether the teardown released everything), and then
+ends the process with that status. `lib.rs` declares the port but re-exports nothing from it, because a re-export would
 be a reference from the crate root into the port, which the gate refuses.
 
 The video sink landed as a verb-level cut. `tv::sink::VideoSink` has one method per verb of the

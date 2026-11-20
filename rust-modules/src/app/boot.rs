@@ -531,73 +531,6 @@ mod seam_order_tests {
         );
     }
 
-    /// **No exit of the app process returns into libc's `exit`.** `exit` runs libcrypto's
-    /// `OPENSSL_cleanup`, which frees and NULLs its global locks while the detached curl workers
-    /// still run (#1115). The run-and-shutdown sequence and the entry point are typed `-> !` (a
-    /// path that returns does not compile): these consts are the compile-time proof, and the
-    /// source scan below finds any other `exit` call, which would sidestep
-    /// `plx_base::process::exit_now`.
-    const _: unsafe fn(&mut super::super::App) -> ! = super::super::run_and_shutdown;
-    const _: fn(*const std::os::raw::c_char, std::os::raw::c_int) -> ! =
-        super::super::run_application;
-
-    #[test]
-    fn no_production_code_calls_libc_exit_outside_the_shared_helper() {
-        // The app process links every crate under rust-modules except `storage` (the separate
-        // `plxstorage` helper binary, no OpenSSL workers) and the os layer's `storage_service/` (that
-        // helper's body). `base/src/process.rs` is the helper itself.
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut files = Vec::new();
-        collect_rs(&root.join("src"), &mut files);
-        for entry in std::fs::read_dir(root).expect("rust-modules") {
-            let dir = entry.expect("entry").path();
-            let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-            if matches!(name.as_str(), "storage" | "target" | "tests")
-                || name.starts_with("target-")
-                || !dir.join("src").is_dir()
-            {
-                continue;
-            }
-            collect_rs(&dir.join("src"), &mut files);
-        }
-        assert!(files.len() > 100, "the scan must see the whole tree");
-        let (a, b) = (concat!("process::", "exit("), concat!("libc::", "exit("));
-        let mut hits = Vec::new();
-        for f in files {
-            let path = f.to_string_lossy().replace('\\', "/");
-            if path.ends_with("base/src/process.rs")
-                || path.contains("/storage_service/")
-                || path.contains("/tests/")
-                || path.ends_with("_tests.rs")
-            {
-                continue;
-            }
-            let text = std::fs::read_to_string(&f).expect("read");
-            let prod = text.split("#[cfg(test)]").next().unwrap_or("");
-            for (n, line) in prod.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
-                if code.contains(a) || code.contains(b) {
-                    hits.push(format!("{path}:{}", n + 1));
-                }
-            }
-        }
-        assert!(
-            hits.is_empty(),
-            "exit through plx_base::process::exit_now, never libc exit (#1115): {hits:?}"
-        );
-    }
-
-    fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                collect_rs(&p, out);
-            } else if p.extension().is_some_and(|e| e == "rs") {
-                out.push(p);
-            }
-        }
-    }
-
     /// `enter_application` installs the player's error-trace eraser before telemetry first loads a
     /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
     /// before anything can play. It was installed by `player::report::requested`, which a
@@ -1439,7 +1372,8 @@ pub(super) fn install_pms_owned(
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
-/// exit ends the process through `plx_base::process::exit_now` (the caller maps `Err(code)` to it).
+/// refusal returns its `Exit` (the entry ends the process with its code, `port::plex_run`; a hosted
+/// entry reports it and stays alive).
 ///
 /// `mt`, THE main-thread token, is minted once by `plex_run` itself (`plx_base::task::MainThread::
 /// assume()` — that function IS the SDL main thread) and MOVES into `App.adapters.player` here,
@@ -1451,7 +1385,7 @@ pub(crate) unsafe fn boot(
     pms_port: c_int,
     mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight,
-) -> Result<App, c_int> {
+) -> Result<App, Exit> {
     // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
     // so it is handed over here, before any playback can land. Replay boots take it too.
     plx_media::route::install_up_next_still_warm(super::playback::warm_up_next_still);
@@ -1466,7 +1400,7 @@ pub(crate) unsafe fn boot(
             let host = std::ffi::CStr::from_ptr(pms_host).to_string_lossy();
             match super::bootstrap::Initial::capture_home(&host, pms_port) {
                 Ok(initial) => Some(initial),
-                Err(reason) => { log(&format!("rec: REFUSED — {reason}")); return Err(1); }
+                Err(reason) => { log(&format!("rec: REFUSED — {reason}")); return Err(Exit::refused(1)); }
             }
         }
         super::bootstrap::Preflight::Replay { initial, .. } => Some((initial.clone(), None)),
@@ -1522,12 +1456,12 @@ pub(crate) unsafe fn construct(
     pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
     deferred: Option<plx_plex::plex::session::DeferredLoad>,
-) -> Result<App, c_int> {
+) -> Result<App, Exit> {
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
         plx_data::stores::tape::init(initial.person_credits(), preflight.replay());
-        initial.home.restore(&mt).map_err(|_| 1)?;
-        plx_plex::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
+        initial.home.restore(&mt).map_err(|_| Exit::refused(1))?;
+        plx_plex::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| Exit::refused(1))?;
     }
     SDL_SetMainReady();
     // DEAD END, measured 2026-07-31 — do not re-try this. The obvious answer to "a parked TV
@@ -1546,7 +1480,7 @@ pub(crate) unsafe fn construct(
     webos3_cursor_sleep_hint();
     if SDL_Init(SDL_INIT_VIDEO) != 0 {
         log("SDL_Init failed");
-        return Err(1);
+        return Err(Exit::refused(1));
     }
     tap_relaunch_payloads();
     {
@@ -1656,7 +1590,7 @@ pub(crate) unsafe fn construct(
             log(&format!("GL ctx failed at {ww_try}x{wh_try}"));
             SDL_DestroyWindow(win);
         }
-        let Some((w, h)) = fallback.take() else { return Err(1); };
+        let Some((w, h)) = fallback.take() else { return Err(Exit::refused(1)); };
         log(&format!("surface: retrying the window at the native {w}x{h}"));
         (ww_try, wh_try) = (w, h);
     };
@@ -1727,9 +1661,11 @@ pub(crate) unsafe fn construct(
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
     plx_os::tv::window::arm_opaque_region();
-    plx_gfx::gfx::init_gl();
-    plx_gfx::text::init_text();
-    plx_gfx::gfx::init_image();
+    // A required shader the driver refuses is a refusal like any other (`Exit::from(GfxFault)`):
+    // the same status the process always ended with, returned instead of `exit_now`'d from inside GL.
+    plx_gfx::gfx::init_gl()?;
+    plx_gfx::text::init_text()?;
+    plx_gfx::gfx::init_image()?;
     plx_gfx::gfx::init_blur();
     // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
     // over before any request can be made, so the first one already carries it.
@@ -2518,6 +2454,8 @@ pub(crate) unsafe fn construct(
         rec: super::recorder::Recplay::Off,
         boot_initial: initial,
         telemetry_guard: None,
+        #[cfg(test)]
+        drop_probe: Default::default(),
 
         glass,
         // **The application's page stack runs the route DIP** (§6.2). It ran `Immediate` until
@@ -2639,16 +2577,16 @@ pub(crate) unsafe fn construct(
     plx_plex::plex::account::announce_discover();
     if controlled {
         let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");
-        initial.validate().map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+        initial.validate().map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); Exit::refused(1) })?;
         let replay = preflight.replay();
         app.rec = super::recorder::Recplay::controlled(preflight, &initial)
-            .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+            .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); Exit::refused(1) })?;
         let mut bridge = app.runtime.bridge(&mut app.bridge);
         app.rec.arm_landgate(bridge.landgate());
         log("bootstrap: captured pre-effect initial state");
         if let Some(deferred) = deferred {
             apply_deferred_capture(&mut app.rec, bridge.landgate(), deferred)
-                .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+                .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); Exit::refused(1) })?;
             log("bootstrap: captured session persistence applied");
         }
         if !replay {
@@ -2659,13 +2597,13 @@ pub(crate) unsafe fn construct(
         app.rec.prepare_resources(&mut bridge);
         if !matches!(activate_session(&mut bridge, &mut app.pages, &mut app.rec), BootTo::Home) {
             log("bootstrap: controlled Home activation refused");
-            return Err(1);
+            return Err(Exit::refused(1));
         }
         let tree = app.pages.state_hash();
         app.rec.resource_requests(bridge.take_resource_requests());
         if let Some(reason) = app.rec.failure().or_else(|| bridge.controlled_failure()) {
             log(&format!("bootstrap: REFUSED — {reason}"));
-            return Err(1);
+            return Err(Exit::refused(1));
         }
         super::run::recorder_end_frame(&mut app.rec, &bridge,
             "home", "", "bootstrap", tree);
@@ -2698,7 +2636,7 @@ pub(crate) unsafe fn construct(
             // Preflight refuses the still-unsupported first-run surface before resource boot.
             if plx_screens::consent::should_show(&initial.consent, initial.automated) {
                 log("bootstrap: REFUSED — unsupported initial consent route");
-                return Err(1);
+                return Err(Exit::refused(1));
             }
         } else {
             maybe_ask_consent(&mut app.pages, &mut app.runtime.consent.machine.ask);
