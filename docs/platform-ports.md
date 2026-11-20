@@ -458,9 +458,11 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
     `load_login_client_id`, `:4336-4349`), reusing one process-local id when storage is unavailable.
     `install_preferences::Saved` is `deny_unknown_fields`, version 1 (`:28-38`): it cannot carry the id without a
     new version.
-  - The authority is chosen by `target_arch = "arm"`, not by a platform value (`session/persistence.rs:1400-1425`,
+  - The authority was chosen by `target_arch = "arm"`, not by a platform value (`session/persistence.rs:1400-1425`,
     `commit_data` `:288-308`); a Tizen ARM build would select the DB8 arm with no helper behind it (F12). The
-    `MemoryOnly` gate sits above that selection, and W8a re-keys it.
+    `MemoryOnly` gate sits above that selection. W8a re-keyed plex's 21 sites to `tv::authority::authority()`:
+    `persistence.rs`'s dispatchers take the authority and the helper's transport, so a host test drives the helper
+    arm with a fake one; telemetry's sites follow in its own PR.
 
 ### Evidence from the second reviews: F40-F46 (each citation checked in the tree)
 
@@ -502,9 +504,11 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   - `CompletionOutcome` (`plex/src/plex/session/async_persistence.rs:112`) and `LiveWrite` are matched in
     `session.rs`, `session/{persistence,async_persistence,prefs/profile_prefs}.rs`, `session/src/auth/owner.rs`,
     `telemetry/src/telemetry/incident.rs:592-600`, `src/app/adapters/session.rs` and three test files.
-  - `install_preferences::candidates` (`:40`) and `clear_for_erase` (`session.rs:5341`) key on the ARM cfg, so
-    Tizen ARM reads `native = true`; `load` accepts `version == 1` only (`:59`) and `Saved` is
-    `deny_unknown_fields`. The ARM canonical write is cfg'd out of host tests (`session/persistence.rs:1400-1425`).
+  - `install_preferences::candidates` (`:40`) and `clear_for_erase` (`session.rs:5341`) keyed on the ARM cfg, so
+    Tizen ARM read `native = true` (W8a re-keyed them to `tv::authority::authority()`); `load` accepts
+    `version == 1` only (`:59`) and `Saved` is `deny_unknown_fields`. The ARM canonical write was cfg'd out of
+    host tests (`session/persistence.rs:1400-1425`); it is now the `Helper` arm of `persistence::*_via`, which every
+    host runs over a fake transport.
   - `ci/check-deps.sh`: `plex/` is in `FORK_SCOPE`, `session.rs` in `MACHINES` (`:1406-1408`): a new
     `cfg(test)` branch there is a `forks` line, a new static a `statics` line. `platform/` is not in `FORK_SCOPE`,
     and only `platform/src/tv/plane.rs` is in `MACHINES` (`:1406-1408`; the scan `find` at `:1439` lists it too). The
@@ -850,9 +854,12 @@ split by who reads it (critic M4):
    - `system { go_home, poll_home, deliver_toast }`;
    - `storage { authority }` (W8a): `Authority::Helper` (webOS: the LS2/DB8 storage helper is the canonical store of
      the session, the install's preferences and the consent record; the app's own files there are the legacy
-     migration inputs and the marked fallback of a helper outage) or `Authority::Files` (desktop, Tizen, a host
+     migration inputs, the marked fallback of a helper outage and the install-preferences file a sign-out writes
+     when the helper's clear is not durable) or `Authority::Files` (desktop, Tizen, a host
      test: the app's own record files are the store), read through
-     `tv::authority::authority()`. It replaces the `target_os = "linux"` + `target_arch = "arm"` fence the persistence
+     `tv::authority::authority()`. `secure::mode()` decides the session record ahead of it: under `MemoryOnly`
+     (where Tizen starts, W9) the session lives in memory and no credential store is read or written, whatever the
+     authority says; only the install's own preference file persists. It replaces the `target_os = "linux"` + `target_arch = "arm"` fence the persistence
      layers chose their store by; the helper's wake-up (`storage::client::install_activator`) joins it after W7b;
    - `legacy_webos_media { sink, display_sink, uri_media }`: the Starfish, ACB and `com.webos.media` verbs (F31),
      named for what they are (critic M3). Every hook is required (Decision 2, C): a platform states each field,

@@ -6,10 +6,20 @@
 //! state root ([`Authority::Files`]): the desktop simulator, a host test, and a platform with no
 //! helper at all (Tizen).
 //!
-//! Under `Helper` the app's own files are not the store. They are the legacy migration inputs an
-//! older build left, and the marked fallback the session layer writes when a commit to the helper is
-//! not durable (a helper outage): while the helper cannot answer, that file is served as transient
-//! state, and it never replaces the helper's record.
+//! The authority is not the whole answer for the session record: the platform's persistence mode
+//! ([`secure::mode()`](super::secure::mode)) decides it first. Under `StoreMode::MemoryOnly`, where
+//! Tizen starts (W9), the session lives in memory and no credential store is read or written,
+//! whatever the authority says; only the install's own preference file (client id, language and
+//! Interface resolution) persists.
+//!
+//! Under `Helper` the app's own files are not the store. Three kinds remain:
+//! - the legacy migration inputs an older build left;
+//! - the marked fallback the session layer writes when a commit to the helper is not durable (a
+//!   helper outage): while the helper cannot answer, that file is served as transient state, and it
+//!   never replaces the helper's record;
+//! - the install-preferences file a sign-out writes when the helper's clear is not durable
+//!   (`install_preferences::save`): an unmarked `….language.json` file beside a session candidate, which
+//!   `install_preferences::load` reads back into the `Locked` and `Cleared` states.
 //!
 //! The platform states the value once, as the `authority` of its [`StorageHooks`](super::StorageHooks),
 //! and [`authority`] reads it. A process that installed no platform (a host test) reads
@@ -30,10 +40,12 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Authority {
     /// The platform's storage helper (webOS: the LS2/DB8 service) is the canonical store. The app's
-    /// own files are only the legacy migration inputs and the session layer's marked fallback, which
-    /// is written during a helper outage and is never the record.
+    /// own files are only the legacy migration inputs, the session layer's marked fallback (written
+    /// during a helper outage, never the record) and the install-preferences file a sign-out writes
+    /// when the helper's clear is not durable.
     Helper,
-    /// The app's own record files under its persistent state root are the canonical store.
+    /// The app's own record files under its persistent state root are the canonical store. A process
+    /// in `StoreMode::MemoryOnly` still keeps the session record in memory (see the module doc).
     #[default]
     Files,
 }
