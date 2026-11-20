@@ -111,7 +111,7 @@ impl LegacyWebosMedia {
 
 impl Services {
     /// No platform installed: host unit tests (nothing installs one). Every entry is what today's
-    /// `cfg(any(hostsim, test))` arm answered, minus the off-device log lines the other entries would
+    /// `cfg(any(test, feature = "test-support"))` arm answered, minus the off-device log lines the other entries would
     /// write (`deliver_toast` keeps its one).
     pub const HOST_TEST: Self = Self {
         identity: IdentityHooks::NONE,

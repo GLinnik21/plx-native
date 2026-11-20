@@ -442,7 +442,12 @@ still webOS's. Three things were left, and item 2 is done:
    `FrameProbe`, and `src/bin/sim.rs` enters through it, so the webOS table no longer runs host arms. The
    `hostsim` terms are gone from `system`, `port`, `webos` and `keymanager`. The stand-ins in `webos` and
    `keymanager` are test seams only, `cfg(any(test, feature = "test-support"))`: a simulator run executes
-   none of them (`docs/platform-ports.md`, W4). The
+   none of them (`docs/platform-ports.md`, W4). `hostsim` no longer selects a platform: it selects the
+   host build of what is not one (the media seam's host sink, the GL context request, the window flags
+   and the keyboard event decode), while the television's wayland and glib calls, like the rest of the
+   television's arms, are compiled in every build and the linker drops them from a host executable.
+   The comment on the feature in `rust-modules/Cargo.toml` still lists those calls under what it
+   switches; the certificate pins that file, so W7 rewords it when it re-seals. The
    webOS-shaped types in `tv` needed neutral shapes then, and have them since W3d: `tv::secure::Backend`
    is an opaque tag that stays a string on the wire (the two webOS spellings are constants, and a tag no
    installed platform knows is refused on open), `tv::sandbox` is `tv::native_video` with a verdict that is
