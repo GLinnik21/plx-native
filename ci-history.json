@@ -1,4 +1,4 @@
-{"updated":"2026-11-20T05:59:36Z",
+{"updated":"2026-11-20T06:01:10Z",
 "ci":[
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564709752,"at":"2026-08-22T09:21:07Z","sha":"aa578b180","title":"release: 0.4.0's note, rewritten for the 132 commits it predated","jobs":{"host checks (NOT a device gate)":90,"cross-build (armv7) + artifact assertions":86},"pr":null,"conclusion":"success","attempt":1},
@@ -5507,7 +5507,8 @@
 {"id":44679326778,"at":"2026-11-20T05:11:13Z","sha":"9ed56b066","title":"gfx: state the confirmed cause of the vs_ambient rejection","pr":1481,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":294,"macOS tests against bundled FFmpeg and ASS":244,"Windows launcher syntax":22,"Linux simulator build + launch":294}},
 {"id":44680286842,"at":"2026-11-20T05:19:41Z","sha":"e0599089b","title":"Keep no credential on platforms that cannot store one: a memory-only store mode","pr":1477,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":196,"macOS tests against bundled FFmpeg and ASS":282,"Linux simulator build + launch":331}},
 {"id":44682723941,"at":"2026-11-20T05:41:45Z","sha":"9dea74a34","title":"gfx: say what the one-name rule covers in vs_ambient.vert","pr":1481,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":243,"macOS tests against bundled FFmpeg and ASS":222,"Windows launcher syntax":20,"Linux simulator build + launch":272}},
-{"id":44684125771,"at":"2026-11-20T05:54:30Z","sha":"f351f08ba","title":"Prove at compile time that the process entry never returns","pr":1479,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":234,"Windows launcher syntax":23,"Linux simulator build + launch":278,"macOS simulator build + launch":248}}
+{"id":44684125771,"at":"2026-11-20T05:54:30Z","sha":"f351f08ba","title":"Prove at compile time that the process entry never returns","pr":1479,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":234,"Windows launcher syntax":23,"Linux simulator build + launch":278,"macOS simulator build + launch":248}},
+{"id":44684150029,"at":"2026-11-20T05:54:44Z","sha":"70cbda92f","title":"URI drivers report their own display evidence; LG's binding moves into the LG driver","pr":1478,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":102,"Linux simulator build + launch":368,"macOS tests against bundled FFmpeg and ASS":117}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
