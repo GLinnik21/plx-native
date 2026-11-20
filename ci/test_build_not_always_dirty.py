@@ -41,7 +41,7 @@ objects with a `reason` are looked at; `cargo test` also prints harness text on 
   `build.rs` and `src/release_line.rs` against a stub library, in a throwaway repository (the
   appearance is detected through the worktree's `HEAD`, which is what checking out the line moves),
   so the real tree is never touched and nothing app-sized is recompiled. It has no dependencies of
-  its own (the catalog and install-identity generators belong to the platform crate's build script
+  its own (the catalog and install-identity generators belong to the os crate's build script
   now) and runs `--offline`.
   It also pins that a missing `.git/logs/HEAD` (reflog off or deleted) does not make the build
   always-dirty, the same hazard through `emit_build_sha`.
@@ -62,7 +62,7 @@ CRATE = "plxnative_modules"  # the lib target's name (underscored)
 PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_id
 # The layer crate that owns a build script of its own (catalog + install identities): it must not be
 # always-dirty either, or every crate above it would rebuild with it.
-PLATFORM_CRATE = "plx_os"
+OS_CRATE = "plx_os"
 GFX_CRATE = "plx_gfx"
 NIGHTLY = pinned()  # the repo's one toolchain (historic name)
 
@@ -109,12 +109,12 @@ def package_of(record):
 
 
 def rebuilt(records):
-    """Describe what a build recompiled of the app crate (or of the platform crate, whose build
+    """Describe what a build recompiled of the app crate (or of the os crate, whose build
     script generates the catalog), or [] when it recompiled none of it."""
     return [f"{(rec.get('target') or {}).get('name')} ({'/'.join((rec.get('target') or {}).get('kind') or [])}) was recompiled"
             for rec in records
             if rec.get("reason") == "compiler-artifact"
-            and (rec.get("target") or {}).get("name") in (CRATE, PLATFORM_CRATE, GFX_CRATE) and not rec.get("fresh")]
+            and (rec.get("target") or {}).get("name") in (CRATE, OS_CRATE, GFX_CRATE) and not rec.get("fresh")]
 
 
 def freeze_stamps(records):

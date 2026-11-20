@@ -130,7 +130,7 @@ SCRATCH_MAKEFILE = r'''print-bench-config:
 '''
 LEAF = "rust-modules/base/src/cbuf.rs"
 MACHINE_LEAF = "rust-modules/machine/src/landgate.rs"
-PLATFORM_LEAF = "rust-modules/os/src/devcaps.rs"
+OS_LEAF = "rust-modules/os/src/devcaps.rs"
 GFX_LEAF = "rust-modules/gfx/src/overdraw.rs"
 NET_LEAF = "rust-modules/net/src/stream_redirect.rs"
 UI_LEAF = "rust-modules/ui/src/dwell.rs"
@@ -143,7 +143,7 @@ APPKIT_LEAF = "rust-modules/appkit/src/skip_pill.rs"
 SCREENS_LEAF = "rust-modules/screens/src/clock_readout.rs"
 APP_LEAF = "rust-modules/src/coldstart.rs"
 HUB = "rust-modules/ui/src/lib.rs"
-SRC_FILES = {LEAF: "pub fn leaf() {}\n", MACHINE_LEAF: "pub fn machine() {}\n", PLATFORM_LEAF: "pub fn platform() {}\n", GFX_LEAF: "pub fn gfx() {}\n", NET_LEAF: "pub fn net() {}\n", UI_LEAF: "pub fn ui() {}\n", PLEX_LEAF: "pub fn plex() {}\n", TELEMETRY_LEAF: "pub fn telemetry() {}\n", DATA_LEAF: "pub fn data() {}\n", SESSION_LEAF: "pub fn session() {}\n", MEDIA_LEAF: "pub fn media() {}\n", APPKIT_LEAF: "pub fn appkit() {}\n", SCREENS_LEAF: "pub fn screens() {}\n", APP_LEAF: "pub fn app() {}\n", HUB: "pub fn hub() {}",
+SRC_FILES = {LEAF: "pub fn leaf() {}\n", MACHINE_LEAF: "pub fn machine() {}\n", OS_LEAF: "pub fn os() {}\n", GFX_LEAF: "pub fn gfx() {}\n", NET_LEAF: "pub fn net() {}\n", UI_LEAF: "pub fn ui() {}\n", PLEX_LEAF: "pub fn plex() {}\n", TELEMETRY_LEAF: "pub fn telemetry() {}\n", DATA_LEAF: "pub fn data() {}\n", SESSION_LEAF: "pub fn session() {}\n", MEDIA_LEAF: "pub fn media() {}\n", APPKIT_LEAF: "pub fn appkit() {}\n", SCREENS_LEAF: "pub fn screens() {}\n", APP_LEAF: "pub fn app() {}\n", HUB: "pub fn hub() {}",
              "rust-modules/src/lib.rs": "mod coldstart;\n"}
 
 

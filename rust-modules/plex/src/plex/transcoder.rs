@@ -20,7 +20,7 @@ use super::params::{Ceiling, TranscodeDelivery, TranscodeSpec};
 use super::probe::Location;
 
 // `DP_AUDIO_CODECS` — the AUDIO codec set the buffer-feed pipeline decodes — is defined in
-// `devcaps` (the platform layer intersects it with the device's own codec table) and re-exported
+// `devcaps` (the os layer intersects it with the device's own codec table) and re-exported
 // here, so the profile string below and `plex::DP_AUDIO_CODECS` keep naming it. The live set is
 // `devcaps::Caps::audio`; normal routing uses [`is_dp_audio_track_with`] for membership, channel
 // bounds and sample rate, shared with the device profile.

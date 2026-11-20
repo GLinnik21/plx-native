@@ -57,7 +57,7 @@ In scope if the diff touches any of:
 | `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries (built only when `PLAYBACK_HAS_FEED`) |
 | `src/video_plane.c`, `src/starfish.h` | the video-plane binding: its own `dlopen` of ACB, the `dlsym` probe for the SDL exported window, and `vp_mode()` choosing between them; the header declares the `acb_*` / `sf_*` seam the Rust externs mirror |
-| `rust-modules/os/src/webos/ls2/uri.rs` and the `LSCall` declaration in `webos.rs` | the `com.webos.media` LS2 worker; `LSCall` is a hard import of `libluna-service2` in every build with the platform feature `uri-transport`, which the application's `play-uri` feature (in the shipping set) turns on |
+| `rust-modules/os/src/webos/ls2/uri.rs` and the `LSCall` declaration in `webos.rs` | the `com.webos.media` LS2 worker; `LSCall` is a hard import of `libluna-service2` in every build with the os crate's feature `uri-transport`, which the application's `play-uri` feature (in the shipping set) turns on |
 | `rust-modules/play-uri/src` | the URI backend declares no `extern "C"` of its own: it reaches ACB through `DisplaySink` (the platform's `acb_*` externs) and the bus through `tv::uri::UriMedia`; a declaration appearing here is a new undefined symbol and a layer violation |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` and the link rule that uses it | a new `-l` is a new hard `DT_NEEDED` |

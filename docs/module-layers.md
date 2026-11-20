@@ -64,8 +64,8 @@ formed one strongly connected component** from production references alone. Only
 outside it. `ci/check-module-layers.py --cycles` prints the current components, with the config's
 members (`ui::machine`, `diag::zlib`, …) as separate nodes. After L14 every production component
 sat inside one layer: media's `abr curlio ff hls player route`, data's eight modules, app's `app
-dev textinput`, platform's `i18n storage webos`, gfx's `gfx gpu_timer overdraw`, plex's `http
-plex`, telemetry's `diag telemetry` and machine's `ui::machine ui::present`. L15 took the platform
+dev textinput`, os's `i18n storage webos`, gfx's `gfx gpu_timer overdraw`, plex's `http
+plex`, telemetry's `diag telemetry` and machine's `ui::machine ui::present`. L15 took the os
 one apart (`webos` is behind the port, and `tv` names neither `i18n` nor `storage`: the release
 line is `i18n::webos_release_line`, and the port installs the storage helper's activator through
 `storage::client::install_activator`), so seven components remain, the others unchanged. A cycle
@@ -109,7 +109,7 @@ play_uri       playback_contract                                          + os b
 media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
 owp
-platform                                                                             machine base
+os                                                                                   machine base
 machine                                                                                      base
 base
 ```
@@ -118,7 +118,7 @@ base
 |---|---|---:|---:|
 | base | `eventlog paths task cbuf sha256 sha1 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold detail_parts devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
-| platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
+| os | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
 | net | `net stream ws` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
@@ -211,7 +211,7 @@ Four choices that were not obvious:
   types (`metadata::Stream`, `Dovi`, the metadata store) 84 times in production code and 191
   times in tests. The data layer names `media` 11 times. With this order the baseline is 231
   entries and 783 production references; the reverse order gives 254 and 856.
-- **machine sits below platform.** The runtime names nothing above `base`. `webos` already wakes
+- **machine sits below os.** The runtime names nothing above `base`. `webos` already wakes
   the frame through `ui::idle::invalidate`, and `auth`, `stores` and `plex` are written against
   `ui::machine`.
 - **appkit sits between media and screens.** It was added by L10, which planned to move the player
@@ -312,11 +312,11 @@ proves the references are gone and nothing more; L15b is open.
 |---|---:|---|
 | **L1** log core to base — **done** | 72 / 325 | `log`, `redact_tokens`, `events_log`, `open_log_append`, `write_log_line` and their tests moved from `lib.rs` to `eventlog.rs` in `base`. `log` calls `eventlog::ring::record` directly (`lab::record` was a one-line wrapper of it and is gone), and all 473 references in 95 files name `crate::eventlog::log`. The log's own guards moved under it too (`diag::scrub` and `diag::ring`, which named nothing but `redact_tokens`, are `eventlog::{scrub, ring}`), and `paths::app_dir` no longer logs: the boot preamble writes the same `appdir:` line from `paths::app_dir_line()`. So `eventlog` names nothing but `paths`, `paths` names nothing, and both sit outside every cycle. |
 | **L2** dev trigger primitives to base — **done** | 28 / 68 | The primitives (`read`, `flag`, `latched_flag!`, `read_sample`, `controlled_trigger`, `listed`, `guard_log_only`, `no_wan`, `holdload_delay_ms`) are the base module `devtrig`, which every caller names; the typed triggers moved beside their one consumer (`abr_pin` to `abr::ladder`, `PlayUrl`/`PlayDovi` to `player::playurl`, now `plx_playback_contract::playurl` with the parse in `plx_play_feed::playurl`), and the scenario reads lower layers made moved down rather than becoming hooks (`auth::scripted`, `telemetry::consent::state_override`, `screens::login`'s `harness_driven`, `player::failure_fixture`). |
-| **L3** lab config to platform — **done** | 5 / 7 | `lab::{config, is_trigger_key, menu_row_enabled}` are the platform module `labcfg`, and `ui/lab_toast.rs` went to `lab/toast.rs`, since only `lab` draws it. |
+| **L3** lab config to os — **done** | 5 / 7 | `lab::{config, is_trigger_key, menu_row_enabled}` are the os module `labcfg`, and `ui/lab_toast.rs` went to `lab/toast.rs`, since only `lab` draws it. |
 | **L4** machine runtime leaves ui — **done** | 4 / 6 | The six upward names are cut: `page_frozen` lives in `ui::idle` (`gfx` re-exports it), `ScreenArg`/`ScreenEvent` and `fit_line_by`/`elide_by` moved into `ui::machine` (`ui::screen` and `text` re-export them), the loop calls `card_motion_metrics::presented` itself, and idle's plane-bit test moved to `app::run`. |
 | **L5** gfx stops naming ui — **done** | 2 / 61 | `Rect`, `Crop` and `Zoom` are `gfx/geom.rs`, the colour and size tokens `gfx` and `text` draw with are `gfx/tokens.rs`, and the backdrop walk and the profilers moved whole to `gfx/backdrop.rs` and `gfx/profile.rs`; `ui` re-exports all of them at the old paths. |
 | **L6** transport takes Plex values — **done** | 5 / 13 | `Origin`, `Scheme`, `url_host`, `ResolvePin` and `dial_port` are `net/origin.rs` (`plex::origin` re-exports them and keeps `CredentialPolicy`), the user agent is installed once at boot through `net::set_user_agent`, and `stream::redirect::Request` takes the credential-transport check as a function pointer. |
-| **L7** platform owns its types — **done** | 2 / 5 | `DP_AUDIO_CODECS` lives in `devcaps` (`plex` re-exports it), and the Dolby Vision half of `webos/caps.rs`'s frame-safety test moved to `metadata`'s tests. |
+| **L7** os owns its types — **done** | 2 / 5 | `DP_AUDIO_CODECS` lives in `devcaps` (`plex` re-exports it), and the Dolby Vision half of `webos/caps.rs`'s frame-safety test moved to `metadata`'s tests. |
 | **L8** plex stops naming upward — **done** | 7 / 10 | `urlenc_str` is `plex::client`'s, `backoff_secs` and `EndpointRefresh(Set)` are `plex::retry` (`pms` and `stores` re-export them), `LinkClass`/`classify` are `plex::probe`'s, `route::auto_quality_ready` and `telemetry::cleanup_after_account_clear` are hooks `app::boot::install_plex_seams` installs, and `plex::session`'s whole-app tests moved to `app/plex_session_app_tests.rs`. |
 | **L9** telemetry owns its wire schema — **done** | 5 / 69 | The `*Class`/`Trace*` vocabulary and a new `FailureClass` are `telemetry::classes` (`player::report` re-exports them and converts through `FailureKind::class()`), clearing the error trace is a hook (`player::report::install_trace_eraser`, run at boot by `app::enter_application`, not by the first attempt: a failed preview traces without one), an incident hands over a telemetry-owned `ReadoutGlyph` that `screens::login` maps to an icon, and the consent adapter's live half is `telemetry::transition`. |
 | **L10** player and Plex-aware widgets out of ui — **done** | 38 / 511 | Part a moved `ui/{player_hud,track_menu,more_menu,info_panel,up_next,chapters_panel,timing_capsule,source_list}.rs` and `screens/player/skip_pill.rs` to the new `appkit` layer rather than `screens/` (the third choice above); part b gave `widgets`, `card_row`, `hero_logo`, `collection_tile` and `fmt` plain values (`ui::tile::TileFacts`, a raw `u16` server id, `fmt::RatingScale`), with `screens::registry::tile_facts::of` the one `PmsMovie` converter. |
@@ -634,7 +634,7 @@ couple of seconds that crate cost per edit to everything above it. The gain is i
 application edit is 5.7 s faster), not in the noisy medians; the crates that carry the line count
 (`gfx`, `plex`, `ui`, `screens`) were still inside the application crate at that point.
 
-### Split 3: platform
+### Split 3: os
 
 `os` was extracted third: `rust-modules/os/` is the workspace member `plx_os` (an
 `rlib`, `uses = base machine`), holding `webos storage keymanager devcaps imgcache i18n labcfg tv`
@@ -658,10 +658,10 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
   and the nanosvg object, lost its `serde`/`serde_json` build-dependencies, and the application
   manifest lost the `icu_*` crates, which only `i18n` used.
 - **A `cargo:rustc-env` reaches one crate.** `storage::diagnostics` read `env!("PLX_VERSION")`,
-  which the application's build script publishes; the platform crate cannot see it, and
+  which the application's build script publishes; the os crate cannot see it, and
   re-deriving the version rule in a second build script would have been a third copy of it (it is
   already in `build.rs` and `ci/version_rule.py`). The application hands it in instead:
-  `storage::diagnostics::start(env!("PLX_VERSION"))`. The platform layer does not know what
+  `storage::diagnostics::start(env!("PLX_VERSION"))`. The os layer does not know what
   version the application is.
 - **A test that reads another layer's source moves up.** `storage::diagnostics`'s boot-order test
   `include_str!`ed `app/mod.rs`; it now sits beside its sibling in `app/boot.rs`'s
@@ -720,7 +720,7 @@ Measured effect (`make build-bench`, same machine, 3 interleaved runs; the host 
 both sets, and the figures are non-incremental). Before, on `b131c181`: an edit in `plx_base` 31.3 s
 (min 31.2), in `plx_machine` 31.4 s (min 31.3), of the application crate 32.0 s (min 31.0), the hub
 edit 32.3 s (min 31.4), the unit suite 60.5 s. After: an edit in `plx_base` 30.6 s (min 30.5), in
-`plx_machine` 30.9 s (min 30.5), in `plx_os` 31.2 s (min 30.1, it rebuilds the platform crate
+`plx_machine` 30.9 s (min 30.5), in `plx_os` 31.2 s (min 30.1, it rebuilds the os crate
 and the application behind it), of the application crate 30.8 s (min 28.4, the three layer crates
 fresh), the hub edit 30.8 s (min 28.2), and the unit suite 61.1 s with the same 5603 tests. The gain
 is the 1 to 3 s that `os` (11k of 450k lines) cost every application edit, and no more: the

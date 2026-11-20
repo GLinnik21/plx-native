@@ -12,9 +12,9 @@ Scenarios (each a named row; `--only ID,ID` selects, `--quick` is `noop,leaf,siz
   machine   ...after appending one to a leaf file of the MACHINE layer crate
             (rust-modules/machine/src/landgate.rs, in `plx_machine`): `plx_base` stays fresh, the
             machine crate and the app crate behind it recompile.
-  os        ...after appending one to a leaf file of the PLATFORM layer crate
+  os        ...after appending one to a leaf file of the os layer crate
             (rust-modules/os/src/devcaps.rs, in `plx_os`): `plx_base` and `plx_machine`
-            stay fresh, the platform crate and the app crate behind it recompile.
+            stay fresh, the os crate and the app crate behind it recompile.
   gfx       ...after appending one to a leaf file of the GFX layer crate
             (rust-modules/gfx/src/overdraw.rs, in `plx_gfx`): `plx_base` and `plx_machine` stay
             fresh, the gfx crate and the app crate behind it recompile.
@@ -129,7 +129,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 LEAF_FILE = "rust-modules/base/src/cbuf.rs"
 MACHINE_LEAF_FILE = "rust-modules/machine/src/landgate.rs"
-PLATFORM_LEAF_FILE = "rust-modules/os/src/devcaps.rs"
+OS_LEAF_FILE = "rust-modules/os/src/devcaps.rs"
 GFX_LEAF_FILE = "rust-modules/gfx/src/overdraw.rs"
 NET_LEAF_FILE = "rust-modules/net/src/stream_redirect.rs"
 UI_LEAF_FILE = "rust-modules/ui/src/dwell.rs"
@@ -146,7 +146,7 @@ TOUCH_FILE = "rust-modules/src/lib.rs"
 APP_PACKAGE = "plxnative-modules"
 BASE_PACKAGE = "plx_base"
 MACHINE_PACKAGE = "plx_machine"
-PLATFORM_PACKAGE = "plx_os"
+OS_PACKAGE = "plx_os"
 GFX_PACKAGE = "plx_gfx"
 NET_PACKAGE = "plx_net"
 UI_PACKAGE = "plx_ui"
@@ -198,7 +198,7 @@ TITLES = {
     "check": "make check, whole host gate",
 }
 SWAP_WARN_PCT = 90.0
-EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "os": PLATFORM_LEAF_FILE, "gfx": GFX_LEAF_FILE, "net": NET_LEAF_FILE, "ui": UI_LEAF_FILE, "plex": PLEX_LEAF_FILE, "telemetry": TELEMETRY_LEAF_FILE, "data": DATA_LEAF_FILE, "session": SESSION_LEAF_FILE, "media": MEDIA_LEAF_FILE, "appkit": APPKIT_LEAF_FILE, "screens": SCREENS_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
+EDIT_FILES = {"leaf": LEAF_FILE, "leaf-inc": LEAF_FILE, "machine": MACHINE_LEAF_FILE, "os": OS_LEAF_FILE, "gfx": GFX_LEAF_FILE, "net": NET_LEAF_FILE, "ui": UI_LEAF_FILE, "plex": PLEX_LEAF_FILE, "telemetry": TELEMETRY_LEAF_FILE, "data": DATA_LEAF_FILE, "session": SESSION_LEAF_FILE, "media": MEDIA_LEAF_FILE, "appkit": APPKIT_LEAF_FILE, "screens": SCREENS_LEAF_FILE, "app": APP_LEAF_FILE, "hub": HUB_FILE, "hub-inc": HUB_FILE}
 
 
 class BenchError(Exception):
@@ -376,7 +376,7 @@ def summarize_artifacts(stdout: str) -> dict:
             app_rebuilt = app_rebuilt or APP_PACKAGE in str(rec.get("package_id", ""))
             base_rebuilt = base_rebuilt or BASE_PACKAGE in str(rec.get("package_id", ""))
             machine_rebuilt = machine_rebuilt or MACHINE_PACKAGE in str(rec.get("package_id", ""))
-            platform_rebuilt = platform_rebuilt or PLATFORM_PACKAGE in str(rec.get("package_id", ""))
+            platform_rebuilt = platform_rebuilt or OS_PACKAGE in str(rec.get("package_id", ""))
             gfx_rebuilt = gfx_rebuilt or GFX_PACKAGE in str(rec.get("package_id", ""))
             net_rebuilt = net_rebuilt or NET_PACKAGE in str(rec.get("package_id", ""))
             ui_rebuilt = ui_rebuilt or UI_PACKAGE in str(rec.get("package_id", ""))

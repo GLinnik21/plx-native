@@ -2,7 +2,7 @@
 """Fail if building the storage helper compiles the app library.
 
 `plxnative-storage` is the small LS2 service binary that holds the private store; it shares a few
-source files with the platform layer crate (`os/src/storage_service/*.rs`,
+source files with the os layer crate (`os/src/storage_service/*.rs`,
 `os/src/storage/state.rs`) but never links the
 app crate. While it was a `[[bin]]` of the `plxnative-modules` package, cargo nevertheless built
 the whole ~423k-line library for it first (a bin of a package depends on that package's lib), so

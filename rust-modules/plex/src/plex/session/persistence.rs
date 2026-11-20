@@ -541,7 +541,7 @@ const GCM_TAG: usize = 16;
 ///
 /// The two were once folded into one "whichever is larger, plus 512" figure, which overstated an
 /// ACL write (every credential change on a 4.x set) by the base64 expansion, and so evicted memory
-/// from a write the platform would have stored.
+/// from a write the os layer would have stored.
 pub(super) fn sealed_envelope_estimate(state: &state::CanonicalState, plaintext: &str, seal: Seal) -> usize {
     use serde_json::{json, Value};
     let mut context = state.auth_context();
@@ -661,7 +661,7 @@ pub(super) fn projected_document(
 /// **The document guard.** DB8 keeps the whole state in one document that may not pass
 /// `MAX_LOGICAL_BYTES`, and past it EVERY write fails (`LogicalTooLarge`): quality, pins, consent,
 /// all of it, because per-profile memory grew. So before a write that carries `public` is sent, its
-/// projected document is measured with the platform's own counting rule (`state::logical_size`;
+/// projected document is measured with the os layer's own counting rule (`state::logical_size`;
 /// the loaded envelope, ledger and any pending refresh are in hand, and future preference keys
 /// preserved above count), and if it would not fit, per-profile memory is shed from the payload —
 /// `track_memory`, then `subtitle_offsets`, then `library_sorts`, each oldest-first from the record
@@ -669,7 +669,7 @@ pub(super) fn projected_document(
 ///
 /// Returns the lists that lost entries and how many. Nothing is ever refused here: if everything
 /// sheddable is gone and the document still does not fit, the write goes out as it would have and
-/// the platform refuses it as before. A stored document already over the cap never reaches this
+/// the os layer refuses it as before. A stored document already over the cap never reaches this
 /// (it fails to load), and the file backend has no cap and no guard.
 pub(super) fn fit_document(
     state: &state::CanonicalState,
@@ -689,7 +689,7 @@ pub(super) fn fit_document(
 }
 
 /// The one line that reports what a write is about to put in DB8: the whole projected document
-/// and the share `track_memory` holds of it, both in the platform's logical bytes, against the
+/// and the share `track_memory` holds of it, both in the os layer's logical bytes, against the
 /// cap. It is what the device check reads to see how close memory sits to the budget; the write's
 /// own latency is the line `session.rs` logs after the helper answers.
 pub(super) fn document_size_line(total: usize, preferences: &serde_json::Value) -> String {
@@ -715,7 +715,7 @@ pub(super) fn projected_size(
     };
     let projected = size(write)?;
     if write == DocumentWrite::Staged {
-        // The platform also validates the document the pending refresh WOULD become
+        // The os layer also validates the document the pending refresh WOULD become
         // (`pending_candidate`), and that is what stands once it is promoted.
         return Some(projected.max(size(DocumentWrite::Replace(Seal::Keymanager))?));
     }
