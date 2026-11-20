@@ -324,7 +324,9 @@ fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
 /// `Enter` makes the seat the page's own only for the page it is about: a FRESH open with no driver,
 /// whatever its item (a page whose item is there can still see a later landing change its default).
 /// With a driver Play is the default from the first frame and the page keeps no self-seat, and a Back
-/// return brings the viewer's own place, which ends the claim a fresh open had made.
+/// return brings the viewer's own place, which ends the claim a fresh open had made. A body nothing
+/// has entered yet (one rebuilt for a return, between its mount and its `Enter`, while the engine
+/// still holds the viewer's cursor on the entry) claims nothing.
 #[test]
 fn enter_makes_the_seat_the_pages_own_only_for_a_fresh_open_with_no_driver() {
     use plx_ui::screen::Enter;
@@ -332,6 +334,7 @@ fn enter_makes_the_seat_the_pages_own_only_for_a_fresh_open_with_no_driver() {
     let fresh = Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
     // (what, no driver, item landed, the enters in order, the page's own seat after them)
     for (what, no_driver, landed, enters, own) in [
+        ("a body nothing has entered", true, false, vec![], false),
         ("a fresh open before its item lands", true, false, vec![fresh], true),
         ("a fresh open whose item is already there", true, true, vec![fresh], true),
         ("a fresh open with a driver composed", false, false, vec![fresh], false),
