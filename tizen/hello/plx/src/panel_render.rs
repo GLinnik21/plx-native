@@ -307,22 +307,27 @@ mod tests {
     #[derive(Clone, Copy, PartialEq)]
     enum Gfx {
         /// A device where everything works and the GL lists neither wanted extension: the bisect says every
-        /// variant compiles (one short line).
+        /// variant compiles (one short line), 60 frames drawn with `plx_gfx`.
         Ok,
-        /// What the NEXT emulator run is expected to show: the one pair that failed on the first run, the
-        /// driver's first line whole, both extensions missing, and a bisect with failing rungs.
+        /// What the NEXT emulator run is expected to show, now that `plx_gfx` sends `#version 100`: all 14
+        /// pairs compile, `plx_gfx` is entered and draws, both extensions are missing, and the bisect shows
+        /// the matrix of the first run (a-, c+, g+, l+, o+) with its new rung p+.
         Emulator,
         /// The longest refusal the probe can write from realistic strings: a first error that wraps onto a
         /// second row, more log lines behind it, every rung failing, and the driver's copy of the source
         /// differing on all of them (the longest bisect line).
         Worst,
+        /// The longest result of a run that DID enter `plx_gfx` and went wrong: a panicked init with a long
+        /// message, GL errors, no font, a late fault, `plx_gfx`'s own failure lines, both extensions missing
+        /// and every bisect rung failing.
+        WorstEntered,
     }
 
     /// A bisect result where exactly the variants named in `pass` compiled.
     fn bisect(pass: &str, copy_differs: bool) -> crate::shader_bisect::BisectReport {
         use crate::gfx_probe::{Readback, Trial};
         use crate::shader_bisect::{BisectReport, Inspection, Outcome};
-        let outcomes = "abcdefghiklmno"
+        let outcomes = "abcdefghiklmnop"
             .chars()
             .map(|id| Outcome {
                 id,
@@ -343,35 +348,51 @@ mod tests {
         use crate::gfx_probe::{Report, ShaderCheck, ShaderFailure, Where};
         use crate::net_probe::{CurlFacts, GetResult, MockHost, NetReport};
         let ext = vec!["ARM|EXT_shader_framebuffer_fetch".to_string(), "EXT_disjoint_timer_query".to_string()];
-        let refusal = "1 of 14 shader pairs do not compile+link (init would exit)".to_string();
         let gfx = match gfx {
             Gfx::Ok => Report {
                 shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
-                bisect: Some(bisect("abcdefghiklmno", false)),
+                bisect: Some(bisect("abcdefghiklmnop", false)),
                 stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
                 err_init: Some(0),
                 err_frame: Some(0),
                 err_swap: Some(0),
                 text_px: Some(187.0),
                 rect_drawn: true,
+                frames_drawn: crate::gfx_probe::STEADY_FRAMES,
                 missing_ext: ext,
                 font_redirected: true,
                 ..Report::default()
             },
             Gfx::Emulator => Report {
-                refusal: Some(refusal),
-                shaders: Some(ShaderCheck {
-                    passed: 13,
-                    total: 14,
-                    first_failure: Some(ShaderFailure {
-                        pair: "init_gl ambient",
-                        at: Where::Vertex,
-                        first_line: "0:37(9): error: syntax error, unexpected NEW_IDENTIFIER".into(),
-                        more_lines: 0,
-                    }),
-                }),
-                bisect: Some(bisect("cglo", false)),
+                shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
+                bisect: Some(bisect("cglop", false)),
+                stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
+                err_init: Some(0),
+                err_frame: Some(0),
+                err_swap: Some(0),
+                text_px: Some(187.0),
+                rect_drawn: true,
+                frames_drawn: crate::gfx_probe::STEADY_FRAMES,
                 missing_ext: ext,
+                font_redirected: true,
+                ..Report::default()
+            },
+            Gfx::WorstEntered => Report {
+                shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
+                bisect: Some(bisect("", false)),
+                stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
+                err_init: Some(0x0502),
+                err_frame: Some(0x0506),
+                err_swap: Some(0x0501),
+                text_px: Some(0.0),
+                rect_drawn: true,
+                frames_drawn: 7,
+                missing_ext: ext,
+                font_redirected: false,
+                font_expected: "/opt/usr/globalapps/plxnhello0/bin/appfont.ttf".into(),
+                failure_events: 12,
+                first_failure_event: Some("text prog link failed: the vertex shader and the fragment shader do not agree on a varying named v_uv".into()),
+                late_fault: Some("3 unbound GL call(s), first glGetFramebufferAttachmentParameteriv".into()),
                 ..Report::default()
             },
             Gfx::Worst => Report {
@@ -484,11 +505,19 @@ mod tests {
         p
     }
 
-    /// The panel the next emulator run is expected to show: ordinary device facts, step 8 refused with the
-    /// first shader error and the bisect, step 9 answering.
+    /// The panel the next emulator run is expected to show: ordinary device facts, step 8 with `plx_gfx`
+    /// entered (all 14 pairs compile now), the frame count, the font's origin and the bisect, step 9
+    /// answering.
     fn emulator_panel() -> Panel {
         let p = typical_panel();
         add_probe_steps(&p, Gfx::Emulator, true);
+        p
+    }
+
+    /// Ordinary device facts and the longest step-8 result of a run that entered `plx_gfx` and went wrong.
+    fn worst_entered_gfx_panel() -> Panel {
+        let p = typical_panel();
+        add_probe_steps(&p, Gfx::WorstEntered, true);
         p
     }
 
@@ -601,10 +630,11 @@ mod tests {
         });
     }
 
-    /// The panel the next emulator run shows (step 8 refused, with the first shader error and the bisect
-    /// summary): it is the one the owner photographs, so it must fit whole.
+    /// The panel the next emulator run shows (`plx_gfx` entered: the inits, the three `glGetError`s, the frame
+    /// count, where the font came from, the missing extensions and the bisect summary): it is the one the
+    /// owner photographs, so it must fit whole.
     #[test]
-    fn the_expected_emulator_panel_fits_with_the_shader_error_and_the_bisect_line() {
+    fn the_expected_emulator_panel_fits_with_plx_gfx_entered_the_frame_count_the_font_and_the_bisect_line() {
         with_renderer(|r| {
             let (_, sections) = emulator_panel().snapshot();
             let rendered = r.render(&sections).expect("render");
@@ -612,9 +642,30 @@ mod tests {
             eprintln!("emulator panel: {}", fit(&rendered));
             assert!(!rendered.overflowed, "the emulator panel must fit: {}", fit(&rendered));
             let text: String = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
-            assert!(text.contains("first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER"), "{text}");
-            assert!(text.contains("no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query"), "{text}");
-            assert!(text.contains("shader bisect (+ compiles, - fails): a- b- c+"), "{text}");
+            assert!(text.contains("OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px, font from res/"), "{text}");
+            assert!(text.contains("glGetError init/frame/swap 0/0/0; 60 frames drawn with plx_gfx; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query"), "{text}");
+            assert!(text.contains("shader bisect (+ compiles, - fails): a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+ p+; j bytes clean"), "{text}");
+            assert!(!text.contains("first failure"), "nothing was refused: {text}");
+        });
+    }
+
+    /// A run that got into `plx_gfx` and went wrong in every way the report can say at once: still whole on
+    /// the plate (the verdict, the GL errors, the frames, the missing font, the late fault, `plx_gfx`'s own
+    /// failure line, the extensions, the bisect), nothing cut.
+    #[test]
+    fn a_step_8_that_entered_plx_gfx_and_went_wrong_in_every_way_still_fits_whole() {
+        with_renderer(|r| {
+            let (_, sections) = worst_entered_gfx_panel().snapshot();
+            let rendered = r.render(&sections).expect("render");
+            dump(&rendered, "worst-entered");
+            eprintln!("worst entered step-8 panel: {}", fit(&rendered));
+            assert!(!rendered.overflowed, "the longest step 8 of a run that entered plx_gfx and failed must fit: {}", fit(&rendered));
+            let step8 = sections.iter().find(|s| s.text.starts_with("8 gfx")).expect("step 8");
+            assert!(step8.text.contains("NOT OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, TEXT DREW 0px"), "{}", step8.text);
+            assert!(step8.text.contains("glGetError init/frame/swap 0x0502/0x0506/0x0501; 7 frames drawn with plx_gfx; no font face, looked in /opt/usr/globalapps/plxnhello0/bin/appfont.ttf"), "{}", step8.text);
+            assert!(step8.text.contains("3 unbound GL call(s), first glGetFramebufferAttachmentParameteriv"), "{}", step8.text);
+            assert!(step8.text.contains("12 failure line(s) in plx_gfx's log, first: text prog link failed"), "{}", step8.text);
+            assert!(step8.text.ends_with("o- p-; j bytes clean"), "{}", step8.text);
         });
     }
 
@@ -641,7 +692,7 @@ mod tests {
             assert!(step8_rows >= 6, "the first error and the bisect line each wrapped onto a second row: {step8_rows} rows");
             // Everything in the model is in the section's text (nothing cut by the model's caps).
             assert!(step8.text.contains("'uniform' or 'varying' (+2 more log lines in the UDP log)"), "{}", step8.text);
-            assert!(step8.text.contains("the driver's copy of the source differs for a b c d e f g h i k l m n o"), "{}", step8.text);
+            assert!(step8.text.contains("the driver's copy of the source differs for a b c d e f g h i k l m n o p"), "{}", step8.text);
             assert!(!step8.text.contains("..."), "{}", step8.text);
         });
     }

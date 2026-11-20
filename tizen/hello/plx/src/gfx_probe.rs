@@ -67,11 +67,24 @@ const GL_ONE: u32 = 1;
 /// The render-loop frame (frames presented so far) at which the probe starts. The panel's own first frame
 /// and the H5 result come first.
 pub const START_FRAME: u64 = 2;
-/// What `plx_gfx` hands GL ahead of every shader source on an ES context (`gfx.rs` `glsl_preamble`): the
-/// empty string, as its OWN source string (`glShaderSource(s, 2, [preamble, source], NULL)`). The probe
-/// compiles the same way, so a driver that treats a two-string call differently from a one-string one is
-/// tested as the renderer will use it.
-pub const ES_PREAMBLE: &str = "";
+/// The swatch is drawn on every frame after the first result; once this many have been drawn with `plx_gfx`
+/// (no GL error, no unbound call) the settled report replaces the first on the panel, with the count. About
+/// two seconds at the 30 fps the emulator ran at.
+pub const STEADY_FRAMES: u64 = 60;
+/// What `plx_gfx` hands GL ahead of every shader source on an ES context (`gfx.rs` `glsl_preamble`): a
+/// `#version 100` line, as its OWN source string (`glShaderSource(s, 2, [preamble, source], NULL)`). The
+/// probe compiles the same way, so the preflight tests the call the renderer makes. A test reads `gfx.rs`
+/// and fails if this drifts from its ES branch.
+///
+/// It was the empty string until the first emulator run: YaGL's GLSL compiler (Mesa's, "OpenGL ES GLSL ES
+/// 1.4") rejected `varying highp vec2 v_dither_nc;` in `vs_ambient.vert` when the source began with no
+/// `#version` line (the bisect's variants `a`, `m`; `g`, with a `#version 100` first, compiled), which is
+/// why the line is there now. The bisect still compiles its variants after [`BISECT_PREAMBLE`], the old
+/// empty string, so its matrix stays comparable with that run and `g` is the new baseline.
+pub const ES_PREAMBLE: &str = "#version 100\n";
+/// The first source string of the bisect's variants (all but `p`): what `plx_gfx` handed GL BEFORE the
+/// `#version 100` line was added, an empty string.
+pub const BISECT_PREAMBLE: &str = "";
 
 symtable! {
     /// The core GLES2 entry points the probe itself calls, loaded from the opened libGLESv2. These are
@@ -237,7 +250,7 @@ pub const PAIRS: &[Pair] = &[
 /// Compile and link, as `gfx::try_compile` / `link_shaders` do, but returning the driver's complaint
 /// instead of exiting.
 pub trait ShaderGl {
-    /// Compile one GLSL source the way `plx_gfx` does (an empty preamble string, then the source). A
+    /// Compile one GLSL source the way `plx_gfx` does ([`ES_PREAMBLE`] as its own string, then the source). A
     /// trailing NUL is ignored. `Err` is the driver's WHOLE info log (or why there is none).
     fn compile(&mut self, fragment: bool, src: &str) -> Result<u32, String>;
     /// Attach both, bind `a_pos` to attribute 0 (what `link_shaders` does) and link.
@@ -272,6 +285,26 @@ pub struct Trial {
     pub source_length: Option<i32>,
     /// `glGetShaderSource`'s answer, when that entry is bound.
     pub readback: Option<Readback>,
+}
+
+/// A `glGetShaderSource` that returns fewer bytes than this for a source of at least this many is not
+/// giving the source back at all. YaGL returned 8 bytes for EVERY variant, the compiling ones included, so
+/// there the entry is a stub and its answer says nothing about what the driver kept.
+pub const READBACK_STUB_BELOW: usize = 16;
+
+impl Trial {
+    /// The read-back is there but cannot be a copy of the source: it returned under
+    /// [`READBACK_STUB_BELOW`] bytes for a source of at least that many (see there).
+    pub fn readback_unsupported(&self) -> bool {
+        self.readback
+            .as_ref()
+            .is_some_and(|r| self.passed_len >= READBACK_STUB_BELOW && (r.returned.max(0) as usize) < READBACK_STUB_BELOW)
+    }
+
+    /// The read-back is trustworthy AND differs from what was passed: the driver kept other text.
+    pub fn readback_differs(&self) -> bool {
+        !self.readback_unsupported() && self.readback.as_ref().is_some_and(|r| !r.same)
+    }
 }
 
 /// Where a pair failed.
@@ -581,6 +614,9 @@ pub struct Report {
     pub text_px: Option<f32>,
     /// The swatch's rect was drawn without a panic.
     pub rect_drawn: bool,
+    /// Frames drawn with `plx_gfx` so far (each: the rect and the line of text, drawn without a panic), as of
+    /// this report. 1 when the first result is published; [`STEADY_FRAMES`] when the settled one is.
+    pub frames_drawn: u64,
     /// Extensions the renderer wants that `GL_EXTENSIONS` lacks ([`missing_extensions`]).
     pub missing_ext: Vec<String>,
     /// The package font was reached through the `TTF_OpenFont` redirect, and where `plx_gfx` first looked.
@@ -644,9 +680,11 @@ impl Report {
         } else {
             format!("no GL ext: {}", self.missing_ext.join(" "))
         };
-        // The font finding rides on the draw part of line 1 (the text's own result) and is shown only when
-        // the redirect was what opened the font.
-        let font = if self.font_redirected { " (res/ font)" } else { "" };
+        // Where the text's font came from, on the draw part of line 1 beside the text's own result:
+        // `plx_gfx` opens `<exe dir>/appfont.ttf` first and the exe is the .NET launcher, so a font that
+        // drew means either the `TTF_OpenFont` redirect found the package's `res/` copy, or (no redirect)
+        // the exe dir had one after all.
+        let font = if self.font_redirected { ", font from res/" } else { ", font from the exe dir" };
         let mut out: Vec<String> = Vec::new();
         if let Some(why) = &self.refusal {
             out.push(format!("FAILED, plx_gfx not entered: {why}"));
@@ -684,6 +722,9 @@ impl Report {
                 err_hex(self.err_frame),
                 err_hex(self.err_swap)
             )];
+            if self.frames_drawn > 0 {
+                parts.push(format!("{} frame{} drawn with plx_gfx", self.frames_drawn, if self.frames_drawn == 1 { "" } else { "s" }));
+            }
             if self.text_px == Some(0.0) {
                 parts.push(format!("no font face, looked in {}", cap(&self.font_expected, 120)));
             }
@@ -759,7 +800,7 @@ pub trait Env {
     /// First nonzero `glGetError` of up to 16 (all drained), 0 when there is none.
     fn drain_errors(&mut self) -> u32;
     /// Run one init call. A panic is the caller's to catch.
-    fn init(&mut self, stage: Stage);
+    fn init(&mut self, stage: Stage, width: i32, height: i32);
     /// Make `plx_gfx`'s GL state what it assumes (its buffer, attribute 0, blending, texture unit 0), draw
     /// the swatch (a rect and a line of text), and put the state back for the panel's own client-side
     /// arrays. Returns the text's width in pixels.
@@ -823,12 +864,18 @@ impl<E: Env> Probe<E> {
     /// The result, on the panel and in the log. The log gets every line whole (`H7 RESULT:` is line 1, then
     /// `H7 RESULT+1:` and so on), each split into continuations rather than cut when it is long.
     fn publish_report(&mut self) {
+        self.publish_report_as("");
+    }
+
+    /// [`Self::publish_report`] under a log tag: the settled report after [`STEADY_FRAMES`] frames is
+    /// `H7 RESULT@60:` (and `H7 RESULT@60+1:`, ...), so a reader can tell it from the first one.
+    fn publish_report_as(&mut self, tag: &str) {
         let (ok, lines) = self.report.lines();
         for (i, l) in lines.iter().enumerate() {
             if i == 0 {
-                plog_full!("H7 RESULT: {l}");
+                plog_full!("H7 RESULT{tag}: {l}");
             } else {
-                plog_full!("H7 RESULT+{i}: {l}");
+                plog_full!("H7 RESULT{tag}+{i}: {l}");
             }
         }
         self.env.publish(ok, lines);
@@ -867,7 +914,7 @@ impl<E: Env> Probe<E> {
                 self.phase = Phase::Preflight;
             }
             Phase::Preflight => self.run_preflight(),
-            Phase::Init => self.run_inits(),
+            Phase::Init => self.run_inits(width, height),
             Phase::FirstDraw => {
                 self.draw(width, height, true);
             }
@@ -941,16 +988,18 @@ impl<E: Env> Probe<E> {
         self.phase = Phase::Init;
     }
 
-    fn run_inits(&mut self) {
+    fn run_inits(&mut self, width: i32, height: i32) {
         let (expected, _) = self.env.font();
         self.report.font_expected = expected;
         for stage in Stage::ALL {
             plog!("H7 gfx: entering {}", stage.name());
-            let r = catch_unwind(AssertUnwindSafe(|| self.env.init(stage)));
+            let started = std::time::Instant::now();
+            let r = catch_unwind(AssertUnwindSafe(|| self.env.init(stage, width, height)));
+            let took_ms = started.elapsed().as_secs_f64() * 1000.0;
             let result = r.map_err(|p| panic_text(&*p));
             match &result {
-                Ok(()) => plog!("H7 gfx: {} returned", stage.name()),
-                Err(e) => plog!("H7 gfx: {} PANICKED: {e}", stage.name()),
+                Ok(()) => plog!("H7 gfx: {} returned in {took_ms:.1} ms", stage.name()),
+                Err(e) => plog!("H7 gfx: {} PANICKED after {took_ms:.1} ms: {e}", stage.name()),
             }
             self.report.stages.push((stage.name(), result));
             self.collect_events();
@@ -974,6 +1023,7 @@ impl<E: Env> Probe<E> {
         match catch_unwind(AssertUnwindSafe(|| self.env.draw_swatch(width, height))) {
             Ok(px) => {
                 let err = self.env.drain_errors();
+                self.report.frames_drawn += 1;
                 if first {
                     self.report.rect_drawn = true;
                     self.report.text_px = Some(px);
@@ -987,6 +1037,12 @@ impl<E: Env> Probe<E> {
                         plog!("H7 gfx: {fault}");
                         self.report.late_fault = Some(fault);
                         self.publish_report();
+                    } else if self.report.frames_drawn == STEADY_FRAMES {
+                        // The swatch has now been drawn, frame after frame, with no GL error and no call to a
+                        // missing entry: say so once (a still panel is re-rendered only when its text changes).
+                        self.collect_events();
+                        plog!("H7 gfx: {STEADY_FRAMES} frames drawn with plx_gfx, glGetError clean on every one");
+                        self.publish_report_as(&format!("@{STEADY_FRAMES}"));
                     }
                 }
             }
@@ -1082,8 +1138,15 @@ pub unsafe extern "C" fn __wrap_TTF_OpenFont(file: *const c_char, ptsize: c_int)
         return font;
     };
     let Some(res) = RES_DIR.get() else { return font };
-    let Ok(alt) = CString::new(format!("{res}/{name}")) else { return font };
+    let alt_path = format!("{res}/{name}");
+    let Ok(alt) = CString::new(alt_path.as_str()) else { return font };
     let retry = __real_TTF_OpenFont(alt.as_ptr(), ptsize);
+    // The log says which path was asked, which was retried and how it went, so the panel's "font from res/"
+    // has the paths behind it (the open itself is on the render thread, in `init_text`).
+    plog!(
+        "H7 font: {asked:?} did not open; retried from the package: {alt_path:?} -> {}",
+        if retry.is_null() { "FAILED" } else { "opened" }
+    );
     if !retry.is_null() {
         FONT_REDIRECTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1161,21 +1224,85 @@ fn then_restore<R>(restore: impl FnOnce(), body: impl FnOnce() -> R) -> R {
     }
 }
 
-/// Put the GL state the panel's own draw (`label_gl`) relies on back, after `plx_gfx` ran: no vertex buffer
-/// bound (the panel's arrays are client-side) and no attribute left enabled, blending and the scissor test
-/// off, dither on (all GL's defaults, which is what the panel was written against), texture unit 0 active.
+/// The GL state the panel's own draw (`label_gl`) relies on, put back after `plx_gfx` ran: no vertex buffer
+/// bound (the panel's arrays are client-side) and no attribute left enabled (an enabled array with no
+/// buffer is read from whatever address its last pointer held), blending and the scissor test off, dither on
+/// (all GL's defaults, which is what the panel was written against), texture unit 0 active and, when the
+/// window's size is known, the viewport the whole window: `init_blur`'s warm-up pass leaves the
+/// application's own 1920x1080 viewport behind, and the panel sets the viewport only once, at start.
 /// Everything else the panel's draw sets for itself on every frame (program, texture, both attribute
-/// pointers); the viewport is set by the swatch's own draw to the window's size, which is the panel's too.
-fn restore_panel_gl(s: &ProbeSyms) {
-    // SAFETY: the render thread's context is current.
-    unsafe {
-        (s.bind_buffer)(GL_ARRAY_BUFFER, 0);
-        (s.disable_vertex_attrib_array)(0);
-        (s.disable_vertex_attrib_array)(1);
-        (s.disable)(GL_BLEND);
-        (s.disable)(GL_SCISSOR_TEST);
-        (s.enable)(GL_DITHER);
-        (s.active_texture)(GL_TEXTURE0);
+/// pointers).
+fn panel_state_ops(viewport: Option<(i32, i32)>) -> Vec<StateOp> {
+    let mut ops = vec![
+        StateOp::BindArrayBuffer(0),
+        StateOp::DisableAttrib(0),
+        StateOp::DisableAttrib(1),
+        StateOp::Disable(GL_BLEND),
+        StateOp::Disable(GL_SCISSOR_TEST),
+        StateOp::Enable(GL_DITHER),
+        StateOp::ActiveTexture(GL_TEXTURE0),
+    ];
+    if let Some((w, h)) = viewport {
+        ops.push(StateOp::Viewport(w, h));
+    }
+    ops
+}
+
+/// What `plx_gfx` assumes when it draws, which the panel's draw (client-side arrays, no buffer, no
+/// attribute, no blending) leaves otherwise: its one buffer bound, attribute 0 read from it, straight
+/// blending, no dither, no scissor, texture unit 0 and the viewport the size of the window.
+fn swatch_state_ops(vbo: u32, width: i32, height: i32) -> Vec<StateOp> {
+    vec![
+        StateOp::Viewport(width, height),
+        StateOp::BindArrayBuffer(vbo),
+        StateOp::EnableAttrib(0),
+        StateOp::PointAttrib0,
+        StateOp::Enable(GL_BLEND),
+        StateOp::StraightBlend,
+        StateOp::Disable(GL_DITHER),
+        StateOp::Disable(GL_SCISSOR_TEST),
+        StateOp::ActiveTexture(GL_TEXTURE0),
+    ]
+}
+
+/// One GL state call of the hand-over between the panel's draw and `plx_gfx`'s, as data: the two directions
+/// are lists a test can read, and [`apply_state`] is the one place they become GL calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StateOp {
+    /// `glViewport(0, 0, w, h)`.
+    Viewport(i32, i32),
+    BindArrayBuffer(u32),
+    EnableAttrib(u32),
+    DisableAttrib(u32),
+    /// `glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL)`: `plx_gfx`'s only attribute, read from its
+    /// bound buffer at offset 0.
+    PointAttrib0,
+    Enable(u32),
+    Disable(u32),
+    /// `glBlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)`.
+    StraightBlend,
+    ActiveTexture(u32),
+}
+
+fn apply_state(s: &ProbeSyms, ops: &[StateOp]) {
+    for op in ops {
+        // SAFETY: the render thread's context is current; every call is a plain GL state call with
+        // constants or the buffer name `init_gl` made.
+        unsafe {
+            match *op {
+                StateOp::Viewport(w, h) => (s.viewport)(0, 0, w, h),
+                StateOp::BindArrayBuffer(b) => (s.bind_buffer)(GL_ARRAY_BUFFER, b),
+                StateOp::EnableAttrib(i) => (s.enable_vertex_attrib_array)(i),
+                StateOp::DisableAttrib(i) => (s.disable_vertex_attrib_array)(i),
+                StateOp::PointAttrib0 => (s.vertex_attrib_pointer)(0, 2, GL_FLOAT, 0, 0, std::ptr::null()),
+                StateOp::Enable(c) => (s.enable)(c),
+                StateOp::Disable(c) => (s.disable)(c),
+                StateOp::StraightBlend => {
+                    (s.blend_func_separate)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+                }
+                StateOp::ActiveTexture(u) => (s.active_texture)(u),
+            }
+        }
     }
 }
 
@@ -1231,7 +1358,7 @@ impl Env for RealEnv {
         first
     }
 
-    fn init(&mut self, stage: Stage) {
+    fn init(&mut self, stage: Stage, width: i32, height: i32) {
         #[cfg(feature = "gfx")]
         {
             let syms = self.syms().copied();
@@ -1241,7 +1368,7 @@ impl Env for RealEnv {
             then_restore(
                 || {
                     if let Some(s) = &syms {
-                        restore_panel_gl(s)
+                        apply_state(s, &panel_state_ops(Some((width, height))))
                     }
                 },
                 || match stage {
@@ -1265,32 +1392,21 @@ impl Env for RealEnv {
             self.vbo = vbo;
         }
         #[cfg(not(feature = "gfx"))]
-        let _ = stage;
+        let _ = (stage, width, height);
     }
 
     fn draw_swatch(&mut self, width: i32, height: i32) -> f32 {
         let Some(s) = self.syms().copied() else { return 0.0 };
-        // SAFETY (the GL calls below): the render thread's context is current.
-        unsafe {
-            // The panel drew just before this with client-side arrays, which need NO buffer bound and no
-            // attribute enabled; `plx_gfx` assumes the opposite (its one buffer bound, attribute 0 read
-            // from it at offset 0). Put its state back, and take it away again afterwards.
-            (s.viewport)(0, 0, width, height);
-            (s.bind_buffer)(GL_ARRAY_BUFFER, self.vbo);
-            (s.enable_vertex_attrib_array)(0);
-            (s.vertex_attrib_pointer)(0, 2, GL_FLOAT, 0, 0, std::ptr::null());
-            (s.enable)(GL_BLEND);
-            (s.blend_func_separate)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            (s.disable)(GL_DITHER);
-            (s.disable)(GL_SCISSOR_TEST);
-            (s.active_texture)(GL_TEXTURE0);
-        }
+        // The panel drew just before this with client-side arrays, which need NO buffer bound and no
+        // attribute enabled; `plx_gfx` assumes the opposite (its one buffer bound, attribute 0 read from it
+        // at offset 0). Put its state back, and take it away again afterwards.
+        apply_state(&s, &swatch_state_ops(self.vbo, width, height));
         // The state is put back for the panel even when a draw panics (the panic then goes on to the
         // caller's own `catch_unwind`, which names it): a panel drawn with `plx_gfx`'s buffer still bound
         // would read its client-side arrays as offsets and vanish, which is the one thing this probe must
         // never cause.
         then_restore(
-            || restore_panel_gl(&s),
+            || apply_state(&s, &panel_state_ops(Some((width, height)))),
             || {
                 #[cfg(feature = "gfx")]
                 {
@@ -1477,8 +1593,8 @@ mod tests {
         fn drain_errors(&mut self) -> u32 {
             self.errors.pop_front().unwrap_or(0)
         }
-        fn init(&mut self, stage: Stage) {
-            self.log.push(format!("init {}", stage.name()));
+        fn init(&mut self, stage: Stage, width: i32, height: i32) {
+            self.log.push(format!("init {} {width}x{height}", stage.name()));
             if self.panic_in == Some(stage) {
                 panic!("{} blew up", stage.name());
             }
@@ -1549,6 +1665,19 @@ mod tests {
                 assert!(haystack.contains(&decl), "{}: the renderer no longer declares `{decl}`", p.name);
             }
         }
+    }
+
+    /// The preflight hands GL the preamble the renderer hands it: the ES branch of `glsl_preamble` in
+    /// `gfx.rs`, read from the source, is [`ES_PREAMBLE`]. The first emulator run's preflight passed no
+    /// preamble at all and so tested something the renderer never does.
+    #[test]
+    fn the_es_preamble_is_the_one_gfx_rs_returns_on_an_es_context() {
+        let src = include_str!("../../../../rust-modules/gfx/src/gfx.rs");
+        let body = &src[src.find("fn glsl_preamble(").expect("glsl_preamble is still in gfx.rs")..];
+        let es = &body[body.find("if gl_is_es() {").expect("the ES branch") ..];
+        let literal = es.split("return c\"").nth(1).and_then(|r| r.split("\";").next()).expect("the ES branch returns a C string literal");
+        assert_eq!(literal.replace("\\n", "\n"), ES_PREAMBLE, "the ES branch of glsl_preamble no longer returns the probe's ES_PREAMBLE");
+        assert!(ES_PREAMBLE.starts_with("#version 100") && ES_PREAMBLE.ends_with('\n'));
     }
 
     /// And the set itself: every `link_program(VS_*, FS_*)` the four init functions make (the call that
@@ -1632,6 +1761,124 @@ mod tests {
         assert_eq!(missing_extensions("GL_EXT_shader_framebuffer_fetch_non_coherent").len(), 2);
     }
 
+    // --- the GL state handed back and forth between the panel and plx_gfx ----------------------------
+
+    /// The slice of GL state the hand-over touches, with GL's defaults, which are what the panel's draw is
+    /// written against.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct SimGl {
+        array_buffer: u32,
+        attrib_on: [bool; 8],
+        attrib0_pointer_from_buffer: bool,
+        blend: bool,
+        dither: bool,
+        scissor: bool,
+        active_texture: u32,
+        viewport: (i32, i32),
+        straight_blend: bool,
+    }
+
+    impl SimGl {
+        /// The state the panel's draw leaves behind it, for a window of `w` x `h`.
+        fn panels(w: i32, h: i32) -> SimGl {
+            SimGl {
+                array_buffer: 0,
+                attrib_on: [false; 8],
+                attrib0_pointer_from_buffer: false,
+                blend: false,
+                dither: true,
+                scissor: false,
+                active_texture: GL_TEXTURE0,
+                viewport: (w, h),
+                straight_blend: false,
+            }
+        }
+
+        fn apply(&mut self, ops: &[StateOp]) {
+            for op in ops {
+                match *op {
+                    StateOp::Viewport(w, h) => self.viewport = (w, h),
+                    StateOp::BindArrayBuffer(b) => self.array_buffer = b,
+                    StateOp::EnableAttrib(i) => self.attrib_on[i as usize] = true,
+                    StateOp::DisableAttrib(i) => self.attrib_on[i as usize] = false,
+                    StateOp::PointAttrib0 => self.attrib0_pointer_from_buffer = self.array_buffer != 0,
+                    StateOp::Enable(c) => self.set(c, true),
+                    StateOp::Disable(c) => self.set(c, false),
+                    StateOp::StraightBlend => self.straight_blend = true,
+                    StateOp::ActiveTexture(u) => self.active_texture = u,
+                }
+            }
+        }
+
+        fn set(&mut self, cap: u32, on: bool) {
+            match cap {
+                GL_BLEND => self.blend = on,
+                GL_DITHER => self.dither = on,
+                GL_SCISSOR_TEST => self.scissor = on,
+                other => panic!("the hand-over toggled 0x{other:04x}, which this model does not know"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_swatch_gets_plx_gfxs_state_and_the_panel_gets_its_own_back_whole() {
+        let (w, h) = (1280, 720);
+        let panel = SimGl::panels(w, h);
+        let mut gl = panel.clone();
+        gl.apply(&swatch_state_ops(7, w, h));
+        assert_eq!(gl.array_buffer, 7, "plx_gfx's buffer is bound");
+        assert!(gl.attrib_on[0] && gl.attrib0_pointer_from_buffer, "attribute 0 reads from it at offset 0");
+        assert!(gl.blend && gl.straight_blend && !gl.dither && !gl.scissor, "straight blending, no dither, no scissor");
+        assert_eq!(gl.viewport, (w, h));
+        gl.apply(&panel_state_ops(Some((w, h))));
+        // Two things persist in GL and matter to nobody: the blend FUNCTION (the panel draws with blending
+        // off) and attribute 0's pointer (the array is disabled). Everything else is the panel's again.
+        let mut want = panel;
+        want.straight_blend = true;
+        want.attrib0_pointer_from_buffer = true;
+        assert_eq!(gl, want, "after the swatch the panel finds the state it left");
+    }
+
+    /// Whatever `plx_gfx`'s four inits leave behind (its buffer bound, attribute 0 on, blending on, the scissor
+    /// test on, another texture unit active, `init_blur`'s warm-up viewport of the application's 1920x1080
+    /// canvas) the panel's state is put back, on a window that is NOT 1080p. Without the viewport entry
+    /// the panel's next frame would draw into the wrong rectangle: the panel never sets it after start.
+    #[test]
+    fn after_the_inits_whatever_they_left_the_panels_state_is_back_including_the_viewport() {
+        let (w, h) = (1280, 720);
+        let mut gl = SimGl {
+            array_buffer: 9,
+            attrib_on: [true, true, false, false, false, false, false, false],
+            attrib0_pointer_from_buffer: true,
+            blend: true,
+            dither: false,
+            scissor: true,
+            active_texture: 0x84C3,
+            viewport: (1920, 1080),
+            straight_blend: true,
+        };
+        gl.apply(&panel_state_ops(Some((w, h))));
+        let mut want = SimGl::panels(w, h);
+        want.attrib0_pointer_from_buffer = true;
+        want.straight_blend = true;
+        assert_eq!(gl, want);
+    }
+
+    #[test]
+    fn the_hand_over_lists_are_ordered_so_the_pointer_finds_its_buffer_and_the_viewport_comes_last_for_the_panel() {
+        let ops = swatch_state_ops(5, 1920, 1080);
+        let at = |op: StateOp| ops.iter().position(|o| *o == op).unwrap_or_else(|| panic!("{op:?} missing from {ops:?}"));
+        assert!(at(StateOp::BindArrayBuffer(5)) < at(StateOp::PointAttrib0), "the pointer is taken from the buffer bound before it");
+        assert!(at(StateOp::Enable(GL_BLEND)) < at(StateOp::StraightBlend));
+        assert_eq!(ops[0], StateOp::Viewport(1920, 1080));
+        let back = panel_state_ops(Some((1280, 720)));
+        assert_eq!(back.last(), Some(&StateOp::Viewport(1280, 720)));
+        assert!(!panel_state_ops(None).iter().any(|o| matches!(o, StateOp::Viewport(..))), "no size known, no viewport call");
+        // Every attribute plx_gfx could have enabled for the panel's two-attribute draw is off.
+        assert!(back.contains(&StateOp::DisableAttrib(0)) && back.contains(&StateOp::DisableAttrib(1)));
+        assert!(back.contains(&StateOp::BindArrayBuffer(0)));
+    }
+
     // --- the report and the panel lines -------------------------------------------------------------
 
     fn good_report() -> Report {
@@ -1643,6 +1890,7 @@ mod tests {
             err_swap: Some(0),
             text_px: Some(187.0),
             rect_drawn: true,
+            frames_drawn: STEADY_FRAMES,
             missing_ext: vec!["ARM|EXT_shader_framebuffer_fetch".into()],
             font_redirected: true,
             font_expected: "/usr/bin/appfont.ttf".into(),
@@ -1654,9 +1902,34 @@ mod tests {
     fn a_good_report_is_green_two_lines_verdict_first_and_names_what_was_not_found() {
         let (ok, l) = good_report().lines();
         assert!(ok);
-        assert_eq!(l[0], "OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px (res/ font)");
-        assert_eq!(l[1], "glGetError init/frame/swap 0/0/0; no GL ext: ARM|EXT_shader_framebuffer_fetch");
+        assert_eq!(l[0], "OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px, font from res/");
+        assert_eq!(l[1], "glGetError init/frame/swap 0/0/0; 60 frames drawn with plx_gfx; no GL ext: ARM|EXT_shader_framebuffer_fetch");
         assert_eq!(l.len(), 2, "no bisect ran, so no bisect line: {l:?}");
+    }
+
+    /// Step 8 says where the text's font came from, both ways: the `TTF_OpenFont` redirect found the
+    /// package's `res/` copy (the expected answer on a device whose executable is the .NET launcher), or
+    /// `plx_gfx`'s own `<exe dir>/appfont.ttf` was there.
+    #[test]
+    fn the_verdict_says_whether_plx_gfxs_text_came_from_res_or_from_the_exe_dir() {
+        let mut r = good_report();
+        assert!(r.lines().1[0].ends_with("text 187px, font from res/"), "{:?}", r.lines().1);
+        r.font_redirected = false;
+        assert!(r.lines().1[0].ends_with("text 187px, font from the exe dir"), "{:?}", r.lines().1);
+        // No font at all is its own wording (and line 2 names where it looked), not a "from" claim.
+        r.text_px = Some(0.0);
+        assert!(!r.lines().1[0].contains("font from"), "{:?}", r.lines().1);
+    }
+
+    /// The frame count is how many frames were drawn with `plx_gfx`: 1 in the first result, the settled count
+    /// in the later one, never invented when nothing was drawn.
+    #[test]
+    fn the_frame_count_is_shown_in_the_singular_and_the_plural_and_not_at_all_before_a_draw() {
+        let mut r = good_report();
+        r.frames_drawn = 1;
+        assert!(r.lines().1[1].contains("; 1 frame drawn with plx_gfx"), "{:?}", r.lines().1);
+        r.frames_drawn = 0;
+        assert!(!r.lines().1[1].contains("frame drawn") && !r.lines().1[1].contains("frames drawn"), "{:?}", r.lines().1);
     }
 
     /// The owner's photo of the first emulator run: "no G..." was the end of a line cut at 108 characters
@@ -1667,7 +1940,10 @@ mod tests {
         let mut r = good_report();
         r.missing_ext = vec!["ARM|EXT_shader_framebuffer_fetch".into(), "EXT_disjoint_timer_query".into()];
         let (_, l) = r.lines();
-        assert_eq!(l[1], "glGetError init/frame/swap 0/0/0; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query");
+        assert_eq!(
+            l[1],
+            "glGetError init/frame/swap 0/0/0; 60 frames drawn with plx_gfx; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query"
+        );
         // And with a fault and a failure line in front of it, the list is still last and still whole.
         r.late_fault = Some("glGetError 0x0502 on a later frame".into());
         r.failure_events = 2;
@@ -1830,10 +2106,54 @@ mod tests {
     #[test]
     fn a_healthy_run_enters_the_four_inits_in_the_apps_order_draws_every_frame_and_ends_ok() {
         let p = run(FakeEnv::healthy(), START_FRAME + 10);
-        assert_eq!(p.env.log[..4], ["init init_gl", "init init_text", "init init_image", "init init_blur"]);
+        assert_eq!(
+            p.env.log[..4],
+            ["init init_gl 1920x1080", "init init_text 1920x1080", "init init_image 1920x1080", "init init_blur 1920x1080"],
+            "each init is told the window's size, so the panel's viewport can be put back after it"
+        );
         assert!(p.env.log.iter().filter(|l| *l == "draw").count() >= 6, "the swatch is redrawn on every frame");
         assert!(p.report.is_ok(), "{:?}", p.report);
         assert_eq!(p.phase(), Phase::Live);
+    }
+
+    /// Step 8 reports the frames drawn with `plx_gfx`: 1 when the first result lands (the swap that closes it),
+    /// and the settled count once [`STEADY_FRAMES`] have been drawn without a GL error, which re-publishes the
+    /// step once, not every frame.
+    #[test]
+    fn the_first_result_counts_one_frame_and_the_settled_one_counts_sixty_and_is_published_once() {
+        // Iteration START_FRAME starts the preflight, the next two preflight and init, the one after draws
+        // the first swatch (and its swap closes the report): START_FRAME + 4 iterations hold one draw.
+        let p = run(FakeEnv::healthy(), START_FRAME + 4);
+        let first = p.env.published.last().unwrap();
+        assert!(first.1[1].contains("; 1 frame drawn with plx_gfx"), "{first:?}");
+        assert_eq!(p.report.frames_drawn, 1);
+
+        // Every iteration after that draws once more.
+        let p = run(FakeEnv::healthy(), START_FRAME + 3 + STEADY_FRAMES + 40);
+        assert_eq!(p.report.frames_drawn, STEADY_FRAMES + 40, "the count keeps counting");
+        let settled: Vec<_> = p.env.published.iter().filter(|(_, l)| l[1].contains("60 frames drawn with plx_gfx")).collect();
+        assert_eq!(settled.len(), 1, "the settled report is published once, at the {STEADY_FRAMES}th frame: {settled:?}");
+        assert!(settled[0].0 && settled[0].1[0].starts_with("OK: init_gl+text+image+blur ran;"), "{settled:?}");
+        let published_before = p.env.published.len();
+        let p2 = run(FakeEnv::healthy(), START_FRAME + 3 + STEADY_FRAMES + 400);
+        assert_eq!(p2.env.published.len(), published_before, "no further re-publication however long it runs");
+    }
+
+    /// A GL error on a later frame is a fault, shown at once with the count so far; the "settled" report is
+    /// then NOT published over it (the fault stays on the panel).
+    #[test]
+    fn a_gl_error_on_a_later_frame_reports_the_count_so_far_and_there_is_no_settled_report() {
+        let mut env = FakeEnv::healthy();
+        // `glGetError` is drained: twice in the preflight (after the pairs, after the bisect), once after the
+        // inits, once after the first draw, once after its swap, then once per Live frame: the eighth is the
+        // third Live frame.
+        env.errors = VecDeque::from([0, 0, 0, 0, 0, 0, 0, 0x0502]);
+        let p = run(env, START_FRAME + 3 + STEADY_FRAMES + 20);
+        assert!(p.report.late_fault.is_some(), "{:?}", p.report);
+        let last = p.env.published.last().unwrap();
+        assert!(!last.0 && last.1[0].starts_with("NOT OK:"), "{last:?}");
+        assert!(last.1[1].contains("glGetError 0x0502 on a later frame"), "{last:?}");
+        assert!(!p.env.published.iter().any(|(_, l)| l[1].contains("60 frames drawn")), "no settled report after a fault");
     }
 
     #[test]
@@ -1859,9 +2179,9 @@ mod tests {
         let p = run(FakeEnv::healthy(), START_FRAME + 6);
         let (ok, l) = p.report.lines();
         assert!(ok, "{l:?}");
-        assert_eq!(l.last().unwrap(), "shader bisect: all 14 variants compile; j bytes clean");
+        assert_eq!(l.last().unwrap(), "shader bisect: all 15 variants compile; j bytes clean");
         assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 1).count(), 1, "one variant is the one-string call");
-        assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 2).count(), 13, "the rest are plx_gfx's two-string call");
+        assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 2).count(), 14, "the rest are plx_gfx's two-string call");
     }
 
     #[test]

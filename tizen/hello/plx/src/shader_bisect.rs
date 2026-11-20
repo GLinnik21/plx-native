@@ -16,7 +16,7 @@
 //! summary line (`a- b- c+ ...`). The letters are the coordinator's: `j` is not a compile but the byte check
 //! (CR, TAB, BOM) of the source as passed.
 
-use crate::gfx_probe::{ShaderGl, Trial, ES_PREAMBLE};
+use crate::gfx_probe::{ShaderGl, Trial, BISECT_PREAMBLE, ES_PREAMBLE};
 use crate::log::{plog, plog_full};
 
 /// A `main` that writes every output the dithered vertex source declares, for variant `i`.
@@ -30,8 +30,24 @@ pub struct Variant {
     pub what: &'static str,
     /// The GLSL, without a terminating NUL.
     pub source: String,
-    /// Hand GL ONE string instead of `plx_gfx`'s two (preamble, source).
-    pub one_string: bool,
+    /// The first of the two source strings `plx_gfx` hands GL (its preamble); `None` hands ONE string, the
+    /// source alone.
+    pub preamble: Option<&'static str>,
+}
+
+impl Variant {
+    /// The strings handed to `glShaderSource`.
+    pub fn parts(&self) -> Vec<&str> {
+        match self.preamble {
+            Some(p) => vec![p, self.source.as_str()],
+            None => vec![self.source.as_str()],
+        }
+    }
+
+    /// The text the driver composes from [`Self::parts`]: what an error's line number counts in.
+    pub fn composed(&self) -> String {
+        self.parts().concat()
+    }
 }
 
 /// The ladder, from the composed vertex source `full` (`VS_AMBIENT_DITHERED`) and the sibling `control`
@@ -47,22 +63,30 @@ pub fn variants(full: &str, control: &str) -> Vec<Variant> {
         s.push_str(rest);
         s
     };
-    let v = |id: char, what: &'static str, source: String| Variant { id, what, source, one_string: false };
+    // Every variant but `m` and `p` is handed over after the OLD, empty preamble string (what `plx_gfx` did
+    // before it added its `#version 100` line), so the matrix is the one the first emulator run measured.
+    let v = |id: char, what: &'static str, source: String| Variant { id, what, source, preamble: Some(BISECT_PREAMBLE) };
     vec![
-        v('a', "as is, handed over like plx_gfx does: an empty preamble string, then the source", full.to_string()),
+        v('a', "as is, behind the OLD preamble (an empty first string, then the source: what plx_gfx handed over before it added #version 100)", full.to_string()),
         v('b', "every // comment line removed", without_comment_lines(full)),
         v('c', "`highp` dropped from the v_dither_nc line only", drop_highp_on_dither_line(full)),
         v('d', "only #define PLX_DITHER_NC", with(&["PLX_DITHER_NC"])),
         v('e', "PLX_DITHER_NC + PLX_WASH_INK", with(&["PLX_DITHER_NC", "PLX_WASH_INK"])),
         v('f', "PLX_DITHER_NC + PLX_SCRIM", with(&["PLX_DITHER_NC", "PLX_SCRIM"])),
-        v('g', "`#version 100` as the first line", format!("#version 100\n{full}")),
+        v('g', "`#version 100` as the first line of the source (the baseline: plx_gfx now sends this line)", format!("#version 100\n{full}")),
         v('h', "the text after #ifdef resolution (no directive left)", preprocess(full)),
         v('i', "through the v_dither_nc block, then a trivial main", format!("{}{TRIVIAL_MAIN}", through_dither_block(full))),
         v('k', "all comment text blanked, every line kept (line numbers unchanged)", blank_comments(full)),
         v('l', "control: VS_SRC_DITHERED, the sibling that compiled", control.to_string()),
-        Variant { id: 'm', what: "as a but ONE source string (what the first run's preflight did)", source: full.to_string(), one_string: true },
+        Variant { id: 'm', what: "as a but ONE source string (what the first run's preflight did)", source: full.to_string(), preamble: None },
         v('n', "the v_dither_nc declaration moved to the top", move_dither_decl_to_top(full)),
         v('o', "every precision qualifier removed", strip_precision(full)),
+        Variant {
+            id: 'p',
+            what: "the source behind the CURRENT preamble: plx_gfx's own two strings, `#version 100` then the source (the call the renderer makes now)",
+            source: full.to_string(),
+            preamble: Some(ES_PREAMBLE),
+        },
     ]
 }
 
@@ -360,12 +384,10 @@ impl BisectReport {
             Some(odd) => s.push_str(&format!("; j bytes: {odd}")),
             None => s.push_str("; j bytes clean"),
         }
-        let differ: Vec<String> = self
-            .outcomes
-            .iter()
-            .filter(|o| o.trial.readback.as_ref().is_some_and(|r| !r.same))
-            .map(|o| o.id.to_string())
-            .collect();
+        // A read-back that is a stub (YaGL returns 8 bytes for every source) is not "different text": it is
+        // no answer, and the log says so per variant. Only a trustworthy read-back that differs is named.
+        let differ: Vec<String> =
+            self.outcomes.iter().filter(|o| o.trial.readback_differs()).map(|o| o.id.to_string()).collect();
         if !differ.is_empty() {
             s.push_str(&format!("; the driver's copy of the source differs for {}", differ.join(" ")));
         }
@@ -389,6 +411,10 @@ fn describe_readback(t: &Trial) -> String {
     };
     let got = match &t.readback {
         None => "glGetShaderSource not bound here".to_string(),
+        Some(r) if t.readback_unsupported() => format!(
+            "glGetShaderSource UNSUPPORTED here (returned {} bytes for {} passed: a stub, so it says nothing about the kept text)",
+            r.returned, t.passed_len
+        ),
         Some(r) => format!(
             "glGetShaderSource returned {} bytes, {}",
             r.returned,
@@ -415,8 +441,8 @@ pub fn run(gl: &mut dyn ShaderGl, full: &str, control: &str) -> BisectReport {
     }
     let mut outcomes = Vec::new();
     for v in variants(full, control) {
-        let parts: Vec<&str> = if v.one_string { vec![v.source.as_str()] } else { vec![ES_PREAMBLE, v.source.as_str()] };
-        plog!("H7 bisect {}: compiling ({}): {}", v.id, if v.one_string { "one string" } else { "two strings" }, v.what);
+        let parts = v.parts();
+        plog!("H7 bisect {}: compiling ({}): {}", v.id, if v.preamble.is_none() { "one string" } else { "two strings" }, v.what);
         let trial = gl.trial(false, &parts);
         let info = inspect(&v.source);
         plog!(
@@ -432,10 +458,16 @@ pub fn run(gl: &mut dyn ShaderGl, full: &str, control: &str) -> BisectReport {
         }
         if !trial.compiled {
             if let Some(n) = blamed_line(&trial.log) {
-                // The text the driver saw is the preamble plus the source, and the preamble is empty.
-                match v.source.lines().nth(n - 1) {
+                // The driver counts in the text it composed from the strings: the preamble's lines (none for
+                // the empty one, one for `#version 100`) come first.
+                let composed = v.composed();
+                match composed.lines().nth(n - 1) {
                     Some(text) => plog_full!("H7 bisect {}: the log blames line {n}: {text}", v.id),
-                    None => plog!("H7 bisect {}: the log blames line {n}, past the end of the {}-line source", v.id, info.lines),
+                    None => plog!(
+                        "H7 bisect {}: the log blames line {n}, past the end of the {}-line text it was given",
+                        v.id,
+                        composed.lines().count()
+                    ),
                 }
             }
         }
@@ -474,11 +506,20 @@ mod tests {
     fn the_ladder_has_every_rung_and_each_one_changes_what_it_says() {
         let full = composed();
         let vs = variants(&full, &control());
-        assert_eq!(vs.iter().map(|v| v.id).collect::<String>(), "abcdefghiklmno", "j is the byte check, not a compile");
+        assert_eq!(vs.iter().map(|v| v.id).collect::<String>(), "abcdefghiklmnop", "j is the byte check, not a compile");
         let a = by_id(&vs, 'a');
         assert_eq!(a.source, full);
-        assert!(!a.one_string && by_id(&vs, 'm').one_string, "m is the one-string twin of a");
+        assert_eq!(a.preamble, Some(BISECT_PREAMBLE), "a keeps the OLD empty preamble, so the matrix compares with the first run");
+        assert_eq!(BISECT_PREAMBLE, "");
+        assert_eq!(by_id(&vs, 'm').preamble, None, "m is the one-string twin of a");
         assert_eq!(by_id(&vs, 'm').source, full);
+        // p is plx_gfx's own call now: its `#version 100` line, then the source, as two strings. It is the
+        // same composed text as g's, which carries the line inside the source.
+        let p = by_id(&vs, 'p');
+        assert_eq!((p.preamble, p.source.as_str()), (Some(ES_PREAMBLE), full.as_str()));
+        assert_eq!(p.parts(), vec!["#version 100\n", full.as_str()]);
+        assert_eq!(p.composed(), by_id(&vs, 'g').composed());
+        assert_eq!(a.parts(), vec!["", full.as_str()]);
 
         // The failing line really is line 37 of the composed source, as the emulator's log said.
         assert_eq!(full.lines().nth(36).map(str::trim), Some("varying highp vec2 v_dither_nc;"));
@@ -535,7 +576,7 @@ mod tests {
     fn a_variant_never_equals_a_unless_it_is_a_twin_so_no_rung_is_a_silent_no_op() {
         let full = composed();
         for v in variants(&full, &control()) {
-            if !matches!(v.id, 'a' | 'm') {
+            if !matches!(v.id, 'a' | 'm' | 'p') {
                 assert_ne!(v.source, full, "variant {} changed nothing", v.id);
             }
         }
@@ -544,7 +585,7 @@ mod tests {
     #[test]
     fn the_ladder_works_on_a_source_without_the_lines_it_looks_for_and_changes_nothing_it_cannot_find() {
         let vs = variants("void main(){}\n", "void main(){}\n");
-        assert_eq!(vs.len(), 14);
+        assert_eq!(vs.len(), 15);
         assert_eq!(by_id(&vs, 'c').source, "void main(){}\n");
         assert_eq!(by_id(&vs, 'i').source, format!("void main(){{}}\n{TRIVIAL_MAIN}"));
     }
@@ -647,11 +688,11 @@ mod tests {
         let _g = crate::testutil::log_serial();
         let mut gl = Desktop110 { trials: Vec::new(), keep_different_copy: false };
         let report = run(&mut gl, &format!("{}\0", composed()), &format!("{}\0", control()));
-        assert_eq!(gl.trials.len(), 14);
+        assert_eq!(gl.trials.len(), 15);
         assert_eq!(gl.trials.iter().filter(|parts| **parts == 1).count(), 1, "only m is a one-string call");
         assert_eq!(
             report.summary(),
-            "shader bisect (+ compiles, - fails): a- b- c+ d- e- f- g+ h- i- k- l- m- n- o+; j bytes clean"
+            "shader bisect (+ compiles, - fails): a- b- c+ d- e- f- g+ h- i- k- l- m- n- o+ p+; j bytes clean"
         );
         let a = &report.outcomes[0];
         assert!(!a.trial.compiled && a.trial.passed_len == composed().len(), "{a:?}");
@@ -675,7 +716,7 @@ mod tests {
         }
         let _g = crate::testutil::log_serial();
         let report = run(&mut Accepting, &composed(), &control());
-        assert_eq!(report.summary(), "shader bisect: all 14 variants compile; j bytes clean");
+        assert_eq!(report.summary(), "shader bisect: all 15 variants compile; j bytes clean");
         assert!(report.summary().chars().count() < 70);
     }
 
@@ -684,7 +725,37 @@ mod tests {
         let _g = crate::testutil::log_serial();
         let mut gl = Desktop110 { trials: Vec::new(), keep_different_copy: true };
         let s = run(&mut gl, &composed(), &control()).summary();
-        assert!(s.ends_with("; the driver's copy of the source differs for a b c d e f g h i k l m n o"), "{s}");
+        assert!(s.ends_with("; the driver's copy of the source differs for a b c d e f g h i k l m n o p"), "{s}");
+    }
+
+    /// YaGL's `glGetShaderSource` returned 8 bytes for every source, the compiling ones included: a stub.
+    /// That is no evidence of an altered copy, so the summary does not name it and the log says why.
+    #[test]
+    fn a_stub_glgetshadersource_is_labelled_unsupported_not_reported_as_a_different_copy() {
+        let stub = |compiled: bool| Trial {
+            compiled,
+            passed_len: 1500,
+            source_length: Some(1501),
+            readback: Some(Readback { returned: 8, same: false, first_diff: Some(8) }),
+            ..Trial::default()
+        };
+        assert!(stub(true).readback_unsupported() && !stub(true).readback_differs());
+        let report = BisectReport {
+            outcomes: vec![Outcome { id: 'a', trial: stub(false) }, Outcome { id: 'g', trial: stub(true) }],
+            bytes: inspect("x\n"),
+        };
+        let s = report.summary();
+        assert_eq!(s, "shader bisect (+ compiles, - fails): a- g+; j bytes clean");
+        let described = describe_readback(&stub(true));
+        assert!(described.contains("glGetShaderSource UNSUPPORTED here (returned 8 bytes for 1500 passed"), "{described}");
+        assert!(!described.contains("DIFFERENT"), "{described}");
+
+        // A real read-back that differs is still named; so is a short source whose copy is all there is.
+        let real = Trial { passed_len: 1500, readback: Some(Readback { returned: 1400, same: false, first_diff: Some(1400) }), ..Trial::default() };
+        assert!(!real.readback_unsupported() && real.readback_differs());
+        let tiny = Trial { passed_len: 8, readback: Some(Readback { returned: 8, same: true, first_diff: None }), ..Trial::default() };
+        assert!(!tiny.readback_unsupported() && !tiny.readback_differs());
+        assert!(describe_readback(&real).contains("DIFFERENT from what was passed (first difference at byte 1400)"));
     }
 
     #[test]
