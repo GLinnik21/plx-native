@@ -9,10 +9,13 @@
 //!    `SDL_Init(TIMER | EVENTS)` (the video subsystem is NOT initialised and SDL opens no window), a
 //!    timer and event-queue smoke test, `TTF_Init`, open the bundled font (`<res dir>/appfont.ttf`,
 //!    the app's own Inter, SIL OFL), render [`TEXT`] to an `SDL_Surface`, set it on a dark plate,
-//!    convert it to RGBA bytes. Only plain bytes ([`Label`]) leave this half.
-//! 2. `label_gl`, on the render thread: upload the bytes as a GLES2 texture and draw it centred on
-//!    every frame, over the step-1 clear colour. The first presented frame with the label ends the
-//!    probe with the `H5 RESULT:` line.
+//!    convert it to RGBA bytes. Only plain bytes ([`Label`]) leave this half; the sample proves the
+//!    path and its result gates the panel (`create` draws no label of its own any more).
+//! 2. `panel_render` + `label_gl`, on the render thread: the on-screen diagnostics panel
+//!    ([`crate::panel`]: device facts, step results, key events, the UTF-8 [`TEXT`] sample) is
+//!    rasterised through the same SDL_ttf path, uploaded as a GLES2 texture and drawn centred on every
+//!    frame, over the step-1 clear colour; it is re-rasterised only when its text changes. The first
+//!    presented frame with the panel ends the probe with the `H5 RESULT:` line.
 //!
 //! Every H5 failure is non-fatal (it never becomes a `plx_tizen_create` code): step 1 (window, colour
 //! change on keys) must keep working whatever SDL does. Exactly one `H5 RESULT:` line is written.
@@ -24,9 +27,10 @@ use crate::log::plog;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-/// What the label says: Latin, a symbol the font must have (U+2713) and Cyrillic.
+/// What the stage-1 sample says: Latin, a symbol the font must have (U+2713) and Cyrillic. The panel
+/// shows the same string on its UTF-8 line.
 #[cfg(plx_sdl)]
-pub const TEXT: &str = "PlxNative H5 \u{2713} \u{041F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}";
+pub const TEXT: &str = crate::panel::SAMPLE_TEXT;
 /// Bundled by `build.sh` into the package's `res/` (a copy of the repository's `pkg/appfont.ttf`).
 #[cfg(plx_sdl)]
 pub const FONT_FILE: &str = "appfont.ttf";
@@ -60,10 +64,33 @@ pub fn fail(step: &str, why: &str) {
 fn result_once(line: &str) {
     if !RESULT_WRITTEN.swap(true, Ordering::AcqRel) {
         plog!("H5 RESULT: {line}");
+        let (ok, text) = panel_summary(line);
+        crate::panel::step(crate::panel::Step::Sdl, ok, &text);
     }
 }
 
-/// The GL half reports here after the first frame with the label (or its failure).
+/// The versions the archives were built from, for the panel ("SDL2 2.32.10, SDL2_ttf 2.24.0").
+fn pins() -> &'static str {
+    #[cfg(plx_sdl)]
+    {
+        env!("PLX_SDL_PINS").split(" (").next().unwrap_or("SDL")
+    }
+    #[cfg(not(plx_sdl))]
+    {
+        "no SDL linked"
+    }
+}
+
+/// The RESULT line as the panel shows it: its outcome, and either a short OK text or the failure text.
+fn panel_summary(line: &str) -> (bool, String) {
+    if line.starts_with("OK") {
+        (true, format!("{}: OK (SDL_Init, TTF_Init, font, UTF-8 render, GLES2 texture)", pins()))
+    } else {
+        (false, format!("{}: {line}", pins()))
+    }
+}
+
+/// The GL half reports here after the first frame with the panel (or its failure).
 pub fn gl_done(outcome: Result<(), String>) {
     match outcome {
         Ok(()) => {
@@ -71,9 +98,9 @@ pub fn gl_done(outcome: Result<(), String>) {
             match first {
                 None => result_once(
                     "OK (static SDL2 + SDL2_ttf: SDL_Init, TTF_Init, font open, UTF-8 render to SDL_Surface, \
-                     GLES2 texture upload and draw on the render thread; the label is on screen)",
+                     GLES2 texture upload and draw on the render thread; the diagnostics panel, with the UTF-8 sample, is on screen)",
                 ),
-                Some(f) => result_once(&format!("FAILED, first failure at {f} (the label was still drawn)")),
+                Some(f) => result_once(&format!("FAILED, first failure at {f} (the panel was still drawn)")),
             }
         }
         Err(why) => {
@@ -407,7 +434,7 @@ mod tests {
         assert!(label.height > 2 * PAD + FONT_PX / 2, "label height {}", label.height);
         assert_eq!(label.rgba.len(), (label.width * label.height * 4) as usize);
         if let Ok(path) = std::env::var("PLX_H5_DUMP") {
-            dump_bmp(&label, &path);
+            crate::testutil::dump_bmp(&label, &path);
         }
         assert_eq!(&label.rgba[..4], &[20, 20, 26, 255], "plate corner, byte order R G B A");
         // Opaque plate: every alpha is 255 (the blit of the AA text onto it keeps the plate opaque).
@@ -442,28 +469,21 @@ mod tests {
         sdl::quit();
     }
 
-    /// 32-bit BMP of the RGBA label, so a human can look at it (`sips -s format png` converts).
-    fn dump_bmp(label: &Label, path: &str) {
-        let (w, h) = (label.width as u32, label.height as u32);
-        let mut out = Vec::new();
-        let size = 54 + w * h * 4;
-        out.extend_from_slice(b"BM");
-        out.extend_from_slice(&size.to_le_bytes());
-        out.extend_from_slice(&[0; 4]);
-        out.extend_from_slice(&54u32.to_le_bytes());
-        out.extend_from_slice(&40u32.to_le_bytes());
-        out.extend_from_slice(&w.to_le_bytes());
-        out.extend_from_slice(&h.to_le_bytes()); // positive height: bottom-up rows
-        out.extend_from_slice(&1u16.to_le_bytes());
-        out.extend_from_slice(&32u16.to_le_bytes());
-        out.extend_from_slice(&[0; 24]);
-        for y in (0..h as usize).rev() {
-            for x in 0..w as usize {
-                let p = &label.rgba[(y * w as usize + x) * 4..][..4];
-                out.extend_from_slice(&[p[2], p[1], p[0], p[3]]); // BGRA
-            }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    /// The panel shows the outcome and one short line, whatever the RESULT line's own length.
+    #[test]
+    fn the_panel_gets_the_outcome_and_a_short_text() {
+        let (ok, t) = panel_summary("OK (static SDL2 + SDL2_ttf: SDL_Init, ...; the diagnostics panel, with the UTF-8 sample, is on screen)");
+        assert!(ok && t.contains(": OK (SDL_Init, TTF_Init, font, UTF-8 render, GLES2 texture)") && !t.contains("on screen"), "{t}");
+        for bad in ["FAILED at TTF_Init: boom", "INCOMPLETE: the SDL + TTF stage passed, the GL stage was not reached (x)"] {
+            let (ok, t) = panel_summary(bad);
+            assert!(!ok && t.ends_with(bad), "{t}");
         }
-        std::fs::write(path, out).unwrap();
     }
 }
 

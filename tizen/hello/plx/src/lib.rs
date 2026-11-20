@@ -28,18 +28,24 @@ mod h5;
 mod keys;
 mod label_gl;
 mod log;
+mod panel;
+mod panel_render;
 mod render;
 #[cfg(plx_sdl)]
 mod sdl;
 mod sym;
 mod sysinfo;
+#[cfg(test)]
+mod testutil;
 mod window;
 
 use dl::{Lib, Ptr};
 use log::plog;
+use panel::Step;
+use panel_render::PanelJob;
 use std::ffi::{c_char, c_void, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -130,16 +136,26 @@ fn cstr_arg(p: *const c_char) -> Option<String> {
 /// `<data_dir>/plx-hello.log` is the log. `log_host` is `a.b.c.d:port` (the host read it from the
 /// package's `res/log-host.txt`) to mirror every log line to over UDP, or null/empty for no network
 /// log. `res_dir` is the package's read-only `res/` directory (the host's `DirectoryInfo.Resource`),
-/// where `build.sh` put the bundled font (`appfont.ttf`) for the H5 probe; null/empty makes the probe
-/// report that. Returns 0 or one of [`code`].
+/// where `build.sh` put the bundled font (`appfont.ttf`) for the H5 probe and the diagnostics panel;
+/// null/empty makes the probe report that. `host_facts` is what only the C# host can learn, as
+/// `name=value` lines (see `panel::parse_host_facts`: Tizen platform and model strings, CPU feature
+/// flags, the .NET runtime, OS, process architecture and `IntPtr.Size`); null/empty is fine and shows
+/// as `?` on the panel. Returns 0 or one of [`code`].
 #[no_mangle]
-pub extern "C" fn plx_tizen_create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_char) -> i32 {
+pub extern "C" fn plx_tizen_create(
+    data_dir: *const c_char,
+    log_host: *const c_char,
+    res_dir: *const c_char,
+    host_facts: *const c_char,
+) -> i32 {
     guard("plx_tizen_create", code::PANIC, || {
-        let rc = create(data_dir, log_host, res_dir);
+        let rc = create(data_dir, log_host, res_dir, host_facts);
         if rc == 0 {
             plog!("plx_tizen_create -> 0 (OK)");
+            panel::step(Step::So, true, &so_line("plx_tizen_create -> 0 (OK)"));
         } else {
             plog!("plx_tizen_create FAILED -> {rc} ({})", code::describe(rc));
+            panel::step(Step::So, false, &so_line(&format!("plx_tizen_create FAILED -> {rc} ({})", code::describe(rc))));
             // The render thread never started, so the GL half of the H5 probe cannot report.
             h5::incomplete(&format!("plx_tizen_create failed with {rc} ({})", code::describe(rc)));
         }
@@ -147,19 +163,37 @@ pub extern "C" fn plx_tizen_create(data_dir: *const c_char, log_host: *const c_c
     })
 }
 
-/// The host went to the background: stop drawing.
+/// The panel's `.so` line: what this library is, then the outcome of `plx_tizen_create`.
+fn so_line(outcome: &str) -> String {
+    format!(
+        "libplx.so loaded (plx-hello {}, built for {} {}-bit); {outcome}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::ARCH,
+        std::mem::size_of::<usize>() * 8
+    )
+}
+
+/// When `pause` ran, as `f64` bits of `panel::uptime()`; `resume` reports how long the pause lasted.
+static PAUSED_AT: AtomicU64 = AtomicU64::new(0);
+
+/// The host went to the background: stop drawing. The panel's lifecycle line is written BEFORE the
+/// flag, so the one frame the render thread still presents after it already says "pause" (render.rs).
 #[no_mangle]
 pub extern "C" fn plx_tizen_pause() {
     guard("plx_tizen_pause", (), || {
+        PAUSED_AT.store(panel::uptime().to_bits(), Ordering::Release);
+        panel::lifecycle("pause");
         render::PAUSED.store(true, Ordering::Release);
-        plog!("lifecycle: pause (render thread idles)");
+        plog!("lifecycle: pause (render thread idles after one more frame)");
     });
 }
 
-/// The host came back: draw again.
+/// The host came back: draw again. The lifecycle line goes in first, so the first live frame has it.
 #[no_mangle]
 pub extern "C" fn plx_tizen_resume() {
     guard("plx_tizen_resume", (), || {
+        let paused_for = panel::uptime() - f64::from_bits(PAUSED_AT.load(Ordering::Acquire));
+        panel::lifecycle(&format!("resume, paused {paused_for:.1}s"));
         render::PAUSED.store(false, Ordering::Release);
         plog!("lifecycle: resume");
     });
@@ -175,14 +209,13 @@ pub extern "C" fn plx_tizen_terminate() {
 #[no_mangle]
 pub extern "C" fn plx_tizen_locale(loc: *const c_char) {
     guard("plx_tizen_locale", (), || {
-        plog!(
-            "lifecycle: locale changed -> {}",
-            cstr_arg(loc).unwrap_or_else(|| "(null)".into())
-        );
+        let loc = cstr_arg(loc).unwrap_or_else(|| "(null)".into());
+        plog!("lifecycle: locale changed -> {loc}");
+        panel::lifecycle(&format!("locale {loc}"));
     });
 }
 
-fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_char) -> i32 {
+fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_char, host_facts: *const c_char) -> i32 {
     let Some(dir) = cstr_arg(data_dir) else {
         log::to_stderr("plx: plx_tizen_create called with a null data_dir\n");
         return code::BAD_ARGS;
@@ -190,8 +223,18 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
     let log_host = cstr_arg(log_host);
     let (path, opened) = log::init(&dir, log_host.as_deref());
     std::panic::set_hook(Box::new(|info| plog!("panic: {info}")));
+    panel::uptime(); // starts the clock the panel's lifecycle lines count from
+    panel::step(Step::So, true, &so_line("plx_tizen_create is running"));
+    panel::step(Step::Sample, true, &format!("UTF-8 sample (Latin, check mark, Cyrillic): {}", panel::SAMPLE_TEXT));
     sysinfo::log_environment(&dir);
     plog!("log file {path} opened={opened}");
+    // What only the host can learn. One log line per fact (a datagram is one line), then the panel.
+    let facts = panel::parse_host_facts(&cstr_arg(host_facts).unwrap_or_default());
+    plog!("host facts: {} received", facts.len());
+    for (k, v) in &facts {
+        plog!("host fact {k} = {v}");
+    }
+    panel::PANEL.set_host_facts(facts);
 
     let mut slot = runtime();
     if slot.is_some() {
@@ -228,6 +271,27 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
     let wl_egl_lib = dl::open_first("wayland-egl", &["libwayland-egl.so.1", "libwayland-egl.so"]);
     let egl_lib = dl::open_first("EGL", &["libEGL.so.1", "libEGL.so"]);
     let gles_lib = dl::open_first("GLESv2", &["libGLESv2.so.2", "libGLESv2.so"]);
+    let opened = [
+        ("ecore_wl2", ecore_wl2.is_some(), true),
+        ("ecore", ecore_lib.is_some(), true),
+        ("ecore_input", ecore_input.is_some(), true),
+        ("wayland-egl", wl_egl_lib.is_some(), false),
+        ("EGL", egl_lib.is_some(), true),
+        ("GLESv2", gles_lib.is_some(), true),
+    ];
+    let missing_required: Vec<&str> = opened.iter().filter(|(_, ok, req)| !ok && *req).map(|(n, _, _)| *n).collect();
+    let optional_missing: Vec<&str> = opened.iter().filter(|(_, ok, req)| !ok && !*req).map(|(n, _, _)| *n).collect();
+    let opened_names: Vec<&str> = opened.iter().filter(|(_, ok, _)| *ok).map(|(n, _, _)| *n).collect();
+    panel::step(
+        Step::Libs,
+        missing_required.is_empty(),
+        &format!(
+            "dlopen opened: {}{}{}",
+            opened_names.join(" "),
+            if missing_required.is_empty() { String::new() } else { format!("; REQUIRED MISSING: {}", missing_required.join(" ")) },
+            if optional_missing.is_empty() { String::new() } else { format!("; optional missing: {}", optional_missing.join(" ")) },
+        ),
+    );
     let (Some(ecore_wl2), Some(ecore_lib), Some(ecore_input), Some(egl_lib), Some(gles_lib)) =
         (ecore_wl2, ecore_lib, ecore_input, egl_lib, gles_lib)
     else {
@@ -245,13 +309,18 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
         plog!("required symbols missing (see the `MISSING (required)` lines above)");
         return code::SYMBOLS;
     };
-    // H5's own GL table: a missing entry point only switches the label off.
-    let label_job = label.and_then(|l| match label_gl::load_syms(&gles_lib) {
-        Ok(syms) => Some((syms, l)),
-        Err(e) => {
-            h5::fail("gl-symbols", &e);
-            h5::incomplete("the label's GL entry points are missing");
-            None
+    // The panel's own GL table: a missing entry point only switches the panel off. Stage 1's sample
+    // label proved the SDL_ttf path; the panel draws through the same path on the render thread, so
+    // only the fact that it worked is carried over (no SDL object, and no pixels, are).
+    let panel_job = label.and_then(|l| {
+        plog!("panel: H5 stage 1 rendered its {}x{} sample; the panel uses the same SDL_ttf path on the render thread", l.width, l.height);
+        match label_gl::load_syms(&gles_lib) {
+            Ok(syms) => Some(PanelJob { syms, res_dir: res.clone() }),
+            Err(e) => {
+                h5::fail("gl-symbols", &e);
+                h5::incomplete("the panel's GL entry points are missing");
+                None
+            }
         }
     });
 
@@ -268,6 +337,16 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
         return rc;
     }
     window.show(&ecore);
+    panel::step(
+        Step::Window,
+        true,
+        &format!(
+            "Ecore_Wl2 window {}x{} shown; {} of 4 Ecore handlers registered (key down, key up, focus in, focus out)",
+            window.width,
+            window.height,
+            handlers.len()
+        ),
+    );
 
     // --- EGL on this thread, drawing on the render thread -------------------------------
     let egl_ctx = match render::setup(&egl, &window) {
@@ -278,7 +357,7 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
         }
     };
     let (tx, rx) = mpsc::channel();
-    let render = match render::spawn(egl, gles, egl_ctx, window.width, window.height, label_job, tx) {
+    let render = match render::spawn(egl, gles, egl_ctx, window.width, window.height, panel_job, tx) {
         Ok(h) => h,
         Err(e) => {
             plog!("cannot spawn the render thread: {e}");
@@ -370,17 +449,24 @@ fn abort_partial(ecore: &Ecore, handlers: &[Ptr], window: &mut Window) {
 }
 
 fn terminate() {
-    release();
-    // SDL and SDL_ttf were started on the main thread by the H5 probe; stop them there.
-    h5::shutdown();
+    if release() {
+        // SDL and SDL_ttf were started on the main thread by the H5 probe; stop them there.
+        h5::shutdown();
+    } else {
+        // The render thread holds the panel's font and may be inside SDL_ttf: quitting it from here
+        // would pull the library out from under that thread. Process exit cleans up.
+        plog!("terminate: SDL_ttf and SDL left running (the render thread did not stop)");
+    }
 }
 
-fn release() {
+/// Stop the render thread and release the window. `false` when the render thread did not stop in time
+/// (it may still be using SDL_ttf, so the caller must not shut SDL down).
+fn release() -> bool {
     plog!("lifecycle: terminate");
     render::RUNNING.store(false, Ordering::Release);
     let Some(mut rt) = runtime().take() else {
         plog!("terminate: nothing created, nothing to release");
-        return;
+        return true;
     };
     del_handlers(&rt.ecore, &rt.handlers);
     if let Some(h) = rt.render.take() {
@@ -393,12 +479,13 @@ fn release() {
         } else {
             // A swap stuck in the compositor: do not tear the surface down under it.
             plog!("render thread still busy after {JOIN_WAIT:?}; leaving teardown to process exit");
-            return;
+            return false;
         }
     }
     render::teardown(&rt.egl, &rt.egl_ctx);
     rt.window.destroy(&rt.ecore);
     plog!("terminate: done");
+    true
 }
 
 #[cfg(test)]
@@ -421,7 +508,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir_c = CString::new(dir.to_str().unwrap()).unwrap();
 
-        let rc = plx_tizen_create(dir_c.as_ptr(), host.as_ptr(), std::ptr::null());
+        // The host's facts: several lines in ONE argument, which must come out as one log line (so one
+        // datagram) each, never as a multi-line log entry.
+        let facts = CString::new(
+            "platform.version=6.0\nmodel_name=SmartTV-Test\nbuild.string=T-TEST-1.2\nos=Linux 4.4 #1 SMP\nruntime=.NET 8.0.1\nintptr=4\n",
+        )
+        .unwrap();
+        let rc = plx_tizen_create(dir_c.as_ptr(), host.as_ptr(), std::ptr::null(), facts.as_ptr());
         assert_ne!(rc, code::BAD_ARGS);
 
         let mut got = Vec::new();
@@ -439,6 +532,18 @@ mod tests {
         assert!(lines[0].contains("network log: UDP -> 127.0.0.1:"), "{}", lines[0]);
         assert!(lines.iter().any(|l| l.contains("H5 RESULT:")), "the H5 probe closes with one RESULT line: {lines:?}");
         assert_eq!(lines.iter().filter(|l| l.contains("H5 RESULT:")).count(), 1);
+        // Host facts: logged one per line, received count first, and they reached the panel.
+        assert!(lines.iter().any(|l| l.contains("host facts: 6 received")), "{lines:?}");
+        for fact in ["host fact platform.version = 6.0", "host fact model_name = SmartTV-Test", "host fact os = Linux 4.4 #1 SMP"] {
+            assert_eq!(lines.iter().filter(|l| l.ends_with(fact)).count(), 1, "{fact}: {lines:?}");
+        }
+        assert!(got.iter().all(|d| d.len() < 1400), "no log line may reach the datagram cut");
+        let (_, sections) = panel::snapshot();
+        let shown: String = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+        for needle in ["Tizen 6.0", "model SmartTV-Test", "build T-TEST-1.2", "runtime .NET 8.0.1", "IntPtr 4 bytes", "uname machine ", "1 .so: "] {
+            assert!(shown.contains(needle), "{needle:?} missing from the panel text:\n{shown}");
+        }
+        assert!(shown.contains("FAILED -> 4 (DLOPEN)") || shown.contains("plx_tizen_create"), "the .so step records the create outcome:\n{shown}");
         h5::shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

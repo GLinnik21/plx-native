@@ -8,10 +8,11 @@
 
 use crate::code;
 use crate::dl::Ptr;
-use crate::h5::{self, Label};
+use crate::h5;
 use crate::keys;
-use crate::label_gl::{GlLabel, LabelSyms};
 use crate::log::plog;
+use crate::panel::{self, Step};
+use crate::panel_render::{Drawer, PanelJob};
 use crate::sym::*;
 use crate::window::Window;
 use std::ffi::{c_char, CStr};
@@ -116,12 +117,8 @@ pub fn setup(egl: &Egl, win: &Window) -> Result<EglCtx, i32> {
         return Err(code::EGL_INIT);
     }
     plog!("eglInitialize ok {major}.{minor}");
-    plog!(
-        "EGL vendor={:?} version={:?} client_apis={:?}",
-        egl_str(egl, dpy, EGL_VENDOR),
-        egl_str(egl, dpy, EGL_VERSION),
-        egl_str(egl, dpy, EGL_CLIENT_APIS)
-    );
+    let (vendor, version) = (egl_str(egl, dpy, EGL_VENDOR), egl_str(egl, dpy, EGL_VERSION));
+    plog!("EGL vendor={vendor:?} version={version:?} client_apis={:?}", egl_str(egl, dpy, EGL_CLIENT_APIS));
     plog!("EGL extensions: {}", egl_str(egl, dpy, EGL_EXTENSIONS));
 
     let ok = unsafe { (egl.bind_api)(EGL_OPENGL_ES_API) };
@@ -155,6 +152,11 @@ pub fn setup(egl: &Egl, win: &Window) -> Result<EglCtx, i32> {
         plog!("eglCreateWindowSurface FAILED error {}", egl_error(egl));
         return Err(code::EGL_SURFACE);
     }
+    panel::step(
+        Step::Egl,
+        true,
+        &format!("EGL {major}.{minor} vendor {vendor:?} version {version:?}; ES2 context and window surface created"),
+    );
     Ok(EglCtx { display: dpy, context, surface })
 }
 
@@ -190,24 +192,24 @@ fn gl_str(gles: &Gles, name: u32) -> String {
     }
 }
 
-/// Start the render thread. `label` is the H5 probe's finished label with its GL entry points (None:
-/// no label is drawn, step 1's colour test is unchanged). `ready` receives `Ok(())` after the first
-/// frame was presented, or the error code that stopped it.
+/// Start the render thread. `panel` is the diagnostics panel's GL entry points and font location
+/// (None: no panel is drawn, step 1's colour test is unchanged). `ready` receives `Ok(())` after the
+/// first frame was presented, or the error code that stopped it.
 pub fn spawn(
     egl: Egl,
     gles: Gles,
     ctx: EglCtx,
     width: i32,
     height: i32,
-    label: Option<(LabelSyms, Label)>,
+    panel: Option<PanelJob>,
     ready: Sender<Result<(), i32>>,
 ) -> std::io::Result<JoinHandle<()>> {
     RUNNING.store(true, Ordering::Release);
-    let args = SendBox((egl, gles, ctx, ready, label));
+    let args = SendBox((egl, gles, ctx, ready, panel));
     std::thread::Builder::new().name("plx-render".into()).spawn(move || {
         let args = args;
-        let (egl, gles, ctx, ready, label) = args.0;
-        let result = catch_unwind(AssertUnwindSafe(|| body(&egl, &gles, &ctx, width, height, label, &ready)));
+        let (egl, gles, ctx, ready, panel) = args.0;
+        let result = catch_unwind(AssertUnwindSafe(|| body(&egl, &gles, &ctx, width, height, panel, &ready)));
         if result.is_err() {
             plog!("PANIC in render thread; thread stops");
             let _ = ready.send(Err(code::PANIC));
@@ -222,7 +224,7 @@ fn body(
     ctx: &EglCtx,
     width: i32,
     height: i32,
-    label: Option<(LabelSyms, Label)>,
+    panel_job: Option<PanelJob>,
     ready: &Sender<Result<(), i32>>,
 ) {
     // SAFETY (whole function): this thread now owns the context; handles come from setup().
@@ -236,26 +238,19 @@ fn body(
     // nuvio: vsync dropped Tizen 9 to 3 fps, so API9+ sets interval 0; the loop paces itself.
     let r = unsafe { (egl.swap_interval)(ctx.display, 0) };
     plog!("eglSwapInterval(0) -> {r}");
-    plog!(
-        "GL vendor={:?} renderer={:?} version={:?}",
-        gl_str(gles, GL_VENDOR),
-        gl_str(gles, GL_RENDERER),
-        gl_str(gles, GL_VERSION)
-    );
+    let (gl_vendor, gl_renderer, gl_version) =
+        (gl_str(gles, GL_VENDOR), gl_str(gles, GL_RENDERER), gl_str(gles, GL_VERSION));
+    plog!("GL vendor={gl_vendor:?} renderer={gl_renderer:?} version={gl_version:?}");
+    panel::step(Step::Gl, true, &format!("vendor {gl_vendor:?} renderer {gl_renderer:?} version {gl_version:?}"));
     if let Some(vp) = gles.viewport {
         unsafe { vp(0, 0, width, height) };
     }
 
-    // H5, GL half: shaders and the label texture, on this thread with the context current. A failure
-    // is reported and the label is simply not drawn; the colour test below is untouched.
-    let label_gl: Option<GlLabel> = label.and_then(|(syms, l)| match GlLabel::create(syms, &l) {
-        Ok(g) => Some(g),
-        Err(e) => {
-            h5::gl_done(Err(e));
-            None
-        }
-    });
-    let mut label_reported = false;
+    // H5, GL half: shaders, the rasteriser and the panel texture, on this thread with the context
+    // current. A failure is reported and the panel is simply not drawn; the colour test below is
+    // untouched.
+    let mut panel: Option<Drawer> = panel_job.and_then(Drawer::start);
+    let mut panel_reported = false;
 
     let mut idx = 0usize;
     let mut frames = 0u64;
@@ -268,16 +263,23 @@ fn body(
                 plog!("key press -> colour #{idx} {}", PALETTE[idx].0);
             }
         }
-        if PAUSED.load(Ordering::Acquire) {
+        if PAUSED.load(Ordering::Acquire) && !panel.as_ref().is_some_and(Drawer::stale) {
             std::thread::sleep(Duration::from_millis(50));
             continue;
+        }
+        // While paused, the only frame drawn is the one that carries a panel change made since the
+        // last frame: `pause` writes its lifecycle line BEFORE it sets PAUSED, so a spurious pause
+        // (Tizen 8/9 pauses an app about 3 s after a launch from the TV menu) leaves a picture that
+        // says "pause +3.0s" instead of one that merely stopped. It is a single present, not a loop.
+        if let Some(p) = panel.as_mut() {
+            p.refresh();
         }
         let (_, r, g, b) = PALETTE[idx];
         unsafe {
             (gles.clear_color)(r, g, b, 1.0);
             (gles.clear)(GL_COLOR_BUFFER_BIT);
         }
-        let label_err = label_gl.as_ref().map(|g| g.draw(width, height));
+        let panel_err = panel.as_ref().and_then(|p| p.draw(width, height));
         let swapped = unsafe { (egl.swap_buffers)(ctx.display, ctx.surface) };
         if swapped == 0 {
             if swap_failures % 60 == 0 {
@@ -294,10 +296,10 @@ fn body(
                 plog!("first frame presented (glGetError=0x{gl:04x})");
                 let _ = ready.send(Ok(()));
             }
-            if let (Some(err), false) = (label_err, label_reported) {
-                label_reported = true;
-                plog!("H5 gl: first frame presented with the label drawn (glGetError=0x{err:04x})");
-                h5::gl_done(if err == 0 { Ok(()) } else { Err(format!("drawing the label raised glError 0x{err:04x}")) });
+            if let (Some(err), false) = (panel_err, panel_reported) {
+                panel_reported = true;
+                plog!("H5 gl: first frame presented with the panel drawn (glGetError=0x{err:04x})");
+                h5::gl_done(if err == 0 { Ok(()) } else { Err(format!("drawing the panel raised glError 0x{err:04x}")) });
             }
             frames += 1;
             if frames % 60 == 0 {
@@ -306,8 +308,8 @@ fn body(
         }
         std::thread::sleep(Duration::from_millis(16));
     }
-    if let Some(g) = &label_gl {
-        g.destroy();
+    if let Some(p) = &panel {
+        p.destroy();
     }
     unsafe { (egl.make_current)(ctx.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) };
     plog!("render loop stopped after {frames} frames");

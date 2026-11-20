@@ -2,27 +2,95 @@
 
 A throwaway test build (branch `samsung/hello-tpk`, never merged). It is a `.tpk` that a 2021+
 Samsung TV (Tizen 6.0+) or the Tizen TV emulator can install. A C# host loads our Rust `libplx.so`;
-the library opens its own native window, clears it to a colour with EGL/GLES2, logs remote keys and
-writes a log file.
+the library opens its own native window, clears it to a colour with EGL/GLES2, draws an **on-screen
+diagnostics panel** (device facts, step results, the last key events, lifecycle lines), logs remote keys
+and writes a log file. A tester with a retail TV and no log receiver photographs the panel: see
+"Tester build".
 
 It answers four questions:
 
-1. **Does the host start?** Lines tagged `[host ...]` in the log.
-2. **Does our .so load?** The `plx-hello 0.1.0` line (written by the .so).
-3. **Does the window draw?** The screen turns **orange** and the log says `first frame presented`.
-4. **Do keys arrive?** Every remote key is logged, and **each key press changes the colour**
-   (orange, red, green, blue, yellow, magenta, cyan, white, back to orange). That works without
-   reading any log.
+1. **Does the host start?** Lines tagged `[host ...]` in the log; on screen, the panel exists at all.
+2. **Does our .so load?** The `plx-hello 0.1.0` line (written by the .so); on the panel, step `1 .so`.
+3. **Does the window draw?** The screen turns **orange** behind the panel and the log says
+   `first frame presented`; on the panel, steps `3 window`, `4 EGL` and `5 GL`.
+4. **Do keys arrive?** Every remote key is logged and listed on the panel, and **each key-down changes
+   the colour** (orange, red, green, blue, yellow, magenta, cyan, white, back to orange). That works
+   without reading any log.
 
 **Probe H5** (section "H5: static SDL2 + SDL2_ttf" below) adds one more question on top of those four:
 can our own `.so` carry a statically linked SDL2 and SDL2_ttf, with the window and EGL still ours, and
-draw a text label with them? It is additive: the colour and key behaviour above are unchanged.
+draw text with them? The panel is drawn through that path (panel step `6 SDL/TTF`), so it is also H5's
+on-screen proof. It is additive: the colour and key behaviour above are unchanged.
 
 Why this shape: retail Samsung TVs refuse a native `capp` package, so the package is `type="dotnet"`
 and its C# host P/Invokes a native library (flutter-tizen's model). The host is a plain
 `CoreUIApplication` whose `OnCreate` calls the library once on the main thread; the library creates
 an Ecore_Wl2 window there (Ecore's main loop runs on that thread), registers key handlers there,
 and a separate Rust thread owns the EGL context and draws.
+
+## Tester build
+
+For a tester with a **retail** Samsung TV and no log receiver: the app shows its own diagnostics panel
+and the tester sends a photo of the screen. The network log (`--log-host`) stays optional.
+
+**Build** (the signing environment variables are "Signing" below; without them the `.tpk` step stops
+before building). Build from a committed and pushed tree: the panel header reads
+`PlxNative Samsung probe <version> — <git short sha>` and says `+dirty` after the sha when anything
+under `tizen/hello` differs from HEAD, so the photo names the code it came from.
+
+```sh
+tizen/hello/build.sh --arch arm            # real TVs (32-bit ARMv7): out/PlxHello-arm.tpk
+tizen/hello/build.sh --arch x86_64         # emulator, on Linux/WSL2 (built by another session)
+```
+
+**Install.** The tester sideloads `out/PlxHello-arm.tpk` with Apps2Samsung. Apps2Samsung is said to
+re-sign the package for the tester's own TV. **We have not verified that**, nor that it accepts a
+`type="dotnet"` package signed with our profile (which lists only the DUIDs we know). If the install
+fails, the tester's message and the TV model are the result.
+
+**What the tester does.** Launch PlxHello. The screen shows the panel on a colour. Press, in any
+order: the arrow keys, OK, Back, Play/Pause, Stop, rewind and fast-forward, red/green/yellow/blue,
+the digits 0-9 and CH+/CH- (the instruction line says so). Each press shows in the panel's key
+list and changes the colour. **Back does not exit** (nothing treats any key as quit); leave with the
+TV's Home. Then photograph the screen. A second photo after pressing Home and re-opening the app
+shows the lifecycle line (`pause +12.3s | resume +15.1s`).
+
+**What to send back:** the photo(s), the TV's model and year, and how it was installed (Apps2Samsung
+or other) and whether it asked anything.
+
+**The panel**, top to bottom (text 30 px on a 1080-line screen, re-rendered only when it changes):
+
+- the header, with the version and git sha;
+- the instruction line;
+- the last 8 key events, oldest first: DOWN/UP, Ecore keyname, keycode (a key whose event carries no
+  name shows as `(none)`); and below them every distinct key seen so far, `name=keycode`;
+- lifecycle lines since start (`focus IN`, `pause`, `resume, paused 2.8s`, locale changes);
+- the step results, green when they passed: `1 .so` (loaded, `plx_tizen_create` result), `2 libs`
+  (which Ecore/EGL/GLES libraries opened), `3 window`, `4 EGL` (vendor, version), `5 GL` (vendor,
+  renderer, version), `6 SDL/TTF` (the single `H5 RESULT`), `7 UTF-8` (a Latin + check mark + Cyrillic
+  sample that must read `PlxNative H5 ✓ Привет`);
+- device facts: Tizen platform and native API version, model, manufacturer, build string, the four CPU
+  architecture flags, `uname` machine, what `libplx.so` was built for, the .NET runtime, OS and process
+  architecture, `IntPtr` size, the process executable and the glibc version.
+
+The font has no glyph for the rewind/fast-forward symbols in the instruction line; the panel shows `<<`
+and `>>` there (and says so nowhere else: it is not a failure).
+
+**Reading the result without a log:**
+
+| what the tester sees | what it means |
+|---|---|
+| the app never opens, or closes at once | the host or `libplx.so` failed before a window existed (the native create returned an error and the host exits). No panel is possible: a `--log-host` build, or the TV's own error text, is the next step |
+| a plain colour, no text | the window and EGL work; SDL/TTF or the panel's GL did not (H5 failed). Same next step |
+| the panel, a step in orange | the step named failed; the text after it is the reason |
+| keys listed, colour changes | keys arrive; the codes to read off the photo |
+| the panel frozen after Home | expected: the render loop idles while the app is in the background |
+
+**Not verified (see also the last section).** Nothing here has run on a Samsung TV or emulator. Whether
+the media and colour keys reach an ordinary app at all is open: some TVs may deliver them only after the app
+registers the key with the platform, which this build does not do, so a key missing from the photo
+means "does not arrive unregistered", which is itself the answer wanted. The
+Ecore key layout is read from the upstream EFL header; every pointer in it is checked before it is read.
 
 ## Layout
 
@@ -32,7 +100,7 @@ tizen/hello/
   sdl/                  build-sdl.sh: static SDL2 + SDL2_ttf per arch (H5); layout-check.c, an ABI gate
   sdl-build/            its cache (gitignored): tarballs, per-arch include/ + lib/*.a + link-libs.txt
   host/PlxHello/        C# host + tizen-manifest.xml (package and app id: plxnhello0)
-  build.sh              builds SDL, the .so and the .tpk (signed; --log-host adds the network log)
+  build.sh              builds SDL, the .so and the .tpk (signed; --log-host optionally adds the network log)
   log-receiver.py       UDP receiver for the network log (`nc -klu PORT` also works)
   out/                  build output (gitignored): out/<arch>/libplx.so, out/PlxHello-<arch>.tpk
 ```
@@ -122,8 +190,10 @@ subsystem not used: the window and EGL stay ours via Ecore_Wl2) to do `SDL_Init`
 events subsystems, `TTF_Init`, open a bundled TrueType font, render a UTF-8 text label to an
 `SDL_Surface`, upload it as a GLES2 texture and draw it on the existing frame from the render thread?
 
-**What the library does** (in `plx/src/h5.rs`, `sdl.rs` and `label_gl.rs`; every step logs its result
-and `SDL_GetError()` on failure; a failed step never stops the step 1 behaviour):
+**What the library does** (in `plx/src/h5.rs`, `sdl.rs`, `label_gl.rs`, `panel.rs` and `panel_render.rs`;
+every step logs its result and `SDL_GetError()` on failure; a failed step never stops the step 1
+behaviour). Since the tester build the label the probe draws is the diagnostics panel; stage 1 is
+unchanged and is what proves the SDL_ttf path before the panel uses it:
 
 1. Main thread, in `plx_tizen_create` (after the log is up, before the Ecore/EGL libraries are opened):
    `SDL_SetHint(SDL_NO_SIGNAL_HANDLERS)` (SDL must not take SIGINT/SIGTERM from .NET), `SDL_Init(TIMER |
@@ -132,9 +202,14 @@ and `SDL_GetError()` on failure; a failed step never stops the step 1 behaviour)
    `TTF_RenderUTF8_Blended` of `PlxNative H5 ✓ Привет` (Latin, a check mark and Cyrillic) at 72 px,
    then a blit onto an opaque dark plate and a conversion to RGBA bytes. Plain bytes leave this stage:
    no SDL object crosses a thread. `terminate` calls `TTF_Quit` and `SDL_Quit`.
-2. Render thread (the EGL context owner): compile a textured-quad program, `glTexImage2D` the RGBA
-   bytes, draw the quad (centred, scaled to the screen height) after every clear and before the
-   swap. It logs the first presented frame with `glGetError`.
+2. Render thread (the EGL context owner): compile a textured-quad program, open the font itself
+   (`TTF_OpenFont` is thread-agnostic here: only this thread uses it), rasterise the panel text
+   (`panel.rs` is the text model; `panel_render.rs` lays it out at 30 px on a 1872x1048 plate authored for
+   a 1080-line screen), `glTexImage2D` the RGBA bytes, and draw the quad (centred, scaled to the screen
+   height) after every clear and before the swap. The panel texture is re-rendered and re-uploaded only
+   when its text changed (a version counter; log lines `panel: render #N` and `H5 gl: texture N upload
+   #K`), so a still panel costs one textured quad per frame. It logs the first presented frame with
+   `glGetError`. A panel failure is not fatal: the colour screen carries on.
 
 No SDL video driver is initialised: `SDL_INIT_VIDEO` is never requested, so there is nothing to choose
 between the dummy driver and none. (The static SDL is configured with the dummy video driver only, so
@@ -142,7 +217,9 @@ even an accidental `SDL_Init(VIDEO)` could not open a display.)
 
 **The font** is `pkg/appfont.ttf`, the app's own Inter (SIL OFL, already shipped by the app), copied with
 `pkg/OFL.txt` into the package's `res/` by `build.sh` (generated, gitignored). The host passes
-`DirectoryInfo.Resource` to `plx_tizen_create`.
+`DirectoryInfo.Resource` to `plx_tizen_create`, together with the data directory, the optional log host
+and, since the tester build, the host's facts as `name=value` lines (the fourth parameter, `hostFacts`;
+there is no new export: the same five `plx_tizen_*` names, one more argument, `Program.cs` in step).
 
 **Versions.** `sdl/build-sdl.sh` pins SDL2 **2.32.10** and SDL2_ttf **2.24.0** by sha256 (a mismatch is a
 hard failure) and builds both from the upstream tarballs with autotools. The main app links the webOS
@@ -178,8 +255,9 @@ headers turn calls like `strtol` into `__isoc23_strtol@GLIBC_2.38`. `build.sh` t
 exceeds GLIBC_2.39` (the `x86_64` limit; `PLX_MAX_GLIBC` overrides it) and its message names the way out:
 `X86_SYSROOT=<an older sysroot>` applies to the SDL compile as well as the Rust link. The first build downloads the two tarballs and compiles SDL2
 and SDL2_ttf. `--host-test` builds SDL for the host (macOS or Linux) and runs `cargo test`, which
-renders the label to a surface without any GL and checks its pixels (`PLX_H5_DUMP=/some/file.bmp`
-also writes the label as a BMP to look at).
+renders the label and the diagnostics panel (a typical one, a long but plausible one and an absurd one)
+to surfaces without any GL and checks their pixels (`PLX_H5_DUMP=/some/file.bmp` writes the label and
+`PLX_PANEL_DUMP=/some/stem` the panels as BMPs to look at).
 
 **Expect in the log** on success (device lines, in this order; `...` is elided detail):
 
@@ -191,16 +269,18 @@ H5 ttf: TTF_Init -> 0 (OK); SDL_ttf 2.24.0 (TTF_WasInit=1), FreeType 2.13.2, Har
 H5 ttf: TTF_OpenFont -> ok; family "Inter" style "Regular" height 88px
 H5 ttf: TTF_RenderUTF8_Blended -> SDL_Surface 791x88 pitch ... in N ms
 H5 sdl: stage 1 finished OK
-H5 gl: texture N uploaded 847x144 RGBA (... bytes), glError=0x0000
-H5 gl: first frame presented with the label drawn (glGetError=0x0000)
-H5 RESULT: OK (static SDL2 + SDL2_ttf: SDL_Init, TTF_Init, font open, UTF-8 render to SDL_Surface, GLES2 texture upload and draw on the render thread; the label is on screen)
+panel: render #1 (content v...) N sections, rasterised in N ms, uploaded; plate N/1048 px used
+H5 gl: texture N upload #1 1872x1048 RGBA (7847424 bytes), glError=0x0000
+H5 gl: first frame presented with the panel drawn (glGetError=0x0000)
+H5 RESULT: OK (static SDL2 + SDL2_ttf: SDL_Init, TTF_Init, font open, UTF-8 render to SDL_Surface, GLES2 texture upload and draw on the render thread; the diagnostics panel, with the UTF-8 sample, is on screen)
 ```
 
-On screen: the step 1 colour with a dark plate in the centre reading `PlxNative H5 ✓ Привет`
-(the colour still changes on key presses). A failure logs `H5 FAILED at <step>: <why>` (with the SDL or
-GL error text) and exactly one final `H5 RESULT: FAILED ...` or `INCOMPLETE ...` line; the colour and
-keys still work. The sizes above (791x88, 847x144) are what the host test measures; the device may
-differ by a pixel or two.
+On screen: the step 1 colour with the dark panel plate in the centre (see "Tester build"; the sample
+line `7 UTF-8` reads `PlxNative H5 ✓ Привет`), and the colour still changes on key presses. A failure logs
+`H5 FAILED at <step>: <why>` (with the SDL or GL error text) and exactly one final `H5 RESULT: FAILED ...`
+or `INCOMPLETE ...` line; the colour and keys still work, with no panel when SDL/TTF failed before it.
+The size above (791x88) is what the host test measures for the stage-1 sample; the device may differ by
+a pixel or two.
 
 ## Install and run
 

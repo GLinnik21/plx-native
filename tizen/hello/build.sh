@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Build the step-1 Samsung Tizen "hello world" (+ the H5 static-SDL probe): libplx.so (Rust, with SDL2
-# and SDL2_ttf linked in statically) and the .NET .tpk that carries it.
+# Build the step-1 Samsung Tizen "hello world" (+ the H5 static-SDL probe and its on-screen diagnostics
+# panel): libplx.so (Rust, with SDL2 and SDL2_ttf linked in statically) and the .NET .tpk that carries it.
+# The panel header shows the git short sha this script embeds (PLX_GIT_SHA; "+dirty" when tizen/hello
+# has uncommitted changes): build a tester's package from a clean, pushed commit.
 #
 #   tizen/hello/build.sh [--arch arm|x86_64|i686] [--so-only | --tpk-only]
 #                        [--log-host IPV4:PORT] [--author-p12 FILE] [--dist-p12 FILE]
@@ -15,13 +17,14 @@
 #   --so-only       build libplx.so and verify it; skip the .NET step (WSL without dotnet).
 #   --tpk-only      package an existing out/<arch>/libplx.so (build the .so elsewhere first).
 #   --host-test     build the static SDL2 + SDL2_ttf for THIS machine (sdl/build-sdl.sh host), then run
-#                   `cargo test` with them linked, so the H5 test renders the label's text to an SDL_Surface
-#                   from the shipped font (no GL, no window, no TV). Plain `cargo test` in plx/ also works but
-#                   skips that test (no SDL linked). Takes no other flag.
-#   --log-host IPV4:PORT   ship the address in the package (res/log-host.txt); the app then sends every
-#                   log line, host and library, as a UDP datagram to it (retail TVs have no way to read
-#                   the log file). From the emulator the build machine is usually 10.0.2.2. Receive with
-#                   `nc -klu PORT`. Without the flag the package carries no address and nothing is sent.
+#                   `cargo test` with them linked, so the H5 test renders the label's text AND the diagnostics
+#                   panel to an SDL_Surface from the shipped font (no GL, no window, no TV). Plain `cargo test`
+#                   in plx/ also works but skips those tests (no SDL linked). Takes no other flag.
+#   --log-host IPV4:PORT   OPTIONAL. Ship the address in the package (res/log-host.txt); the app then sends
+#                   every log line, host and library, as a UDP datagram to it. From the emulator the build
+#                   machine is usually 10.0.2.2. Receive with `nc -klu PORT`. Without the flag the package
+#                   carries no address and nothing is sent: the on-screen panel is always on and is what a
+#                   tester with a retail TV photographs (README, "Tester build").
 #   --author-p12 FILE, --dist-p12 FILE   the signing certificates (see "Signing" below).
 #
 # Signing: building the .tpk REQUIRES a Samsung certificate profile (author + VD Public distributor
@@ -120,7 +123,7 @@ if [ "$HOST_TEST" = 1 ]; then
   PLX_SDL_PREFIX="$HERE/sdl-build/host" cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" 2>&1 \
     | grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' || true
   [ "${PIPESTATUS[0]}" = 0 ] || die "cargo test failed"
-  echo "(PLX_H5_DUMP=/path/label.bmp also writes the rendered label; add -- --nocapture to read the H5 log lines)"
+  echo "(PLX_H5_DUMP=/path/label.bmp and PLX_PANEL_DUMP=/path/stem write the rendered label and panels as BMPs; add -- --nocapture to read the log lines)"
   exit 0
 fi
 
@@ -176,6 +179,20 @@ build_so() {
   # Per the repo's rules for hand-run cargo: no incremental cache, target dir inside the tree
   # (gitignored), never /tmp.
   export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$PLX/target"
+
+  # The revision the panel header shows, embedded by build.rs. "+dirty" when anything under tizen/hello
+  # (untracked files included, gitignored build output not) differs from HEAD, so a photographed screen
+  # says whether it came from a committed tree. PLX_GIT_SHA in the environment wins.
+  if [ -z "${PLX_GIT_SHA:-}" ]; then
+    local sha; sha="$(git -C "$HERE" rev-parse --short=9 HEAD 2>/dev/null || true)"
+    if [ -z "$sha" ]; then
+      sha=unknown
+    elif [ -n "$(git -C "$HERE" status --porcelain -- "$HERE" 2>/dev/null)" ]; then
+      sha="$sha+dirty"
+    fi
+    export PLX_GIT_SHA="$sha"
+  fi
+  say "panel revision: $PLX_GIT_SHA"
 
   local toolchain="${RUST_TOOLCHAIN:-}"
   local flags="-C link-arg=-Wl,-soname,libplx.so"
@@ -286,6 +303,12 @@ verify_so() {
   want="$(grep -hoE 'plx_tizen_[a-z]+' "$HOST/Program.cs" | sort -u)"
   got="$("$nm" -D --defined-only "$SO" | awk '{print $3}')"
   for f in $want; do grep -qx "$f" <<<"$got" || die "$SO does not export $f"; done
+  # The panel header's revision is in the object (a stale cargo cache would leave the old one).
+  if [ -n "${PLX_GIT_SHA:-}" ]; then
+    LC_ALL=C grep -aFq -- "Samsung probe " "$SO" || die "the panel header text is not in $SO"
+    LC_ALL=C grep -aFq -- "$PLX_GIT_SHA" "$SO" || die "the revision $PLX_GIT_SHA is not embedded in $SO (stale build?)"
+    echo "-- the panel header embeds revision $PLX_GIT_SHA"
+  fi
 
   local limit="${PLX_MAX_GLIBC:-2.30}"
   [ -n "${PLX_MAX_GLIBC:-}" ] || [ "$ARCH" != x86_64 ] || limit=2.39

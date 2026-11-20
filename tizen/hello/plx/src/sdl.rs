@@ -119,6 +119,7 @@ extern "C" {
     fn TTF_GlyphIsProvided32(font: *mut c_void, ch: u32) -> c_int;
     fn TTF_SizeUTF8(font: *mut c_void, text: *const c_char, w: *mut c_int, h: *mut c_int) -> c_int;
     fn TTF_RenderUTF8_Blended(font: *mut c_void, text: *const c_char, fg: Color) -> *mut RawSurface;
+    fn TTF_RenderUTF8_Blended_Wrapped(font: *mut c_void, text: *const c_char, fg: Color, wrap_length: u32) -> *mut RawSurface;
 }
 
 fn cstr(p: *const c_char) -> String {
@@ -296,6 +297,27 @@ impl Surface {
     pub fn convert(&self, format: u32) -> Result<Surface, String> {
         Surface::wrap(unsafe { SDL_ConvertSurfaceFormat(self.0.as_ptr(), format, 0) })
     }
+
+    /// The surface as tightly packed, fully opaque RGBA bytes (`width * 4` per row, top row first).
+    /// For an opaque plate: SDL's software BLEND blit leaves alpha at 254 on anti-aliased pixels, and
+    /// the GL stage draws without blending, so alpha is made exact instead of leaving a 1/255 hole.
+    pub fn to_rgba_opaque(&self) -> Result<Vec<u8>, String> {
+        let rgba = self.convert(PIXELFORMAT_ABGR8888)?;
+        let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+        let (pitch, row) = (rgba.pitch() as usize, w * 4);
+        let bytes = rgba.bytes();
+        if pitch < row || bytes.len() < pitch * h {
+            return Err(format!("converted surface is smaller than expected (pitch {pitch}, {} bytes)", bytes.len()));
+        }
+        let mut out = Vec::with_capacity(row * h);
+        for y in 0..h {
+            out.extend_from_slice(&bytes[y * pitch..y * pitch + row]);
+        }
+        for p in out.chunks_exact_mut(4) {
+            p[3] = 255;
+        }
+        Ok(out)
+    }
 }
 
 impl Drop for Surface {
@@ -382,6 +404,15 @@ impl Font {
         let c = CString::new(text).map_err(|_| "text has a NUL".to_string())?;
         // SAFETY: valid font and C string; `Color` is passed by value as the C ABI says.
         Surface::wrap(unsafe { TTF_RenderUTF8_Blended(self.0.as_ptr(), c.as_ptr(), fg) })
+    }
+
+    /// Like [`Font::render_blended`] for text with `\n` and long lines: breaks at `\n`, and at spaces
+    /// (or inside a word that is longer than the line) so no line is wider than `wrap_px`. The text
+    /// must not be empty (SDL_ttf refuses a zero-width render).
+    pub fn render_blended_wrapped(&self, text: &str, fg: Color, wrap_px: u32) -> Result<Surface, String> {
+        let c = CString::new(text).map_err(|_| "text has a NUL".to_string())?;
+        // SAFETY: valid font and C string; `Color` is passed by value as the C ABI says.
+        Surface::wrap(unsafe { TTF_RenderUTF8_Blended_Wrapped(self.0.as_ptr(), c.as_ptr(), fg, wrap_px) })
     }
 }
 

@@ -1,14 +1,16 @@
-//! H5, GL half: upload the SDL-rendered label as a GLES2 texture and draw it as a textured quad on
-//! the existing frame. Everything here runs on the render thread with the EGL context current.
+//! H5, GL half: upload an SDL-rendered image (since the tester build, the diagnostics panel; before
+//! it, the one-line H5 label) as a GLES2 texture and draw it as a textured quad on the existing frame.
+//! Everything here runs on the render thread with the EGL context current.
 //!
 //! The GL entry points are their own table (`LabelSyms`), loaded from the same libGLESv2 handle as
-//! `sym::Gles`, so a missing one can only switch the label off (logged by name), never fail the
+//! `sym::Gles`, so a missing one can only switch the panel off (logged by name), never fail the
 //! step-1 window and colour test.
 //!
-//! The label is an OPAQUE plate (the SDL side blits the text onto a dark plate), so no blending is
+//! The image is an OPAQUE plate (the SDL side blits the text onto a dark plate), so no blending is
 //! needed and alpha-channel handling of the compositor cannot hide or tint it. The texture is the
-//! label's own pixel size; the quad is scaled by `screen_height / 1080`, so it looks the same on a
-//! 1080p and a 4K panel.
+//! image's own pixel size, replaced (`glTexImage2D` on the same texture) whenever the panel text
+//! changes; the quad is scaled by `screen_height / 1080`, so it looks the same on a 1080p and a 4K
+//! panel (and is pixel-exact at 1080p).
 
 use crate::dl::symtable;
 use crate::h5::Label;
@@ -75,13 +77,16 @@ symtable! {
     }
 }
 
-/// The label's GL objects.
+/// The image's GL objects: the program from [`GlLabel::new`], one texture that [`GlLabel::set_image`]
+/// (re)fills. Nothing is drawn until the first image is set.
 pub struct GlLabel {
     s: LabelSyms,
     program: u32,
     texture: u32,
     pub width: i32,
     pub height: i32,
+    /// How many images were uploaded (the first upload also sets the sampler state).
+    uploads: u32,
 }
 
 impl GlLabel {
@@ -126,16 +131,15 @@ impl GlLabel {
         Ok(shader)
     }
 
-    /// Compile the shaders, link the program and upload `label` as an RGBA texture. Render thread.
-    pub fn create(s: LabelSyms, label: &Label) -> Result<GlLabel, String> {
+    /// Compile the shaders and link the program; make the (still empty) texture. Render thread.
+    pub fn new(s: LabelSyms) -> Result<GlLabel, String> {
         let stale = Self::drain_errors(&s);
         if stale != 0 {
             plog!("H5 gl: cleared a pending glError 0x{stale:04x} left by earlier code");
         }
         let vs = Self::compile(&s, GL_VERTEX_SHADER, VERTEX_SRC)?;
         let fs = Self::compile(&s, GL_FRAGMENT_SHADER, FRAGMENT_SRC)?;
-        // SAFETY (rest of the function): current context on this thread, handles from the calls
-        // above, `rgba` is `width * height * 4` bytes (asserted by the caller's Label invariant).
+        // SAFETY (rest of the function): current context on this thread, handles from the calls above.
         let program = unsafe { (s.create_program)() };
         if program == 0 {
             return Err("glCreateProgram returned 0".to_string());
@@ -162,40 +166,61 @@ impl GlLabel {
         plog!("H5 gl: program linked (id {program})");
 
         let mut texture = 0u32;
-        let (w, h) = (label.width, label.height);
-        debug_assert_eq!(label.rgba.len(), (w as usize) * (h as usize) * 4);
-        unsafe {
-            (s.gen_textures)(1, &mut texture);
-            (s.active_texture)(GL_TEXTURE0);
-            (s.bind_texture)(GL_TEXTURE_2D, texture);
-            (s.pixel_storei)(GL_UNPACK_ALIGNMENT, 4);
-            (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            (s.tex_image_2d)(
-                GL_TEXTURE_2D,
-                0,
-                GL_RGBA as i32,
-                w,
-                h,
-                0,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                label.rgba.as_ptr().cast(),
-            );
+        unsafe { (s.gen_textures)(1, &mut texture) };
+        if texture == 0 {
+            return Err("glGenTextures returned 0".to_string());
         }
-        let err = Self::drain_errors(&s);
-        plog!("H5 gl: texture {texture} uploaded {w}x{h} RGBA ({} bytes), glError=0x{err:04x}", label.rgba.len());
-        if texture == 0 || err != 0 {
-            return Err(format!("texture upload failed (id {texture}, glError 0x{err:04x})"));
-        }
-        Ok(GlLabel { s, program, texture, width: w, height: h })
+        Ok(GlLabel { s, program, texture, width: 0, height: 0, uploads: 0 })
     }
 
-    /// Draw the label centred. Render thread, after the clear, before the swap. Returns the first
-    /// `glGetError` seen (0 = fine).
+    /// Upload `image` (tightly packed RGBA, `width * height * 4` bytes) as the texture's content,
+    /// replacing what was there. Render thread, context current.
+    pub fn set_image(&mut self, image: &Label) -> Result<(), String> {
+        let s = &self.s;
+        let (w, h) = (image.width, image.height);
+        if w <= 0 || h <= 0 || image.rgba.len() != (w as usize) * (h as usize) * 4 {
+            return Err(format!("image {w}x{h} does not match its {} bytes", image.rgba.len()));
+        }
+        // SAFETY: current context on this thread; `rgba` is `width * height * 4` bytes (checked above).
+        unsafe {
+            (s.active_texture)(GL_TEXTURE0);
+            (s.bind_texture)(GL_TEXTURE_2D, self.texture);
+            (s.pixel_storei)(GL_UNPACK_ALIGNMENT, 4);
+            if self.uploads == 0 {
+                (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                (s.tex_parameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            }
+            (s.tex_image_2d)(GL_TEXTURE_2D, 0, GL_RGBA as i32, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, image.rgba.as_ptr().cast());
+        }
+        let err = Self::drain_errors(s);
+        plog!(
+            "H5 gl: texture {} upload #{} {w}x{h} RGBA ({} bytes), glError=0x{err:04x}",
+            self.texture,
+            self.uploads + 1,
+            image.rgba.len()
+        );
+        if err != 0 {
+            return Err(format!("texture upload failed (id {}, glError 0x{err:04x})", self.texture));
+        }
+        self.uploads += 1;
+        self.width = w;
+        self.height = h;
+        Ok(())
+    }
+
+    /// Whether an image has been uploaded (what [`GlLabel::draw`] needs).
+    pub fn has_image(&self) -> bool {
+        self.uploads > 0
+    }
+
+    /// Draw the image centred. Render thread, after the clear, before the swap. Returns the first
+    /// `glGetError` seen (0 = fine; also 0 when there is no image yet and nothing was drawn).
     pub fn draw(&self, screen_w: i32, screen_h: i32) -> u32 {
+        if !self.has_image() {
+            return 0;
+        }
         let s = &self.s;
         let scale = screen_h as f32 / 1080.0;
         let w = self.width as f32 * scale / screen_w as f32 * 2.0;
@@ -225,12 +250,12 @@ impl GlLabel {
 
     /// Release the GL objects. Render thread, context still current.
     pub fn destroy(&self) {
-        // SAFETY: handles made by `create` on this context.
+        // SAFETY: handles made by `new` on this context.
         unsafe {
             (self.s.delete_textures)(1, &self.texture);
             (self.s.delete_program)(self.program);
         }
-        plog!("H5 gl: label texture and program deleted");
+        plog!("H5 gl: panel texture and program deleted");
     }
 }
 

@@ -10,15 +10,38 @@
 //!   `cargo build` / `cargo test` need no SDL build). The H5 unit test then does not run.
 //!
 //! `libplx.so` gets no `DT_NEEDED` for SDL either way: the code is inside the object.
+//!
+//! It also embeds the revision the on-screen panel's header shows (`PLX_GIT_SHA`, always set):
+//! `build.sh` passes it in (with `+dirty` when tracked files under tizen/hello differ from HEAD);
+//! without it this asks the VCS itself, and falls back to `unknown` outside a checkout.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
+
+/// The sha the panel header shows: `$PLX_GIT_SHA`, else the short HEAD of this crate's checkout, else
+/// `unknown`. A value that is not a short token (a stray space or newline would break the `cargo:`
+/// line) is replaced by `unknown`.
+fn revision() -> String {
+    let from_env = env::var("PLX_GIT_SHA").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let sha = from_env.or_else(|| {
+        let dir = env::var_os("CARGO_MANIFEST_DIR")?;
+        let out = Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--short=9", "HEAD"]).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    });
+    match sha {
+        Some(s) if s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.') => s,
+        _ => "unknown".to_string(),
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=PLX_SDL_PREFIX");
+    println!("cargo:rerun-if-env-changed=PLX_GIT_SHA");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rustc-check-cfg=cfg(plx_sdl)");
+    println!("cargo:rustc-env=PLX_GIT_SHA={}", revision());
 
     let Some(prefix) = env::var_os("PLX_SDL_PREFIX").filter(|p| !p.is_empty()) else {
         return;

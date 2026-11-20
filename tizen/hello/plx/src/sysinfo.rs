@@ -65,7 +65,7 @@ pub fn log_environment(data_dir: &str) {
     // SAFETY: an all-zero utsname is a valid out-parameter.
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };
     // SAFETY: `u` is a valid, writable utsname.
-    if unsafe { libc::uname(&mut u) } == 0 {
+    let machine = if unsafe { libc::uname(&mut u) } == 0 {
         plog!(
             "uname machine={} sysname={} release={} version={}",
             field(&u.machine),
@@ -73,15 +73,32 @@ pub fn log_environment(data_dir: &str) {
             field(&u.release),
             field(&u.version)
         );
+        field(&u.machine)
     } else {
         plog!("uname failed");
-    }
-    plog!("glibc {}", glibc_version());
+        "(uname failed)".to_string()
+    };
+    let glibc = glibc_version();
+    plog!("glibc {glibc}");
     plog!("pid {} data_dir {data_dir}", std::process::id());
-    match std::fs::read_link("/proc/self/exe") {
-        Ok(p) => plog!("process exe {}", p.display()),
-        Err(e) => plog!("process exe unreadable: {e}"),
-    }
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => {
+            plog!("process exe {}", p.display());
+            p.display().to_string()
+        }
+        Err(e) => {
+            plog!("process exe unreadable: {e}");
+            "(unreadable)".to_string()
+        }
+    };
+    // What the on-screen panel prints of the above.
+    crate::panel::PANEL.set_native(crate::panel::NativeFacts {
+        arch: std::env::consts::ARCH.to_string(),
+        ptr_bits: std::mem::size_of::<usize>() * 8,
+        machine,
+        glibc,
+        exe,
+    });
     dump_file(
         "cpuinfo",
         "/proc/cpuinfo",

@@ -34,11 +34,16 @@ namespace PlxHello
         // logHost: "a.b.c.d:port" to mirror the library's log over UDP, or null for no network log.
         // resDir: the package's res/ directory (DirectoryInfo.Resource), where the H5 probe finds the
         // bundled font (appfont.ttf).
+        // hostFacts: "name=value" lines of what only this host can learn (Tizen system strings, CPU
+        // feature flags, the .NET runtime); the library shows them on the diagnostics panel. Names are
+        // listed in plx/src/panel.rs (parse_host_facts); null is allowed and just leaves them out.
+        // Keep this signature in step with plx_tizen_create in plx/src/lib.rs.
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int plx_tizen_create(
             [MarshalAs(UnmanagedType.LPStr)] string dataDir,
             [MarshalAs(UnmanagedType.LPStr)] string logHost,
-            [MarshalAs(UnmanagedType.LPStr)] string resDir);
+            [MarshalAs(UnmanagedType.LPStr)] string resDir,
+            [MarshalAs(UnmanagedType.LPStr)] string hostFacts);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void plx_tizen_pause();
@@ -132,6 +137,9 @@ namespace PlxHello
         private static string logPath;
         private bool nativeUp;
 
+        // What LogEnvironment learned, as "name=value" lines for the library's diagnostics panel.
+        private readonly StringBuilder hostFacts = new StringBuilder();
+
         // Lines are mirrored to dlog (`sdb dlog PLXHELLO`), to the shared log file and, when the
         // package names a log host, over UDP.
         internal static void Log(string msg)
@@ -160,7 +168,7 @@ namespace PlxHello
             Log(netNote);
             LogEnvironment();
 
-            int rc = CreateNative(dataDir, logHost, this.DirectoryInfo.Resource);
+            int rc = CreateNative(dataDir, logHost, this.DirectoryInfo.Resource, hostFacts.ToString());
             if (rc != 0)
             {
                 Log("native create FAILED rc=" + rc + " (native codes: plx/src/lib.rs; host: -1 dll not found, -2 entry point, -3 other). Exiting.");
@@ -234,11 +242,11 @@ namespace PlxHello
         }
 
         // The one P/Invoke that matters, with every way it can fail on a device recorded.
-        private int CreateNative(string dataDir, string logHost, string resDir)
+        private int CreateNative(string dataDir, string logHost, string resDir, string facts)
         {
             try
             {
-                return Native.plx_tizen_create(dataDir, logHost, resDir);
+                return Native.plx_tizen_create(dataDir, logHost, resDir, facts);
             }
             catch (DllNotFoundException e)
             {
@@ -247,7 +255,7 @@ namespace PlxHello
                 try
                 {
                     Log("retrying plx_tizen_create after preload");
-                    return Native.plx_tizen_create(dataDir, logHost, resDir);
+                    return Native.plx_tizen_create(dataDir, logHost, resDir, facts);
                 }
                 catch (DllNotFoundException e2)
                 {
@@ -307,28 +315,34 @@ namespace PlxHello
                 + " / OSArchitecture " + RuntimeInformation.OSArchitecture
                 + " / ProcessArchitecture " + RuntimeInformation.ProcessArchitecture
                 + " / IntPtr.Size " + IntPtr.Size);
-            foreach (string key in new[]
+            AddFact("runtime", RuntimeInformation.FrameworkDescription);
+            AddFact("os", RuntimeInformation.OSDescription);
+            AddFact("osarch", RuntimeInformation.OSArchitecture.ToString());
+            AddFact("procarch", RuntimeInformation.ProcessArchitecture.ToString());
+            AddFact("intptr", IntPtr.Size.ToString());
+            // (system key, fact name the panel knows). platform.web.api.version is logged only.
+            foreach (var kv in new (string, string)[]
             {
-                "http://tizen.org/feature/platform.version",
-                "http://tizen.org/feature/platform.native.api.version",
-                "http://tizen.org/feature/platform.web.api.version",
-                "http://tizen.org/system/platform.name",
-                "http://tizen.org/system/model_name",
-                "http://tizen.org/system/manufacturer",
-                "http://tizen.org/system/build.string",
+                ("http://tizen.org/feature/platform.version", "platform.version"),
+                ("http://tizen.org/feature/platform.native.api.version", "native.api"),
+                ("http://tizen.org/feature/platform.web.api.version", null),
+                ("http://tizen.org/system/platform.name", "platform.name"),
+                ("http://tizen.org/system/model_name", "model_name"),
+                ("http://tizen.org/system/manufacturer", "manufacturer"),
+                ("http://tizen.org/system/build.string", "build.string"),
             })
             {
-                LogSystemString(key);
+                AddFact(kv.Item2, LogSystemString(kv.Item1));
             }
-            foreach (string key in new[]
+            foreach (var kv in new (string, string)[]
             {
-                "http://tizen.org/feature/platform.core.cpu.arch.armv7",
-                "http://tizen.org/feature/platform.core.cpu.arch.aarch64",
-                "http://tizen.org/feature/platform.core.cpu.arch.x86",
-                "http://tizen.org/feature/platform.core.cpu.arch.x86_64",
+                ("http://tizen.org/feature/platform.core.cpu.arch.armv7", "cpu.armv7"),
+                ("http://tizen.org/feature/platform.core.cpu.arch.aarch64", "cpu.aarch64"),
+                ("http://tizen.org/feature/platform.core.cpu.arch.x86", "cpu.x86"),
+                ("http://tizen.org/feature/platform.core.cpu.arch.x86_64", "cpu.x86_64"),
             })
             {
-                LogSystemBool(key);
+                AddFact(kv.Item2, LogSystemBool(kv.Item1));
             }
             string lib = LibraryPath();
             try
@@ -342,26 +356,47 @@ namespace PlxHello
             }
         }
 
-        private static void LogSystemString(string key)
+        // One "name=value" line for the library. The value is flattened to one line (the format is
+        // line-based); a null name means "log only".
+        private void AddFact(string name, string value)
+        {
+            if (name == null) return;
+            string flat = (value ?? "(unavailable)").Replace('\r', ' ').Replace('\n', ' ');
+            hostFacts.Append(name).Append('=').Append(flat).Append('\n');
+        }
+
+        // Log one Tizen system value and return it as text ("(unavailable)" when the key is missing,
+        // "(error: ...)" when the call threw).
+        private static string LogSystemString(string key)
         {
             try
             {
                 string v;
                 bool ok = Tizen.System.Information.TryGetValue<string>(key, out v);
                 Log(key + " = " + (ok ? v : "(unavailable)"));
+                return ok ? v : null;
             }
-            catch (Exception e) { Log(key + " -> " + e.GetType().Name + ": " + e.Message); }
+            catch (Exception e)
+            {
+                Log(key + " -> " + e.GetType().Name + ": " + e.Message);
+                return "(error: " + e.GetType().Name + ")";
+            }
         }
 
-        private static void LogSystemBool(string key)
+        private static string LogSystemBool(string key)
         {
             try
             {
                 bool v;
                 bool ok = Tizen.System.Information.TryGetValue<bool>(key, out v);
                 Log(key + " = " + (ok ? v.ToString() : "(unavailable)"));
+                return ok ? v.ToString() : null;
             }
-            catch (Exception e) { Log(key + " -> " + e.GetType().Name + ": " + e.Message); }
+            catch (Exception e)
+            {
+                Log(key + " -> " + e.GetType().Name + ": " + e.Message);
+                return "(error: " + e.GetType().Name + ")";
+            }
         }
 
         private static void Main(string[] args)
