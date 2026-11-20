@@ -233,4 +233,24 @@ mod tests {
         p.acquired();
         assert_eq!(p.fields(), "", "an unarmed probe has nothing to log");
     }
+
+    /// **The counting shell says what it is and counts what it is asked, per platform.** It is a
+    /// cursor swap (the webOS 3.x answer), every `platform()` call has counters of its own, and the
+    /// pointer calls are the only ones it counts. The loop's tests read these counts, so the shell they
+    /// read is pinned here, where no feature gate hides it.
+    #[test]
+    fn the_swap_shell_is_a_cursor_swap_that_counts_its_own_pointer_calls() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (platform, counted) = SwapShell::platform();
+        let (other, other_counted) = SwapShell::platform();
+        assert!(platform.shell.hide_is_cursor_swap(), "a swap says so");
+        platform.shell.hide_pointer();
+        platform.shell.hide_pointer();
+        platform.shell.show_pointer_after_motion();
+        platform.shell.pump_bus();
+        assert_eq!((counted.hides.load(Relaxed), counted.shows.load(Relaxed)), (2, 1));
+        assert_eq!((other_counted.hides.load(Relaxed), other_counted.shows.load(Relaxed)), (0, 0),
+            "another platform's counts are its own");
+        assert!(!other.shell.release_surface(), "the rest of the shell answers as the host-test one does");
+    }
 }

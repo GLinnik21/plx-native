@@ -2049,6 +2049,77 @@ mod click_is_ok_tests {
     }
 }
 
+/// **The pointer's hide and show reach the shell, and only when they should.** The machine owns the
+/// decision (`cur_hidden`, the D-pad mode, Back's ownership); the shell owns the act. Counted on a
+/// shell that says what it was asked, with no loop and no feature gate, so the default build grades
+/// the same calls the hostsim loop tests do.
+#[cfg(test)]
+mod pointer_hide_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    fn press_down(ptr: &mut Pointer, shell: &dyn Shell) {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut down_sym = 0;
+        unsafe {
+            begin_fresh_press(&ps, Key::Down, plx_ui::consts::SDLK_DOWN, 0, 0, false, &mut down_sym, None, ptr, shell)
+        };
+    }
+
+    /// The first direction key hides (and enters the D-pad's mode), a second while the pointer is
+    /// still hidden asks for nothing, a motion shows it once and a second motion nothing more, and the
+    /// next direction key hides it again. A key that is no direction hides nothing.
+    #[test]
+    fn a_direction_key_hides_once_and_a_motion_shows_once() {
+        let _g = plx_base::testlock::serial();
+        let (platform, counted) = crate::app::platform::SwapShell::platform();
+        let shell = platform.shell;
+        let counts = || (counted.hides.load(Relaxed), counted.shows.load(Relaxed));
+        let mut ptr = Pointer::IDLE;
+        ptr.note_cursor_motion(shell);
+        assert_eq!(counts(), (0, 0), "a pointer that was never hidden is not shown");
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut down_sym = 0;
+        unsafe { begin_fresh_press(&ps, Key::Ok, 13, 0, 0, false, &mut down_sym, None, &mut ptr, shell) };
+        assert_eq!(counts(), (0, 0), "OK is no direction: nothing hides");
+        press_down(&mut ptr, shell);
+        assert_eq!(counts(), (1, 0), "the first direction key hides");
+        assert!(ptr.dpad_mode && ptr.cur_hidden);
+        press_down(&mut ptr, shell);
+        assert_eq!(counts(), (1, 0), "a second one, with the pointer already hidden, asks for nothing");
+        ptr.note_cursor_motion(shell);
+        assert_eq!(counts(), (1, 1), "a motion shows it");
+        assert!(!ptr.cur_hidden);
+        ptr.note_cursor_motion(shell);
+        assert_eq!(counts(), (1, 1), "...once");
+        press_down(&mut ptr, shell);
+        assert_eq!(counts(), (2, 1), "and the next direction key hides it again");
+    }
+
+    /// Back's cursor owns what it hid: a motion does not show it while Back holds it (`Wake` does),
+    /// and handing it back restores the pointer only if Back's own `Hide` was what hid it.
+    #[test]
+    fn backs_cursor_is_hidden_through_the_shell_and_restored_only_if_back_hid_it() {
+        use plx_machine::machine::{InstanceId, MachineId};
+        use plx_screens::registry::BackCursorChange;
+        let target = (MachineId::Instance(InstanceId(1)), 7);
+        let _g = plx_base::testlock::serial();
+        for already_hidden in [false, true] {
+            let (platform, counted) = crate::app::platform::SwapShell::platform();
+            let shell = platform.shell;
+            let mut ptr = Pointer::IDLE;
+            ptr.cur_hidden = already_hidden;
+            ptr.sync_back_cursor(shell, Some(target), Some((target, BackCursorChange::Hide)));
+            assert_eq!(counted.hides.load(Relaxed), 1, "Back's Hide hides through the shell");
+            ptr.note_cursor_motion(shell);
+            assert_eq!(counted.shows.load(Relaxed), 0, "a motion does not undo Back's hide while Back holds it");
+            ptr.sync_back_cursor(shell, Some(target), Some((target, BackCursorChange::Release)));
+            assert_eq!(counted.shows.load(Relaxed), usize::from(!already_hidden),
+                "release shows the pointer only if Back's own Hide had hidden it (already hidden: {already_hidden})");
+        }
+    }
+}
+
 #[cfg(test)]
 mod edge_scroll_tests {
     use super::{EdgeScroll, EDGE_BAND, EDGE_DWELL_MS, EDGE_RAMP_MS, EDGE_SIDE_BAND};
