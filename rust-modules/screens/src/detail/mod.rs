@@ -1478,6 +1478,8 @@ impl DetailScreen {
         }
         let mut groups = Vec::new();
         Focusable::<H>::groups(self, cx, &mut groups);
+        // `sections` lists a section only while it has stops, so every group below the row has some
+        // today; `len > 0` is each group's own word that the engine can seat on it.
         match groups.iter().find(|g| g.id != hero::HERO_GROUP && g.len > 0) {
             Some(below) => Focusable::<H>::seat(self, below.id, plx_ui::focus::head_of(below.extent), cx).elem,
             None => hero::first_stop(set, stops).elem(),

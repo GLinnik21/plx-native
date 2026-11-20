@@ -931,3 +931,30 @@ fn a_discs_glyph_keeps_one_raster_across_its_whole_pop() {
         assert!((side - rest_side * scale).abs() < 1e-3, "scale {scale}: the box follows the spring continuously");
     }
 }
+
+/// **A disabled disc is drawn at rest, whichever way focus reaches it and in whatever order the
+/// builder ran** ([`TransportButton::enabled`]'s and [`Button::enabled`]'s own rule): the idle face,
+/// in the disabled ink. The Detail hero row's bookmark and watched toggle are discs, and a platform
+/// that cannot act on one must never show it lit. `face_now` is the one place the focus (the binary
+/// flag or a spring's progress) and the disabled rule meet.
+#[test]
+fn a_disabled_disc_wears_the_idle_face_in_the_disabled_ink_however_focus_reaches_it() {
+    let make = || CircleButton::new(c"".as_ptr());
+    let face = |b: CircleButton| {
+        let f = b.face_now();
+        (f.top, f.body, f.ink)
+    };
+    let (rest, lit) = (face(make()), face(make().focused(true)));
+    assert_ne!((rest.0, rest.1), (lit.0, lit.1), "the focused face is distinguishable from the idle one");
+    let disabled = face(make().enabled(false));
+    assert_eq!((disabled.0, disabled.1), (rest.0, rest.1), "a disabled disc keeps the idle plate");
+    assert_eq!(disabled.2, theme::INK_DISABLED, "and wears the disabled ink");
+    for (how, b) in [
+        ("flag, then disabled", make().focused(true).enabled(false)),
+        ("disabled, then flag", make().enabled(false).focused(true)),
+        ("spring, then disabled", make().focus_mix(1.0).enabled(false)),
+        ("disabled, then spring", make().enabled(false).focus_mix(1.0)),
+    ] {
+        assert_eq!(face(b), disabled, "{how}: still the idle face in the disabled ink");
+    }
+}

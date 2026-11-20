@@ -343,6 +343,24 @@ fn enter_arms_the_default_restore_only_for_a_fresh_open_whose_item_is_not_there(
     }
 }
 
+/// A restore the page already carries is never swapped for the default one: a spot a navigation
+/// seeded (`DetailSeed`) is the viewer's own place, and `Enter` arms the default only where none
+/// came.
+#[test]
+fn enter_keeps_the_restore_the_page_already_carries() {
+    use plx_ui::screen::Enter;
+    let sid = ServerId::UNSET;
+    let _driver = NoDriver::set(true);
+    let guard = install(Detail { sid, rk: "other".into(), ..Default::default() });
+    let mut screen = bare(&guard, sid, "movie");
+    screen.restore(&Spot { section: 3, col: 2, ..Default::default() }, test_store().view());
+    let fresh = Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
+    step(&mut screen, &ScreenEvent::Enter(fresh), None);
+    let spot = &screen.restore_intent.as_ref().expect("the restore is still armed").spot;
+    assert_eq!((spot.section, spot.col), (3, 2), "the spot the page came with is the one it keeps");
+    clear();
+}
+
 /// Focus only ever lands on a control of the row that draws a focused face. The shared button draws
 /// none while disabled (`widgets::Button::face_now`), which is why a disabled control owns no stop.
 #[test]
