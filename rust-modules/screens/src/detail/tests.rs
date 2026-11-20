@@ -33,7 +33,14 @@ impl ScreenArg for TestArg {
 pub(super) struct TestHost;
 
 impl crate::registry::ScreenInputsLike for TestHost {
-    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        if NO_DRIVER.with(|flag| flag.get()) { crate::inputs::no_driver_fixture() } else { crate::registry::caption_fixture() }
+    }
+}
+
+thread_local! {
+    /// TEST ONLY: the host publishes a platform that composed no playback driver.
+    static NO_DRIVER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl crate::registry::PlayerLike for TestHost {
@@ -6103,3 +6110,45 @@ pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
 
 #[path = "hero_shade_tests.rs"]
 mod hero_shade;
+
+/// W6c: a platform that composes no playback driver leaves Detail's Play pill focusable but inert.
+/// The same press with a driver composed starts the play, so the guard is the only difference.
+#[test]
+fn the_hero_play_is_inert_when_no_playback_driver_is_composed() {
+    let sid = ServerId::UNSET;
+    for (no_driver, plays) in [(false, true), (true, false)] {
+        let _guard = install(Detail {
+            sid, rk: "movie".into(), kind: "movie".into(), part: "/library/parts/1/file.mkv".into(),
+            ..Default::default()
+        });
+        NO_DRIVER.with(|flag| flag.set(no_driver));
+        let mut screen = bare(&_guard, sid, "movie");
+        let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+        NO_DRIVER.with(|flag| flag.set(false));
+        assert_eq!(play_item(&effects).is_some(), plays, "no_driver={no_driver}");
+        clear();
+    }
+}
+
+/// W6c: the Play pill's label wears the shared button's disabled ink while no playback driver is
+/// composed, and its ordinary ink otherwise: `Button::enabled`, not a screen-local look.
+#[test]
+fn the_play_pill_reads_disabled_when_no_playback_driver_is_composed() {
+    let sid = ServerId::UNSET;
+    let play_label = plx_os::i18n::msg::browse_detail_play();
+    let mut inks = Vec::new();
+    for no_driver in [false, true] {
+        let _guard = install(Detail { sid, rk: "movie".into(), kind: "movie".into(), ..Default::default() });
+        NO_DRIVER.with(|flag| flag.set(no_driver));
+        let screen = bare(&_guard, sid, "movie");
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            screen.draw_buttons(plx_ui::Painter::recording(), &cx(&measure, None), 600.0, 1.0)
+        });
+        NO_DRIVER.with(|flag| flag.set(false));
+        inks.push(runs.iter().find(|r| r.text == play_label).map(|r| r.ink));
+        clear();
+    }
+    assert_eq!(inks[1], Some(plx_ui::theme::INK_DISABLED), "no driver: the disabled ink");
+    assert!(inks[0].is_some() && inks[0] != inks[1], "a driver composed: the ordinary ink");
+}

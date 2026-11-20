@@ -1648,8 +1648,12 @@ impl Bridge<'_> {
         // No Player replay domain exists: controlled owners retain explicit neutral/supplied facts.
         if !self.retained.live_screen_inputs { return false; }
         let next = super::player_presentation::capture(ps);
-        if self.retained.screen_inputs.player_presentation == next { return false; }
+        // The set the composition published: the screens read it to disable Play when none is composed.
+        let backends = ps.backends();
+        if self.retained.screen_inputs.player_presentation == next
+            && self.retained.screen_inputs.backends == backends { return false; }
         self.retained.screen_inputs.player_presentation = next;
+        self.retained.screen_inputs.backends = backends;
         self.retained.screen_inputs.revision = self.retained.screen_inputs.revision.wrapping_add(1);
         true
     }
@@ -5998,6 +6002,29 @@ mod screen_input_publication_tests {
             assert!(!bridge.publish_player_presentation(&ps), "controlled capture must perform no IO");
             assert_eq!(bridge.retained.screen_inputs.player_presentation, Default::default());
         });
+    }
+
+    /// W6c: the set the session was told reaches the screens as `ScreenInputs.backends`, moves the
+    /// frame's revision when it changes, and a controlled host keeps the default (today's) set.
+    #[test]
+    fn the_composed_backend_set_reaches_the_screen_inputs() {
+        use plx_media::route::BackendSet;
+        let _serial = plx_base::testlock::serial();
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        assert!(!bridge.publish_player_presentation(&ps), "the session's default set is the inputs' default");
+        assert_eq!(bridge.retained.screen_inputs.backends, BackendSet::FEED);
+        let revision = bridge.retained.screen_inputs.revision;
+        ps.install_backends(BackendSet::NONE);
+        assert!(bridge.publish_player_presentation(&ps), "a platform with no driver is a visible change");
+        assert_eq!(bridge.retained.screen_inputs.backends, BackendSet::NONE);
+        assert_ne!(bridge.retained.screen_inputs.revision, revision);
+        assert!(!bridge.publish_player_presentation(&ps), "an unchanged set presents nothing");
+        bridge.retained.live_screen_inputs = false;
+        ps.install_backends(BackendSet::BOTH);
+        assert!(!bridge.publish_player_presentation(&ps), "a controlled host publishes nothing");
+        assert_eq!(bridge.retained.screen_inputs.backends, BackendSet::NONE);
     }
 
     #[test]

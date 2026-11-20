@@ -3034,7 +3034,7 @@ impl DetailScreen {
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(chrome, d, chain.facts_y, cx.measure);
+            hero::draw_facts(chrome, d, H::screen_inputs(cx).can_play(), chain.facts_y, cx.measure);
             hero::draw_people(chrome, d, chain.btn_y, measure);
         }
         // Full-trailer mode takes the action row with the rest of the page: the viewer asked for
@@ -3221,6 +3221,9 @@ impl DetailScreen {
                     rect,
                 )
                 .icon(plx_ui::icons::Icon::Play)
+                // No playback driver composed: the shared button's own disabled look. The reason
+                // is the facts line's clause (`hero::draw_facts`).
+                .enabled(H::screen_inputs(cx).can_play())
                 .focus_mix(fill)
                 .palette(palette)
                 .ground(ground)
@@ -4616,6 +4619,9 @@ impl DetailScreen {
         let measure = cx.measure;
         match ctl {
             hero::HeroCtl::Play => {
+                // Focusable but inert while no driver is composed (the disabled-row convention);
+                // the pill reads disabled and the facts line says why.
+                if !H::screen_inputs(cx).can_play() { return; }
                 self.play_hero(false, None, fx, meta);
             }
             hero::HeroCtl::Restart => {

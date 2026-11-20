@@ -51,6 +51,7 @@
   "browse.detail.converts": "Konvertálás a szerveren",
   "browse.detail.direct_play": "Közvetlen lejátszás",
   "browse.detail.direct_stream": "Közvetlen stream",
+  "browse.detail.no_playback": "A lejátszás nem érhető el",
   "browse.detail.original_audio_converted": "Eredeti · konvertált hang",
   "browse.detail.hardware_needs": "a hardveres konvertáláshoz szükséges:",
   "browse.detail.tonemap_needs": "a tónusleképezéshez szükséges:",

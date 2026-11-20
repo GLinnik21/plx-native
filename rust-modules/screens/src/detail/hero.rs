@@ -662,12 +662,29 @@ enum Bit {
 
 const FACTS_BITS: usize = 8;
 
-fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
+fn play_mode_bits(d: &Detail, playable: bool, after: bool) -> ([Bit; FACTS_BITS], usize) {
+    if !playable {
+        return no_playback_bits(after);
+    }
     match plx_media::route::detail_playback_preview(d) {
         Some((plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux, _)) => ([Bit::Air(0.0); FACTS_BITS], 0),
         Some((preview, file)) => play_mode_bits_for(preview, file.hdr, item_subscription(d), after),
         None => ([Bit::Air(0.0); FACTS_BITS], 0),
     }
+}
+
+/// The play-mode clause of a device that composes no playback driver: the one reason word, in the
+/// facts line's own ink, in the place the preview clause takes. Nothing about the item's route is read,
+/// since no route can start.
+fn no_playback_bits(after: bool) -> ([Bit; FACTS_BITS], usize) {
+    let mut bits = [Bit::Air(0.0); FACTS_BITS];
+    let mut n = 0;
+    if after {
+        bits[n] = Bit::Sep;
+        n += 1;
+    }
+    bits[n] = Bit::Word(plx_os::i18n::msg::browse_detail_no_playback_c(), plx_ui::detail_layout::FACTS_INK, 0);
+    (bits, n + 1)
 }
 
 /// [`play_mode_bits`] once the item's route has been read: the line's play-mode clause, behind a
@@ -758,20 +775,21 @@ fn bits_flow(
     flow.end() - x
 }
 
-fn play_mode_w(d: &Detail, after: bool, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    let (bits, n) = play_mode_bits(d, after);
+fn play_mode_w(d: &Detail, playable: bool, after: bool, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    let (bits, n) = play_mode_bits(d, playable, after);
     bits_flow(&bits[..n], 0.0, measure, |_, _| {})
 }
 
 fn draw_play_mode(
     p: Painter,
     d: &Detail,
+    playable: bool,
     x: f32,
     y: f32,
     after: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
-    let (bits, n) = play_mode_bits(d, after);
+    let (bits, n) = play_mode_bits(d, playable, after);
     paint_bits(p, &bits[..n], x, y, measure)
 }
 
@@ -864,12 +882,12 @@ fn facts_flow(
 }
 
 /// Draw the facts line at `y`; the width it draws from the margin.
-pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
+pub fn draw_facts(p: Painter, d: &Detail, playable: bool, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
     let credit = plx_ui::fmt::shared_by(&d.source()).unwrap_or_default();
     let column = Rect::new(plx_ui::consts::MARGIN_X, y, FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H);
-    if play_mode_w(d, false, measure) == 0.0 {
+    if play_mode_w(d, playable, false, measure) == 0.0 {
         let resumes = hero_resume_ns(d) > 0;
         return plx_ui::widgets::hero_facts(p, column, &date, extent, resumes, &credit, measure);
     }
@@ -878,7 +896,7 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
             &[date.as_str(), if fit.extent { extent } else { "" }],
             if fit.credit { &credit } else { "" },
             |text, _, size, _| measure.width_str(text, size, false),
-            |_, after| play_mode_w(d, after, measure),
+            |_, after| play_mode_w(d, playable, after, measure),
         )
     };
     let fit = facts_fit(
@@ -888,7 +906,7 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
     );
     let elided;
     let date = if fit.elide {
-        let budget = (column.w - play_mode_w(d, true, measure)).max(0.0);
+        let budget = (column.w - play_mode_w(d, playable, true, measure)).max(0.0);
         elided = plx_gfx::text::elide_by(&date, budget, false, |t| {
             measure.width_str(t, theme::size::CAPTION, false)
         });
@@ -915,7 +933,7 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
                 })
                 .unwrap_or(0.0)
         },
-        |dx, after| draw_play_mode(p, d, plx_ui::consts::MARGIN_X + dx, y, after, measure),
+        |dx, after| draw_play_mode(p, d, playable, plx_ui::consts::MARGIN_X + dx, y, after, measure),
     )
 }
 
@@ -2192,5 +2210,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// W6c: with no playback driver composed the play-mode clause is the one reason word (after a
+    /// separator when something precedes it) and never the item's preview; with a driver it is
+    /// today's clause, which an item with no route preview leaves empty.
+    #[test]
+    fn no_playback_replaces_the_play_mode_clause_with_one_reason_word() {
+        let d = Detail::default();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        assert_eq!(play_mode_w(&d, true, false, &measure), 0.0, "today: nothing to say for this item");
+        assert!(play_mode_w(&d, false, false, &measure) > 0.0, "no driver: the reason is drawn");
+        let (bits, n) = play_mode_bits(&d, false, false);
+        assert_eq!(n, 1);
+        assert!(matches!(bits[0], Bit::Word(word, ink, 0)
+            if word == plx_os::i18n::msg::browse_detail_no_playback_c()
+                && ink == plx_ui::detail_layout::FACTS_INK), "one word in the facts line's own ink");
+        let (after, n) = play_mode_bits(&d, false, true);
+        assert!(n == 2 && matches!(after[0], Bit::Sep) && matches!(after[1], Bit::Word(..)));
+    }
+
+    /// W6c: a host that never says (the default inputs) is a platform with a driver.
+    #[test]
+    fn inputs_that_set_no_backends_mean_a_playable_platform() {
+        use crate::inputs::ScreenInputs;
+        use plx_media::route::BackendSet;
+        assert!(ScreenInputs::default().can_play());
+        for (set, can) in [(BackendSet::FEED, true), (BackendSet::URI, true), (BackendSet::BOTH, true),
+            (BackendSet::NONE, false)] {
+            assert_eq!(ScreenInputs { backends: set, ..Default::default() }.can_play(), can);
+        }
+        assert!(!ScreenInputs::default().same_facts(&ScreenInputs { backends: BackendSet::NONE, ..Default::default() }),
+            "the set is a screen-visible fact, so a change of it presents");
     }
 }

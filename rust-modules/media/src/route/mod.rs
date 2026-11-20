@@ -22,6 +22,9 @@ mod prefs;
 mod track_memory;
 
 pub use decision::*;
+/// The playback backends a composition supplies, for the layers (screens) that read the set the
+/// session was told and may not name the contract crate.
+pub use plx_playback_contract::BackendSet;
 pub use flight::{
     discard_stale_flight_landing, engineless_flight_outstanding, flight_is_current, flight_outstanding, recovery_flight_offset_ns, recovery_flight_outstanding, resume_flight_outstanding, retire_superseded_encoder, take_ready_flight,
     take_ready_recovery_flight, ReadyFlight, RecoveryLanding, RecoveryVerdict, SeekVerdict,
