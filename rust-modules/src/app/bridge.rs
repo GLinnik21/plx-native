@@ -5325,7 +5325,7 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
 /// television's own keyboard through `SDL_TEXTINPUT`, a replayed text input). True while the system keyboard is
 /// up for whichever page or surface raised it (`Dispatcher::system_keyboard_up`: Settings > Player HUD's address
 /// field, and Search's), and while Search is on top, whose field takes text even when the dispatcher's record of
-/// the panel disagrees with the OS (the `SDL_TEXTINPUT` branch of `run::ingest_sdl_event` says why). Text that
+/// the panel disagrees with the OS (`run::ingest_text_commit` says why). Text that
 /// arrives while this is false goes to `textinput`'s bounded queue, which nothing reads.
 pub(crate) fn text_owner(d: &Dispatcher<AppHost>) -> bool {
     d.system_keyboard_up() || search_owns_input(d)

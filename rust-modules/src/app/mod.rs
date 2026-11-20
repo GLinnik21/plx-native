@@ -90,9 +90,8 @@ pub(crate) const SDL_TEXTINPUT: u32 = 0x303;
 // keysyms, the OK/BACK predicates and `classify` — the key VOCABULARY the ladder below dispatches
 // on — live in ui::consts (the single keycode home)
 use plx_ui::consts::{
-    classify, is_bound, is_ok, Key, SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_PAGEDOWN,
-    SDLK_PAGEUP, SDLK_RETURN, SDLK_RIGHT, SDLK_UP, WCODE_CH_DOWN_KEY, WCODE_CH_UP_KEY, WCODE_PAUSE,
-    WCODE_PLAY, WCODE_POINTER_HIDDEN, WCODE_STOP,
+    classify, is_bound, is_ok, Key, SDLK_RETURN, WCODE_CH_DOWN_KEY, WCODE_CH_UP_KEY,
+    WCODE_POINTER_HIDDEN,
 };
 // The window we ASK SDL for. `surface::probe` then reads back what we actually got.
 const SCR_W: c_int = plx_base::surface::LOGICAL_W as c_int;

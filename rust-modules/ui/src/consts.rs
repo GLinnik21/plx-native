@@ -461,19 +461,18 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 /// 4. [`SDLK_BACKSPACE`] / [`SDLK_CLEAR`] — the television keyboard's own edit keys, read inside
 ///    the owned Search screen (`screens::search`'s key match), which the classifier never sees.
 /// 5. An ASCII digit **in `sym`** — the who's-watching PIN keypad types straight from the remote's
-///    number buttons (`ui::profiles`' own `digit_of`, which owns that behaviour).
+///    number buttons ([`pin_digit`], which owns that behaviour).
 ///
-/// **The `sym` field ONLY, and that is a deliberate divergence from `digit_of`, which also reads
+/// **The `sym` field ONLY, and that is a deliberate divergence from [`pin_digit`], which also reads
 /// the range out of `wcode`.** `wcode` is a SCANCODE (`app.rs::decode_key`), and 48–57 there are
 /// not digits at all: they are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock. The digits'
 /// scancodes are 30–39 — which is exactly why 33/34 turned out to be `4` and `5` a few dozen lines
-/// up. Mirroring `digit_of` would put the retired mis-reading straight back into the gate this
+/// up. Mirroring [`pin_digit`] would put the retired mis-reading straight back into the gate this
 /// function exists to be, so this takes the spelling the evidence supports: a remote's number key
 /// arrives with its ASCII keycode in `sym` (evdev 5 -> scancode 33 -> `SDLK_4` = 52). The cost is
-/// that `is_bound` is no longer a strict superset of `digit_of` for a wcode-only punctuation press
-/// — which reaches no HUD and no armed click, because the PIN pad has neither. `profiles` is not
-/// this module's to edit; `docs/remote-keys.md` §9 carries it as an open finding for the capture
-/// that settles both.
+/// that `is_bound` is no longer a strict superset of [`pin_digit`] for a wcode-only punctuation press
+/// — which reaches no HUD and no armed click, because the PIN pad has neither. `docs/remote-keys.md`
+/// §9 carries it as an open finding for the capture that settles both.
 ///
 /// **It still OVER-approximates in one place** and the alternative is worse. A digit is bound only
 /// on the PIN pad, so a number press on Home or during playback answers `true` here and still wakes
@@ -484,13 +483,164 @@ pub fn is_bound(sym: c_uint, wcode: c_uint) -> bool {
     is_remote_bound(sym, wcode) || plx_os::labcfg::is_trigger_key(sym, wcode)
 }
 
-/// The fixed key map, independent of a lab build's runtime diagnostics configuration.
+/// The fixed key map, independent of a lab build's runtime diagnostics configuration: a press is
+/// bound exactly when it has an [`Action`]. The four fixed sources [`is_bound`] lists (all but the
+/// lab trigger) are the four arms [`action_of`] reads, so there is one spelling of the map and
+/// this is its predicate.
 pub fn is_remote_bound(sym: c_uint, wcode: c_uint) -> bool {
-    classify(sym, wcode) != Key::Other
-        || page_dir(sym, wcode).is_some()
-        || sym == SDLK_BACKSPACE
-        || sym == SDLK_CLEAR
-        || (b'0' as c_uint..=b'9' as c_uint).contains(&sym)
+    action_of(sym, wcode).is_some()
+}
+
+/// **A key press by what it MEANS, with no SDL in it** — the vocabulary a platform that has no SDL
+/// key pair hands the loop (`HostEvent::Key`'s `action`), and the one the screens move onto when
+/// they stop reading `(sym, wcode)` themselves.
+///
+/// It is the union of the four fixed sources [`is_bound`] documents (everything but the lab
+/// trigger, which `lab.json` names at run time), one variant per distinct press the app acts on: [`classify`]'s named keys (with [`Key::Left`]/[`Key::Right`]'s `alt: true` spelling
+/// split out as [`Action::Rewind`]/[`Action::FastForward`], which is what it is), [`page_dir`]'s
+/// two, the system keyboard's two edit keys and the number keys. [`Key::Other`] has no variant: a
+/// press with no action is a press the app does not bind.
+///
+/// **`Action` and the raw pair are two spellings of one fact and each has exactly one function.**
+/// [`raw_pair`] is the ONLY place a `(sym, wcode)` is built from an action, and [`action_of`] the
+/// only place one is read back into it; `action_of(raw_pair(a)) == Some(a)` for every action
+/// (`action_tests`). So a platform that sends an action reaches the loop's raw readers through the
+/// same pair a real remote would have sent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    Up,
+    Down,
+    Left,
+    Right,
+    Ok,
+    Back,
+    Play,
+    Pause,
+    PlayPause,
+    Stop,
+    /// The transport's REWIND key: [`classify`]'s `Left { alt: true }`. It is not a plain
+    /// [`Action::Left`], and a platform that cannot tell them apart would make the player's scrub
+    /// and Home's navigation one key.
+    Rewind,
+    /// [`classify`]'s `Right { alt: true }`; see [`Action::Rewind`].
+    FastForward,
+    Exit,
+    /// The Library grid's pager, up: [`page_dir`]'s `-1`.
+    PageUp,
+    /// The Library grid's pager, down: [`page_dir`]'s `1`.
+    PageDown,
+    /// The system keyboard's delete key ([`SDLK_BACKSPACE`]).
+    Backspace,
+    /// The system keyboard's Clear-all button ([`SDLK_CLEAR`]).
+    ClearAll,
+    /// A number key, `0..=9`. Build one with [`Action::digit`]; a value above 9 names no key and
+    /// [`raw_pair`] gives it a pair no action reads back.
+    Digit(u8),
+    /// The Magic Remote reporting that its pointer auto-hid; a notification, not a press.
+    PointerHidden,
+}
+
+impl Action {
+    /// The number key for `n`, or `None` above 9.
+    pub const fn digit(n: u8) -> Option<Action> {
+        if n <= 9 { Some(Action::Digit(n)) } else { None }
+    }
+}
+
+/// The ONE `(sym, wcode)` pair the app builds for `action` when no SDL event carries one, and the
+/// pair the remote FIFO's named tokens (`app/events.rs::remote_token_key`) press.
+///
+/// Each is the pair a press of that key already reaches the app as in the synthetic path — the
+/// pager is `sym` alone, the transport keys `wcode` alone — so a recorded tape and
+/// `tests/keytable.json` read the same pairs they always did. Where a key has several real
+/// spellings the one chosen is the one the FIFO has always sent ([`Action::Back`] is ESC, not
+/// `wcode` 482; [`Action::Stop`] is [`WCODE_STOP`], not the LG-table 120/260), and [`action_of`]
+/// still accepts every spelling.
+pub const fn raw_pair(action: Action) -> (c_uint, c_uint) {
+    match action {
+        Action::Up => (SDLK_UP, 0),
+        Action::Down => (SDLK_DOWN, 0),
+        Action::Left => (SDLK_LEFT, 0),
+        Action::Right => (SDLK_RIGHT, 0),
+        Action::Ok => (SDLK_RETURN, 0),
+        Action::Back => (SDLK_ESCAPE, 0),
+        Action::Play => (0, WCODE_PLAY),
+        Action::Pause => (0, WCODE_PAUSE),
+        Action::PlayPause => (0, WCODE_PLAYPAUSE),
+        Action::Stop => (0, WCODE_STOP),
+        Action::Rewind => (0, WCODE_REWIND),
+        Action::FastForward => (0, WCODE_FASTFORWARD),
+        Action::Exit => (0, WCODE_EXIT),
+        Action::PageUp => (SDLK_PAGEUP, 0),
+        Action::PageDown => (SDLK_PAGEDOWN, 0),
+        // The keyboard's backspace arrives with scancode 42 beside its sym (device-measured; see
+        // `SDLK_BACKSPACE`), and Clear with 156; neither is read as anything else.
+        Action::Backspace => (SDLK_BACKSPACE, 42),
+        Action::ClearAll => (SDLK_CLEAR, 156),
+        Action::Digit(n) if n <= 9 => (b'0' as c_uint + n as c_uint, 0),
+        Action::Digit(_) => (0, 0),
+        Action::PointerHidden => (0, WCODE_POINTER_HIDDEN),
+    }
+}
+
+/// The [`Action`] a raw `(sym, wcode)` press is, or `None` for a press the app does not bind
+/// (an unsupported key: the colour buttons, GUIDE, INFO). The ONE decode.
+///
+/// **The order is the precedence, and it is [`classify`]'s first.** [`classify`] settles every
+/// named key exactly as the ladder has always read it (directions by `sym` before the transport
+/// codes, `PAUSE` and `PLAY` by `wcode` alone, the alternates in either field), so a pair carrying
+/// two keys' fields resolves as it always did. Only a press `classify` calls `Other` reaches the
+/// rest, in this order: the Library pager ([`page_dir`]), then the system keyboard's edit keys and
+/// the number keys, read from `sym`. That is why the simulator's `(8, 482)` (a desktop Backspace
+/// with the BACK `wcode`) is [`Action::Back`] here and Backspace to a screen that reads `sym` for
+/// itself: the loop keeps the raw pair beside the action, so both readings survive.
+///
+/// **A number key is read from `sym` ONLY**, as [`is_remote_bound`] has always read it, because
+/// `wcode` is a SCANCODE and 48–57 there are punctuation, not digits (`docs/remote-keys.md` §9).
+/// [`pin_digit`], which the PIN keypad still types from, ALSO reads `wcode`; the two differ for a
+/// press that carries a digit-range scancode and no digit `sym`. That press keeps typing a digit
+/// while the PIN keypad reads the raw pair, and W5d, which moves the keypad onto [`Action::Digit`],
+/// decides whether it still should.
+pub fn action_of(sym: c_uint, wcode: c_uint) -> Option<Action> {
+    match classify(sym, wcode) {
+        Key::Up => return Some(Action::Up),
+        Key::Down => return Some(Action::Down),
+        Key::Left { alt: false } => return Some(Action::Left),
+        Key::Left { alt: true } => return Some(Action::Rewind),
+        Key::Right { alt: false } => return Some(Action::Right),
+        Key::Right { alt: true } => return Some(Action::FastForward),
+        Key::Ok => return Some(Action::Ok),
+        Key::Back => return Some(Action::Back),
+        Key::Play => return Some(Action::Play),
+        Key::Pause => return Some(Action::Pause),
+        Key::PlayPause => return Some(Action::PlayPause),
+        Key::Stop => return Some(Action::Stop),
+        Key::Exit => return Some(Action::Exit),
+        Key::PointerHidden => return Some(Action::PointerHidden),
+        Key::Other => {}
+    }
+    match page_dir(sym, wcode) {
+        Some(dir) if dir < 0 => return Some(Action::PageUp),
+        Some(_) => return Some(Action::PageDown),
+        None => {}
+    }
+    match sym {
+        SDLK_BACKSPACE => Some(Action::Backspace),
+        SDLK_CLEAR => Some(Action::ClearAll),
+        s if (b'0' as c_uint..=b'9' as c_uint).contains(&s) => Some(Action::Digit((s - b'0' as c_uint) as u8)),
+        _ => None,
+    }
+}
+
+/// Remote number key → keypad digit, moved unchanged from `screens::profiles` (it was `digit_of`): SDL gives
+/// a printable key its ASCII sym and the webOS remote's number buttons carry the same 48-57
+/// ('0'-'9') range in `wcode`. The PIN keypad types from it, and it reads BOTH fields, which
+/// [`action_of`]'s number-key arm deliberately does not (see there).
+pub fn pin_digit(sym: u32, wcode: u32) -> Option<u8> {
+    [sym, wcode]
+        .into_iter()
+        .find(|v| (48..=57).contains(v))
+        .map(|v| v as u8)
 }
 
 // spring stiffnesses (from ui_home.c, redistributed 1:1 to their owning views)
@@ -767,5 +917,249 @@ mod tests {
             assert_eq!(classify(SDLK_UP, wcode), Key::Up, "wcode={wcode}");
             assert_eq!(classify(SDLK_DOWN, wcode), Key::Down, "wcode={wcode}");
         }
+    }
+}
+
+/// **The `Action` map, graded** (W5b): `action_of` is the one decode of a raw pair, `raw_pair` the one
+/// builder, and `is_remote_bound` is `action_of(..).is_some()`. The pairs below are spelled as
+/// literals where the key has LG-table or alternate spellings, so the table is not read back from
+/// the functions it grades.
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    const ALL: [Action; 28] = [
+        Action::Up,
+        Action::Down,
+        Action::Left,
+        Action::Right,
+        Action::Ok,
+        Action::Back,
+        Action::Play,
+        Action::Pause,
+        Action::PlayPause,
+        Action::Stop,
+        Action::Rewind,
+        Action::FastForward,
+        Action::Exit,
+        Action::PageUp,
+        Action::PageDown,
+        Action::Backspace,
+        Action::ClearAll,
+        Action::PointerHidden,
+        Action::Digit(0),
+        Action::Digit(1),
+        Action::Digit(2),
+        Action::Digit(3),
+        Action::Digit(4),
+        Action::Digit(5),
+        Action::Digit(6),
+        Action::Digit(7),
+        Action::Digit(8),
+        Action::Digit(9),
+    ];
+
+    /// Every pair a press can carry, as far as the app has ever seen or built one: each named
+    /// sym and code, the FIFO's pairs, the simulator's stand-ins, every ASCII sym, and every wcode
+    /// to 600 (past the LG-private 450-505 block).
+    fn grid() -> impl Iterator<Item = (c_uint, c_uint)> {
+        let named = [
+            SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT, SDLK_RETURN, SDLK_KP_ENTER, SDLK_SELECT,
+            SDLK_ESCAPE, SDLK_PAGEUP, SDLK_PAGEDOWN, SDLK_BACKSPACE, SDLK_CLEAR,
+            WCODE_PAUSE, WCODE_STOP, WCODE_PAUSE_ALT, WCODE_PLAY_ALT_A, WCODE_PLAY_ALT_B,
+            WCODE_POINTER_HIDDEN, WCODE_BACK, WCODE_PLAY, WCODE_REWIND, WCODE_FASTFORWARD,
+            WCODE_STOP_KEY, WCODE_STOP_CD, WCODE_PLAYPAUSE, WCODE_EXIT, WCODE_CH_UP_KEY,
+            WCODE_CH_DOWN_KEY,
+        ];
+        (0..256).chain(named).flat_map(|sym| (0..600).map(move |wcode| (sym, wcode)))
+    }
+
+    /// The four-term expression `is_remote_bound` was before it became `action_of(..).is_some()`,
+    /// kept here verbatim as the oracle the new one is graded against.
+    fn old_is_remote_bound(sym: c_uint, wcode: c_uint) -> bool {
+        classify(sym, wcode) != Key::Other
+            || page_dir(sym, wcode).is_some()
+            || sym == SDLK_BACKSPACE
+            || sym == SDLK_CLEAR
+            || (b'0' as c_uint..=b'9' as c_uint).contains(&sym)
+    }
+
+    /// `raw_pair` and `action_of` are inverses, for every action: a platform that sends an action
+    /// reaches the loop's raw readers through a pair that decodes back to it.
+    #[test]
+    fn every_action_reads_back_from_its_own_pair() {
+        for action in ALL {
+            let (sym, wcode) = raw_pair(action);
+            assert_eq!(action_of(sym, wcode), Some(action), "{action:?} via ({sym}, {wcode})");
+        }
+    }
+
+    /// The pair table, key by key, with the spellings a real remote or the simulator sends.
+    #[test]
+    fn every_spelling_maps_to_its_action() {
+        let table: [(c_uint, c_uint, Action); 40] = [
+            (SDLK_UP, 0, Action::Up),
+            (SDLK_DOWN, 0, Action::Down),
+            (SDLK_LEFT, 0, Action::Left),
+            (SDLK_RIGHT, 0, Action::Right),
+            (SDLK_RETURN, 0, Action::Ok),
+            (SDLK_KP_ENTER, 0, Action::Ok),
+            (SDLK_SELECT, 0, Action::Ok),
+            (SDLK_ESCAPE, 0, Action::Back),
+            (b'q' as c_uint, 0, Action::Back),
+            (0, 461, Action::Back),
+            (0, 482, Action::Back),
+            (0, 450, Action::Play),
+            (0, 19, Action::Play),
+            (19, 0, Action::Play),
+            (0, 402, Action::Play),
+            (402, 0, Action::Play),
+            (0, 72, Action::Pause),
+            (0, 415, Action::Pause),
+            (415, 0, Action::Pause),
+            (0, 261, Action::PlayPause),
+            (261, 0, Action::PlayPause),
+            (0, 413, Action::Stop),
+            (0, 120, Action::Stop),
+            (0, 260, Action::Stop),
+            (413, 0, Action::Stop),
+            (0, 452, Action::Rewind),
+            (452, 0, Action::Rewind),
+            (0, 451, Action::FastForward),
+            (451, 0, Action::FastForward),
+            (0, 505, Action::Exit),
+            (505, 0, Action::Exit),
+            (SDLK_PAGEUP, 0, Action::PageUp),
+            (0, 300, Action::PageUp),
+            (SDLK_PAGEDOWN, 0, Action::PageDown),
+            (0, 301, Action::PageDown),
+            (8, 42, Action::Backspace),
+            (SDLK_CLEAR, 156, Action::ClearAll),
+            (0, 0x1e4, Action::PointerHidden),
+            (b'4' as c_uint, 33, Action::Digit(4)),
+            (b'0' as c_uint, 0, Action::Digit(0)),
+        ];
+        for (sym, wcode, action) in table {
+            assert_eq!(action_of(sym, wcode), Some(action), "({sym}, {wcode})");
+        }
+    }
+
+    /// Rewind and FastForward are `Left`/`Right { alt: true }` and never the plain directions, and
+    /// the plain `sym` still wins the pair that carries both (the precedence `classify` documents).
+    #[test]
+    fn transport_is_not_a_direction_and_a_plain_sym_wins() {
+        assert_eq!(action_of(0, WCODE_REWIND), Some(Action::Rewind));
+        assert_eq!(action_of(0, WCODE_FASTFORWARD), Some(Action::FastForward));
+        assert_eq!(action_of(SDLK_LEFT, WCODE_REWIND), Some(Action::Left));
+        assert_eq!(action_of(SDLK_RIGHT, WCODE_FASTFORWARD), Some(Action::Right));
+        assert_ne!(action_of(0, WCODE_PLAY), action_of(0, WCODE_PAUSE), "Play is not Pause");
+        assert_ne!(action_of(SDLK_PAGEUP, 0), action_of(SDLK_PAGEDOWN, 0), "PageUp is not PageDown");
+    }
+
+    /// The simulator's desktop Backspace is `(8, 482)`: BACK to `classify`, so Back here, with the
+    /// raw pair kept beside the action so a screen that reads `sym` still sees a Backspace. The
+    /// FIFO's `backspace` token, `(8, 42)`, and a bare sym 8 are Backspace.
+    #[test]
+    fn the_simulators_backspace_is_back_and_the_fifos_is_backspace() {
+        assert_eq!(action_of(8, 482), Some(Action::Back));
+        assert_eq!(action_of(8, 42), Some(Action::Backspace));
+        assert_eq!(action_of(8, 0), Some(Action::Backspace));
+    }
+
+    /// A press the app does not bind has no action: the colour buttons (the real remote's never
+    /// reach us, and 504 is the code `docs/remote-keys.md` §9 records for KEY_GREEN), GUIDE-class
+    /// codes, and a wcode-only number-range scancode.
+    #[test]
+    fn an_unbound_press_has_no_action() {
+        for (sym, wcode) in [(0, 0), (0, 504), (0, 403), (0, 412), (0, 417), (0, 1), (b'a' as c_uint, 4), (0, 50)] {
+            assert_eq!(action_of(sym, wcode), None, "({sym}, {wcode})");
+            assert!(!is_remote_bound(sym, wcode), "({sym}, {wcode})");
+        }
+    }
+
+    /// `is_remote_bound` became `action_of(..).is_some()`: over every pair the grid names it
+    /// answers what the four-term expression it replaced answered.
+    #[test]
+    fn the_bound_predicate_is_unchanged_over_the_whole_grid() {
+        for (sym, wcode) in grid() {
+            assert_eq!(
+                is_remote_bound(sym, wcode),
+                old_is_remote_bound(sym, wcode),
+                "({sym}, {wcode})"
+            );
+        }
+    }
+
+    /// The pager and the edit keys read back as `page_dir` and the sym tests did.
+    #[test]
+    fn paging_and_editing_agree_with_their_own_readers() {
+        for (sym, wcode) in grid().filter(|&(s, w)| classify(s, w) == Key::Other) {
+            let paged = match page_dir(sym, wcode) {
+                Some(-1) => Some(Action::PageUp),
+                Some(1) => Some(Action::PageDown),
+                _ => None,
+            };
+            if paged.is_some() {
+                assert_eq!(action_of(sym, wcode), paged, "({sym}, {wcode})");
+            } else if sym == SDLK_BACKSPACE {
+                assert_eq!(action_of(sym, wcode), Some(Action::Backspace), "({sym}, {wcode})");
+            } else if sym == SDLK_CLEAR {
+                assert_eq!(action_of(sym, wcode), Some(Action::ClearAll), "({sym}, {wcode})");
+            }
+        }
+    }
+
+    /// Every `classify`-named key has its own action and the action's pair classifies back to it:
+    /// the pair a platform's action expands to drives the ladder as the real key would.
+    #[test]
+    fn an_action_pair_drives_the_ladder_as_its_key() {
+        let expect = [
+            (Action::Up, Key::Up),
+            (Action::Down, Key::Down),
+            (Action::Left, Key::Left { alt: false }),
+            (Action::Right, Key::Right { alt: false }),
+            (Action::Rewind, Key::Left { alt: true }),
+            (Action::FastForward, Key::Right { alt: true }),
+            (Action::Ok, Key::Ok),
+            (Action::Back, Key::Back),
+            (Action::Play, Key::Play),
+            (Action::Pause, Key::Pause),
+            (Action::PlayPause, Key::PlayPause),
+            (Action::Stop, Key::Stop),
+            (Action::Exit, Key::Exit),
+            (Action::PointerHidden, Key::PointerHidden),
+        ];
+        for (action, key) in expect {
+            let (sym, wcode) = raw_pair(action);
+            assert_eq!(classify(sym, wcode), key, "{action:?}");
+        }
+        for action in [Action::PageUp, Action::PageDown, Action::Backspace, Action::ClearAll, Action::Digit(7)] {
+            let (sym, wcode) = raw_pair(action);
+            assert_eq!(classify(sym, wcode), Key::Other, "{action:?} is taken by hand, not by the ladder");
+        }
+    }
+
+    /// The pad's digit reader moved here unchanged and still reads BOTH fields (so a wcode-only
+    /// press types a digit on the PIN keypad), while `action_of` reads `sym` only, as the bound
+    /// predicate always has. The two disagree on a digit-range scancode with no digit sym; the
+    /// keypad still reads the raw pair, and W5d decides what the Action does.
+    #[test]
+    fn the_pin_digit_reads_both_fields_and_the_action_reads_sym() {
+        assert_eq!(pin_digit(b'7' as u32, 0), Some(b'7'), "a dev keyboard's sym");
+        assert_eq!(pin_digit(0, 55), Some(b'7'), "the remote's wcode, same digit");
+        assert_eq!(pin_digit(b'0' as u32, 0), Some(b'0'));
+        assert_eq!(pin_digit(999, 0), None, "not a digit in either field");
+        assert_eq!(action_of(0, 55), None, "scancode 55 is a full stop, not a digit");
+        assert_eq!(action_of(b'7' as c_uint, 0), Some(Action::Digit(7)));
+        assert!(!is_remote_bound(0, 55));
+    }
+
+    /// A digit above 9 is no key: no constructor makes one, and a hand-built one has a pair nothing reads.
+    #[test]
+    fn a_digit_above_nine_names_no_key() {
+        assert_eq!(Action::digit(9), Some(Action::Digit(9)));
+        assert_eq!(Action::digit(10), None);
+        assert_eq!(raw_pair(Action::Digit(10)), (0, 0));
+        assert_eq!(action_of(0, 0), None);
     }
 }

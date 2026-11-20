@@ -2,10 +2,13 @@
 //! `SDL_KeyboardEvent`, the synthetic key/pointer/wheel events, and `dispatch_remote_token`.
 //! Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
 //!
-//! The one decode that yields a platform-neutral value is [`decode_host_event`]: SDL's quit and
-//! application-lifecycle events become a [`HostEvent`], which the loop consumes in one function.
+//! The one decode that yields a platform-neutral value is [`decode_host_event`]: SDL's quit,
+//! application-lifecycle, key and text events become a [`HostEvent`], which the loop consumes in one
+//! function. A key carries its canonical [`Action`] (`ui::consts`) beside the raw pair.
 
 use super::*;
+use plx_machine::machine::Edge;
+use plx_ui::consts::{action_of, raw_pair, Action};
 
 /// Preserve one IME commit and its place among key events. Desktop text does not imply an
 /// on-screen panel; the owning field decides whether it is editing when delivery reaches it.
@@ -136,22 +139,135 @@ const SDL_APP_DIDENTERBACKGROUND: u32 = 0x104;
 const SDL_APP_WILLENTERFOREGROUND: u32 = 0x105;
 const SDL_APP_DIDENTERFOREGROUND: u32 = 0x106;
 
-/// What the platform tells the loop that is not a key, a text commit or a pointer: the window
-/// leaving or returning to the screen, and the host asking the application to end. App-private,
-/// like [`Shell`](super::platform::Shell): no platform reaches it by a type of its own until the
+/// What the platform tells the loop: a key press, a text commit, the window leaving or returning to
+/// the screen, and the host asking the application to end. App-private, like
+/// [`Shell`](super::platform::Shell): no platform reaches it by a type of its own until the
 /// platform contract is settled (`docs/platform-ports.md`, Target shape 2).
 ///
 /// The SDL drain decodes SDL's events into it ([`decode_host_event`]) and the loop consumes it in
 /// ONE function (`run::ingest_host_event`), so a host that stops the application without SDL
 /// (the hosted entry's `plx_host_stop`) arrives as the same [`HostEvent::Quit`] an `SDL_QUIT`
-/// does and takes the same path. Keys, text, pointer and wheel are not here yet: they keep their
-/// raw path in `run::ingest_sdl_event_with_window` until their own steps (W5b, W5c) move them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// does and takes the same path, and a host with no SDL key pair sends a [`HostEvent::Key`] that
+/// carries an [`Action`]. Pointer and wheel are not here yet: they keep their raw path in
+/// `run::ingest_sdl_event_with_window` until their own step (W5c) moves them.
+///
+/// There is no `Edit` event: nothing produces one. `SDL_TEXTEDITING` (the IME pre-edit) is read by
+/// nothing and stays a log-only raw event, and the system keyboard's edit keys (caret, backspace,
+/// clear-all) are ordinary [`HostEvent::Key`] actions. `Edit` arrives with its first producer (W9).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HostEvent {
     /// The window left or came back to the screen.
     Lifecycle(Lifecycle),
     /// The host asks the application to end (`SDL_QUIT` on SDL platforms).
     Quit,
+    /// One edge of a key.
+    Key(KeyPress),
+    /// One commit from the platform's text input (the television's own keyboard): the decoded
+    /// string, possibly empty (SDL delivers a commit for the IME's own bookkeeping too, and the
+    /// loop ignores an empty one as it always has). The platform's own text layout is decoded
+    /// before it gets here (`textinput::decode`, the one place that knows the offsets).
+    Text(String),
+}
+
+/// The raw `(sym, wcode)` pair a key arrived as. Kept beside the [`Action`] because three things
+/// still read it: a press with no action (an unsupported key flows on as exactly the pair it was),
+/// the lab trigger key (named by `lab.json`, not by an action), and the recorder's tape, whose
+/// format IS the pair. A platform with no SDL pair sends none, and the loop builds
+/// [`raw_pair`] for its action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawKey {
+    pub sym: c_uint,
+    pub wcode: c_uint,
+}
+
+/// One edge of one key, as a platform hands it to the loop: the canonical [`Action`] where the key
+/// has one, the [`Edge`], and the raw pair where the platform has one.
+///
+/// **A press is self-consistent, and that is a type's guarantee, not a convention:** the fields are
+/// private to this module and [`KeyPress::new`] makes the action and the pair one key. It refuses a
+/// press that carries neither field, a stated action that is not what [`action_of`] makes of the raw
+/// pair beside it, and an action alone whose [`raw_pair`] does not read back as that action
+/// (`Digit(10)` names no key); a raw pair with no stated action has the action [`action_of`] reads
+/// out of it. So the loop never reads a key it cannot name, and the action and the pair can never
+/// disagree about which key was pressed. An SDL press always has a raw pair (its action is what
+/// [`action_of`] makes of it, `None` for an unbound key); a host that knows only the meaning sends
+/// the action alone and [`KeyPress::pair`] expands it with [`raw_pair`], which is the pair a
+/// remote's press of that key would have been.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct KeyPress {
+    action: Option<Action>,
+    edge: Edge,
+    raw: Option<RawKey>,
+}
+
+impl KeyPress {
+    /// A press of `action` and/or `raw`, or `None` when they do not make one key:
+    /// * with a raw pair, the action is [`action_of`] of it (`None` for a pair no action names: an
+    ///   unsupported key still flows on as the pair it was), and an `action` that is stated and
+    ///   differs is refused;
+    /// * with no raw pair, `action` must be set and its [`raw_pair`] must read back as it, which
+    ///   refuses `Digit(10..=255)`, an action no pair spells.
+    pub(crate) fn new(action: Option<Action>, edge: Edge, raw: Option<RawKey>) -> Option<KeyPress> {
+        let action = match raw {
+            Some(RawKey { sym, wcode }) => {
+                let read = action_of(sym, wcode);
+                if action.is_some() && action != read {
+                    return None;
+                }
+                read
+            }
+            None => {
+                let named = action?;
+                let (sym, wcode) = raw_pair(named);
+                if action_of(sym, wcode) != Some(named) {
+                    return None;
+                }
+                Some(named)
+            }
+        };
+        Some(KeyPress { action, edge, raw })
+    }
+
+    /// The press an SDL key event is: the raw pair as `decode_key` reads it, its action, and the
+    /// edge the fork's packed `state` names (low byte 1 is down, bit 0x100 is the auto-repeat; the
+    /// same reading `bridge::key_input` makes of it). A key-up never carries the repeat bit here.
+    pub(crate) fn from_sdl(ev: &[u8]) -> Option<KeyPress> {
+        let (state, wcode, sym) = decode_key(ev);
+        let edge = if (state & 0xff) != 1 {
+            Edge::Up
+        } else if state & 0x100 != 0 {
+            Edge::Repeat
+        } else {
+            Edge::Down
+        };
+        KeyPress::new(action_of(sym, wcode), edge, Some(RawKey { sym, wcode }))
+    }
+
+    /// What the press means. Read by the tests only for now: the loop's ladder reads [`pair`](Self::pair),
+    /// which every platform's press has, and the screens that move onto the action (W5d) make this
+    /// a production accessor then.
+    #[cfg(test)]
+    pub(crate) fn action(&self) -> Option<Action> {
+        self.action
+    }
+
+    /// The pair the loop reads: the raw one a platform sent, else the one [`raw_pair`] gives the action.
+    pub(crate) fn pair(&self) -> RawKey {
+        self.raw.unwrap_or_else(|| {
+            let (sym, wcode) = raw_pair(self.action.expect("a KeyPress carries an action or a raw pair"));
+            RawKey { sym, wcode }
+        })
+    }
+
+    /// The fork's packed key state for this edge, the form `bridge::key_input` and the recorder read:
+    /// low byte 1 for a press, 0x100 on an auto-repeat.
+    pub(crate) fn state(&self) -> u32 {
+        match self.edge {
+            Edge::Down => 1,
+            Edge::Repeat => 1 | 0x100,
+            Edge::Up => 0,
+        }
+    }
 }
 
 /// One edge of the window's visibility. Both background edges park the tree (the second finds
@@ -181,13 +297,17 @@ impl Lifecycle {
     }
 }
 
-/// An SDL event decoded into a [`HostEvent`]: `SDL_QUIT` and the four application lifecycle types.
-/// `None` for everything else, which the loop reads raw (keys, text, pointer, wheel, and the SDL
-/// events nothing acts on). Beside [`decode_key`], the other place that knows SDL's event bytes.
+/// An SDL event decoded into a [`HostEvent`]: `SDL_QUIT`, the four application lifecycle types, a
+/// key edge (`SDL_KEYDOWN`/`SDL_KEYUP`, through [`decode_key`], so both layouts) and a text commit
+/// (`SDL_TEXTINPUT`, through `textinput::decode`). `None` for everything else, which the loop reads
+/// raw (pointer, wheel, the IME's pre-edit, and the SDL events nothing acts on). Beside
+/// [`decode_key`], the other place that knows SDL's event bytes.
 #[inline]
 pub(crate) fn decode_host_event(ev: &[u8]) -> Option<HostEvent> {
     Some(match rd_u32(ev, 0) {
         SDL_QUIT => HostEvent::Quit,
+        SDL_KEYDOWN | SDL_KEYUP => HostEvent::Key(KeyPress::from_sdl(ev)?),
+        SDL_TEXTINPUT => HostEvent::Text(crate::textinput::decode(ev)),
         SDL_APP_WILLENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::WillBackground),
         SDL_APP_DIDENTERBACKGROUND => HostEvent::Lifecycle(Lifecycle::DidBackground),
         SDL_APP_WILLENTERFOREGROUND => HostEvent::Lifecycle(Lifecycle::WillForeground),
@@ -245,6 +365,21 @@ pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
     ev
 }
 
+/// **One native key edge as the loop hands it to the tree**, for the effect-level guards (W5b): the
+/// SDL bytes a television or the simulator delivers for the pair `(sym, wcode)` (the literals a
+/// test writes down, never an `Action`'s `raw_pair`), decoded by [`decode_host_event`], and the
+/// `InputEvent` that `run::ingest_key` pushes for that press (`bridge::key_input` of the press's
+/// pair and its packed state). A consumer fed this event answers what it answers a real key.
+#[cfg(test)]
+pub(crate) fn native_key_input(sym: c_uint, wcode: c_uint, down: bool, at: plx_machine::machine::Tick)
+    -> (KeyPress, plx_machine::machine::InputEvent<u32>) {
+    let Some(HostEvent::Key(press)) = decode_host_event(&encode_key(sym, wcode, down)) else {
+        panic!("SDL key bytes decode to a key press");
+    };
+    let RawKey { sym, wcode } = press.pair();
+    (press, super::bridge::key_input(sym, wcode, press.state(), at, plx_machine::machine::Source::Sdl))
+}
+
 #[inline]
 /// An SDL pointer event's position, converted from window pixels to the authored 1920x1080 canvas.
 ///
@@ -283,39 +418,44 @@ pub(crate) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
         let (s, w) = rest.split_once(',')?;
         return Some((s.parse().ok()?, w.parse().ok()?));
     }
-    Some(match tok {
-        "up" => (SDLK_UP, 0),
-        "down" => (SDLK_DOWN, 0),
-        "left" => (SDLK_LEFT, 0),
-        "right" => (SDLK_RIGHT, 0),
-        "ok" | "enter" | "select" => (SDLK_RETURN, 0), // is_ok()
-        "back" | "esc" => (SDLK_ESCAPE, 0),            // is_back()
-        // The pager's two spellings, and they are two tokens now rather than one pair carrying
-        // both: a PAGE key is a keyboard's and arrives as a sym alone, the rocker is the remote's
-        // and arrives as a wcode alone. The single pair they shared was `(SDLK_PAGEUP, 33)` — a
+    // Every named token is an `Action` and its pair is `raw_pair`'s, the ONE place a pair is built
+    // from a key's meaning (`ui::consts`), so what the FIFO presses and what a platform that sends
+    // an action presses cannot drift. The channel rocker is the one named token that is not an
+    // action's pair: it is the remote's CH key, a wcode alone, where `PageUp` is a keyboard's sym.
+    let action = match tok {
+        "up" => Action::Up,
+        "down" => Action::Down,
+        "left" => Action::Left,
+        "right" => Action::Right,
+        "ok" | "enter" | "select" => Action::Ok, // is_ok()
+        "back" | "esc" => Action::Back,          // is_back()
+        // The pager's two spellings, and they are two tokens rather than one pair carrying both: a
+        // PAGE key is a keyboard's and arrives as a sym alone, the rocker is the remote's and
+        // arrives as a wcode alone. The single pair they once shared was `(SDLK_PAGEUP, 33)` — a
         // shape no real press has, since 33 is the digit `4` (`ui::consts`, where they were
         // retired), so half of what it drove was never the pager answering the rocker at all.
-        "pageup" => (SDLK_PAGEUP, 0),
-        "pagedown" => (SDLK_PAGEDOWN, 0),
-        "chup" => (0, WCODE_CH_UP_KEY),
-        "chdown" => (0, WCODE_CH_DOWN_KEY),
-        "play" => (0, WCODE_PLAY),
-        "pause" => (0, WCODE_PAUSE),
-        "stop" => (0, WCODE_STOP),
+        "pageup" => Action::PageUp,
+        "pagedown" => Action::PageDown,
+        "chup" => return Some((0, WCODE_CH_UP_KEY)),
+        "chdown" => return Some((0, WCODE_CH_DOWN_KEY)),
+        "play" => Action::Play,
+        "pause" => Action::Pause,
+        "stop" => Action::Stop,
         // The transport keys settled from LG's own scancode table (`ui::consts`' WCODE_REWIND doc).
         // Here for the same reason the edit keys below are: nothing else can press them headlessly.
-        "ff" | "fastforward" => (0, plx_ui::consts::WCODE_FASTFORWARD),
-        "rew" | "rewind" => (0, plx_ui::consts::WCODE_REWIND),
-        "playpause" => (0, plx_ui::consts::WCODE_PLAYPAUSE),
-        "exit" => (0, plx_ui::consts::WCODE_EXIT),
+        "ff" | "fastforward" => Action::FastForward,
+        "rew" | "rewind" => Action::Rewind,
+        "playpause" => Action::PlayPause,
+        "exit" => Action::Exit,
         // The system keyboard's own two edit keys (`ui::consts`' doc has the protocol). They are
         // here because they are otherwise UNREACHABLE without a human at the panel: no trigger
         // raises the keyboard and `SDL_PushEvent` cannot carry a text event on the simulator, so
         // without these the only grader for backspace and Clear all is somebody's thumb.
-        "backspace" | "del" => (plx_ui::consts::SDLK_BACKSPACE, 42),
-        "clear" => (plx_ui::consts::SDLK_CLEAR, 156),
+        "backspace" | "del" => Action::Backspace,
+        "clear" => Action::ClearAll,
         _ => return None,
-    })
+    };
+    Some(raw_pair(action))
 }
 
 /// **`focus:<id>`, `press:<id>` and `press:<id>@<subject>`**, the by-id tokens of the remote FIFO and
@@ -846,7 +986,7 @@ mod key_layout_tests {
 /// from the mapping it grades.
 #[cfg(test)]
 mod host_event_tests {
-    use super::{decode_host_event, encode_key, is_input_event, HostEvent, Lifecycle};
+    use super::{decode_host_event, is_input_event, HostEvent, Lifecycle};
 
     fn event_of(code: u32) -> [u8; 128] {
         let mut ev = [0u8; 128];
@@ -863,7 +1003,7 @@ mod host_event_tests {
             (0x105, HostEvent::Lifecycle(Lifecycle::WillForeground)),
             (0x106, HostEvent::Lifecycle(Lifecycle::DidForeground)),
         ] {
-            assert_eq!(decode_host_event(&event_of(code)), Some(event), "{code:#x}");
+            assert_eq!(decode_host_event(&event_of(code)), Some(event.clone()), "{code:#x}");
             assert!(!is_input_event(code), "{code:#x}: a host event is the app's, never a modal's input");
             if let HostEvent::Lifecycle(edge) = event {
                 assert_eq!(edge.sdl_code(), code, "the code a decoded edge is read back as");
@@ -871,19 +1011,309 @@ mod host_event_tests {
         }
     }
 
-    /// Everything the loop still reads raw stays raw: no key, text, pointer or wheel event decodes,
-    /// in either key layout, and neither do the SDL events nothing acts on (terminating and low
-    /// memory, which sit between quit and the background pair, and the window events).
+    /// Everything the loop still reads raw stays raw: no pointer or wheel event decodes (0x400 to
+    /// 0x403, until W5c), nor the IME's pre-edit (0x302, which nothing reads), nor the SDL events
+    /// nothing acts on (terminating and low memory, which sit between quit and the background pair,
+    /// and the window events). Keys (0x300, 0x301) and text (0x303) are decoded: `key_event_tests`.
     #[test]
     fn every_other_event_stays_on_the_raw_path() {
         for code in [
-            0, 0x101, 0x102, 0x107, 0x200, 0x300, 0x301, 0x302, 0x303, 0x400, 0x401, 0x402, 0x403,
-            u32::MAX,
+            0, 0x101, 0x102, 0x107, 0x200, 0x302, 0x400, 0x401, 0x402, 0x403, u32::MAX,
         ] {
             assert_eq!(decode_host_event(&event_of(code)), None, "{code:#x}");
         }
-        for down in [true, false] {
-            assert_eq!(decode_host_event(&encode_key(plx_ui::consts::SDLK_DOWN, 0, down)), None);
+    }
+}
+
+/// A key edge and a text commit as a [`HostEvent`] (W5b): what the SDL decoder makes of the bytes,
+/// the pairs the FIFO's named tokens press, and the one guarantee the constructor gives.
+#[cfg(test)]
+mod key_event_tests {
+    use super::{
+        decode_host_event, encode_key, encode_key_repeat, remote_token_key, Action, Edge, HostEvent,
+        KeyPress, RawKey,
+    };
+    use plx_ui::consts::{raw_pair, SDLK_CLEAR, SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PLAY};
+
+    fn press(action: Option<Action>, edge: Edge, sym: u32, wcode: u32) -> HostEvent {
+        HostEvent::Key(KeyPress::new(action, edge, Some(RawKey { sym, wcode })).expect("a raw pair names a press"))
+    }
+
+    /// An SDL key event decodes to its edge, its raw pair (always kept) and its action (`None` for a
+    /// press the app does not bind), for the layout this build reads. The press is built with
+    /// `encode_key`/`encode_key_repeat`, so this is the round trip; the byte-literal test below pins
+    /// the layout itself.
+    #[test]
+    fn an_sdl_key_decodes_to_its_edge_its_raw_pair_and_its_action() {
+        let table: [(u32, u32, Option<Action>); 9] = [
+            (SDLK_UP, 0, Some(Action::Up)),
+            (SDLK_RETURN, 0, Some(Action::Ok)),
+            (0, WCODE_BACK, Some(Action::Back)),
+            (0, WCODE_PLAY, Some(Action::Play)),
+            (b'4' as u32, 33, Some(Action::Digit(4))),
+            (8, 42, Some(Action::Backspace)),
+            (SDLK_CLEAR, 156, Some(Action::ClearAll)),
+            (0, 504, None),
+            (0, 0, None),
+        ];
+        for (sym, wcode, action) in table {
+            assert_eq!(decode_host_event(&encode_key(sym, wcode, true)), Some(press(action, Edge::Down, sym, wcode)), "({sym},{wcode}) down");
+            assert_eq!(decode_host_event(&encode_key(sym, wcode, false)), Some(press(action, Edge::Up, sym, wcode)), "({sym},{wcode}) up");
+            assert_eq!(decode_host_event(&encode_key_repeat(sym, wcode)), Some(press(action, Edge::Repeat, sym, wcode)), "({sym},{wcode}) repeat");
         }
+    }
+
+    /// The layout, byte for byte and written out a second time rather than through `encode_key`.
+    /// LG's fork: `state` u32 at +16, wcode at +20, sym at +24. Stock SDL (the simulator): `state` u8
+    /// at +12, `repeat` u8 at +13, sym at +20, and a synthetic press carries its wcode in `mod` at
+    /// +24 under the `SYNTH_WINDOW` marker at +8 (`decode_key`'s doc has the measurement).
+    #[test]
+    fn the_key_layout_is_pinned_byte_for_byte() {
+        // UP (0x40000052) with no wcode, and PLAY (wcode 450 = 0x1c2) with no sym.
+        let (up_sym, play_wcode) = ([0x52, 0x00, 0x00, 0x40], [0xc2, 0x01, 0x00, 0x00]);
+        let mut up = [0u8; 128];
+        let mut play = [0u8; 128];
+        let mut repeat = [0u8; 128];
+        for ev in [&mut up, &mut play, &mut repeat] {
+            ev[0..4].copy_from_slice(&0x300u32.to_ne_bytes());
+        }
+        if cfg!(feature = "hostsim") {
+            for ev in [&mut up, &mut play, &mut repeat] {
+                ev[12] = 1;
+                ev[8..12].copy_from_slice(&0x504c_584bu32.to_ne_bytes());
+            }
+            up[20..24].copy_from_slice(&up_sym);
+            play[24..26].copy_from_slice(&450u16.to_ne_bytes());
+            repeat[20..24].copy_from_slice(&up_sym);
+            repeat[13] = 1;
+        } else {
+            for ev in [&mut up, &mut play, &mut repeat] {
+                ev[16] = 1;
+            }
+            up[24..28].copy_from_slice(&up_sym);
+            play[20..24].copy_from_slice(&play_wcode);
+            repeat[24..28].copy_from_slice(&up_sym);
+            repeat[17] = 1; // state 0x101
+        }
+        assert_eq!(decode_host_event(&up), Some(press(Some(Action::Up), Edge::Down, SDLK_UP, 0)));
+        assert_eq!(decode_host_event(&play), Some(press(Some(Action::Play), Edge::Down, 0, 450)));
+        assert_eq!(decode_host_event(&repeat), Some(press(Some(Action::Up), Edge::Repeat, SDLK_UP, 0)));
+    }
+
+    /// A release never carries the auto-repeat bit into the event: `Edge::Up` is `Edge::Up`, and the
+    /// tape's `repeat` for it is false (the SDL drivers only stamp 0x100 on a press).
+    #[test]
+    fn a_release_is_an_up_edge_whatever_else_is_stamped() {
+        let mut ev = encode_key(SDLK_DOWN, 0, false);
+        if cfg!(feature = "hostsim") {
+            ev[13] = 1;
+        } else {
+            ev[17] = 1;
+        }
+        let Some(HostEvent::Key(key)) = decode_host_event(&ev) else { panic!("a key event") };
+        assert_eq!(key.state(), 0);
+        assert_eq!(key, KeyPress::new(Some(Action::Down), Edge::Up, Some(RawKey { sym: SDLK_DOWN, wcode: 0 })).unwrap());
+    }
+
+    /// The constructor's guarantee: a press names an action or a raw pair, and an action-only press
+    /// reads as the pair `raw_pair` gives it, which is what a remote's press of that key would be.
+    /// A raw pair that came with an action keeps being the pair read.
+    #[test]
+    fn a_press_names_an_action_or_a_raw_pair_and_reads_back_as_a_pair() {
+        assert!(KeyPress::new(None, Edge::Down, None).is_none(), "a press that names nothing is refused");
+        for action in [Action::Up, Action::Pause, Action::Rewind, Action::PageDown, Action::Backspace, Action::Digit(3)] {
+            let only = KeyPress::new(Some(action), Edge::Down, None).unwrap();
+            let (sym, wcode) = raw_pair(action);
+            assert_eq!(only.pair(), RawKey { sym, wcode }, "{action:?}");
+            assert_eq!(only.action(), Some(action));
+        }
+        let both = KeyPress::new(Some(Action::Back), Edge::Down, Some(RawKey { sym: 8, wcode: 482 })).unwrap();
+        assert_eq!(both.pair(), RawKey { sym: 8, wcode: 482 }, "the simulator's desktop Backspace stays the pair it was");
+        let raw_only = KeyPress::new(None, Edge::Repeat, Some(RawKey { sym: 0, wcode: 504 })).unwrap();
+        assert_eq!((raw_only.action(), raw_only.pair()), (None, RawKey { sym: 0, wcode: 504 }));
+        assert_eq!(
+            [Edge::Down, Edge::Repeat, Edge::Up]
+                .map(|edge| KeyPress::new(Some(Action::Ok), edge, None).unwrap().state()),
+            [1, 0x101, 0]
+        );
+    }
+
+    /// **A press is one key: its action and its pair cannot disagree.** An action alone must read
+    /// back from its own `raw_pair` (`Digit(10)`, which `raw_pair` spells as `(0, 0)`, does not and
+    /// is refused, whatever else rides beside it); a stated action must be what `action_of` reads
+    /// out of the pair it comes with (the pairs below are real keys, each beside another key's
+    /// action); and a pair with no stated action has the action `action_of` reads out of it,
+    /// `PointerHidden` for the LG remote's pointer-hide wcode included.
+    #[test]
+    fn a_press_is_one_key_and_its_action_and_pair_cannot_disagree() {
+        for n in [10u8, 11, 100, 255] {
+            assert!(KeyPress::new(Some(Action::Digit(n)), Edge::Down, None).is_none(), "Digit({n}) names no key");
+            assert!(KeyPress::new(Some(Action::Digit(n)), Edge::Down, Some(RawKey { sym: 0, wcode: 0 })).is_none(),
+                "Digit({n}) is no action of the unbound pair (0, 0)");
+        }
+        assert!(KeyPress::new(Some(Action::Digit(9)), Edge::Down, None).is_some(), "9 is a number key");
+        assert_eq!(Action::digit(10), None);
+        for (action, sym, wcode, why) in [
+            (Action::Play, 0, 72, "PAUSE's wcode"),
+            (Action::Pause, 0, 450, "PLAY's wcode"),
+            (Action::PageUp, 0x4000_004e, 0, "PAGE DOWN's sym"),
+            (Action::PageDown, 0x4000_004b, 0, "PAGE UP's sym"),
+            (Action::Left, 0, 452, "REWIND, which is not a plain LEFT"),
+            (Action::Rewind, 0x4000_0050, 0, "LEFT, which is not REWIND"),
+            (Action::Digit(4), b'5' as u32, 0, "the digit 5"),
+            (Action::Ok, 0, 504, "an unbound colour button"),
+            (Action::PointerHidden, 0, 504, "an unbound colour button"),
+        ] {
+            assert!(KeyPress::new(Some(action), Edge::Down, Some(RawKey { sym, wcode })).is_none(),
+                "{action:?} beside {why} is two keys");
+        }
+        // Agreeing, in either spelling, is accepted: the simulator's desktop Backspace carries BACK's wcode.
+        assert!(KeyPress::new(Some(Action::Back), Edge::Down, Some(RawKey { sym: 8, wcode: 482 })).is_some());
+        assert!(KeyPress::new(Some(Action::Play), Edge::Down, Some(RawKey { sym: 0, wcode: 450 })).is_some());
+        // A pair with no stated action has the action it reads as, so a raw-only press is the press an SDL event is.
+        for (sym, wcode, action) in [
+            (0, 0x1e4, Some(Action::PointerHidden)),
+            (0, 450, Some(Action::Play)),
+            (0x4000_004b, 0, Some(Action::PageUp)),
+            (0, 300, Some(Action::PageUp)),
+            (0, 504, None),
+        ] {
+            let press = KeyPress::new(None, Edge::Down, Some(RawKey { sym, wcode })).unwrap();
+            assert_eq!((press.action(), press.pair()), (action, RawKey { sym, wcode }), "({sym}, {wcode})");
+        }
+    }
+
+    /// **A native key decodes to the action it means.** Every pair here is what a television or the
+    /// simulator sends, written out as a LITERAL (no `raw_pair`, no constant), so a wrong `action_of`
+    /// reading cannot agree with itself: PLAY is not PAUSE, REWIND is not a plain LEFT, PAGE UP and
+    /// CH+ are not PAGE DOWN and CH-, the number keys read from the sym alone, and a wcode-only
+    /// number press is no action (the PIN pad reads it through `pin_digit` instead). No production
+    /// reader of the loop reads the action before W5d, so a wrong `action_of` leaves every native
+    /// effect test green: this table, `input.rs`'s decode literals and the hosted door's round trip
+    /// (`KeyPress::new`) are what see it. `native_key_effect_*` in `run.rs` grade what the consumers
+    /// do with the pair.
+    #[test]
+    fn native_key_effect_the_native_pairs_decode_to_the_actions_they_mean() {
+        let table: &[(u32, u32, Option<Action>)] = &[
+            (0x4000_0052, 0, Some(Action::Up)),
+            (0x4000_0051, 0, Some(Action::Down)),
+            (0x4000_0050, 0, Some(Action::Left)),
+            (0x4000_004f, 0, Some(Action::Right)),
+            (13, 0, Some(Action::Ok)),
+            (0, 482, Some(Action::Back)),
+            (27, 0, Some(Action::Back)),
+            (8, 482, Some(Action::Back)),
+            (0, 450, Some(Action::Play)),
+            (0, 72, Some(Action::Pause)),
+            (0, 261, Some(Action::PlayPause)),
+            (415, 0, Some(Action::Pause)),
+            (0, 415, Some(Action::Pause)),
+            (19, 0, Some(Action::Play)),
+            (0, 402, Some(Action::Play)),
+            (0, 413, Some(Action::Stop)),
+            (0, 505, Some(Action::Exit)),
+            (0, 452, Some(Action::Rewind)),
+            (0, 451, Some(Action::FastForward)),
+            (0x4000_004b, 0, Some(Action::PageUp)),
+            (0, 300, Some(Action::PageUp)),
+            (0x4000_004e, 0, Some(Action::PageDown)),
+            (0, 301, Some(Action::PageDown)),
+            (8, 42, Some(Action::Backspace)),
+            (0x4000_009c, 156, Some(Action::ClearAll)),
+            (0, 0x1e4, Some(Action::PointerHidden)),
+            (48, 0, Some(Action::Digit(0))),
+            (49, 0, Some(Action::Digit(1))),
+            (50, 0, Some(Action::Digit(2))),
+            (51, 0, Some(Action::Digit(3))),
+            (52, 0, Some(Action::Digit(4))),
+            (53, 0, Some(Action::Digit(5))),
+            (54, 0, Some(Action::Digit(6))),
+            (55, 0, Some(Action::Digit(7))),
+            (56, 0, Some(Action::Digit(8))),
+            (57, 0, Some(Action::Digit(9))),
+            (57, 33, Some(Action::Digit(9))),
+            (0, 48, None),
+            (0, 53, None),
+            (0, 57, None),
+            (47, 0, None),
+            (58, 0, None),
+            (0, 504, None),
+            (0, 269, None),
+            (0, 270, None),
+            (97, 4, None),
+            (0, 0, None),
+            (0, 299, None),
+            (0, 302, None),
+            (0x4000_004c, 0, None),
+        ];
+        for &(sym, wcode, action) in table {
+            let Some(HostEvent::Key(press)) = decode_host_event(&encode_key(sym, wcode, true)) else {
+                panic!("({sym}, {wcode}) decodes to a key press");
+            };
+            assert_eq!(press.action(), action, "({sym}, {wcode}) means {action:?}");
+            assert_eq!(press.pair(), RawKey { sym, wcode }, "({sym}, {wcode}) keeps the pair it arrived as");
+        }
+    }
+
+    /// **The pairs the FIFO's named tokens press are the ones they have always pressed**, written out
+    /// as literals: they are what `tests/keytable.json` and the recorded tapes carry, and the fold
+    /// through `raw_pair` must not move one. The rocker's two tokens and `k:` are not actions' pairs
+    /// and stay literal.
+    #[test]
+    fn the_fifo_tokens_press_the_pairs_they_always_pressed() {
+        let (up, down, left, right) = (0x4000_0052u32, 0x4000_0051u32, 0x4000_0050u32, 0x4000_004fu32);
+        let (pageup, pagedown, clear) = (0x4000_004bu32, 0x4000_004eu32, 0x4000_009cu32);
+        for (tok, pair) in [
+            ("up", (up, 0)),
+            ("down", (down, 0)),
+            ("left", (left, 0)),
+            ("right", (right, 0)),
+            ("ok", (13, 0)),
+            ("enter", (13, 0)),
+            ("select", (13, 0)),
+            ("back", (27, 0)),
+            ("esc", (27, 0)),
+            ("pageup", (pageup, 0)),
+            ("pagedown", (pagedown, 0)),
+            ("chup", (0, 300)),
+            ("chdown", (0, 301)),
+            ("play", (0, 450)),
+            ("pause", (0, 72)),
+            ("stop", (0, 413)),
+            ("ff", (0, 451)),
+            ("fastforward", (0, 451)),
+            ("rew", (0, 452)),
+            ("rewind", (0, 452)),
+            ("playpause", (0, 261)),
+            ("exit", (0, 505)),
+            ("backspace", (8, 42)),
+            ("del", (8, 42)),
+            ("clear", (clear, 156)),
+            ("k:0,504", (0, 504)),
+            ("k:53,34", (53, 34)),
+        ] {
+            assert_eq!(remote_token_key(tok), Some(pair), "{tok}");
+        }
+        assert_eq!(remote_token_key("home"), None, "an unknown token names no key");
+        assert_eq!(remote_token_key("k:1"), None, "`k:` needs both fields");
+    }
+
+    /// `SDL_TEXTINPUT` decodes to its string at THIS build's offset (LG's fork, +16; stock SDL, +12),
+    /// written out as literals: ASCII, a CJK commit (3 bytes a character), a full unterminated
+    /// 32-byte array, and the empty commit SDL sends for the IME's bookkeeping, which is still a
+    /// `Text` (the loop ignores it).
+    #[test]
+    fn a_text_commit_decodes_at_this_builds_offset() {
+        let off = if cfg!(feature = "hostsim") { 12 } else { 16 };
+        let text = |bytes: &[u8]| {
+            let mut ev = [0u8; 128];
+            ev[0..4].copy_from_slice(&0x303u32.to_ne_bytes());
+            ev[off..off + bytes.len()].copy_from_slice(bytes);
+            decode_host_event(&ev)
+        };
+        assert_eq!(text(b"wal"), Some(HostEvent::Text("wal".into())));
+        assert_eq!(text("星球".as_bytes()), Some(HostEvent::Text("星球".into())));
+        assert_eq!(text(&[b'a'; 32]), Some(HostEvent::Text("a".repeat(32))));
+        assert_eq!(text(b""), Some(HostEvent::Text(String::new())));
     }
 }
