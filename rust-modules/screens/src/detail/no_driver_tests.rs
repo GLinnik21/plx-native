@@ -4,8 +4,10 @@
 //! control that writes to the account (the bookmark, the watched toggle): its default is the first
 //! stop that does not, or, for a row of writes only, the first section below the row, and a restore
 //! that names a control the viewer was on keeps it. A page seated before its item lands has only the
-//! watched toggle, which presses nothing until the item is there, and the landing re-seats it. With
-//! a driver composed every one of these is exactly what it was.
+//! watched toggle, which presses nothing until the item is there; that seat is the PAGE's, not the
+//! viewer's (`DetailScreen::provisional`), so every frame moves it to the page's default until the
+//! viewer moves focus or presses OK on a landed page, whatever a restore does meanwhile. With a driver
+//! composed every one of these is exactly what it was.
 //!
 //! The shared rule these pin is `focus.rs`'s "a disabled item owns no focus stop"
 //! (`next_enabled_index`; the player HUD's disabled discs): the shared button draws no focused face
@@ -279,9 +281,9 @@ fn a_page_whose_item_has_not_landed_opens_on_the_watch_disc_with_no_driver() {
 
 /// **The real order: the page is seated BEFORE its item lands** (the item is requested on every fresh
 /// open). With no driver the first seat can only be the watched toggle, the row's one stop until the
-/// item is there, and it must not stay there once the toggle is live. Every navigation arrives with a
-/// restore armed at the default spot (`DetailSeed`), and a fresh open that came with none arms one
-/// itself, so the landing seats the page's default instead of leaving focus on a write control.
+/// item is there, and it must not stay there once the toggle is live. The seat is the page's own
+/// (`provisional`), so the landing moves it to the page's default whether the navigation seeded a
+/// restore (`DetailSeed`) or not, instead of leaving focus on a write control.
 #[test]
 fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
     let sid = ServerId::UNSET;
@@ -297,8 +299,7 @@ fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
         step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
             focus: FocusTarget::FirstInGroup(hero::HERO_GROUP),
         }), None);
-        assert_eq!(screen.restore_intent.is_some(), seeded || no_driver,
-            "no_driver={no_driver} seeded={seeded}: armed by the seed, or by Enter when no driver can play; with one, Enter arms nothing");
+        assert_eq!(screen.restore_intent.is_some(), seeded, "no_driver={no_driver} seeded={seeded}: Enter arms no restore of its own");
         let mut engine = FocusEngine::new();
         let first = if no_driver { hero::ELEM_MARK_WATCHED } else { hero::ELEM_PLAY };
         match engine.enter::<TestHost>(OWNER, &screen, FocusTarget::FirstInGroup(hero::HERO_GROUP), None, &cx(&measure, None)) {
@@ -320,47 +321,32 @@ fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
     }
 }
 
-/// `Enter` arms the default restore only for the page it is about: a FRESH open, with no driver, whose
-/// item is not there yet and that is not already returning. A page whose item is there is seated by
-/// the default at once, and a Back return brings its own spot.
+/// `Enter` makes the seat the page's own only for the page it is about: a FRESH open with no driver,
+/// whatever its item (a page whose item is there can still see a later landing change its default).
+/// With a driver Play is the default from the first frame and the page keeps no self-seat, and a Back
+/// return brings the viewer's own place, which ends the claim a fresh open had made.
 #[test]
-fn enter_arms_the_default_restore_only_for_a_fresh_open_whose_item_is_not_there() {
+fn enter_makes_the_seat_the_pages_own_only_for_a_fresh_open_with_no_driver() {
     use plx_ui::screen::Enter;
     let sid = ServerId::UNSET;
     let fresh = Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
-    let _driver = NoDriver::set(true);
-    // (what, item landed, return pending, the enter, armed)
-    for (what, landed, returning, enter, armed) in [
-        ("a fresh open before its item lands", false, false, fresh, true),
-        ("a fresh open whose item is already there", true, false, fresh, false),
-        ("a page that is returning", false, true, fresh, false),
-        ("a restored enter", false, false, Enter::Restored, false),
+    // (what, no driver, item landed, the enters in order, the page's own seat after them)
+    for (what, no_driver, landed, enters, own) in [
+        ("a fresh open before its item lands", true, false, vec![fresh], true),
+        ("a fresh open whose item is already there", true, true, vec![fresh], true),
+        ("a fresh open with a driver composed", false, false, vec![fresh], false),
+        ("a return after a fresh open", true, false, vec![fresh, Enter::Restored], false),
+        ("a restored enter", true, false, vec![Enter::Restored], false),
     ] {
         let guard = install(if landed { resumable(sid) } else { Detail { sid, rk: "other".into(), ..Default::default() } });
+        let _driver = NoDriver::set(no_driver);
         let mut screen = bare(&guard, sid, "movie");
-        screen.return_pending = returning;
-        step(&mut screen, &ScreenEvent::Enter(enter), None);
-        assert_eq!(screen.restore_intent.is_some(), armed, "{what}");
+        for enter in enters {
+            step(&mut screen, &ScreenEvent::Enter(enter), None);
+        }
+        assert_eq!(screen.provisional, own, "{what}");
         clear();
     }
-}
-
-/// A restore the page already carries is never swapped for the default one: a spot a navigation
-/// seeded (`DetailSeed`) is the viewer's own place, and `Enter` arms the default only where none
-/// came.
-#[test]
-fn enter_keeps_the_restore_the_page_already_carries() {
-    use plx_ui::screen::Enter;
-    let sid = ServerId::UNSET;
-    let _driver = NoDriver::set(true);
-    let guard = install(Detail { sid, rk: "other".into(), ..Default::default() });
-    let mut screen = bare(&guard, sid, "movie");
-    screen.restore(&Spot { section: 3, col: 2, ..Default::default() }, test_store().view());
-    let fresh = Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
-    step(&mut screen, &ScreenEvent::Enter(fresh), None);
-    let spot = &screen.restore_intent.as_ref().expect("the restore is still armed").spot;
-    assert_eq!((spot.section, spot.col), (3, 2), "the spot the page came with is the one it keeps");
-    clear();
 }
 
 /// Focus only ever lands on a control of the row that draws a focused face. The shared button draws
@@ -610,4 +596,243 @@ fn a_version_pick_plays_that_version_when_a_driver_is_composed() {
     let (play, _) = play_item(&effects).expect("a version pick plays");
     assert!(matches!(play, PlayIntent::Item { version: Some(plx_plex::plex::MediaId(7)), .. }), "the pick names its version");
     clear();
+}
+
+/// A page running the way `Dispatcher` runs it: `Enter` reaches the screen and the engine then seats
+/// the entry; after every landing the engine's `reconcile` runs, the move it makes comes back to the
+/// screen as `FocusMoved`, and the screen ticks (`dispatch.rs`, step 6). A test that calls `reconcile`
+/// by hand and never feeds the move back cannot see a `FocusMoved` arm that takes the page's own move
+/// for the viewer's.
+struct Running {
+    screen: DetailScreen,
+    engine: FocusEngine<u32>,
+    /// Every move the engine reported, as `(where, by)`.
+    moves: Vec<(u32, By)>,
+    ms: u32,
+}
+
+impl Running {
+    /// Opened the way a navigation opens a fresh page.
+    fn open(screen: DetailScreen) -> Self {
+        let mut run = Running { screen, engine: FocusEngine::new(), moves: Vec::new(), ms: 0 };
+        let fresh = plx_ui::screen::Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
+        step(&mut run.screen, &ScreenEvent::Enter(fresh), None);
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let outcome = run.engine.enter::<TestHost>(OWNER, &run.screen, FocusTarget::FirstInGroup(hero::HERO_GROUP), None, &cx(&measure, None));
+        run.deliver(outcome);
+        run
+    }
+
+    fn deliver(&mut self, outcome: Outcome<u32>) {
+        if let Outcome::Moved { from, to, by } = outcome {
+            self.moves.push((to.elem, by));
+            step(&mut self.screen, &ScreenEvent::FocusMoved { from, to, by }, Some(to.elem));
+        }
+    }
+
+    fn focus(&self) -> u32 {
+        self.engine.read(OWNER).current.expect("the page holds focus").elem
+    }
+
+    /// One frame: the engine reconciles, the move is delivered back, the page ticks.
+    fn frame(&mut self) {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let landed = Cx { focus: self.engine.read(OWNER), ..cx(&measure, None) };
+        let outcome = self.engine.reconcile::<TestHost>(OWNER, &self.screen, &landed);
+        self.deliver(outcome);
+        self.ms += 16;
+        let at = self.focus();
+        step(&mut self.screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: self.ms, dt_us: 16_667 }), Some(at));
+    }
+
+    fn frames(&mut self, n: usize) {
+        for _ in 0..n {
+            self.frame();
+        }
+    }
+
+    /// The store publishes `d` as the page's item.
+    fn land(&mut self, d: Detail) {
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+        self.changed();
+    }
+
+    /// The Metadata store raised its notice.
+    fn changed(&mut self) {
+        let at = self.focus();
+        step(&mut self.screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), 1), Some(at));
+    }
+
+    /// A direction key the viewer presses: the screen sees it, then the engine moves focus if it can.
+    fn press(&mut self, key: Key) {
+        let event = ScreenEvent::Input(InputEvent {
+            at: Default::default(),
+            source: plx_machine::machine::Source::Script,
+            kind: InputKind::Key { key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+        });
+        let at = self.focus();
+        step(&mut self.screen, &event, Some(at));
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let context = Cx { focus: self.engine.read(OWNER), ..cx(&measure, None) };
+        let mut links = Vec::new();
+        Screen::<TestHost>::links(&self.screen, &mut links);
+        let outcome = self.engine.move_dir(OWNER, &self.screen, &links, Dir::of_key(key).expect("a direction"), &context);
+        self.deliver(outcome);
+    }
+
+    /// OK on the focused control, as a press that commits delivers it.
+    fn ok(&mut self) -> Vec<plx_machine::machine::Stamped<TestHost>> {
+        let at = self.focus();
+        step(&mut self.screen, &ScreenEvent::Activate(at), Some(at)).1
+    }
+}
+
+fn is_write(elem: u32) -> bool {
+    ctl_of(elem).is_some_and(hero::HeroCtl::writes_account)
+}
+
+fn writes_viewstate(effects: &[plx_machine::machine::Stamped<TestHost>]) -> bool {
+    effects.iter().any(|e| matches!(e.fx, Fx::App(AppFx::Store(StoreId::ViewState, _))))
+}
+
+/// **Account safety does not depend on a restore firing in the landing frame.** A show opened from an
+/// episode's Go to Show arrives with a restore that names a season (`Spot { season }`, `open_detail`).
+/// The show opens on its on-deck season, so while the named one loads the restore WAITS and answers
+/// nothing, and when the named season is not the show's it RETIRES without ever answering; either way
+/// the page was seated, before its item landed, on the watched toggle, which is live the moment the
+/// item is there. The page's own seat follows the page's default instead of waiting on the restore.
+#[test]
+fn a_show_opened_with_a_season_restore_never_rests_on_the_write_control_while_it_loads() {
+    let sid = ServerId::UNSET;
+    for (what, season, loading) in [
+        ("a season the show has, which is not the on-deck one, still loading", 2, true),
+        ("a season the show does not have", 9, false),
+    ] {
+        let guard = install(Detail { sid, rk: "other".into(), ..Default::default() });
+        let _driver = NoDriver::set(true);
+        let mut screen = bare(&guard, sid, "show");
+        // What `open_detail` seeds an episode's Go to Show with.
+        screen.restore(&Spot { season: Some(season), ..Default::default() }, test_store().view());
+        let mut run = Running::open(screen);
+        assert_eq!(run.focus(), hero::ELEM_MARK_WATCHED, "{what}: premise: seated before the item lands, on the toggle");
+        run.land(detail(sid, "show"));
+        plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), loading);
+        run.frames(6);
+        let at = run.focus();
+        assert!(!is_write(at), "{what}: focus is on a control that writes: {at}");
+        assert!(matches!(run.screen.locate(at, test_store().view()), Some(Located::Season(0))), "{what}: the page's default is the season strip's selected tab");
+        assert!(!writes_viewstate(&run.ok()), "{what}: a reflex OK writes nothing");
+        plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), false);
+        clear();
+    }
+}
+
+/// **A direction key that moves nothing is not the viewer's choice of the seat.** Before the item
+/// lands the row's only stop is the toggle, so a key moves focus nowhere, yet it cancels the restore
+/// (`Input`); and an OK before the item lands presses nothing. Neither may leave focus on the toggle
+/// when it goes live.
+#[test]
+fn a_key_or_an_ok_before_the_item_lands_leaves_the_page_free_to_move_off_the_toggle() {
+    let sid = ServerId::UNSET;
+    for (what, seeded, key, ok) in [
+        ("a seeded page, DOWN", true, Some(Key::Down), false),
+        ("an unseeded page, DOWN", false, Some(Key::Down), false),
+        ("a seeded page, LEFT", true, Some(Key::Left), false),
+        ("a seeded page, OK", true, None, true),
+        ("an unseeded page, OK", false, None, true),
+    ] {
+        let guard = install(Detail { sid, rk: "other".into(), ..Default::default() });
+        let _driver = NoDriver::set(true);
+        let mut screen = bare(&guard, sid, "movie");
+        if seeded {
+            screen.restore(&Spot::default(), test_store().view());
+        }
+        let mut run = Running::open(screen);
+        assert_eq!(run.focus(), hero::ELEM_MARK_WATCHED, "{what}: premise");
+        if let Some(key) = key {
+            run.press(key);
+        }
+        if ok {
+            assert!(!writes_viewstate(&run.ok()), "{what}: OK before the item lands writes nothing");
+        }
+        assert_eq!(run.focus(), hero::ELEM_MARK_WATCHED, "{what}: premise: nothing moved focus");
+        run.land(resumable(sid));
+        run.frames(6);
+        assert_eq!(run.focus(), first_extra(&run.screen), "{what}: the landing took focus off the toggle");
+        assert!(!writes_viewstate(&run.ok()), "{what}: the OK after the landing writes nothing either");
+        clear();
+    }
+}
+
+/// **A seat nobody chose follows the head** (`screens/src/CLAUDE.md`). A movie whose first landing has
+/// only write controls seats below the row; a later landing (*Also available*, `request_alt_sources`)
+/// gives the row a stop that does not write, which is the page's default, and focus the viewer never
+/// moved goes there.
+#[test]
+fn a_later_landing_that_changes_the_default_moves_a_seat_the_viewer_never_chose() {
+    let guard = install(Detail { sid: ServerId::UNSET, rk: "other".into(), ..Default::default() });
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("w6c-alt-own", "127.0.0.1", 1, "t", "c1");
+    let other = plx_plex::plex::register_for_test("w6c-alt-other", "127.0.0.1", 2, "t", "c2");
+    let _driver = NoDriver::set(true);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(resumable(sid)));
+    let screen = bare(&guard, sid, "movie");
+    let mut run = Running::open(screen);
+    run.frames(3);
+    let below = first_extra(&run.screen);
+    assert_eq!(run.focus(), below, "premise: the first landing has only writes in its row, so the page seats below it");
+    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
+        sid,
+        rk: "movie".into(),
+        copies: vec![
+            plx_data::metadata::AltCopy { sid, rk: "movie".into(), ..Default::default() },
+            plx_data::metadata::AltCopy { sid: other, rk: "movie-copy".into(), ..Default::default() },
+        ],
+    }, &plx_data::pms::registry_keys_for_test());
+    run.changed();
+    assert!(run.screen.hero_set(test_store().view()).alt, "premise: the second source landed");
+    run.frames(6);
+    assert_eq!(run.focus(), hero::ELEM_ALT, "the seat nobody chose follows the head onto the control that can act");
+    let settled = run.moves.len();
+    run.frames(10);
+    assert_eq!(run.moves.len(), settled, "and it stays there: no frame moves it again");
+    clear();
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// **A focus the viewer placed is never moved by a landing.** The viewer's own move (a direction key
+/// that moves: here DOWN and UP among the sections, then UP into the row, where the write controls
+/// are reachable) ends the page's claim on the seat: the later landing that changes the default does
+/// not take it from them.
+#[test]
+fn a_landing_never_moves_a_focus_the_viewer_placed() {
+    let guard = install(Detail { sid: ServerId::UNSET, rk: "other".into(), ..Default::default() });
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("w6c-alt-own", "127.0.0.1", 1, "t", "c1");
+    let other = plx_plex::plex::register_for_test("w6c-alt-other", "127.0.0.1", 2, "t", "c2");
+    let _driver = NoDriver::set(true);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(resumable(sid)));
+    let mut run = Running::open(bare(&guard, sid, "movie"));
+    run.frames(3);
+    // The page seated below the row (nothing in it acts without a driver); DOWN and back UP stay in
+    // the sections, the next UP crosses into the row, where every control writes.
+    for key in [Key::Down, Key::Up, Key::Up] {
+        run.press(key);
+        run.frames(3);
+    }
+    let chosen = run.focus();
+    assert!(is_write(chosen), "premise: UP into an all-writes row seats on one of its write controls: {chosen} moves={:?}", run.moves);
+    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
+        sid,
+        rk: "movie".into(),
+        copies: vec![
+            plx_data::metadata::AltCopy { sid, rk: "movie".into(), ..Default::default() },
+            plx_data::metadata::AltCopy { sid: other, rk: "movie-copy".into(), ..Default::default() },
+        ],
+    }, &plx_data::pms::registry_keys_for_test());
+    run.changed();
+    run.frames(10);
+    assert_eq!(run.focus(), chosen, "the later landing leaves the viewer's own focus where they put it");
+    clear();
+    plx_plex::plex::reset_servers_for_test();
 }

@@ -180,6 +180,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
         restore_intent: None,
+        provisional: false,
         teardown_cleared: false,
         withdrawn: false,
         scroll: Spring::at(0.0),

@@ -256,6 +256,18 @@ pub struct DetailScreen {
     /// for the same (sid, rk) that predates this promotion's own admission.
     refresh_gen: u32,
     restore_intent: Option<RestoreIntent>,
+    /// The page, not the viewer, placed the current focus: a fresh open with no playback driver
+    /// composed seats itself before its item has landed, on the watched toggle (the row's only stop
+    /// until then), which writes to the account the moment the item is there. While this holds,
+    /// every frame's `reconcile` answers the page's default ([`Self::default_elem`]), so that seat
+    /// follows the head wherever the landing puts it (the item, a later Also available landing) and
+    /// never waits on a restore to fire. It ends with the viewer's own act: a move a direction key
+    /// or the pointer makes, or an OK or a hold on a landed page (`LibraryScreen::provisional` keeps
+    /// the same rule for the Library's first seat). Never set with a driver composed, where Play is
+    /// the default from the first frame and the page keeps no self-seat. Not hashed, not in
+    /// [`SHAPE`]: a `SHAPE` bump would invalidate every detail fixture, and a fixture's page has a
+    /// driver.
+    provisional: bool,
     /// This page has already sent its addressed `ClearItem` to the Metadata store. §3.4's
     /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
     /// in the teardown arm below, so without the latch one teardown would send two. The command is
@@ -575,6 +587,7 @@ impl DetailScreen {
             refresh: DetailRefreshPhase::None,
             refresh_gen: 0,
             restore_intent: None,
+            provisional: false,
             teardown_cleared: false,
             withdrawn: false,
             scroll: Spring::at(0.0),
@@ -1467,9 +1480,10 @@ impl DetailScreen {
     /// it from the group's head. A page whose item has not landed has no section below; its row
     /// stops on the watched toggle alone, which presses nothing until the item is there
     /// (`activate_hero`), and the toggle is the last resort ([`hero::first_stop`]). That seat is
-    /// provisional: the restore every navigation arrives with (and a fresh open without one arms in
-    /// its `Enter`) re-seats the page by this same rule when the item lands, so a reflex OK on a page
-    /// that has just appeared never writes to someone's account.
+    /// the page's own ([`Self::provisional`]): `reconcile` answers this same rule every frame until
+    /// the viewer moves focus, so the landing, a later Also available landing and a restore that
+    /// waits or retires all leave the toggle without any one of them having to fire, and a reflex OK
+    /// on a page that has just appeared never writes to someone's account.
     fn default_elem<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, cx: &Cx<'_, H>) -> u32 {
         let stops = self.stops(cx);
         let set = self.hero_set(<H as crate::registry::MetadataLike>::metadata(cx));
@@ -1883,6 +1897,14 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // that has already been moved. `pump_restore` ends the wait when the request fails.
         if self.return_pending && self.detail(meta).is_none() && hero::HeroCtl::of_elem(want.elem).is_some() {
             return want;
+        }
+        // A focus the page itself placed (`provisional`) is the page's default wherever the item
+        // stands: the landing, a later Also available landing and a restore that waits on a season
+        // or retires all move it by this one rule, so nothing below has to fire for focus to leave
+        // the watched toggle. Only the viewer's own move ends it (the `FocusMoved` and `activate`
+        // arms).
+        if self.provisional {
+            return FocusKey { entry: want.entry, elem: self.default_elem(cx) };
         }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
         // `self.refresh != None` is the page's OWN outstanding server obligation, and it belongs
@@ -2304,14 +2326,11 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 // The page is seated before its item lands (the item is requested right here). With
                 // no playback driver that first seat is the watched toggle, the row's only stop
                 // until the item is there, and it must not stay there: it writes the moment the item
-                // lands. A navigation arrives with a restore armed at the default spot (`DetailSeed`,
-                // `registry`), and the landing then seats the page's default (`default_elem`); a
-                // fresh open that came with none gets the same one.
-                if fresh_open && self.restore_intent.is_none() && !self.return_pending
-                    && self.detail(meta).is_none() && !H::screen_inputs(cx).can_play()
-                {
-                    self.restore(&plx_data::metadata::Spot::default(), meta);
-                }
+                // lands. The seat is the page's, not the viewer's, until the viewer moves focus
+                // (`provisional`): `reconcile` answers the page's default every frame it holds,
+                // whatever the restore a navigation arrives with does or does not do. A return
+                // (`Restored`) is the viewer's own place and ends it.
+                self.provisional = fresh_open && !H::screen_inputs(cx).can_play();
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
                     || refresh == DetailRefreshPhase::None
@@ -2363,6 +2382,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.return_pending = false;
                     self.restore_intent = None;
+                    // The viewer moved focus (a key that moved it, the pointer): it is theirs now,
+                    // and no landing takes it from them. A key that moves nothing never gets here.
+                    self.provisional = false;
                 }
                 // A hover moves focus, never the page: the pointer scrolls by the screen's edges
                 // (and a click by what it clicked, `Input`'s `Click` arm).
@@ -2415,6 +2437,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         )
                     });
                 if supported {
+                    self.provisional = false;
                     self.content(fx, ContentReq::ItemMenu);
                     fx.invalidate(Provenance::Input);
                     Handled::Yes
@@ -4617,6 +4640,12 @@ impl DetailScreen {
 
     fn activate<H: ContentLike + crate::registry::MetadataLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
+        // An OK on a landed page is the viewer's act on the focus it holds. One before the item is
+        // there presses nothing (`activate_hero`) and must not end the page's claim on the seat: the
+        // landing would then leave focus on a toggle the next OK writes with.
+        if self.detail(meta).is_some() {
+            self.provisional = false;
+        }
         let local = self.locate(elem, meta).and_then(Located::local_key).unwrap_or(elem);
         match self.locate(elem, meta) {
             Some(Located::Hero(ctl)) => self.activate_hero(ctl, cx, fx, meta),

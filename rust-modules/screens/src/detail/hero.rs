@@ -176,11 +176,13 @@ impl HeroCtl {
     }
     /// Does pressing this control WRITE to the household's account? The bookmark disc adds or
     /// removes the title on the plex.tv Watchlist, and the watched toggle in either face marks it
-    /// watched or unwatched on the server. The rest play, navigate or open a menu or panel. A page
-    /// never rests on one of these once its item is there ([`default_stop`]): a reflex OK on a page
-    /// that has just appeared must not change the record. Travel still reaches them. Before the
-    /// item lands, the one seat on a write control (the watched toggle of a page with no driver)
-    /// presses nothing (`activate_hero`) and the landing re-seats it (`DetailScreen::default_elem`).
+    /// watched or unwatched on the server. The rest play, navigate or open a menu or panel. The page
+    /// never seats ITSELF on one of these once its item is there ([`default_stop`]): a reflex OK on a
+    /// page that has just appeared must not change the record. Travel still reaches them, and focus
+    /// the viewer put on one stays. Before the item lands, the one seat on a write control (the
+    /// watched toggle of a page with no driver) presses nothing (`activate_hero`) and is the page's
+    /// own seat, which every frame moves to `DetailScreen::default_elem` until the viewer moves focus
+    /// (`DetailScreen::provisional`).
     pub const fn writes_account(self) -> bool {
         matches!(self, HeroCtl::Watchlist | HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
     }
@@ -321,8 +323,8 @@ impl Stops {
 /// ([`HeroCtl::starts_playback`]) are drawn disabled and the focus travels only between the
 /// controls that can act. The shared button draws no focused face for a disabled control, so a stop
 /// on one would leave focus visibly nowhere. Where the page rests when nothing says where is a
-/// separate rule ([`default_stop`]): never on a control that writes to the account once its item
-/// is there.
+/// separate rule ([`default_stop`]): the page never seats itself on a control that writes to the
+/// account once its item is there.
 pub fn focusable(ctl: HeroCtl, stops: Stops) -> bool {
     if stops.full_trailer {
         return ctl == HeroCtl::Play;

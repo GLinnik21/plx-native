@@ -101,8 +101,14 @@ that mixes async content with a live cursor:
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
   and Person keeps no self-seat for a landing to strand. Detail keeps none while a playback driver
   is composed (Play is its first seat and the landing does not move it); with none composed its
-  first seat, before the item lands, is the watched toggle, so `Enter` arms the default restore and
-  the landing re-seats the page by `DetailScreen::default_elem`.
+  first seat, before the item lands, is the watched toggle, which writes to the account once the
+  item is there. The page owns that seat the way the Library owns its grid's
+  (`DetailScreen::provisional`, set by a fresh open's `Enter`): every frame's `reconcile` answers
+  `DetailScreen::default_elem` until the viewer moves focus (a key that moves it, the pointer) or
+  presses OK on a landed page. The item's landing, a later Also available landing and a restore that
+  waits on a season or retires all move the seat by that one rule, so account safety never depends on
+  a restore firing in the landing frame. A key that moves nothing, and an OK before the item lands,
+  leave it the page's.
 - **The grid absorbs an index landing, the page shifts its scroll.** The Library's grid is a
   `cards::Grid` in `ScrollMode::External`: when the focused element's index changes with no
   `FocusMoved` (an insert or reorder before it) the grid moves its pop with the element and

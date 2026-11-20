@@ -111,6 +111,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         preview_had_picture: false,
         trailer_ctl: super::trailer::Transport::IDLE,
         restore_intent: None,
+        provisional: false,
         teardown_cleared: false,
         withdrawn: false,
         refresh: DetailRefreshPhase::None,
