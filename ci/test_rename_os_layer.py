@@ -72,6 +72,7 @@ FILES = {
     'ci/check-module-layers.py': "order = [s for s in sections if not s.startswith('port ')]\nport = section[len('port '):]\nmsg = f'is listed in [port {port}]'\n",
     'ci/check-deps.sh': 'SRC_PLATFORM=rust-modules/platform/src\nplatform holds forks of its own\n',
     'ci/list-caps.ini': '[platform/src/devcaps.rs::PCM_MAX_CHANNELS]\nreason = x\n',
+    'rust-modules/platform/build.rs': '//! Code generation for the platform layer: the catalog.\n',  # a LITERALS entry keyed by the head path
     'ci/test_no_host_staticlib.py': 'WORKSPACE_FILES = (".cargo", "base", "machine", "net", "platform", "gfx", "ui")\n',
     'Makefile': 'RUST_INPUTS := $(shell find rust-modules/net rust-modules/platform rust-modules/gfx -type f)\n# chain (base -> platform -> ui/plex)\n'
                 'test: ; cargo test -p plx_base -p plx_platform -p plx_gfx\n',
@@ -90,7 +91,7 @@ FILES = {
     # `os` already means the operating system.
     'rust-modules/telemetry/src/telemetry/sentry.rs': '/// The `os` context a native crash carries, `"os"` and `"net"`, `"gfx"` none.\nlet k = ["os", "webos", "hardware"];\n',
     'tools/disk-budget.py': '# uses only `os` and `sys`\nuse std::os::raw::c_int;\n',
-    'docs/disk-budget.md': 'needs only `os` and `sys` and the platform layer\n',
+    'docs/disk-budget.md': 'needs only `os` and `sys` and the host platform\n',
     # Exempt: dated records and the plan keep the old name.
     'docs/release-audits/v0.9.0.md': 'rust-modules/platform/src/x.rs plx_platform\n',
     'docs/measurements/acb-2026-11-04.md': 'rust-modules/platform/src/tv/plane.rs\n',
@@ -125,10 +126,19 @@ def read_tree(root):
 def run(*args):
     """(exit code, stdout) of the tool's main()."""
     out = io.StringIO()
-    with contextlib.redirect_stdout(out):
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
         try: code = tool.main(list(args))
         except SystemExit as exit_: code = exit_.code
     return code, out.getvalue()
+
+
+def run_err(*args):
+    """(exit code, stdout, stderr) of the tool's main()."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try: code = tool.main(list(args))
+        except SystemExit as exit_: code = exit_.code
+    return code, out.getvalue(), err.getvalue()
 
 
 def git(root, *args):
@@ -149,6 +159,7 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         now = read_tree(self.root)
         self.assertNotIn('rust-modules/platform/Cargo.toml', now)
+        self.assertEqual(now['rust-modules/os/build.rs'], '//! Code generation for the os layer: the catalog.\n')
         self.assertEqual(now['rust-modules/os/Cargo.toml'], '[package]\nname = "plx_os"\n[lib]\nname = "plx_os"\n')
         self.assertEqual(now['rust-modules/os/src/lib.rs'], '//! plx_os: the `os` layer.\nuse plx_os::tv::sink;\n')
         self.assertEqual(now['rust-modules/Cargo.toml'], '# layers: base/, machine/, net/, os/, gfx/\n[workspace]\nmembers = [\n    "base",\n    "os",\n]\n'
@@ -171,7 +182,7 @@ class RenameTests(unittest.TestCase):
         self.assertIn('base -> os -> ui/plex', now['Makefile'])
         self.assertIn('-p plx_os -p plx_gfx', now['Makefile'])
         self.assertEqual(now['tools/cargo-seed.py'], 'part("manifest-os", mb(os.path.join(root, "rust-modules", "os", "Cargo.toml")))\n')
-        self.assertEqual(now['tools/build-bench.py'], 'PLATFORM_LEAF_FILE = "rust-modules/os/src/devcaps.rs"\nALL = ("noop", "leaf", "machine", "os", "gfx", "net")\n'
+        self.assertEqual(now['tools/build-bench.py'], 'OS_LEAF_FILE = "rust-modules/os/src/devcaps.rs"\nALL = ("noop", "leaf", "machine", "os", "gfx", "net")\n'
                          '  os        ...after appending one to a leaf file\nTITLES = {\n    "os": "Edit leaf (plx_os devcaps.rs)",\n}\n')
         self.assertEqual(now['ci/test_build_bench.py'], "art('/os', 'plx_os', '0.0.0')\nonly = \"noop,leaf,machine,os,gfx\"\nok(by_id[\"os\"][\"samples\"])\n"
                          'host = doc["host"]["machine"] and doc["host"]["os"]\n')
@@ -236,6 +247,48 @@ class RenameTests(unittest.TestCase):
         self.assertIn('tools/new-gate.py:2: [UNCLASSIFIED quoted "platform"]', out)
         self.assertIn('rust-modules/telemetry/src/telemetry/list.rs:1: [UNCLASSIFIED quoted "platform"]', out)
 
+    def test_check_flags_a_layer_token_in_a_separator_list_and_a_slash_before_dotdot(self):
+        run('--root', str(self.root))
+        write_tree(self.root, {'ci/proofs/platform-generated-enums.json': '{}\n', 'ci/proofs/serde-json-immutable.json': '{}\n',
+                               'ci/new-gate.sh': 'for c in net platform gfx; do :; done\n',
+                               'ci/new-args.sh': 'run --only machine,platform now\n',
+                               'ci/new-chain.md': 'the chain is base -> platform -> ui\n',
+                               'ci/new-order.md': 'platform, plex and data are below\n',
+                               'ci/new-path.py': 'root = os.path.join(x, "/../platform/src")\n',
+                               'ci/new-path-ok.py': 'root = os.path.join(x, "../os/src", "/../os/src")\n',
+                               'ci/new-dir.py': 'root = Path("rust-modules/platform/src")\n',
+                               'ci/new-other-dir.py': 'root = Path("x/platform/src")\n',
+                               'docs/new-prose.md': 'the platform is a cross-platform thing; ports and the ARM platform stay\n',
+                               'docs/new-data.md': 'the data platform stays\n'})
+        code, out = run('--root', str(self.root), '--check')
+        self.assertEqual(code, 1)
+        for path in ('ci/new-gate.sh:1', 'ci/new-args.sh:1', 'ci/new-chain.md:1', 'ci/new-order.md:1'):
+            self.assertIn(path + ': [3 layer token in a separator list]', out)
+        self.assertIn('ci/new-path.py:1: [2 bare path platform/..]', out)
+        self.assertNotIn('ci/new-path-ok.py', out)
+        # `rust-modules/platform/` keeps its own class; a `/` before `platform/` that is not a `../` prefix
+        # (`x/platform/src`, some other tree's directory) is not a bare path and is not flagged at all.
+        self.assertIn('ci/new-dir.py:1: [2 path rust-modules/platform]', out)
+        self.assertNotIn('ci/new-dir.py:1: [2 bare', out)
+        self.assertNotIn('ci/new-other-dir.py', out)
+        # Prose with no layer neighbour is not a site; `data platform` is a neighbour and is a separator hit.
+        self.assertNotIn('docs/new-prose.md', out)
+        self.assertIn('docs/new-data.md:1: [3 layer token in a separator list]', out)
+
+    def test_check_flags_a_layer_table_cell_and_platform_layer_or_crate(self):
+        run('--root', str(self.root))
+        write_tree(self.root, {'ci/proofs/platform-generated-enums.json': '{}\n', 'ci/proofs/serde-json-immutable.json': '{}\n',
+                               'docs/new-table.md': '| layer | members |\n|---|---|\n| platform | `webos storage` |\n| `os::i18n` | platform | strings |\n',
+                               'docs/new-noun.md': "the platform layer crate's source\nthe platform crate's own build script\n",
+                               'docs/new-host.md': '| Platform | LG webOS |\nthe webOS platform release, a platform port\n'})
+        code, out = run('--root', str(self.root), '--check')
+        self.assertEqual(code, 1)
+        for site in ('docs/new-table.md:3', 'docs/new-table.md:4'):
+            self.assertIn(site + ': [3 layer token in a table cell]', out)
+        for site in ('docs/new-noun.md:1', 'docs/new-noun.md:2'):
+            self.assertIn(site + ': [3 layer token before layer/crate]', out)
+        self.assertNotIn('docs/new-host.md', out)     # the host platform, a column heading and a port are not the layer
+
     def test_both_quote_styles_are_classified(self):
         run('--root', str(self.root))
         write_tree(self.root, {'ci/proofs/platform-generated-enums.json': '{}\n', 'ci/proofs/serde-json-immutable.json': '{}\n',
@@ -249,6 +302,44 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('would change', out)
         self.assertEqual(read_tree(self.root), FILES)
+
+
+class ReversePatchTests(unittest.TestCase):
+    PATCH = (
+        'diff --git a/rust-modules/net/src/x.rs b/rust-modules/net/src/x.rs\n'
+        '--- a/rust-modules/net/src/x.rs\n'
+        '+++ b/rust-modules/net/src/x.rs\n'
+        '@@ -10,3 +10,4 @@ fn f()\n'
+        ' let ctx = 1;\n'
+        '-// old: the `os` clock\n'
+        '+// new: the `os` clock and plx_os::tv\n'
+        '+let layers = ["base", "net", "os", "gfx"];\n'
+        ' let tail = 2;\n')
+
+    def test_every_weak_rewrite_is_printed_with_its_line_and_the_strong_ones_are_not(self):
+        patch = Path(tempfile.mkdtemp(prefix='rename-os-patch-')) / 'fix.patch'
+        self.addCleanup(lambda: patch.parent.exists() and __import__('shutil').rmtree(patch.parent))
+        patch.write_text(self.PATCH)
+        code, out, err = run_err('--reverse-patch', str(patch))
+        self.assertEqual(code, 0)
+        # The rewrite itself is unchanged: the backport still applies.
+        self.assertIn('+// new: the `platform` clock and plx_platform::tv\n', out)
+        self.assertIn('+let layers = ["base", "net", "platform", "gfx"];\n', out)
+        lines = err.splitlines()
+        self.assertIn('rust-modules/net/src/x.rs:11: // old: the `os` clock -> // old: the `platform` clock', lines)
+        self.assertIn('rust-modules/net/src/x.rs:11: // new: the `os` clock and plx_os::tv -> // new: the `platform` clock and plx_platform::tv', lines)
+        self.assertIn('rust-modules/net/src/x.rs:12: let layers = ["base", "net", "os", "gfx"]; -> let layers = ["base", "net", "platform", "gfx"];', lines)
+        self.assertEqual(len([l for l in lines if ': ' in l and ' -> ' in l]), 3, err)
+        self.assertNotIn('let ctx', err)  # an unchanged context line is silent
+
+    def test_a_patch_with_only_strong_rewrites_prints_nothing(self):
+        patch = Path(tempfile.mkdtemp(prefix='rename-os-patch-')) / 'fix.patch'
+        self.addCleanup(lambda: patch.parent.exists() and __import__('shutil').rmtree(patch.parent))
+        patch.write_text('diff --git a/rust-modules/os/src/lib.rs b/rust-modules/os/src/lib.rs\n--- a/rust-modules/os/src/lib.rs\n+++ b/rust-modules/os/src/lib.rs\n'
+                         '@@ -1,1 +1,2 @@\n use plx_os::tv;\n+use plx_os::devcaps; // rust-modules/os/src\n')
+        code, out, err = run_err('--reverse-patch', str(patch))
+        self.assertEqual((code, err), (0, ''))
+        self.assertIn('+use plx_platform::devcaps; // rust-modules/platform/src\n', out)
 
 
 class EquivalenceTests(unittest.TestCase):

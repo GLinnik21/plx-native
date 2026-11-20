@@ -109,14 +109,14 @@ Every file:line is on origin/main adf73d81a.
 |---|---|---|
 | `plex::watchlist` (plex/src/plex/watchlist.rs) | plex | `impl AccountClient`: paged list, released list, `user_state(hex)`, `catalog_item(hex)`, add/remove PUT. Drift-tolerant DTOs; injectable `request` closure. Base URL `account::discover()` (moved from this file; `discover.rs`'s person routes share it): DISCOVER, or `/tmp/plxnative-discover` (else the `plxnative-plextv` loopback) behind the `loopback_http` guard as `plex_tv()`. Logs status + endpoint shape only. |
 | `Client::find_by_guids` (plex/library.rs) | plex | One `/library/all?type=T&guid=a,b,c` per server per kind (1 movie, 2 show), ≤40 guids/request; other guid kinds not matched. |
-| `watchlist` (data/src/watchlist.rs) | data — ADD to `[data] members` + docs/module-layers.md line. Names `plx_plex` (incl. `plex::servers` facts_gen/roster_gen/probe_result, `plex::session`), base, machine, platform. NOT net, NOT media. | Rows, released set, match table, `TileState`, intent ledger, client-side sort/filter, comparator. |
+| `watchlist` (data/src/watchlist.rs) | data — ADD to `[data] members` + docs/module-layers.md line. Names `plx_plex` (incl. `plex::servers` facts_gen/roster_gen/probe_result, `plex::session`), base, machine, os. NOT net, NOT media. | Rows, released set, match table, `TileState`, intent ledger, client-side sort/filter, comparator. |
 | `stores::watchlist` | data | `WatchlistStore`: main-thread state + `Arc<Adapter>` mailbox (viewstate ownership pattern). `StoreId::Watchlist` APPENDED. |
 | `catalog` (data/src/catalog.rs) + `stores::catalog` | data — ADD to members | Discover-only item page fetch/state. `StoreId::Catalog` appended. |
 | `screens::watchlist` | screens | The page. |
 | `screens::catalog` | screens | Lightweight page for a Discover-only item (§1.7). |
 | `appkit::hero_layout` | appkit | Hero geometry/meta-line helpers moved out of detail/hero.rs so Detail and catalog share them without breaking the sibling rule. |
 | `ui::icons`, `ui::cards::{landing,grid}`, `ui::popover`, gfx `fs_glass.frag`, gfx text | ui/gfx | DS PRs |
-| `os::i18n` | platform | Month-name dates, strings |
+| `os::i18n` | os | Month-name dates, strings |
 | app (chrome.rs, bridge.rs, content.rs, effects.rs, input) | app | Strip vocabulary, routing, `AppArg::Watchlist`, tab pulse |
 
 Nothing names webOS. Screens never name a sibling screen or app.

@@ -536,7 +536,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   FIELD's derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
   record's own `Default` sets it. `plaintext_consent` is written as `[]` in the legacy file but
   omitted from the canonical record while empty (`split_public` drops the key). `prefs_tests` holds
-  the table to the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to
+  the table to the struct (T-fields), to the os layer's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to
   each row's parse policy (T-parse), both ways; a field with no row, or a row with no field, fails
   there.
   The two memory-door lists (`track_memory`: each profile's remembered audio and subtitle picks per
@@ -629,7 +629,7 @@ a dead source is **absent** from Home and states itself in its own library secti
      (T-settings).
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
   grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
-  `persistence::commit_session_with` measures the projected document (platform's own
+  `persistence::commit_session_with` measures the projected document (the os layer's own
   `state::logical_size`, with the stored envelope, ledger, consent and future keys in hand, for the
   write it is really about to send: update, one-put replace, or the strict staged write; a first
   write onto an ABSENT record, a sign-in or a legacy import, is measured against the fresh state the
@@ -639,7 +639,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   `library_sorts` (`prefs::shed_memory`; the same oldest-from-the-largest-record rule as the
   household budget), only as far as it needs, and logs `prefs: evicted <n> <list> entries to fit
   the 256 KiB document`. The live session keeps what the payload lost until the next load. It never
-  refuses a write: with nothing sheddable left the platform still does, as before. The file backend
+  refuses a write: with nothing sheddable left the os layer still does, as before. The file backend
   has no cap and no guard. A stored document already AT the cap leaves no room for the strict tier's
   second copy (old and new halves side by side), which the guard cannot create. A record created on
   webOS 4.x is ACL-only; a record that already holds a keymanager envelope still stages.
