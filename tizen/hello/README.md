@@ -347,11 +347,20 @@ screen colour (below) still answers questions 1 to 4.
 
 ## Unverified (the app has not run yet: the first emulator install stopped at signing)
 
-H5, on the Mac (no Tizen device, no Linux), only these were run: `cargo test` (stub), `--host-test`
-(7 tests: the label renders to a surface with the right pixels), the ARM link of `libplx.so` with the
-checks above, `bash -n build.sh`, the `--tpk-only` refusal without certificates, and the ARM `.tpk`
-build with throwaway certificates (the C# host compiles with the new `plx_tizen_create` signature, 0
-warnings, and the package lists `res/appfont.ttf`, `res/OFL.txt` and the same `libplx.so`). Not verified:
+H5 and the tester-build panel, on the Mac (no Tizen device, no Linux), only these were run: `cargo test`
+(stub, 27 tests), `--host-test` (35 tests: the label and the panel render to surfaces with the right
+pixels, the panel fits at 28+ px with typical and long contents, the key-string guard refuses unmapped
+and `PROT_NONE` pointers, the create path logs one line per fact), the ARM link of `libplx.so` with the
+checks above (the same five `plx_tizen_*` exports, no `libSDL2` in `DT_NEEDED`, the git sha inside the
+object), `bash -n build.sh`, the `--tpk-only` refusal without certificates, and the ARM `.tpk` build with
+throwaway certificates (the C# host compiles with the four-argument `plx_tizen_create`, 0 warnings, and
+the package lists `res/appfont.ttf`, `res/OFL.txt` and the same `libplx.so`). Not verified:
+
+- That the panel is legible in a phone photo of a real TV (the host test reads the rendered panel at
+  1872x1048 and the text is 30 px on a 1080-line screen; nobody has looked at it on a screen), and the
+  whole Apps2Samsung path ("Tester build").
+- That the C# host's facts arrive intact through the `LPStr` marshaling on a device (the create test
+  feeds the same `name=value` lines from Rust).
 
 - The `x86_64` and `i686` SDL builds and libraries (same script and code path as ARM apart from the
   compiler and `--host`; never run, there was no Linux machine). The WSL2 session is the first run.
@@ -368,7 +377,9 @@ warnings, and the package lists `res/appfont.ttf`, `res/OFL.txt` and the same `l
   against a loopback receiver (`cargo test` in `plx/`), the signing path with throwaway certificates,
   and that the C# host compiles.
 - The `Ecore_Event_Key` layout. `keyname`, `key` and `keycode` are read from the upstream EFL header's
-  offsets; Samsung's fork may differ, so the first events are also hex-dumped.
+  offsets; Samsung's fork may differ, so the first events are also hex-dumped (6, was 5), and the four
+  string pointers are read only after a per-page readability probe, so a wrong layout shows `UNREADABLE@0x...`
+  in the log and `(none)` on the panel instead of crashing the app.
 - Every Ecore/EGL symbol name and signature is copied from flutter-tizen's embedder, not checked
   against a device; the `sym ...` lines say what exists. `ECORE_WL2_WINDOW_TYPE_TOPLEVEL` = 1 is from
   memory of the EFL header.

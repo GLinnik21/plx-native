@@ -117,6 +117,8 @@ mod imp {
             Renderer::open(&format!("{res}/{}", h5::FONT_FILE))
         }
 
+        /// Whether the font has `c` (the tests probe which fallbacks are in play).
+        #[cfg(test)]
         pub fn has_glyph(&self, c: char) -> bool {
             self.font.has_glyph(c)
         }
