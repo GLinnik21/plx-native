@@ -388,6 +388,63 @@ mod tests {
         assert!(forced.may_qualify(BackendKind::Uri, OfferId::URI_ORIGINAL));
     }
 
+    /// A production catalog with exactly `qualified` qualified, each on the backend the catalog
+    /// gives it (Feed's recipes on the Feed driver, URI's on the URI driver).
+    fn catalog_with(qualified: &[OfferId], force_original: bool) -> BackendPolicy {
+        let mut policy = BackendPolicy::for_request(force_original);
+        for id in qualified {
+            let backend = policy.offers.iter().find(|offer| offer.id == *id)
+                .expect("a production recipe").backend;
+            policy.qualify(backend, *id, Qualification::Qualified);
+        }
+        policy
+    }
+
+    /// The two backends' selection order, as the production catalog ranks it: the exact original
+    /// handoffs first (URI's before Feed's, and Feed's own original, which may be wire-compatible
+    /// rather than bit-exact, with them), then URI's compatible conversions, then every Feed
+    /// conversion in its catalog order. Nothing else orders the two drivers; a driver with another
+    /// name, a second URI driver or a driver that certifies more must not move any of these.
+    #[test]
+    fn the_feed_and_uri_drivers_are_chosen_in_the_catalogs_rank_order() {
+        use OfferId as O;
+        let auto = [O::URI_ORIGINAL, O::FEED_ORIGINAL, O::URI_PMS_REMUX, O::URI_PMS_ENCODE,
+            O::URI_PMS_HLS, O::FEED_APP_AUDIO, O::FEED_PMS_REMUX, O::FEED_PMS_ENCODE, O::FEED_PMS_HLS,
+            O::FEED_ORIGINAL_TRIAL_REMUX, O::FEED_REFUSAL_AUDIO, O::FEED_REFUSAL_VIDEO,
+            O::FEED_REFUSAL_BOTH];
+        let mut ranked = BackendPolicy::for_request(false).offers;
+        ranked.sort_by_key(|offer| offer.rank());
+        assert_eq!(ranked.iter().map(|offer| offer.id).collect::<Vec<_>>(), auto);
+        // Forced counts Feed's original handoff and its app-decoded audio as exact, so both sit with
+        // the URI original ahead of every conversion.
+        let forced = [O::URI_ORIGINAL, O::FEED_ORIGINAL, O::FEED_APP_AUDIO, O::URI_PMS_REMUX,
+            O::URI_PMS_ENCODE, O::URI_PMS_HLS, O::FEED_PMS_REMUX, O::FEED_PMS_ENCODE, O::FEED_PMS_HLS,
+            O::FEED_ORIGINAL_TRIAL_REMUX, O::FEED_REFUSAL_AUDIO, O::FEED_REFUSAL_VIDEO,
+            O::FEED_REFUSAL_BOTH];
+        let mut ranked = BackendPolicy::for_request(true).offers;
+        ranked.sort_by_key(|offer| offer.rank());
+        assert_eq!(ranked.iter().map(|offer| offer.id).collect::<Vec<_>>(), forced);
+
+        // The same order through `choose`, one pair at a time: with both qualified the earlier one
+        // opens, whichever driver owns it. (Forced permits only the exact recipes.)
+        for (earlier, later) in auto.iter().zip(&auto[1..]) {
+            let mut policy = catalog_with(&[*earlier, *later], false);
+            let Selection::Open(chosen) = policy.choose() else { panic!("a qualified recipe opens") };
+            assert_eq!(chosen.id, *earlier, "{later:?} must not outrank {earlier:?}");
+            policy.qualify(chosen.backend, chosen.id, Qualification::Refused);
+            let Selection::Open(chosen) = policy.choose() else { panic!("the other opens next") };
+            assert_eq!(chosen.id, *later);
+        }
+        for (earlier, later) in [(O::URI_ORIGINAL, O::FEED_ORIGINAL), (O::FEED_ORIGINAL, O::FEED_APP_AUDIO)] {
+            let Selection::Open(chosen) = catalog_with(&[earlier, later], true).choose()
+                else { panic!("a qualified recipe opens") };
+            assert_eq!(chosen.id, earlier, "Forced: {later:?} must not outrank {earlier:?}");
+        }
+        assert_eq!(catalog_with(&[O::URI_PMS_REMUX, O::FEED_PMS_REMUX], true).choose(), Selection::Unqualified,
+            "Forced converts nothing on a server, whichever driver would carry it: only the exact \
+             originals stay open, and those are still unknown");
+    }
+
     #[test]
     fn rollback_restores_one_prior_same_backend_recipe_without_replenishing_recovery() {
         let mut policy = BackendPolicy::for_request(false);

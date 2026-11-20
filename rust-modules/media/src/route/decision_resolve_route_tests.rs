@@ -3494,20 +3494,22 @@ fn the_converted_mark_reads_the_attempt_not_the_boot() {
 // ---- Settings > Playback engine > Experimental takes only what Standard would direct-play ----
 //
 // The viewer's opt-in qualifies the original file as a URL carrier for the TV's own pipeline
-// (`ProductQualifier`), and that pipeline plays what the file says: a video the caps cannot show, a
+// (the URL-carrier rule), and that pipeline plays what the file says: a video the caps cannot show, a
 // Dolby Vision layering the frozen decision refuses, or an audio codec the set cannot decode would play
 // with wrong colours or in silence and report nothing, so the handoff to Standard would never fire; a
 // container Standard has the server remux would skip that remux. Each case below is one cold resolve,
 // run as Standard and as Experimental through the production qualifier, and the Experimental plan is
 // Standard's. (The server's own direct-play decision is not one of the verdicts: the offer precedes it.)
 
-/// The production composition on an ACB display: nothing certified, `ProductQualifier`.
+/// The production composition on a display the driver reports ready: nothing certified, and the
+/// carrier rule (`CarrierQualifier`; a driver's own rule for its display is the application's, and
+/// tested there).
 #[cfg(feature = "devtriggers")]
 fn production_uri_port() -> crate::route::uri_preflight::ResolvePort {
     crate::route::uri_preflight::ResolvePort::new(
         crate::route::uri_preflight::ProductEvidence::unqualified_on(
-            plx_os::tv::sink::VP_ACB, plx_playback_contract::uri::Binding::Acb),
-        std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier))
+            plx_playback_contract::uri::DisplayEvidence::ready("test")),
+        std::sync::Arc::new(crate::route::uri_preflight::CarrierQualifier))
 }
 
 /// [`cold_audio_resolve`] by a viewer whose Playback engine is `engine`, with the production URI port

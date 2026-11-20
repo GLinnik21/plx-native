@@ -1,7 +1,7 @@
 //! Test doubles for the contract's driver traits, compiled only for this crate's own tests and for
 //! dependents that name the `test-support` feature from their `[dev-dependencies]`.
 
-use crate::uri::{UriDriver, UriSource};
+use crate::uri::{DisplayEvidence, UriDriver, UriSource};
 use crate::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult,
     DriverEvent, DriverSet, ExitDisposition, Failure, Observation, Operation, ReleaseStatus,
     SourceKey, TrackSelection};
@@ -9,8 +9,13 @@ use plx_base::task::MainThread;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// The display path a [`FakeUriDriver`] reports until a test scripts another: ready, no preview
+/// rectangle, tagged `fake`.
+const FAKE_DISPLAY: DisplayEvidence = DisplayEvidence::ready("fake");
+
 #[derive(Default)]
 struct Script {
+    display: Option<DisplayEvidence>,
     staged: Vec<(AttemptId, SourceKey)>,
     cancelled: Vec<AttemptId>,
     discarded: Vec<(AttemptId, SourceKey)>,
@@ -84,6 +89,10 @@ impl FakeUriHandle {
     pub fn set_exit_preserved(&self, preserved: bool) {
         self.0.lock().unwrap().exit_preserved = preserved;
     }
+    /// Make [`UriDriver::display`] report this (until then: ready, tagged `fake`).
+    pub fn set_display(&self, display: DisplayEvidence) {
+        self.0.lock().unwrap().display = Some(display);
+    }
     /// Make [`UriDriver::ready_to_start`] answer this (`None`: ready).
     pub fn set_not_ready(&self, why: Option<crate::uri::UriNotReady>) {
         self.0.lock().unwrap().not_ready = why;
@@ -141,6 +150,10 @@ impl DriverSet for FakeUriDriver {
 }
 
 impl UriDriver for FakeUriDriver {
+    fn display(&self) -> DisplayEvidence {
+        self.script.lock().unwrap().display.unwrap_or(FAKE_DISPLAY)
+    }
+
     fn stage_source(&mut self, attempt: AttemptId, key: SourceKey, source: UriSource)
         -> Result<(), Failure> {
         // The checks the product driver makes before it escrows a source.
@@ -226,6 +239,22 @@ mod tests {
         assert!(driver.plane_owned() && driver.maps_track(audio));
         assert!(!driver.maps_track(TrackSelection { kind: TrackKind::Subtitle, id: 42 }));
         assert_eq!(driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+    }
+
+    #[test]
+    fn the_display_a_driver_reports_is_what_the_test_scripted_and_a_reason_reads_as_its_text() {
+        use crate::uri::{DisplayReadiness, UriNotReady};
+        let (driver, handle) = boxed();
+        assert_eq!(driver.display(), DisplayEvidence::ready("fake"), "ready until a test says otherwise");
+        assert!(driver.display().is_ready() && !driver.display().preview_rectangle);
+        handle.set_display(DisplayEvidence::unavailable("none"));
+        let display = driver.display();
+        assert_eq!(display.readiness, DisplayReadiness::NotReady(UriNotReady::DisplayUnavailable));
+        assert!(!display.is_ready());
+        assert_eq!(display.tag, "none");
+        // A driver's own reason reads as the driver wrote it; the shared one names no driver.
+        assert_eq!(UriNotReady::Driver("the handle could not be made").log_name(), "the handle could not be made");
+        assert_eq!(UriNotReady::DisplayUnavailable.log_name(), "the driver has no display path");
     }
 
     #[test]

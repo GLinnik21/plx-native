@@ -221,13 +221,14 @@ mod qualified_uri_offer_tests {
             UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
             requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
 
-        handle.set_not_ready(Some(plx_playback_contract::uri::UriNotReady::AcbHandle));
+        handle.set_not_ready(Some(plx_playback_contract::uri::UriNotReady::Driver(
+            "the driver could not set its display up")));
         let (declined, log) = plx_base::eventlog::with_private_log(|| {
             let declined = adapter.offer_qualified_uri(&mut session, offer());
             (declined, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
         });
         assert!(matches!(declined, Err(Failure::Unavailable)));
-        assert!(log.contains("uri: original declined (the ACB handle for the URI engine could not be created)\n"),
+        assert!(log.contains("uri: original declined (the driver could not set its display up)\n"),
             "{log}");
         assert!(adapter.qualified_uri.is_none(), "a declined offer keeps no authorization");
         assert!(matches!(session.backend_offer(),
@@ -270,7 +271,7 @@ mod qualified_uri_offer_tests {
             requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
 
         // A driver that would decline if it were asked.
-        handle.set_not_ready(Some(plx_playback_contract::uri::UriNotReady::AcbHandle));
+        handle.set_not_ready(Some(plx_playback_contract::uri::UriNotReady::DisplayUnavailable));
         let mut fx = Vec::new();
         adapter.release.step(&ReleaseEvent::UnloadHandedOff { epoch: 1, at: std::time::Instant::now() }, &mut fx);
         assert!(adapter.release_busy());

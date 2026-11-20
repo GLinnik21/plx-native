@@ -9,8 +9,10 @@
 //! `uri_product_binding`'s answer): with the trigger present and a display in `VP_EXPORTED` mode,
 //! `Exported` on the full 1920x1080 canvas instead of `Unbound` (what production composes for a major
 //! the evidence table, `EXPORTED_STRATA`, has not admitted). Nothing else: the viewer still has to
-//! opt in to the URI engine in Settings, the qualifier is still `ProductQualifier`, and a display in any other mode composes as it always
-//! did (an ACB set keeps ACB, a set with no window path stays unbound).
+//! opt in to the URI engine in Settings, the qualifier is still `ProductQualifier` (built from the
+//! binding this composes, so its several-audio-tracks rule applies to the exported window the
+//! override bound), and a display in any other mode composes as it always did (an ACB set keeps
+//! ACB, a set with no window path stays unbound).
 //!
 //! **Arming.** The file is read ONCE, at boot (`install_uri_product`), unlike the probe's per-Play
 //! trigger, so it can be armed only by writing it before the app launches (plain `/tmp`, or the

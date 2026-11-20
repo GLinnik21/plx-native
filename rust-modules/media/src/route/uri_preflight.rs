@@ -2,12 +2,15 @@
 //! A native implementation may answer Unknown until its display and control behavior is proven.
 //! Production proves nothing for anyone; the one qualification it supplies is a viewer's own:
 //! Settings > Video & playback > Playback engine > Experimental ([`OriginalRequest::uri_opt_in`]).
+//! The display half of the evidence is the driver's own report ([`DisplayEvidence`]): the route
+//! names no display path, and the qualifier that answers for a product's sources is its
+//! composition's (the application's), not this module's.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use plx_base::task::OffFrame;
-use plx_playback_contract::uri::{Binding, NativeTrackIndex, UriSource};
+use plx_playback_contract::uri::{DisplayEvidence, NativeTrackIndex, UriSource};
 use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, TrackChoice, TrackKind, TrackSelection};
 
 use super::SourceSelection;
@@ -18,72 +21,69 @@ use super::SourceSelection;
 pub struct SourceSubtitle { pub codec: String, pub embedded: bool }
 
 /// Captured product evidence shared by boot's executor configuration and one resolve's IO port.
-/// Callable operations and certified firmware behavior are separate facts.
+/// Callable operations and certified firmware behavior are separate facts, and the display path is
+/// a third: what the installed driver reports of it, read once when the composition installs the
+/// driver ([`plx_playback_contract::UriDriver::display`]).
 #[derive(Clone, Copy)]
 pub struct ProductEvidence {
-    pub display_exported: bool,
-    pub binding: Binding,
+    pub display: DisplayEvidence,
     pub callable: Capabilities,
     pub certified: Capabilities,
-    pub preview_rectangle: bool,
 }
 
 impl ProductEvidence {
+    /// What the product's URI executor can call, whatever its display: the progressive and HLS
+    /// sources, pause, seek and track selection, but no packet feed and no track disable.
+    pub const CALLABLE: Capabilities = Capabilities { progressive_uri: true, hls_uri: true,
+        packet_feed: false, pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+
+    /// What the product certifies for everyone: nothing.
+    pub const UNCERTIFIED: Capabilities = Capabilities { progressive_uri: false, hls_uri: false,
+        packet_feed: false, pause: false, seek: false, audio_track: false, subtitle_track: false,
+        audio_off: false, subtitle_off: false };
+
     /// Current firmware has a real URI bus implementation, but no qualified production source,
-    /// control and release certificate. A display window mode alone cannot certify playback.
-    /// Only a viewer's own opt-in ([`opted_in`](Self::opted_in)) certifies anything, and only for
-    /// that viewer's requests.
-    pub fn unqualified(display_mode: i32) -> Self {
-        Self::unqualified_on(display_mode, Binding::Unbound)
+    /// control and release certificate. A display path alone cannot certify playback. Only a
+    /// viewer's own opt-in ([`opted_in`](Self::opted_in)) certifies anything, and only for that
+    /// viewer's requests. `display` is what the installed driver reports of its display path; it
+    /// certifies nothing, so `certified` stays all false and `permits` and `could_qualify_pms`
+    /// offer no source through any display.
+    pub const fn unqualified_on(display: DisplayEvidence) -> Self {
+        Self { display, callable: Self::CALLABLE, certified: Self::UNCERTIFIED }
     }
 
-    /// [`unqualified`](Self::unqualified) with the display path composition chose for the
-    /// executor (the URI driver's `product_binding`). The binding configures the executor and
-    /// names the display path an offer would use; it certifies nothing. `certified` stays all
-    /// false, so `permits` and `could_qualify_pms` offer no source through any binding.
-    pub fn unqualified_on(display_mode: i32, binding: Binding) -> Self {
-        let exported = display_mode == plx_os::tv::sink::VP_EXPORTED;
-        let callable = Capabilities { progressive_uri: true, hls_uri: true, packet_feed: false,
-            pause: true, seek: true, audio_track: true, subtitle_track: true,
-            audio_off: false, subtitle_off: false };
-        let certified = Capabilities { progressive_uri: false, hls_uri: false, packet_feed: false,
-            pause: false, seek: false, audio_track: false, subtitle_track: false,
-            audio_off: false, subtitle_off: false };
-        Self { display_exported: exported, binding, callable,
-            certified, preview_rectangle: false }
+    /// The capabilities a viewer's opt-in certifies on top of `certified`: the ones a URL carrier
+    /// needs (the progressive source, pause, seek and audio-track selection), where the executor
+    /// `callable`s them. Subtitle selection and converted outputs stay as they are. The URI driver
+    /// is configured with these, so the composition asks for them before there is a display to
+    /// report ([`opted_in`](Self::opted_in) is this over the evidence's own pair).
+    pub fn opt_in_certifies(callable: Capabilities, certified: Capabilities) -> Capabilities {
+        let carried = |certified: bool, callable: bool| certified || callable;
+        Capabilities {
+            progressive_uri: carried(certified.progressive_uri, callable.progressive_uri),
+            pause: carried(certified.pause, callable.pause),
+            seek: carried(certified.seek, callable.seek),
+            audio_track: carried(certified.audio_track, callable.audio_track),
+            ..certified }
     }
 
     /// This evidence for a viewer who turned on the URI engine in Settings: the capabilities a URL
-    /// carrier needs (the progressive source, pause, seek and audio-track selection), where the
-    /// executor can call them, are certified by that choice. Subtitle selection and converted
-    /// outputs stay uncertified, and the display path is the composition's own, so an unbound
-    /// executor still offers nothing. The URI driver is configured with these capabilities; no
-    /// source reaches it without a qualification.
+    /// carrier needs ([`opt_in_certifies`](Self::opt_in_certifies)) are certified by that choice.
+    /// Subtitle selection and converted outputs stay uncertified, and the display path is the
+    /// driver's own, so a driver with no display path still offers nothing. The URI driver is
+    /// configured with these capabilities; no source reaches it without a qualification.
     pub fn opted_in(self) -> Self {
-        let carried = |certified: bool, callable: bool| certified || callable;
-        Self { certified: Capabilities {
-            progressive_uri: carried(self.certified.progressive_uri, self.callable.progressive_uri),
-            pause: carried(self.certified.pause, self.callable.pause),
-            seek: carried(self.certified.seek, self.callable.seek),
-            audio_track: carried(self.certified.audio_track, self.callable.audio_track),
-            ..self.certified }, ..self }
+        Self { certified: Self::opt_in_certifies(self.callable, self.certified), ..self }
     }
 
-    /// Whether the composed display path can show a URI source at all: the exported window with
-    /// a real canvas (and the display mode that exports it), or the ACB plane. An unbound
-    /// executor shows nothing. This is only the path; what may be offered through it is still
-    /// decided by `certified`.
-    fn display_path_offerable(&self) -> bool {
-        match self.binding {
-            Binding::Exported { canvas: (w, h) } => self.display_exported && w > 0 && h > 0,
-            Binding::Acb => true,
-            Binding::Unbound => false,
-        }
-    }
+    /// Whether the driver's display path can show a URI source at all. This is only the path; what
+    /// may be offered through it is still decided by `certified`.
+    fn display_path_offerable(&self) -> bool { self.display.is_ready() }
 
     pub fn permits(&self, requirements: Requirements, preview: bool) -> bool {
         self.display_path_offerable()
-            && (!preview || self.preview_rectangle)
+            && (!preview || self.display.preview_rectangle)
             && self.callable.pause && self.callable.seek
             && self.certified.pause && self.certified.seek
             && self.callable.supports(requirements)
@@ -196,8 +196,10 @@ pub enum UriDecline {
     /// of that subtitle (the product carrier certifies none, so today a selected embedded subtitle
     /// always ends here).
     SubtitleNotCarried,
-    /// The display path has no evidence on this firmware (the exported window with a real canvas, or
-    /// the ACB plane, with the controls a URL carrier needs callable).
+    /// The driver reports no display path it can show a source on ([`ProductEvidence::display`]; for
+    /// the product driver, neither an exported window on a firmware that admits one nor the ACB
+    /// plane), or the controls a URL carrier needs are not callable. The wording of the log line is
+    /// the product driver's.
     NoDisplayEvidence,
 }
 
@@ -274,8 +276,6 @@ pub struct OriginalRequest {
     pub audio_ordinal: Option<i64>,
     /// The exported-window service can enumerate multiple tracks in a different order from PMS.
     pub has_multiple_audio_tracks: bool,
-    /// Filled by ResolvePort from the composed backend before calling the qualifier.
-    pub binding: Binding,
     pub subtitle_source: Option<SourceSubtitle>,
     /// Off is an actual viewer choice, distinct from no subtitle streams being present.
     /// The current URI driver has no native disable operation.
@@ -632,7 +632,7 @@ impl ResolvePort {
             applied_audio: audio, resource_session: session, expires_at: cert.expires_at })
     }
 
-    pub fn qualify(&self, off: &OffFrame, mut request: OriginalRequest) -> Verdict {
+    pub fn qualify(&self, off: &OffFrame, request: OriginalRequest) -> Verdict {
         // Evidence is certified for everyone only as far as the product has proven it; a viewer
         // who opted in has also certified the URL carrier for their own playback.
         let evidence = if request.uri_opt_in { self.evidence.opted_in() } else { self.evidence };
@@ -648,7 +648,6 @@ impl ResolvePort {
         let dovi = request.dolby_vision;
         let subtitle = request.subtitle_source.clone();
         let subtitle_choice = request.subtitle_choice;
-        request.binding = evidence.binding;
         match self.qualifier.qualify(off, request) {
             Verdict::Known(known) => {
                 // The certificate is judged against this play first (its selection, then the subtitle it
@@ -680,7 +679,7 @@ impl ResolvePort {
         else if request.dolby_vision.present
             && request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off {
             Some(UriDecline::DolbyVisionOff)
-        } else if request.preview && !evidence.preview_rectangle { Some(UriDecline::Preview) }
+        } else if request.preview && !evidence.display.preview_rectangle { Some(UriDecline::Preview) }
         else { None }
     }
 }
@@ -757,24 +756,19 @@ impl KnownSource {
     }
 }
 
-/// Native product source evidence is unqualified for everyone but a viewer who turned on the URI
-/// engine in Settings ([`OriginalRequest::uri_opt_in`]): that choice is their own qualification of
-/// the URL carrier, so the answer is Unknown without it. Even then it covers only an original Standard
-/// would direct-play ([`OriginalRequest::standard`]: the plan's own video, Dolby Vision, audio and
-/// container verdicts, which this qualifier reads and never re-derives; not the server's own decision,
-/// which the offer is made before): every other file plays exactly as it does in Standard, where the
-/// server converts what the set cannot show or decode and remuxes a container Standard does not stream. The same port is run by
-/// every real resolve and can consume a future certified provider without changing route policy.
-pub struct ProductQualifier;
-impl OriginalQualifier for ProductQualifier {
+/// The qualifier the route's own tests run over: the shape of a product qualifier (a viewer's
+/// opt-in is their own qualification of the URL carrier, and it covers only an original Standard
+/// would direct-play, read from [`OriginalRequest::standard`] and never re-derived) without any rule
+/// of a display path or a firmware, which the route knows nothing of. The product's qualifier is the
+/// composition's (`ProductQualifier`, in the application's `adapters::backends`), where the rule of
+/// its own display lives and is tested.
+#[cfg(test)]
+pub(crate) struct CarrierQualifier;
+#[cfg(test)]
+impl OriginalQualifier for CarrierQualifier {
     fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
         if !request.uri_opt_in { return Verdict::Unknown(UriDecline::NotOptedIn); }
         if let Some(gap) = request.standard.first_gap() { return Verdict::Unknown(gap); }
-        // The product carrier assumes Plex order. Explicitly certified providers may supply
-        // their own track map, so this restriction belongs to this qualifier.
-        if request.has_multiple_audio_tracks && matches!(request.binding, Binding::Exported { .. }) {
-            return Verdict::Refused(UriDecline::ManyAudioTracksExported);
-        }
         let url = request.source_url.clone();
         Verdict::Known(KnownSource::url_carrier(&request, url, SOURCE_VERDICT_TTL))
     }
@@ -785,11 +779,15 @@ mod tests {
     use super::*;
     use plx_playback_contract::{TrackKind, TrackSelection};
 
+    /// A display path the route can use, and one it cannot: the driver's report is all the route
+    /// reads of a display.
+    const READY: DisplayEvidence = DisplayEvidence::ready("test");
+    const NO_DISPLAY: DisplayEvidence = DisplayEvidence::unavailable("test");
+
     #[test]
-    fn an_acb_binding_certifies_and_offers_nothing() {
-        use plx_os::tv::sink::VP_ACB;
-        // Configuring the executor with it certifies and offers nothing.
-        let evidence = ProductEvidence::unqualified_on(VP_ACB, Binding::Acb);
+    fn a_ready_display_certifies_and_offers_nothing() {
+        // The display path alone certifies and offers nothing.
+        let evidence = ProductEvidence::unqualified_on(READY);
         assert!(!evidence.permits(Requirements { source: SourceKind::ProgressiveUri, video: Fidelity::Exact,
             audio: Fidelity::Exact, audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified }, false));
     }
@@ -803,73 +801,84 @@ mod tests {
             seek: on, audio_track: on, subtitle_track: false, audio_off: false, subtitle_off: false }
     }
 
-    fn evidence_with(display_exported: bool, binding: Binding, certified: Capabilities)
-        -> ProductEvidence {
-        ProductEvidence { display_exported, binding, callable: uri_caps(true), certified,
-            preview_rectangle: false }
+    fn evidence_with(display: DisplayEvidence, certified: Capabilities) -> ProductEvidence {
+        ProductEvidence { display, callable: uri_caps(true), certified }
     }
 
     #[test]
-    fn acb_binding_is_offerable_only_with_certified_capabilities() {
-        // The ACB display path is an offerable path beside the exported canvas: with the source
-        // class, pause and seek certified there is an offer, and `could_qualify_pms` agrees.
-        let certified = evidence_with(false, Binding::Acb, uri_caps(true));
+    fn a_ready_display_is_offerable_only_with_certified_capabilities() {
+        // A display path the driver reports ready is an offerable path: with the source class,
+        // pause and seek certified there is an offer, and `could_qualify_pms` agrees.
+        let certified = evidence_with(READY, uri_caps(true));
         assert!(certified.permits(PROGRESSIVE_EXACT, false));
-        let port = ResolvePort::new(certified, Arc::new(ProductQualifier));
+        let port = ResolvePort::new(certified, Arc::new(CarrierQualifier));
         assert!(port.could_qualify_pms());
         // Nothing certified: the display path alone offers nothing, so production stays locked.
-        let uncertified = evidence_with(false, Binding::Acb, uri_caps(false));
+        let uncertified = evidence_with(READY, uri_caps(false));
         assert!(!uncertified.permits(PROGRESSIVE_EXACT, false));
-        assert!(!ResolvePort::new(uncertified, Arc::new(ProductQualifier)).could_qualify_pms());
-        // The preview rectangle is its own certificate, ACB or not.
+        assert!(!ResolvePort::new(uncertified, Arc::new(CarrierQualifier)).could_qualify_pms());
+        // The preview rectangle is its own certificate: only a driver that reports one has it.
         assert!(!certified.permits(PROGRESSIVE_EXACT, true));
+        let placeable = evidence_with(DisplayEvidence { preview_rectangle: true, ..READY }, uri_caps(true));
+        assert!(placeable.permits(PROGRESSIVE_EXACT, true));
+        assert!(placeable.permits(PROGRESSIVE_EXACT, false));
     }
 
     #[test]
-    fn only_an_exported_canvas_or_acb_is_an_offerable_display_path() {
+    fn only_a_display_the_driver_reports_ready_is_an_offerable_path() {
         let all = uri_caps(true);
-        let exported = Binding::Exported { canvas: (1920, 1080) };
-        assert!(evidence_with(true, exported, all).permits(PROGRESSIVE_EXACT, false));
-        // An exported canvas needs the display mode that exports it and a real canvas.
-        assert!(!evidence_with(false, exported, all).permits(PROGRESSIVE_EXACT, false));
-        assert!(!evidence_with(true, Binding::Exported { canvas: (0, 1080) }, all)
-            .permits(PROGRESSIVE_EXACT, false));
-        for display_exported in [false, true] {
-            let unbound = evidence_with(display_exported, Binding::Unbound, all);
-            assert!(!unbound.permits(PROGRESSIVE_EXACT, false));
-            assert!(!ResolvePort::new(unbound, Arc::new(ProductQualifier)).could_qualify_pms());
-        }
+        assert!(evidence_with(READY, all).permits(PROGRESSIVE_EXACT, false));
+        // The driver says why it has none (which window, plane or canvas is its own detail): the
+        // route reads only that it has none, whatever is certified and whether a preview is asked.
+        let unavailable = evidence_with(NO_DISPLAY, all);
+        assert!(!unavailable.permits(PROGRESSIVE_EXACT, false));
+        assert!(!unavailable.permits(PROGRESSIVE_EXACT, true));
+        assert!(!ResolvePort::new(unavailable, Arc::new(CarrierQualifier)).could_qualify_pms());
+        let driver_says = DisplayEvidence { readiness: plx_playback_contract::uri::DisplayReadiness::NotReady(
+            plx_playback_contract::uri::UriNotReady::Driver("a reason of its own")),
+            preview_rectangle: true, tag: "test" };
+        assert!(!evidence_with(driver_says, all).permits(PROGRESSIVE_EXACT, true));
     }
 
     #[test]
-    fn the_production_evidence_certifies_nothing_on_any_binding() {
-        use plx_os::tv::sink::{VP_ACB, VP_EXPORTED};
-        for (mode, binding) in [(VP_ACB, Binding::Acb), (VP_EXPORTED, Binding::Acb),
-            (VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }), (VP_ACB, Binding::Unbound)] {
-            let evidence = ProductEvidence::unqualified_on(mode, binding);
+    fn the_production_evidence_certifies_nothing_on_any_display() {
+        for display in [READY, NO_DISPLAY] {
+            let evidence = ProductEvidence::unqualified_on(display);
             assert!(!evidence.permits(PROGRESSIVE_EXACT, false));
-            assert!(!ResolvePort::new(evidence, Arc::new(ProductQualifier)).could_qualify_pms());
+            assert!(!ResolvePort::new(evidence, Arc::new(CarrierQualifier)).could_qualify_pms());
             assert!(!evidence.certified.supports(PROGRESSIVE_EXACT));
         }
     }
 
-    /// The composition's exported-window answer for a viewer who opted in: production evidence
-    /// certifies nothing, and the opt-in certifies the URL carrier, so an exact progressive original
-    /// is permitted through the exported window (and through nothing else: not an unbound executor,
-    /// not a display that is not in the exported-window mode, not the preview rectangle).
+    /// The opt-in for a viewer: production evidence certifies nothing, and the opt-in certifies the
+    /// URL carrier, so an exact progressive original is permitted through a display the driver
+    /// reports ready (and through nothing else: not a driver with no display, not the preview
+    /// rectangle).
     #[test]
-    fn an_opted_in_viewer_is_permitted_exact_progressive_through_the_exported_window_only() {
-        use plx_os::tv::sink::{VP_ACB, VP_EXPORTED};
-        let exported = Binding::Exported { canvas: (1920, 1080) };
-        let production = ProductEvidence::unqualified_on(VP_EXPORTED, exported);
+    fn an_opted_in_viewer_is_permitted_exact_progressive_through_a_ready_display_only() {
+        let production = ProductEvidence::unqualified_on(READY);
         assert!(!production.permits(PROGRESSIVE_EXACT, false), "without the opt-in nothing is certified");
         let opted_in = production.opted_in();
         assert!(opted_in.permits(PROGRESSIVE_EXACT, false));
         assert!(!opted_in.permits(PROGRESSIVE_EXACT, true), "the preview rectangle is its own certificate");
-        assert!(!ProductEvidence::unqualified_on(VP_EXPORTED, Binding::Unbound).opted_in()
-            .permits(PROGRESSIVE_EXACT, false), "an unbound executor offers nothing");
-        assert!(!ProductEvidence::unqualified_on(VP_ACB, exported).opted_in()
-            .permits(PROGRESSIVE_EXACT, false), "the exported window needs the display mode that exports it");
+        assert!(!ProductEvidence::unqualified_on(NO_DISPLAY).opted_in()
+            .permits(PROGRESSIVE_EXACT, false), "a driver with no display offers nothing");
+    }
+
+    /// The capabilities the opt-in certifies are one function of what the executor can call and what
+    /// is already certified: the four a URL carrier needs, where callable, and nothing else, so the
+    /// composition can configure the driver with them before there is a display to report.
+    #[test]
+    fn the_opt_in_certifies_the_url_carrier_where_the_executor_can_call_it_and_nothing_else() {
+        let certified = ProductEvidence::opt_in_certifies(ProductEvidence::CALLABLE,
+            ProductEvidence::UNCERTIFIED);
+        assert_eq!(certified, Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+            pause: true, seek: true, audio_track: true, subtitle_track: false, audio_off: false,
+            subtitle_off: false });
+        assert_eq!(ProductEvidence::unqualified_on(READY).opted_in().certified, certified,
+            "the evidence's own opt-in is the same function");
+        assert_eq!(ProductEvidence::opt_in_certifies(uri_caps(false), ProductEvidence::UNCERTIFIED),
+            ProductEvidence::UNCERTIFIED, "what the executor cannot call is not certified");
     }
 
     const MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
@@ -962,9 +971,8 @@ mod tests {
         let capabilities = Capabilities { progressive_uri: true, hls_uri: true, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
-        ResolvePort::new(ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        ResolvePort::new(ProductEvidence { display: READY,
+            callable: capabilities, certified: capabilities },
             Arc::new(CertifiedPms(case)))
     }
 
@@ -1125,7 +1133,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "h264".to_owned(), dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in,
-            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false, binding: Binding::Unbound,
+            standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false,
             subtitle_source: None, subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
@@ -1137,16 +1145,17 @@ mod tests {
     const PLAYS: StandardDirectPlay = StandardDirectPlay { video: true, dolby_vision: true, audio: true,
         container: true };
 
-    /// The production composition on an ACB set: nothing certified, `ProductQualifier`.
-    fn production_port(binding: Binding) -> ResolvePort {
-        ResolvePort::new(ProductEvidence::unqualified_on(plx_os::tv::sink::VP_ACB, binding),
-            Arc::new(ProductQualifier))
+    /// The production composition over a display the driver reports as `display`: nothing certified,
+    /// a product-shaped qualifier ([`CarrierQualifier`]; the product's own, with the rule of its
+    /// display, is the application's).
+    fn production_port(display: DisplayEvidence) -> ResolvePort {
+        ResolvePort::new(ProductEvidence::unqualified_on(display), Arc::new(CarrierQualifier))
     }
 
     #[test]
     fn only_a_viewer_who_opted_in_gets_a_url_source_from_production() {
         let off = OffFrame::for_test();
-        let port = production_port(Binding::Acb);
+        let port = production_port(READY);
         assert!(matches!(port.qualify(&off, opt_in_request(false)), Verdict::Unknown(UriDecline::NotOptedIn)),
             "off keeps today's answer: nothing is qualified, so the route stays on Feed");
         let Verdict::Known(known) = port.qualify(&off, opt_in_request(true)) else {
@@ -1166,30 +1175,9 @@ mod tests {
     }
 
     #[test]
-    fn exported_uri_leaves_multi_audio_originals_on_standard() {
-        let off = OffFrame::for_test();
-        let port = ResolvePort::new(ProductEvidence::unqualified_on(
-            plx_os::tv::sink::VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }),
-            Arc::new(ProductQualifier));
-        let request = |ordinal, multiple| {
-            let mut request = opt_in_request(true);
-            request.audio_ordinal = Some(ordinal);
-            request.has_multiple_audio_tracks = multiple;
-            request
-        };
-        assert!(matches!(port.qualify(&off, request(0, false)), Verdict::Known(_)));
-        for ordinal in [0, 1] {
-            assert!(matches!(port.qualify(&off, request(ordinal, true)),
-                Verdict::Refused(UriDecline::ManyAudioTracksExported)));
-        }
-        let acb = production_port(Binding::Acb);
-        assert!(matches!(acb.qualify(&off, request(1, true)), Verdict::Known(_)));
-    }
-
-    #[test]
     fn the_opt_in_carries_only_an_original_standard_would_direct_play() {
         let off = OffFrame::for_test();
-        let port = production_port(Binding::Acb);
+        let port = production_port(READY);
         assert!(matches!(port.qualify(&off, opt_in_request(true)), Verdict::Known(_)), "the control");
         for (what, standard) in [
             ("a video the caps do not direct-play",
@@ -1250,8 +1238,8 @@ mod tests {
                 Verdict::Known(KnownSource::url_carrier(&request, url, SOURCE_VERDICT_TTL))
             }
         }
-        let port = ResolvePort::new(ProductEvidence { display_exported: false, binding: Binding::Acb,
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        let port = ResolvePort::new(ProductEvidence { display: READY,
+            callable: capabilities, certified: capabilities },
             Arc::new(Carrier));
         assert!(matches!(port.qualify(&off, request), Verdict::Unknown(UriDecline::CertificateMismatch)));
     }
@@ -1259,7 +1247,7 @@ mod tests {
     #[test]
     fn the_opt_in_still_meets_every_viewer_refusal_and_the_display_path() {
         let off = OffFrame::for_test();
-        let port = production_port(Binding::Acb);
+        let port = production_port(READY);
         let mut preview = opt_in_request(true);
         preview.preview = true;
         assert!(matches!(port.qualify(&off, preview), Verdict::Refused(UriDecline::Preview)), "no preview rectangle");
@@ -1282,8 +1270,30 @@ mod tests {
         unmapped.audio_ordinal = None;
         assert!(matches!(port.qualify(&off, unmapped), Verdict::Unknown(UriDecline::CertificateMismatch)),
             "a selected audio stream without its native index cannot be carried");
-        assert!(matches!(production_port(Binding::Unbound).qualify(&off, opt_in_request(true)),
+        assert!(matches!(production_port(NO_DISPLAY).qualify(&off, opt_in_request(true)),
             Verdict::Unknown(UriDecline::NoDisplayEvidence)), "no display path, no URI source");
+    }
+
+    /// A driver whose evidence certifies the URL carrier for everyone (a driver that is not the
+    /// product's, or a product that earned its certificate) needs no viewer opt-in: the port admits
+    /// what its qualifier knows, whoever asks, and the route names no driver. A driver that reports
+    /// no display path is admitted nothing, certified or not.
+    #[test]
+    fn a_driver_certified_for_everyone_is_admitted_without_the_viewers_opt_in() {
+        struct Anyone;
+        impl OriginalQualifier for Anyone {
+            fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
+                let url = request.source_url.clone();
+                Verdict::Known(KnownSource::url_carrier(&request, url, SOURCE_VERDICT_TTL))
+            }
+        }
+        let off = OffFrame::for_test();
+        let certified = ProductEvidence { display: READY, callable: uri_caps(true), certified: uri_caps(true) };
+        assert!(matches!(ResolvePort::new(certified, Arc::new(Anyone))
+            .qualify(&off, opt_in_request(false)), Verdict::Known(_)), "no opt-in is asked");
+        let without_display = ProductEvidence { display: NO_DISPLAY, ..certified };
+        assert!(matches!(ResolvePort::new(without_display, Arc::new(Anyone))
+            .qualify(&off, opt_in_request(false)), Verdict::Unknown(UriDecline::NoDisplayEvidence)));
     }
 
     #[test]
@@ -1293,9 +1303,8 @@ mod tests {
         let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
-        let evidence = ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false };
+        let evidence = ProductEvidence { display: READY,
+            callable: capabilities, certified: capabilities };
         let request = || OriginalRequest { selection: SourceSelection {
                 server: plx_plex::plex::ServerId::from_raw(1), part_id: 4, audio_sid: 42,
                 subtitle_sid: 0, audio_contract: plx_plex::plex::AudioEnhancements::NONE },
@@ -1303,7 +1312,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
-            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false, binding: Binding::Unbound,
+            standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1920, 1080)),
@@ -1369,7 +1378,7 @@ mod tests {
     #[test]
     fn every_check_of_the_resolve_port_names_its_reason_and_keeps_its_kind() {
         let off = OffFrame::for_test();
-        let port = production_port(Binding::Acb);
+        let port = production_port(READY);
         let p8 = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
             ..plx_data::metadata::Dovi::NONE };
         type Tweak = fn(&mut OriginalRequest);
@@ -1432,24 +1441,21 @@ mod tests {
         let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
-        let evidence = |binding| ProductEvidence { display_exported: true, binding,
-            callable: capabilities, certified: capabilities, preview_rectangle: false };
-        let exported = Binding::Exported { canvas: (1920, 1080) };
-        let certify = |binding, expired, mapped| ResolvePort::new(evidence(binding),
+        let evidence = |display| ProductEvidence { display,
+            callable: capabilities, certified: capabilities };
+        let certify = |display, expired, mapped| ResolvePort::new(evidence(display),
             Arc::new(Certified { dovi: None, subtitle: None, expired, mapped }));
-        assert_eq!(answer(&certify(exported, false, true).qualify(&off, opt_in_request(true))).0, "known");
-        assert_eq!(answer(&certify(exported, true, true).qualify(&off, opt_in_request(true))),
+        assert_eq!(answer(&certify(READY, false, true).qualify(&off, opt_in_request(true))).0, "known");
+        assert_eq!(answer(&certify(READY, true, true).qualify(&off, opt_in_request(true))),
             ("unknown", Some(UriDecline::CertificateMismatch)), "an expired certificate");
-        assert_eq!(answer(&certify(exported, false, false).qualify(&off, opt_in_request(true))),
+        assert_eq!(answer(&certify(READY, false, false).qualify(&off, opt_in_request(true))),
             ("unknown", Some(UriDecline::CertificateMismatch)), "a track the source cannot supply");
         // A certificate that matches the play on a path nothing can show is the display's gap, not
-        // the certificate's: the exported window without a canvas, and an unbound executor.
-        assert_eq!(answer(&certify(Binding::Exported { canvas: (0, 1080) }, false, true)
-            .qualify(&off, opt_in_request(true))), ("unknown", Some(UriDecline::NoDisplayEvidence)));
-        assert_eq!(answer(&certify(Binding::Unbound, false, true).qualify(&off, opt_in_request(true))),
+        // the certificate's: a driver that reports no display path.
+        assert_eq!(answer(&certify(NO_DISPLAY, false, true).qualify(&off, opt_in_request(true))),
             ("unknown", Some(UriDecline::NoDisplayEvidence)));
         // Both wrong: the certificate is judged first.
-        assert_eq!(answer(&certify(Binding::Unbound, true, true).qualify(&off, opt_in_request(true))),
+        assert_eq!(answer(&certify(NO_DISPLAY, true, true).qualify(&off, opt_in_request(true))),
             ("unknown", Some(UriDecline::CertificateMismatch)));
         // A selected embedded subtitle the certificate does not carry has its own reason: after the
         // rest of the certificate, before the display path.
@@ -1460,11 +1466,11 @@ mod tests {
             request.subtitle_source = Some(SourceSubtitle { codec: "srt".to_owned(), embedded: true });
             request
         };
-        assert_eq!(answer(&certify(exported, false, true).qualify(&off, subtitled())),
+        assert_eq!(answer(&certify(READY, false, true).qualify(&off, subtitled())),
             ("unknown", Some(UriDecline::SubtitleNotCarried)));
-        assert_eq!(answer(&certify(exported, true, true).qualify(&off, subtitled())),
+        assert_eq!(answer(&certify(READY, true, true).qualify(&off, subtitled())),
             ("unknown", Some(UriDecline::CertificateMismatch)), "an expired certificate first");
-        assert_eq!(answer(&certify(Binding::Unbound, false, true).qualify(&off, subtitled())),
+        assert_eq!(answer(&certify(NO_DISPLAY, false, true).qualify(&off, subtitled())),
             ("unknown", Some(UriDecline::SubtitleNotCarried)), "the subtitle before the display path");
     }
 
@@ -1477,8 +1483,8 @@ mod tests {
         }
         let off = OffFrame::for_test();
         let through = |say: fn() -> Verdict| {
-            let port = ResolvePort::new(ProductEvidence::unqualified_on(
-                plx_os::tv::sink::VP_ACB, Binding::Acb).opted_in(), Arc::new(Says(say)));
+            let port = ResolvePort::new(ProductEvidence::unqualified_on(READY).opted_in(),
+                Arc::new(Says(say)));
             answer(&port.qualify(&off, opt_in_request(true)))
         };
         assert_eq!(through(|| Verdict::Unknown(UriDecline::NotCertified)),
@@ -1487,17 +1493,15 @@ mod tests {
             ("refused", Some(UriDecline::Relay)));
     }
 
-    /// [`ProductQualifier`]'s own answers, called directly (the port fills the binding in before it
-    /// asks, so a direct call names it).
+    /// The route's test qualifier names why it did not certify, in the order the product's does (the
+    /// product's own answers, with the rule of its display, are tested where it is built).
     #[test]
-    fn the_product_qualifier_names_why_it_did_not_certify() {
+    fn the_carrier_qualifier_names_why_it_did_not_certify() {
         let off = OffFrame::for_test();
-        let exported = Binding::Exported { canvas: (1920, 1080) };
         let ask = |tweak: &dyn Fn(&mut OriginalRequest)| {
             let mut request = opt_in_request(true);
-            request.binding = exported;
             tweak(&mut request);
-            answer(&ProductQualifier.qualify(&off, request))
+            answer(&CarrierQualifier.qualify(&off, request))
         };
         assert_eq!(ask(&|_| {}).0, "known");
         assert_eq!(ask(&|r| r.uri_opt_in = false), ("unknown", Some(UriDecline::NotOptedIn)));
@@ -1507,10 +1511,8 @@ mod tests {
         assert_eq!(ask(&|r| r.standard.audio = false), ("unknown", Some(UriDecline::StandardAudio)));
         assert_eq!(ask(&|r| r.standard.container = false),
             ("unknown", Some(UriDecline::StandardContainer)));
-        assert_eq!(ask(&|r| r.has_multiple_audio_tracks = true),
-            ("refused", Some(UriDecline::ManyAudioTracksExported)));
-        assert_eq!(ask(&|r| { r.has_multiple_audio_tracks = true; r.binding = Binding::Acb }).0, "known",
-            "several tracks are only a problem on the exported window");
+        // The route's qualifier has no rule of a display: several audio tracks are no gap here.
+        assert_eq!(ask(&|r| r.has_multiple_audio_tracks = true).0, "known");
         // Not opted in is named before what Standard would do, and the first gap before the rest.
         assert_eq!(ask(&|r| { r.uri_opt_in = false; r.standard.video = false }),
             ("unknown", Some(UriDecline::NotOptedIn)));

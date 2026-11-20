@@ -620,7 +620,6 @@ impl crate::route::uri_preflight::OriginalQualifier for RecordingOriginal {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn the_original_request_carries_the_selected_audio_streams_container_position() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -630,9 +629,7 @@ fn the_original_request_carries_the_selected_audio_streams_container_position() 
         audio_off: false, subtitle_off: false };
     let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
         std::sync::Arc::new(RecordingOriginal(asked.clone()))));
     let (port, done, server) = versions_pms_with(URI_TWO_AUDIO_OUT_OF_ORDER, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("two-audio", "127.0.0.1", port, "token", "two-audio-client");
@@ -653,7 +650,6 @@ fn the_original_request_carries_the_selected_audio_streams_container_position() 
 #[test]
 #[cfg(feature = "devtriggers")]
 fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -663,9 +659,7 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
         std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
     let (port, done, server) = versions_pms_with(URI_DTS_SELECTED_SUBTITLE, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("remembered-off", "127.0.0.1", port,
@@ -722,7 +716,6 @@ fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn a_fixed_quality_qualifies_a_uri_original_on_its_video_bitrate() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -731,9 +724,7 @@ fn a_fixed_quality_qualifies_a_uri_original_on_its_video_bitrate() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: all, certified: all, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: all, certified: all },
         std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
     let (port, done, server) = versions_pms_with(URI_RUNG_SIZED, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("uri-rung", "127.0.0.1", port, "token", "uri-rung-client");
@@ -776,7 +767,6 @@ impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decision() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -784,9 +774,7 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
     let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
-    let evidence = crate::route::uri_preflight::ProductEvidence { display_exported: true,
-        binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
-        certified: all, preview_rectangle: false };
+    let evidence = crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: all, certified: all };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
         evidence, std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
     let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
@@ -819,7 +807,6 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
 #[test]
 #[cfg(feature = "devtriggers")]
 fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -828,9 +815,7 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
-            certified: all, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: all, certified: all },
         std::sync::Arc::new(QualifiedOriginal { video: "av1", audio: "aac" })));
     let (port, done, server) = versions_pms_with(URI_AV1, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("qualified-av1", "127.0.0.1", port, "token", "qualified-av1-client");
@@ -855,8 +840,8 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn an_unqualified_uri_original_still_uses_the_feed_compatible_version() {
-    use crate::route::uri_preflight::{ProductEvidence, ProductQualifier, ResolvePort};
-    use plx_playback_contract::{uri::Binding, Capabilities};
+    use crate::route::uri_preflight::{CarrierQualifier, ProductEvidence, ResolvePort};
+    use plx_playback_contract::Capabilities;
     let (plan, requests) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
         env.caps = std::sync::Arc::new(full_hd_set());
         env.quality = Quality::Original;
@@ -865,9 +850,9 @@ fn an_unqualified_uri_original_still_uses_the_feed_compatible_version() {
             audio_track: true, subtitle_track: true, audio_off: false, subtitle_off: false,
         };
         env.uri_preflight_port = Some(ResolvePort::new(ProductEvidence {
-            display_exported: true, binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false,
-        }, std::sync::Arc::new(ProductQualifier)));
+            display: plx_playback_contract::uri::DisplayEvidence::ready("test"),
+            callable: capabilities, certified: capabilities,
+        }, std::sync::Arc::new(CarrierQualifier)));
     });
     assert!(plan.uri_original.is_none());
     assert_eq!((plan.part_id, plan.media_index), (3134, 1));
@@ -879,7 +864,6 @@ fn an_unqualified_uri_original_still_uses_the_feed_compatible_version() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -889,9 +873,7 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
         audio_off: false, subtitle_off: false };
     let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
         std::sync::Arc::new(QualifiedPms(observed.clone()))));
     let (port, done, server) = versions_pms_with(URI_DTS, MDE_PMS_OUTPUT);
     let sid = plx_plex::plex::register_for_test("qualified-pms", "127.0.0.1", port,
@@ -921,7 +903,6 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -930,9 +911,7 @@ fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
         std::sync::Arc::new(QualifiedPms(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))))));
     let (port, done, server) = versions_pms_with(URI_DTS_EXTERNAL_SUBTITLE, MDE_PMS_BURNED_EXTERNAL);
     let sid = plx_plex::plex::register_for_test("burned-external", "127.0.0.1", port,
@@ -954,7 +933,6 @@ fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -963,9 +941,7 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
         std::sync::Arc::new(QualifiedPms(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))))));
     let (port, done, server) = versions_pms_with(URI_AV1_EXTERNAL_SUBTITLE, MDE_PMS_BURNED_EXTERNAL);
     let sid = plx_plex::plex::register_for_test("burned-off", "127.0.0.1", port,
@@ -1014,7 +990,6 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     for (master_body, qualifies) in [
         (TWO_VARIANT_MASTER as &[u8], true), (FIXED_MEDIA_PLAYLIST as &[u8], false)
@@ -1027,9 +1002,7 @@ fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
         ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-            crate::route::uri_preflight::ProductEvidence { display_exported: true,
-                binding: Binding::Exported { canvas: (1920, 1080) },
-                callable: capabilities, certified: capabilities, preview_rectangle: false },
+            crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
             std::sync::Arc::new(QualifiedNativeMaster)));
         let (port, done, server) = versions_pms_observed_with_master(URI_DTS,
             MDE_PMS_HLS_OUTPUT, None, Some(master_body));
@@ -1059,7 +1032,6 @@ fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1069,10 +1041,8 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) }, callable,
-            certified: callable, preview_rectangle: false },
-        std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier)));
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable, certified: callable },
+        std::sync::Arc::new(crate::route::uri_preflight::CarrierQualifier)));
     let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("unknown-dts", "127.0.0.1", port, "token", "unknown-dts-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
@@ -1092,7 +1062,6 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
 
 #[cfg(feature = "devtriggers")]
 fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri(backends: plx_playback_contract::BackendSet) {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
     use super::super::backend_policy::{BackendPolicy, OfferId, Qualification};
     use super::super::backend_policy::Selection;
@@ -1107,9 +1076,7 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri(backend
     let qualification_calls = std::sync::Arc::new(AtomicUsize::new(0));
     let pms_calls = std::sync::Arc::new(AtomicUsize::new(0));
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) }, callable: capabilities,
-            certified: capabilities, preview_rectangle: false },
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
         std::sync::Arc::new(CountingQualified {
             original: qualification_calls.clone(), pms: pms_calls.clone(),
         })));
@@ -1221,10 +1188,10 @@ fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
     let _g = fresh_registry(&mut ps);
     ps.install_backends(plx_playback_contract::BackendSet::URI);
     assert!(plx_net::net::global_init());
-    let evidence = crate::route::uri_preflight::ProductEvidence::unqualified(
-        plx_os::tv::sink::VP_EXPORTED);
+    let evidence = crate::route::uri_preflight::ProductEvidence::unqualified_on(
+        plx_playback_contract::uri::DisplayEvidence::unavailable("test"));
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        evidence, std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier)));
+        evidence, std::sync::Arc::new(crate::route::uri_preflight::CarrierQualifier)));
     let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("unqualified-dts", "127.0.0.1", port, "token", "unqualified-client");
     let env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
@@ -1244,7 +1211,6 @@ fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
 #[test]
 #[cfg(feature = "devtriggers")]
 fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
-    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -1254,10 +1220,8 @@ fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        crate::route::uri_preflight::ProductEvidence { display_exported: true,
-            binding: Binding::Exported { canvas: (1920, 1080) },
-            callable: capabilities, certified: capabilities, preview_rectangle: false },
-        std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier)));
+        crate::route::uri_preflight::ProductEvidence { display: plx_playback_contract::uri::DisplayEvidence::ready("test"), callable: capabilities, certified: capabilities },
+        std::sync::Arc::new(crate::route::uri_preflight::CarrierQualifier)));
     let (seen_tx, seen_rx) = std::sync::mpsc::channel();
     let (port, done, server) = versions_pms_observed(URI_DTS, MDE_PMS_OUTPUT, Some(seen_tx));
     let sid = plx_plex::plex::register_for_test("unknown-pms", "127.0.0.1", port,
