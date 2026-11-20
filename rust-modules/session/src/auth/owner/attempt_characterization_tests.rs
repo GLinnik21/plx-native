@@ -718,3 +718,188 @@ fn restored_empty_waiting_and_ready_do_not_invent_work_or_handoff() {
         assert_eq!(owner.subhash(), init.hash());
     }
 }
+
+// ---- a platform that keeps no credential across launches (`StoreMode::MemoryOnly`) ----------------
+//
+// Its writes complete as `CompletionOutcome::Ephemeral`: signed in for this run, which is neither a
+// failure to warn about nor a saved login.
+
+const MEMORY_ACCOUNT: &str = "mem-owner-account-8c41e7d2-token";
+const MEMORY_PMS: &str = "mem-owner-pms-0b93a5f6-token";
+
+/// Drive a fresh sign-in as far as the final commit's admission, returning the epoch and the
+/// plan of the FINAL commit (the one that holds the handoff). `write` performs each commit's
+/// credential write and answers the outcome it reports; every commit is admitted at the next
+/// revision with the purpose the owner gave it.
+fn sign_in_to_the_final_commit(owner: &mut SessionMachine, server: plx_plex::plex::session::ServerRef,
+    mut write: impl FnMut(&CommitPlan) -> CompletionOutcome) -> (u64, CommitReply) {
+    let epoch = waiting(owner);
+    login(owner, 2, LoginProgress::Authorized { epoch, token: MEMORY_ACCOUNT.into() }, false);
+    let e = envelope(owner, 1, 3, true, Observation::Login(LoginProgress::SignedIn {
+        epoch, server, sources: Vec::new(),
+        users: vec![UserTile { uuid: "synthetic-only".into(), ..Default::default() }] }));
+    let fx = step(owner, SessionEvent::Result(e));
+    let [SessionFx::Commit { plan, .. }] = fx.as_slice() else { panic!("the discovery commit: {:?}", safe_effect_diagnostics(&fx)) };
+    let outcome = write(plan);
+    let (before, after) = (plan.expected_disk.clone(), plan.credentials.as_ref().unwrap().identity());
+    let reply = commit_reply(&fx, CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery });
+    step(owner, SessionEvent::Commit(reply));
+    assert!(step(owner, SessionEvent::DiskWrite { before, after, outcome }).is_empty());
+    assert!(step(owner, SessionEvent::Persistence(PersistenceCompletion { req: reply.req, epoch, arrival: 3,
+        revision: 1, purpose: PersistencePurpose::Discovery, outcome })).is_empty());
+    let fx = command(owner, Command::TakeReady);
+    let [SessionFx::Commit { plan, .. }] = fx.as_slice() else { panic!("the final commit: {:?}", safe_effect_diagnostics(&fx)) };
+    let outcome = write(plan);
+    let (before, after) = (plan.expected_disk.clone(), plan.credentials.as_ref().unwrap().identity());
+    let reply = commit_reply(&fx, CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final });
+    assert!(matches!(step(owner, SessionEvent::Commit(reply)).as_slice(), [SessionFx::Retire { req }] if *req == reply.req));
+    assert!(owner.common.held_handoff.is_some(), "the final commit holds the handoff until its write is answered");
+    assert!(step(owner, SessionEvent::DiskWrite { before, after, outcome }).is_empty());
+    (epoch, reply)
+}
+
+#[test]
+fn an_ephemeral_fresh_write_releases_the_handoff_with_no_warning_and_no_saved_claim() {
+    let mut owner = SessionMachine::from_init(captured());
+    let (epoch, reply) = sign_in_to_the_final_commit(&mut owner, local().persisted.server,
+        |_| CompletionOutcome::Ephemeral);
+    assert!(!owner.common.commit_phase.durable && !owner.common.commit_phase.proves_saved_login);
+    let completion = PersistenceCompletion { req: reply.req, epoch, arrival: 0, revision: 2,
+        purpose: PersistencePurpose::Final, outcome: CompletionOutcome::Ephemeral };
+    assert!(step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { revision: 3, ..completion })).is_empty(),
+        "a verdict for another revision is not this write's");
+    assert!(owner.common.held_handoff.is_some());
+    let fx = step(&mut owner, SessionEvent::Persistence(completion));
+    assert!(matches!(fx.as_slice(), [SessionFx::PublishProfile(_), SessionFx::Ready { .. }]),
+        "signed in for this run: the handoff goes on to Home {:?}", safe_effect_diagnostics(&fx));
+    assert!(owner.common.held_handoff.is_none());
+    assert!(owner.common.persistence_warning.is_none(), "no persistence warning");
+    assert!(owner.common.incident.is_none(), "and no save-failed incident");
+    assert!(!owner.common.commit_phase.durable, "nothing durable");
+    assert!(!owner.common.commit_phase.proves_saved_login, "so no saved-login claim");
+    assert!(command(&mut owner, Command::TakeReady).is_empty());
+}
+
+#[test]
+fn an_ephemeral_disk_write_advances_the_identity_fence_like_a_durable_one() {
+    let mut owner = SessionMachine::from_init(captured());
+    let before = owner.common.disk_identity.clone();
+    let after = Identity { account_token: "synthetic-memory".into(), ..before.clone() };
+    assert!(step(&mut owner, SessionEvent::DiskWrite { before: before.clone(), after: after.clone(),
+        outcome: CompletionOutcome::Ephemeral }).is_empty());
+    assert!(owner.common.disk_identity == after, "the next commit expects the disk to read what this one wrote");
+    // A write that did not land anywhere still moves nothing.
+    let failed = CompletionOutcome::Failed(plx_plex::plex::session::async_persistence::Failure::Persistence(
+        PersistOutcome::WriteFailed));
+    let next = Identity { account_token: "synthetic-next".into(), ..after.clone() };
+    assert!(step(&mut owner, SessionEvent::DiskWrite { before: after.clone(), after: next, outcome: failed }).is_empty());
+    assert!(owner.common.disk_identity == after);
+}
+
+/// A canonical root and a data directory of this test's own, taken back on drop.
+struct MemoryOnlyData(std::path::PathBuf);
+impl MemoryOnlyData {
+    fn new(dir: &std::path::Path) -> Self {
+        let canonical = dir.join("canonical");
+        std::fs::create_dir_all(&canonical).unwrap();
+        plx_base::paths::redirect_persistent_state_root_for_test(Some(canonical));
+        MemoryOnlyData(dir.to_path_buf())
+    }
+    /// Every regular file under the data directory that holds a byte run of `needle`.
+    fn files_holding(&self, needle: &str) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![self.0.clone()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() { pending.push(path); continue; }
+                let bytes = std::fs::read(&path).unwrap_or_default();
+                if bytes.windows(needle.len()).any(|run| run == needle.as_bytes()) { found.push(path); }
+            }
+        }
+        found
+    }
+}
+impl Drop for MemoryOnlyData {
+    fn drop(&mut self) { plx_base::paths::redirect_persistent_state_root_for_test(None); }
+}
+
+/// The owner against the REAL session layer on a memory-only platform: the mock sign-in goes
+/// through to Home, every commit's write runs `replace_after_reauthentication_guarded_with_outcome`
+/// behind the same disk-identity fence the application adapter applies, and a scan of the whole
+/// writable data directory finds no byte of the mock tokens. A sign-out and the next sign-in's
+/// client id then agree with what the layer reads back over the revoked cell.
+#[test]
+fn a_memory_only_sign_in_reaches_home_through_the_real_session_layer_with_no_token_on_disk() {
+    use plx_plex::plex::session as layer;
+    let _serial = plx_base::testlock::serial();
+    let _mode = plx_os::tv::secure::set_mode_for_test(plx_os::tv::secure::StoreMode::MemoryOnly);
+    // The scratch session's own client id is what the owner is built from, as at boot.
+    let scratch = layer::TempSession::new("memory-only-owner");
+    let dir = scratch.path().parent().unwrap().to_path_buf();
+    let data = MemoryOnlyData::new(&dir);
+    // The install id the owner helpers above expect, held by the layer as a boot would hold it.
+    assert!(layer::update(|cur| Some(layer::Session { client_id: "synthetic-client".into(), ..cur.clone() })));
+    let booted = layer::load();
+    assert_eq!(booted.client_id, "synthetic-client");
+    let mut owner = SessionMachine::from_init(SessionInit::captured(booted.clone()));
+    assert_eq!(owner.common.disk_identity.client_id, booted.client_id);
+
+    let mut server = local().persisted.server;
+    server.token = MEMORY_PMS.into();
+    let (epoch, reply) = sign_in_to_the_final_commit(&mut owner, server, |plan| {
+        let patch = plan.credentials.as_ref().expect("the commit carries credentials");
+        let write = layer::replace_after_reauthentication_guarded_with_outcome(
+            |disk| plan.expected_disk.matches(disk), |disk| patch.merge_into(disk), || true,
+        ).expect("the disk identity fence held: the owner's identity follows what memory-only writes")
+            .expect("a sign-in that carries a token writes");
+        assert!(write.commit.is_none(), "no canonical store was consulted");
+        write.classify()
+    });
+    let fx = step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { req: reply.req, epoch,
+        arrival: 0, revision: 2, purpose: PersistencePurpose::Final, outcome: CompletionOutcome::Ephemeral }));
+    assert!(matches!(fx.as_slice(), [SessionFx::PublishProfile(_), SessionFx::Ready { .. }]),
+        "{:?}", safe_effect_diagnostics(&fx));
+    assert_eq!(owner.read().0.phase, Phase::Ready);
+    assert!(owner.common.persistence_warning.is_none() && !owner.common.commit_phase.proves_saved_login);
+    assert_eq!(layer::peek().account_token, MEMORY_ACCOUNT, "this run is signed in");
+
+    for token in [MEMORY_ACCOUNT, MEMORY_PMS] {
+        assert_eq!(data.files_holding(token), Vec::<std::path::PathBuf>::new(), "a credential reached the data directory");
+    }
+    assert!(!scratch.path().exists(), "no credential file was created at all");
+
+    // Sign-out: the erase runs against the same layer, the owner learns the install id from the
+    // read the adapter runs next, and its disk identity matches what that read answers.
+    let fx = command(&mut owner, Command::SignOut);
+    let [.., SessionFx::Erase { epoch: erase_epoch, all_local: false, .. }] = fx.as_slice() else {
+        panic!("sign-out erases: {:?}", safe_effect_diagnostics(&fx))
+    };
+    let erase_epoch = *erase_epoch;
+    let erasure = layer::clear_for_erase(false, None);
+    assert_eq!(erasure.outcome, layer::ClearOutcome::Durable { legacy_swept: true });
+    assert!(layer::peek().account_token.is_empty());
+    let fx = step(&mut owner, SessionEvent::Erased { epoch: erase_epoch, leftovers: 0 });
+    let [.., SessionFx::Capture { req, epoch, request: SessionReadRequest::LoginClientId }] = fx.as_slice() else {
+        panic!("the next sign-in asks for the install id: {:?}", safe_effect_diagnostics(&fx))
+    };
+    let (req, epoch) = (*req, *epoch);
+    let id = layer::load_login_client_id();
+    assert_eq!(id, booted.client_id, "the install id outlives the sign-out");
+    let fx = step(&mut owner, SessionEvent::Read(SessionReadReply {
+        addr: Addr { to: MachineId::Session, req: RequestId(req) }, epoch,
+        value: SessionReadValue::LoginClientId(id) }));
+    assert!(fx.iter().any(|effect| matches!(effect, SessionFx::Work { input: SessionWork::Login { client_id }, .. }
+        if *client_id == booted.client_id)), "{:?}", safe_effect_diagnostics(&fx));
+    let expected = owner.common.disk_identity.clone();
+    assert_eq!(expected.client_id, booted.client_id, "the owner's fence carries the id the layer kept");
+    let again = layer::replace_after_reauthentication_guarded_with_outcome(
+        |disk| expected.matches(disk),
+        |disk| layer::Session { account_token: MEMORY_ACCOUNT.into(), ..disk.clone() },
+        || true,
+    );
+    assert!(matches!(again, Ok(Some(_))), "the next sign-in is not fenced out by a stale identity");
+    for token in [MEMORY_ACCOUNT, MEMORY_PMS] {
+        assert_eq!(data.files_holding(token), Vec::<std::path::PathBuf>::new(), "a credential reached the data directory");
+    }
+}

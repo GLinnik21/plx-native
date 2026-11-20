@@ -3457,8 +3457,10 @@ let (req,): (u32,) = (reply.req,);
 let (before, after, outcome,): (&Identity, &Identity, plx_plex::plex::session::async_persistence::CompletionOutcome,) = (before, after, *outcome,);
 
         use plx_plex::plex::session::async_persistence::{CompletionOutcome, Operation};
+        // A write this process holds in memory by design is the record there is, for the fence: the
+        // next commit expects the disk to read what it wrote, exactly as after a durable one.
         if self.common.disk_identity != *before || before == after
-            || !matches!(outcome, CompletionOutcome::Durable(Operation::Write { .. })) { break 'observe_disk_write false; }
+            || !matches!(outcome, CompletionOutcome::Durable(Operation::Write { .. }) | CompletionOutcome::Ephemeral) { break 'observe_disk_write false; }
         self.common.disk_identity = after.clone();
         true
 
@@ -3476,6 +3478,10 @@ let (completion,): (plx_plex::plex::session::async_persistence::PersistenceCompl
         // operation's verdict either.
         if admitted.purpose.is_some_and(|purpose| purpose != completion.purpose) { break 'apply_persistence_completion false; }
         let durable = matches!(completion.outcome, CompletionOutcome::Durable(_));
+        // A platform with no credential store keeps the session in memory by design: signed in for
+        // this run, which is not a failure to warn about and not a saved login either. It resolves
+        // the held handoff like a durable write, and `durable`/`proves_saved_login` stay false.
+        let resolved = durable || matches!(completion.outcome, CompletionOutcome::Ephemeral);
         self.common.admitted_persistence = None;
         let prior = self.common.unconfirmed_fresh_prior.take();
         if let (Some(prior), CompletionOutcome::Failed(_)) = (prior, &completion.outcome) {
@@ -3485,7 +3491,7 @@ let (completion,): (plx_plex::plex::session::async_persistence::PersistenceCompl
         self.common.commit_phase.proves_saved_login =
             durable && completion.purpose.proves_saved_login();
         let correlation_key = PersistenceWarningKey { epoch: completion.epoch, req: completion.req };
-        if durable {
+        if resolved {
             // 0.6.6 parity: a later FRESH write landing durably supersedes any warning still
             // showing about an earlier fresh attempt — the failure it was reporting on no longer
             // describes the session's current state, so holding it would strand an acknowledgement

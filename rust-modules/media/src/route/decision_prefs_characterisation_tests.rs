@@ -734,6 +734,37 @@ fn a_refused_direct_play_write_does_not_republish_auto() {
 }
 
 // =====================================================================================
+// 11b. A platform that keeps nothing across launches (`StoreMode::MemoryOnly`)
+// =====================================================================================
+
+/// **A Confirm pick under `MemoryOnly` is still a pick.** The write answers `Ephemeral` rather than
+/// `Durable`, which the door counts as taken: the cell moves, the profile's own record in the
+/// process-local session holds the value, the signed-in account survives the edit, and nothing is
+/// written to the data directory (`secure::StoreMode`, `plex/src/plex/CLAUDE.md`).
+#[test]
+fn a_memory_only_confirm_pick_moves_the_cell_and_keeps_the_signed_in_session() {
+    use plx_os::tv::secure::{set_mode_for_test, StoreMode};
+    let _g = plx_base::testlock::serial();
+    let _mode = set_mode_for_test(StoreMode::MemoryOnly);
+    let session = session::TempSession::new("prefs-char-memory-only");
+    sign_in(&session);
+    let _restore = Restore::take();
+    defaults();
+
+    let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_direct_play_mode(DirectPlayMode::Forced));
+    assert!(saved, "an ephemeral write is a pick that took");
+    assert_eq!(direct_play_mode(), DirectPlayMode::Forced);
+    assert_eq!(picked::<DirectPlayModePref>(), Some(DirectPlayMode::Forced), "the process-local record holds it");
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(session::peek().account_token, TOKEN, "the edit does not cost the session");
+    assert!(set_skip_interval(SkipInterval::Seconds30), "and a second pick lands the same way");
+    assert_eq!(skip_interval(), SkipInterval::Seconds30);
+    assert_eq!(picked::<SkipIntervalPref>(), Some(SkipInterval::Seconds30));
+    assert_eq!(session::peek().account_token, TOKEN);
+    assert!(!session.path().exists(), "no credential file was written");
+}
+
+// =====================================================================================
 // 12. Indices and seeds
 // =====================================================================================
 

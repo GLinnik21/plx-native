@@ -24,6 +24,11 @@ const NOT_LOCKED: u8 = 0;
 pub enum PersistOutcome {
     PersistedPlaintext,
     PersistedSealed,
+    /// A [`plx_os::tv::secure::StoreMode::MemoryOnly`] write: the process-local session holds the
+    /// edit and nothing credential-bearing was written. `persisted()` is true because that cell is
+    /// the authority there, so a caller asking "did the edit take" reads the same answer as ever;
+    /// only [`LiveWrite::classify`] says it did not reach a store, as `CompletionOutcome::Ephemeral`.
+    Memory,
     WriteFailed,
 }
 impl PersistOutcome {
@@ -111,6 +116,11 @@ pub enum Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionOutcome {
     Durable(Operation),
+    /// The edit lives in this process alone, by design: the platform keeps no credential across
+    /// launches ([`plx_os::tv::secure::StoreMode::MemoryOnly`]). It is neither a failure to warn
+    /// about nor proof that a login was saved: a consumer that treats it as `Durable` claims a
+    /// saved login, one that treats it as a failure raises a persistence warning on every write.
+    Ephemeral,
     Uncertain {
         stage: CommitStage,
         errno: i32,
@@ -232,6 +242,8 @@ impl Receipt {
 pub enum LatestStatus {
     Pending,
     Durable,
+    /// Held in this process only ([`CompletionOutcome::Ephemeral`]).
+    Ephemeral,
     Uncertain { stage: CommitStage, errno: i32, helper: Option<HelperEvidence> },
     Failed(Failure),
     ProtectionUncertain(ProtectionFailure),
@@ -367,6 +379,8 @@ enum CommitDetail {
 
 #[derive(Clone, Copy)]
 enum DiskOutcome {
+    /// A [`LiveWrite::memory`] write: the process-local session took it and no store was touched.
+    Memory,
     ProtectionFailed(ProtectionFailure),
     Write {
         outcome: PersistOutcome,
@@ -383,6 +397,7 @@ enum DiskOutcome {
 impl DiskOutcome {
     fn classify(self) -> CompletionOutcome {
         match self {
+            Self::Memory => CompletionOutcome::Ephemeral,
             Self::ProtectionFailed(evidence) => {
                 if evidence.preservation == AuthPreservation::Uncertain {
                     CompletionOutcome::ProtectionUncertain(evidence)
@@ -468,6 +483,9 @@ pub struct LiveWrite {
     pub commit: Option<CanonicalCommit>,
     helper_failure: Option<plx_os::storage::wire::failure::HelperFailure>,
     candidate_errnos: [Option<i32>; 8],
+    /// `Some` only for a [`StoreMode::MemoryOnly`](plx_os::tv::secure::StoreMode) write, holding
+    /// whether the install's own choices reached their file.
+    memory: Option<bool>,
 }
 
 impl LiveWrite {
@@ -476,7 +494,7 @@ impl LiveWrite {
     pub fn legacy(sealed: Option<bool>) -> Self {
         Self {
             outcome: Self::outcome_of(sealed),
-            commit: None, helper_failure: None, candidate_errnos: [None; 8],
+            commit: None, helper_failure: None, candidate_errnos: [None; 8], memory: None,
         }
     }
 
@@ -486,7 +504,26 @@ impl LiveWrite {
             outcome: Self::outcome_of(sealed),
             commit: Some(commit), helper_failure: None,
             candidate_errnos: super::candidate_errnos(),
+            memory: None,
         }
+    }
+
+    /// The [`StoreMode::MemoryOnly`](plx_os::tv::secure::StoreMode) path: the process-local session
+    /// took the write and no credential store, canonical or legacy, was touched. `install_kept` is
+    /// whether the install's own choices (client id, language, resolution) reached their file,
+    /// which is the only thing a caller promising "next launch" can ask of it.
+    pub fn memory(install_kept: bool) -> Self {
+        Self {
+            outcome: PersistOutcome::Memory,
+            commit: None, helper_failure: None, candidate_errnos: [None; 8],
+            memory: Some(install_kept),
+        }
+    }
+
+    /// Whether the install's own choices written by this [`memory`](Self::memory) write reached
+    /// their file. False for every other write.
+    pub fn install_choices_kept(&self) -> bool {
+        self.memory == Some(true)
     }
 
     pub fn with_helper_failure(mut self, failure: Option<plx_os::storage::wire::failure::HelperFailure>) -> Self {
@@ -522,6 +559,9 @@ impl LiveWrite {
     }
 
     fn disk_outcome(&self) -> DiskOutcome {
+        if self.memory.is_some() {
+            return DiskOutcome::Memory;
+        }
         match &self.commit {
             Some(CanonicalCommit::ProtectionFailed(evidence)) => {
                 DiskOutcome::ProtectionFailed(*evidence)
@@ -926,11 +966,13 @@ impl CompletionGuard {
                 self.revision
             )),
             CompletionOutcome::Durable(_)
+            | CompletionOutcome::Ephemeral
             | CompletionOutcome::Superseded
             | CompletionOutcome::ProtectionUncertain(_) => {}
         }
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = match outcome {
             CompletionOutcome::Durable(_) => LatestStatus::Durable,
+            CompletionOutcome::Ephemeral => LatestStatus::Ephemeral,
             CompletionOutcome::Uncertain { stage, errno, helper } => {
                 LatestStatus::Uncertain { stage, errno, helper }
             }

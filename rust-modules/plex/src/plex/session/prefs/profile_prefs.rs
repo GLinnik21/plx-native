@@ -308,8 +308,9 @@ impl ProfileWrite {
 /// The skip compares the profile's OWN value with `Some(v)`, so a first pick equal to the fallback
 /// still writes (own `None` differs), the way an explicit quality pick over an absent key always
 /// has: a legacy absent quality must not be reinterpreted by a later readiness change. `true` is a
-/// `Durable` write, or no write at all because the profile already held the value (`read &&
-/// unchanged`). `false` is a refused or failed write, an unreadable record, a pick whose tenure or
+/// `Durable` write, an `Ephemeral` one (a platform that keeps nothing across launches: the
+/// process-local record took the edit), or no write at all because the profile already held the
+/// value (`read && unchanged`). `false` is a refused or failed write, an unreadable record, a pick whose tenure or
 /// credentials moved, and the revocation guard of
 /// [`update_guarded_with_outcome`](super::super::update_guarded_with_outcome).
 pub fn persist_profile_pref<S: ProfileSetting>(w: &ProfileWrite, v: S::Value) -> bool {
@@ -342,7 +343,10 @@ fn persist_profile_with(w: &ProfileWrite, put: impl FnOnce(&mut Vec<ProfilePrefs
         || crate::plex::session::tenure() == w.tenure,
     );
     match write {
-        Some(write) => matches!(write.classify(), crate::plex::session::async_persistence::CompletionOutcome::Durable(_)),
+        // A write held in memory by design (a platform with no credential store) took the edit.
+        Some(write) => matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)
+            | crate::plex::session::async_persistence::CompletionOutcome::Ephemeral),
         None => read && unchanged,
     }
 }
