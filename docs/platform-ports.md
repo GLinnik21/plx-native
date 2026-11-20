@@ -998,26 +998,39 @@ Ecore names to `remote_token_key` pairs".
 ### 6. Media, as four things
 
 - a. Composition and the two boot phases (review M5, C3; critic F7). `Platform.media` is `MediaBoot { early_init:
-  fn(&MainThread), compose: fn(&mut PlayerAdapter, &PlaybackSession, controlled: bool) -> Composition }`, with
-  `Composition { resolver: Option<ResolvePort> }`:
+  fn(&MainThread), compose: fn(&mut PlayerAdapter, controlled: bool) -> Composition }`, with
+  `Composition { resolver: Option<ResolvePort> }` (W6b landed this shape; the `&PlaybackSession` parameter this
+  paragraph first named is dropped, see the deviation below):
   - `early_init` runs at today's `acb_init` site (`app/boot.rs:2043`, inside `if !controlled`, before
     `ffi::boot()`, F32). webOS fills it with `acb_init`, the others with a no-op.
   - `compose` runs where `compose_backends` runs (`:2323`). webOS fills it with today's function
     (`backends.rs:64,141-164`) minus both publications; the desktop installs HostSink Feed; Tizen installs
     nothing (W9), then its URI driver (W10). It returns the resolver of a URI product only when the physical
     install succeeded (today's `install_uri_product_with_ports`, `:418-421`); `None` on a refused install, a
-    controlled boot or no URI driver. It reads the session (`&PlaybackSession`: a driver may need a snapshot) and
-    publishes nothing.
+    controlled boot or no URI driver. It publishes nothing. Deviation, W6b: it takes no `&PlaybackSession`. The
+    session was read by nothing in the composition (the only session use was the resolver publication that moved
+    out), so the parameter would have been dead; W10 adds a read-only session parameter if a Tizen driver needs
+    one.
   - After `compose` returns, the APP publishes both facts in one function, once, always: the resolver
     (`install_uri_preflight_port`) if present, then `install_backends(adapter.composed_backends())`,
-    `BackendSet::NONE` included (`backends.rs:163` and `:421` moved app-side, F43). The session starts at `FEED`
+    `BackendSet::NONE` included (`backends.rs:163` and `:421` moved app-side, F43; landed in W6b as
+    `app::platform::publish_composition`, which also logs the one `compose: backends=<set> resolver=<yes|no>`
+    line). The session starts at `FEED`
     (F31), so a zero-driver platform that forgot the call would offer Feed, and a set that advertised URI without
     its resolver would reach the planner as `NoPort`. No platform keeps adapter and session in step.
   - The Cargo feature `play-uri` (`rust-modules/Cargo.toml:81`) keeps meaning "the webOS ACB URI driver" and is
-    webOS-only. `PLAYBACK_BACKENDS` maps per platform (Tizen: its own `uri` feature; `play-uri` never). The 37
-    `feature = "play-uri"` sites in `rust-modules/src` are sorted in W6b: composition and `acb_init` go to the
-    webOS platform; `playback.rs`, `run.rs` and `dev.rs` read `adapter.composed_backends()` at run time, or stay
-    webOS-platform code if they name ACB.
+    webOS-only. `PLAYBACK_BACKENDS` maps per platform (Tizen: its own `uri` feature; `play-uri` never). The
+    `feature = "play-uri"` sites in `rust-modules/src` (37 when this was written, 51 at W6b: #1478 added 14 to
+    `backends.rs`) are sorted in W6b: the 10 in `playback.rs` and `run.rs` read the installed drivers at run
+    time (the attempt's backend, the adapter's queues, the resolver's offer) and lost their gate; every site that
+    remains names ACB or the URI product and keeps it (`git grep -n 'feature = "play-uri"' -- rust-modules/src`
+    lists them: `backends.rs`, `dev.rs`, `lib.rs`'s ARM guard and two test files).
+    Composition is a SEAM until W11a, not a move: `port.rs` fills `Platform.media` with
+    `backends::acb_init` and `backends::compose_native`, and the bodies stay in `app/adapters/backends.rs`. They
+    cannot go to `port` yet, because `dev/uri_product.rs`, `dev/uri_exported.rs`, `run_uri_boot_tests.rs` and
+    `backends.rs`'s own tests name `UriProduct`, `UriDriverSettings` and `install_uri_product_with_ports`, and the
+    layer fence forbids anything outside the webOS platform naming `port`. W11a moves the file whole, with its
+    callers.
 - b. Evidence is the driver's, in three separate decisions (review B3, C5; critic M1, F12).
   - Display readiness: `UriDriver::display() -> DisplayEvidence { readiness: Ready | NotReady(DisplayUnavailable),
     preview_rectangle, tag }`, beside the capabilities and certification its offers carry. `Binding` leaves the
@@ -1588,6 +1601,13 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   shows `acb_init` at the same point.
 - Risk: `acb_init`'s order relative to `ffi::boot()` and the first frame; moving it into `compose` would change
   its timing (review M5).
+- As landed: the seam, not the move (Target shape 6a, "Composition is a SEAM until W11a"). `port.rs` fills
+  `Platform.media` with `backends::acb_init` and `backends::compose_native`; the bodies stay in
+  `app/adapters/backends.rs` until W11a, because dev and the tests name `UriProduct` and its siblings and the fence
+  forbids them naming `port`. `early_init` is called at the old `acb_init` line and `compose` at the old
+  `compose_backends` line, so neither phase moved. `dev.rs`, `lib.rs` and the `sink`
+  rule are unchanged (`backends.rs` stays an allowed path). The desktop composes the Feed over the host sink and no
+  URI driver; its `early_init` is a no-op.
 
 ### W6c (N). A URI-only and a two-driver composition play an ordinary title (host tests, before W10)
 - Goal (review B3, M8, C5; critic M1): through the real planner, with `FakeUriDriver` (`test_support.rs:143`) carrying

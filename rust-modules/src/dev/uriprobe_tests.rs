@@ -924,7 +924,7 @@ mod hostsim {
                 plx_media::route::CandidatePurpose::NewCandidate),
                 "the prepared fixture source must qualify its stable Feed recipe");
             let mut pa = crate::app::adapters::backends::test_adapter();
-            // The composition installs the probe at boot (`compose_backends`); the fork is a boot.
+            // The composition installs the probe at boot (`backends::compose_with`); the fork is a boot.
             super::super::install(&mut pa);
             Fork { ps, pa, pms, _host: host }
         }

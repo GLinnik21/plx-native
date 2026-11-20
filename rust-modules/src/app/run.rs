@@ -2287,7 +2287,6 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);
         // A playback the server ended is retired whichever backend plays it; the Feed's `pump` opens
         // with the same door.
-        #[cfg(feature = "play-uri")]
         if foreground {
             plx_media::player::retire_if_server_stopped(&mut app.player.session, &mut app.adapters.player);
         }
@@ -2315,10 +2314,8 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Engine and is polled here on every frame as well.
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_poll_session_at(&mut app.player.session, backend_at);
-        #[cfg(feature = "play-uri")]
         super::playback::drain_uri_track_fallbacks(&mut app.player.session,
             &mut app.adapters.player, app.runtime.metadata_mut());
-        #[cfg(feature = "play-uri")]
         if let Some(recovery) = app.adapters.player.take_released_uri_recovery() {
             // The driver has proved this exact URI owner Released and the adapter has retired
             // its reporter. Re-resolve the same source episode before generic report::tick can
@@ -2956,7 +2953,6 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
                     // The resolved URI locator is an owned IO result. Install it against the
                     // route ticket before the common start door chooses a physical backend.
-                    #[cfg(feature = "play-uri")]
                     if let Some(offer) = r.uri_offer {
                         let offer_id = offer.offer_id();
                         if app.adapters.player.offer_qualified_uri(&mut app.player.session, offer).is_err() {
