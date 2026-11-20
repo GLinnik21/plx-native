@@ -522,7 +522,7 @@ fn a_watchlist_read_waits_for_the_network() {
 
 use super::notify::NotifyLibrary;
 use super::notify_map::{LIBRARY_QUIET_FRAMES, LIBRARY_SPACING_FRAMES};
-use super::watchlist::tests::{scripted_for_test, Script};
+use super::watchlist::tests::{scripted_for_test, scripted_with_shows_for_test, Script};
 use crate::watchlist::model::TileState;
 use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
 
@@ -968,6 +968,51 @@ fn a_feed_that_never_goes_quiet_still_refreshes_about_once_a_minute() {
     for pair in released_at.windows(2) {
         assert!(pair[1] - pair[0] >= LIBRARY_LONGEST_WAIT_FRAMES, "after a refresh the next entry starts a new wait: {released_at:?}");
     }
+}
+
+/// The store re-matches one thing at a time, so a server whose movies and shows both changed has one
+/// re-match refused at the pump its wait ends. That one stays queued and its wait is over: it starts
+/// when the one out finishes, not after the new wait the feed's next entry began a second later
+/// (#1458). Held again each time, a feed that never goes quiet re-matched each kind about every two
+/// minutes, not once a minute.
+#[test]
+fn a_re_match_refused_when_the_wait_ends_starts_when_the_one_out_finishes_not_a_minute_later() {
+    let _g = plx_base::testlock::serial();
+    let sid = ServerId::from_raw(0);
+    let (watchlist, script) = scripted_with_shows_for_test(sid, 3, 2, &[(1, "11")]);
+    let mut stores = Stores::default();
+    stores.watchlist = watchlist;
+    script.forget_asked();
+    // A movie and a show finish every second, for as long as the test runs.
+    let entry = library(sid, vec![created("20"), change(LibraryKind::Show, LibraryState::Created, "21")]);
+    let none = NotifyOut::default();
+    let mut pumps = 0;
+    let mut step = |stores: &mut Stores| {
+        pumps += 1;
+        map(stores, if (pumps - 1) % FRAMES_PER_S == 0 { &entry } else { &none }, &[]);
+    };
+    for _ in 0..LIBRARY_LONGEST_WAIT_FRAMES {
+        step(&mut stores);
+    }
+    assert!(script.asked().is_empty(), "the oldest entry has not waited a minute");
+    step(&mut stores);
+    let out = script.asked();
+    assert_eq!(out.len(), 1, "one kind's re-match starts the pump the wait ends: {out:?}");
+    assert!(out[0].contains(&Script::guid(2)), "the movies, which were owed first");
+    // The re-match takes longer than a second (a remote link): the next entry arrives while it is out.
+    for _ in 0..FRAMES_PER_S {
+        step(&mut stores);
+    }
+    assert_eq!(script.asked().len(), 1, "the shows wait for the re-match that is out");
+    stores.watchlist.pump();
+    let mut waited = 0;
+    while script.asked().len() < 2 && waited < LIBRARY_LONGEST_WAIT_FRAMES {
+        step(&mut stores);
+        waited += 1;
+    }
+    assert!(waited <= FRAMES_PER_S, "the shows start {waited} pumps after the re-match ahead of them finished");
+    let asked = script.asked();
+    assert!(asked[1].contains(&Script::show_guid(4)), "and they ask about the shows: {asked:?}");
 }
 
 /// The wait belongs to the library entries: a `stopped` session's refetch and invalidate are spent

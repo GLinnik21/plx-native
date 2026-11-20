@@ -1369,6 +1369,10 @@ pub(super) mod tests {
         format!("plex://movie/{}", id(n))
     }
 
+    fn show_guid(n: u8) -> String {
+        format!("plex://show/{}", id(n))
+    }
+
     fn item(n: u8, title: &str) -> WatchItem {
         WatchItem {
             hex: id(n),
@@ -1603,7 +1607,14 @@ pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> Watchlis
     /// A scripted world a test outside this file drives: the server `sid`, `titles` movies on the list
     /// (numbered from 1) and the `(title number, ratingKey)` pairs `sid` holds, with the list read.
     pub(in crate::stores) fn scripted_for_test(sid: ServerId, titles: u8, held: &[(u8, &str)]) -> (WatchlistStore, Script) {
-        let mock = Mock::new((1..=titles).map(|n| item(n, "T")).collect());
+        scripted_with_shows_for_test(sid, titles, 0, held)
+    }
+
+    /// [`scripted_for_test`] with `shows` shows listed after the `titles` movies (numbered on from
+    /// them; [`Script::show_guid`] names one), so a server owes the list a re-match of both kinds.
+    pub(in crate::stores) fn scripted_with_shows_for_test(sid: ServerId, titles: u8, shows: u8, held: &[(u8, &str)]) -> (WatchlistStore, Script) {
+        let show = |n: u8| WatchItem { guid: show_guid(n), kind: Some(WatchKind::Show), ..item(n, "S") };
+        let mock = Mock::new((1..=titles).map(|n| item(n, "T")).chain((titles + 1..=titles + shows).map(show)).collect());
         *mock.roster.lock().unwrap() = vec![sid];
         *mock.up.lock().unwrap() = vec![sid];
         for (n, rk) in held {
@@ -1626,6 +1637,9 @@ pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> Watchlis
         }
         pub(in crate::stores) fn guid(n: u8) -> String {
             guid(n)
+        }
+        pub(in crate::stores) fn show_guid(n: u8) -> String {
+            show_guid(n)
         }
         /// The guids of every guid lookup since the list was read, per request.
         pub(in crate::stores) fn asked(&self) -> Vec<Vec<String>> {

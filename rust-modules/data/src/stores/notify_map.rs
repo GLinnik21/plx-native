@@ -187,6 +187,14 @@ struct LibraryOwed {
     /// Whether every title of the kind is asked again, because the exact change was not followed, and
     /// whether that waits for the server's quiet.
     sweep: Sweep,
+    /// The server's wait that this owe was held for has ended ([`NotifyMap::library_wait_over`], from
+    /// `release_settled_library`, and nowhere else). The owe then needs no later wait: a re-match the
+    /// store could not start that frame (another re-match or a list read is out) stays queued and is
+    /// made as soon as it can, not held again behind the wait the feed's next entry starts, which a
+    /// feed that never goes quiet would stretch to a minute a time. An entry that merges into an owe
+    /// already marked rides the re-match that is already due: what a re-match asks is worked out
+    /// when it starts, so it covers that entry too.
+    wait_over: bool,
 }
 
 impl LibraryOwed {
@@ -321,6 +329,15 @@ impl NotifyMap {
     /// Is `sid` still waiting for its feed to go quiet?
     fn library_settling(&self, sid: ServerId) -> bool {
         self.settling.iter().any(|(s, _)| *s == sid)
+    }
+
+    /// `sid`'s wait ended: no re-match it has queued is held for a later wait any more.
+    fn library_wait_over(&mut self, sid: ServerId) {
+        for ((s, _), owe) in &mut self.library {
+            if *s == sid {
+                owe.wait_over = true;
+            }
+        }
     }
 
     /// End and return the waits that are over now; the rest go on.
@@ -545,7 +562,9 @@ impl Stores {
             // A feed gap's sweep asks after every title of the kind, so it covers every entry that has
             // arrived; an entry still to come makes a new owe, which waits for its own quiet. It is not
             // held. A delete that could not be followed sweeps too, but it is one of those entries.
-            let waits = owe.sweep != Sweep::Now && self.notify_map.library_settling(sid);
+            // An owe whose own wait has ended (and could not be spent that frame) is not held for the
+            // wait the feed's next entry started since.
+            let waits = owe.sweep != Sweep::Now && !owe.wait_over && self.notify_map.library_settling(sid);
             if !self.watchlist.is_ready() || waits || !self.notify_map.library_due(sid, kind) {
                 kept.push(((sid, kind), owe));
                 continue;
@@ -582,6 +601,7 @@ impl Stores {
                 wait.entries,
                 self.notify_map.frame.saturating_sub(wait.first) / FRAMES_PER_S
             ));
+            self.notify_map.library_wait_over(sid);
             let owed = &mut self.notify_map.owed;
             owed.refetch(sid);
             owed.invalidate(sid);
