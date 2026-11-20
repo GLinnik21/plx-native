@@ -212,7 +212,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         let metric_request = rig.app.player.session.metric_request().expect("accepted URI request");
@@ -278,7 +278,7 @@ mod uri_boot_tests {
             .set_link(plx_plex::plex::probe::Location::Local);
         let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
         let display: &'static Display = Box::leak(Box::new(Display));
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session,
             composed_product(true, display), bus, display));
         rig.request();
@@ -315,7 +315,7 @@ mod uri_boot_tests {
             .set_link(plx_plex::plex::probe::Location::Local);
         let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
         let display: &'static Display = Box::leak(Box::new(Display));
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session,
             composed_product(false, display), bus, display));
         rig.request();
@@ -343,7 +343,7 @@ mod uri_boot_tests {
         let display: &'static Display = Box::leak(Box::new(Display));
         let product = UriProduct { binding: Binding::Unbound, callable: ProductEvidence::CALLABLE,
             certified: ProductEvidence::UNCERTIFIED, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -380,7 +380,7 @@ mod uri_boot_tests {
             subtitle_track: false, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -435,7 +435,7 @@ mod uri_boot_tests {
             subtitle_track: false, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         assert!(plx_media::route::arm_play_resume(&mut rig.app.player.session, 12_000_000_000),
@@ -499,7 +499,7 @@ mod uri_boot_tests {
             .set_link(plx_plex::plex::probe::Location::Local);
         let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
         let display: &'static Display = Box::leak(Box::new(Display));
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, acb_product(trigger), bus,
             display));
         rig.request();
@@ -637,7 +637,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
@@ -718,7 +718,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
@@ -783,7 +783,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
@@ -892,7 +892,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1017,7 +1017,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedTwoAudio) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1098,7 +1098,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1154,7 +1154,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedTwoAudio) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1213,7 +1213,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1286,7 +1286,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1349,7 +1349,7 @@ mod uri_boot_tests {
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, qualifier: Arc::new(QualifiedOriginal) };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
@@ -1468,9 +1468,10 @@ mod uri_boot_tests {
     const WINDOW_STARTUP_MS: u64 = 1_000;
     const WINDOW_RELEASE_MS: u64 = 500;
 
-    /// Compose the URI driver as the boot does (`install_uri_product_with_ports`: the opted-in
-    /// viewer's capabilities over an exported canvas), but on `clock` with short allowances, over
-    /// `display`, so a startup timeout and an unreleased close are reachable by moving the clock.
+    /// Compose the URI driver as the boot does (the opted-in viewer's capabilities over an exported
+    /// canvas, published through `platform::publish_composition`), but on `clock` with short
+    /// allowances, over `display`, so a startup timeout and an unreleased close are reachable by
+    /// moving the clock.
     fn install_exported_uri(rig: &mut Rig, bus: &'static Bus, display: &'static CountingDisplay,
         clock: Arc<std::sync::atomic::AtomicU64>) {
         let caps = Capabilities { progressive_uri: true, hls_uri: false,
@@ -1490,10 +1491,11 @@ mod uri_boot_tests {
         let path = crate::app::adapters::backends::install_uri_backend_with_ports(
             &mut rig.app.adapters.player, settings, bus, display)
             .expect("the URI driver installs");
-        rig.app.player.session.install_uri_preflight_port(
-            plx_media::route::uri_preflight::ResolvePort::new(
-                ProductEvidence { display: path, callable: product.callable,
-                    certified: product.certified }, product.qualifier));
+        let resolver = plx_media::route::uri_preflight::ResolvePort::new(
+            ProductEvidence { display: path, callable: product.callable,
+                certified: product.certified }, product.qualifier);
+        crate::app::platform::publish_composition(&mut rig.app.player.session,
+            &rig.app.adapters.player, crate::app::platform::Composition { resolver: Some(resolver) });
     }
 
     /// One frame of the app loop's playback half, as the other URI fixtures run it.
@@ -1635,7 +1637,7 @@ mod uri_boot_tests {
             packet_feed: false, pause: true, seek: true, audio_track: true,
             subtitle_track: true, audio_off: false, subtitle_off: false };
         let product = UriProduct { binding: Binding::Acb, callable: caps, certified: caps, qualifier };
-        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+        assert!(crate::app::adapters::backends::install_and_publish_uri_product(
             &mut rig.app.adapters.player, &mut rig.app.player.session, product, bus, display));
         assert!(display.created_player_types().is_empty(), "composing the driver creates no handle");
         (bus, display)

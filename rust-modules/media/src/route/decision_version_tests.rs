@@ -1271,3 +1271,22 @@ fn the_picked_version_rides_the_request_and_the_landing() {
     test_support::apply_plan(&mut ps, Plan { media_index: 1, ..Default::default() }, "rk-v");
     assert_eq!(cur_media_index(&ps), 1);
 }
+
+/// The composition's resolver is published as a value, absence included: a bare port installs it,
+/// `None` clears it, and the reader says which. The boot's one publisher relies on all three
+/// (`app::platform::publish_composition` passes the compose's `Option` straight through).
+#[test]
+fn the_published_resolver_is_readable_and_an_absence_clears_it() {
+    use crate::route::uri_preflight::{CarrierQualifier, ProductEvidence, ResolvePort};
+    let port = || ResolvePort::new(
+        ProductEvidence::unqualified_on(plx_playback_contract::uri::DisplayEvidence::ready("test")),
+        std::sync::Arc::new(CarrierQualifier));
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    assert!(ps.uri_preflight_port().is_none(), "a session nobody published to holds none");
+    ps.install_uri_preflight_port(port());
+    assert!(ps.uri_preflight_port().is_some(), "a bare port installs");
+    ps.install_uri_preflight_port(Some(port()));
+    assert!(ps.uri_preflight_port().is_some(), "so does a `Some`");
+    ps.install_uri_preflight_port(Option::<ResolvePort>::None);
+    assert!(ps.uri_preflight_port().is_none(), "an absence clears it");
+}

@@ -27,7 +27,7 @@
 //! made one of them reachable would fail to link for want of libwayland, glib or luna-service2, on
 //! a Mac and on Linux alike. `simulators.yml` links the shapes the simulator ships in to guard that
 //! until the platform crates split (`docs/platform-ports.md`, W7).
-use crate::app::platform::{FrameProbe, Platform, Shell};
+use crate::app::platform::{Composition, FrameProbe, MediaBoot, Platform, Shell};
 use plx_os::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use plx_os::tv::toast::{Identity, Outcome, Sent};
 use plx_os::tv::{IdentityHooks, LegacyWebosMedia, SecureHooks, Services, StorageHooks, SystemHooks};
@@ -41,7 +41,8 @@ const SINK: &dyn plx_os::tv::sink::VideoSink = &crate::app::adapters::hostsim::H
 #[cfg(not(feature = "play-feed"))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::tv::sink::NoSink;
 
-/// The display binding the player's plane boot resolves: the same sink, so the plane is the host's.
+/// The display binding the table must state. The desktop runs no plane boot, so nothing reads it in
+/// production; it is the host sink only so that the hook is never `NoSink`.
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 
 /// What the lower layers read from the desktop platform. Every hook is stated, as `tv` requires: a
@@ -127,8 +128,24 @@ impl FrameProbe for DesktopProbe {
     }
 }
 
+/// The desktop's media boot: nothing to initialize before the first adapter (the plane owner's
+/// default facts are the absent ones the host sink's `VP_EXPORTED`/`VP_NONE` boot would state), and
+/// the Feed over the host sink as its only driver. It composes no URI driver (that is the
+/// television's ACB driver), so it returns no resolver and the session is published the Feed alone.
+fn media_early_init(_mt: &plx_base::task::MainThread) {}
+
+fn media_compose(adapter: &mut plx_media::player::adapter::PlayerAdapter, _controlled: bool) -> Composition {
+    crate::app::adapters::backends::compose_feed(adapter);
+    Composition::default()
+}
+
 /// The desktop platform: what [`run`] hands `app::run_application`.
-static PLATFORM: Platform = Platform::new(&SERVICES, &DesktopShell, &DesktopProbe);
+static PLATFORM: Platform = Platform::new(
+    &SERVICES,
+    &DesktopShell,
+    &DesktopProbe,
+    MediaBoot { early_init: media_early_init, compose: media_compose },
+);
 
 /// The desktop entry: boot the application on [`PLATFORM`] and return the status it ended with.
 /// Ending the process is the executable's (`src/bin/sim.rs`), which owns it, like the television's
@@ -151,17 +168,33 @@ mod tests {
         assert_eq!(SERVICES.storage.authority, plx_os::tv::authority::Authority::Files);
     }
 
-    /// The app's plane boot resolves the display through `display_installed()` (this table's
-    /// `display_sink`), where media's old `acb_init` resolved it through `player::display()`. In
-    /// the simulator both must be the host sink, never `NoSink`: a boot that read `NoSink` would
-    /// report no plane to every backend and nothing in a simulator run would say so.
+    /// The video sink the Feed runs over and the display binding the table states are the one host
+    /// sink in the simulator, never `NoSink`: a Feed that ran over `NoSink` would show no picture
+    /// and nothing in a simulator run would say so.
     #[cfg(feature = "play-feed")]
     #[test]
-    fn the_simulator_port_display_is_the_host_sink_the_acb_init_reads() {
+    fn the_simulator_port_display_is_the_host_sink() {
         let host = std::ptr::from_ref(&crate::app::adapters::hostsim::HOST_SINK).cast::<()>();
         let media = &SERVICES.legacy_webos_media;
         assert_eq!(std::ptr::from_ref(media.display_sink).cast::<()>(), host,
             "display_installed() is the host sink");
         assert_eq!(std::ptr::from_ref(media.sink).cast::<()>(), host, "so is the video sink");
+    }
+
+    /// The desktop's own `media.compose`, the one `run_application` calls, composes the Feed and no
+    /// URI driver: published, the session offers the adapter's set (no `Uri` in it) and holds no
+    /// resolver. A resolver here would describe a driver this platform never installed.
+    #[test]
+    fn the_desktop_platform_composes_the_feed_and_no_resolver() {
+        use plx_media::player::adapter::PlayerAdapter;
+        let mut adapter = PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut session = plx_media::route::PlaybackSession::IDLE;
+        let composed = (PLATFORM.media.compose)(&mut adapter, false);
+        crate::app::platform::publish_composition(&mut session, &adapter, composed);
+        assert_eq!(session.backends(), adapter.composed_backends());
+        assert!(!session.backends().uri);
+        assert!(session.uri_preflight_port().is_none());
+        #[cfg(feature = "play-feed")]
+        assert!(session.backends().feed, "the Feed is the desktop's driver");
     }
 }

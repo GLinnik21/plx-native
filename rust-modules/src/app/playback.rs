@@ -532,7 +532,6 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
     crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
 }
 
-#[cfg(feature = "play-uri")]
 fn reconfigure_uri_audio(ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore, sid: i64,
@@ -548,7 +547,6 @@ fn reconfigure_uri_audio(ps: &mut plx_media::route::PlaybackSession,
     accepted
 }
 
-#[cfg(feature = "play-uri")]
 fn reconfigure_uri_subtitle(ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore, sid: i64,
@@ -569,7 +567,6 @@ fn reconfigure_uri_subtitle(ps: &mut plx_media::route::PlaybackSession,
 /// A delivered URI native SelectTrack refusal keeps its exact command and original menu choice
 /// in the adapter. The app has the metadata store and can submit that choice through the same
 /// viewer re-resolve door used by a source track absent from the native map.
-#[cfg(feature = "play-uri")]
 pub(crate) fn drain_uri_track_fallbacks(ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore) {
@@ -638,7 +635,6 @@ pub(crate) fn commit_track(
     use plx_appkit::track_menu::TrackCommit;
     match commit {
         TrackCommit::Audio { carried, memo } => {
-            #[cfg(feature = "play-uri")]
             if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
                 if pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Audio,
                     carried.sid) == Some(false)
@@ -664,7 +660,6 @@ pub(crate) fn commit_track(
         // The route commits the pick and performs the sidecar half of it too
         // (`route::commit_subtitle_and_sidecar`): the sidecar policy lives beside the track memory's.
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
-            #[cfg(feature = "play-uri")]
             if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
                 if render_ordinal < 0 || sidecar_key.is_some()
                     || pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Subtitle,
@@ -683,7 +678,6 @@ pub(crate) fn commit_track(
         // the route holds the mode and remembers `ForcedOnly { lang }` when it changed, and drops
         // any sidecar (`route::commit_forced_only_and_sidecar`).
         TrackCommit::SubtitleForcedOnly { render_ordinal, stream_id, lang, changed } => {
-            #[cfg(feature = "play-uri")]
             if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
                 let memo = changed.then(||
                     plx_plex::plex::session::prefs::SubtitleMemo::ForcedOnly {

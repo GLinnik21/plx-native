@@ -6,7 +6,8 @@
 //! video sink together. The simulator and the macOS app are not on these tables: they are their own
 //! platform (`platform_desktop`), which never names this module, so a desktop build compiles the
 //! television's code and the linker drops it.
-use crate::app::platform::{FrameProbe, Platform, Shell};
+use crate::app::adapters::backends;
+use crate::app::platform::{FrameProbe, MediaBoot, Platform, Shell};
 use std::os::raw::{c_char, c_int, c_void};
 
 #[cfg(all(not(test), feature = "play-feed"))]
@@ -103,8 +104,16 @@ impl FrameProbe for WebosProbe {
 }
 
 /// The webOS platform: what `plex_main` hands `app::run_application`, which installs its services
-/// for the lower layers and keeps it for the loop.
-static PLATFORM: Platform = Platform::new(&SERVICES, &WebosShell, &WebosProbe);
+/// for the lower layers and keeps it for the loop. Its media boot is the television's: the plane
+/// owner's boot, and the Feed plus the product URI driver. The bodies are the application's
+/// `adapters::backends` until the webOS platform owns that file: the dev surface and the tests name the
+/// URI product there, and nothing outside this module may name `port`.
+static PLATFORM: Platform = Platform::new(
+    &SERVICES,
+    &WebosShell,
+    &WebosProbe,
+    MediaBoot { early_init: backends::acb_init, compose: backends::compose_native },
+);
 
 /// The C shim's entry (`src/main.c`). The `-> c_int` is only the C signature: `plex_main` never
 /// returns, so neither does this.

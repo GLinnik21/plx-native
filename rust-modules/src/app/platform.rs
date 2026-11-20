@@ -1,7 +1,7 @@
 //! The platform the application runs on, as only the loop reads it.
 //!
 //! [`Platform`] is the one value a platform's entry hands `run_application`, so an entry that forgot
-//! it does not compile. It carries three things, split by who reads them:
+//! it does not compile. It carries four things, split by who reads them:
 //!
 //! - `services`: [`plx_os::tv::Services`], what the LOWER layers read through the private `tv`
 //!   accessors (identity, the secure store, Home and the toast, the legacy webOS media verbs).
@@ -12,11 +12,20 @@
 //!   hooks.
 //! - `diag`: the six frame probes, [`FrameProbe`], read by the loop. The renderer's clear hook takes
 //!   plain functions, so the platform's entry installs it (`gfx::install_clear_probe`).
+//! - `media`: [`MediaBoot`], the platform's two boot-time playback steps. `early_init` runs once before
+//!   the first adapter exists; `compose` installs the platform's drivers on the adapter and hands
+//!   back what it composed as a [`Composition`]. The boot then tells the route session what the
+//!   platform composed through [`publish_composition`], the one function that does, so the set of
+//!   installed drivers and the resolver the planner reads cannot disagree.
 //!
 //! `Shell`, `FrameProbe` and `Platform` are app-private on purpose: no type a platform's shell has
 //! to match leaves the application crate until the platform contract is settled. The webOS value is
 //! built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
 //! privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) to `app/run.rs`.
+use plx_base::task::MainThread;
+use plx_media::player::adapter::PlayerAdapter;
+use plx_media::route::uri_preflight::ResolvePort;
+use plx_media::route::PlaybackSession;
 use plx_os::tv::Services;
 use std::os::raw::c_void;
 
@@ -60,6 +69,53 @@ pub(crate) trait FrameProbe: Sync {
     fn fields(&self) -> String;
 }
 
+/// What a platform's composition installed that the route session also has to know: the resolver the
+/// planner asks before it offers a URI source. `Some` only when the physical URI install succeeded,
+/// so it is present exactly when the composed set holds a URI driver.
+///
+/// `Composition::default()` is a platform that composed no URI driver (the Feed or nothing): no resolver.
+#[derive(Default)]
+pub(crate) struct Composition {
+    pub(crate) resolver: Option<ResolvePort>,
+}
+
+/// A platform's two playback steps at boot. Both are plain functions: the platform's entry states
+/// them once, in its `static`, and the boot calls them through [`Platform::media`].
+pub(crate) struct MediaBoot {
+    /// Before the first adapter exists, once per process. The caller runs it only on a boot that
+    /// touches the television (not a controlled one), so a platform's body never asks.
+    pub(crate) early_init: fn(&MainThread),
+    /// Install this platform's drivers on the adapter, and return what the session must also be told.
+    /// `controlled` is a replay or scripted Home, which touches no native port and so installs no
+    /// native driver. It takes no session and publishes nothing: [`publish_composition`] does that.
+    pub(crate) compose: fn(&mut PlayerAdapter, controlled: bool) -> Composition,
+}
+
+/// Tell the route session what the platform composed: the resolver first, then the backend set the
+/// adapter's installed drivers form, and log what it published in the one `compose:` line (the
+/// television's boot log shows it). One call, every boot, for every platform: a platform that
+/// composed nothing still publishes `BackendSet::NONE` (and no resolver), instead of leaving the
+/// session on the Feed-only default, which would offer a backend nothing installed.
+pub(crate) fn publish_composition(
+    session: &mut PlaybackSession,
+    adapter: &PlayerAdapter,
+    composed: Composition,
+) {
+    let set = adapter.composed_backends();
+    let named = match (set.uri, set.feed) {
+        (true, true) => "uri+feed",
+        (true, false) => "uri",
+        (false, true) => "feed",
+        (false, false) => "none",
+    };
+    plx_base::eventlog::log(&format!(
+        "compose: backends={named} resolver={}",
+        if composed.resolver.is_some() { "yes" } else { "no" }
+    ));
+    session.install_uri_preflight_port(composed.resolver);
+    session.install_backends(set);
+}
+
 /// Everything the application needs from its platform. Built by the platform's entry (`port.rs` for
 /// webOS) with [`Platform::new`] and passed to `run_application`, which keeps it as `App::platform`.
 ///
@@ -71,16 +127,18 @@ pub(crate) struct Platform {
     services: &'static Services,
     pub(crate) shell: &'static dyn Shell,
     pub(crate) diag: &'static dyn FrameProbe,
+    pub(crate) media: MediaBoot,
 }
 
 impl Platform {
-    /// A platform's entry states its three parts once, in a `static`.
+    /// A platform's entry states its four parts once, in a `static`.
     pub(crate) const fn new(
         services: &'static Services,
         shell: &'static dyn Shell,
         diag: &'static dyn FrameProbe,
+        media: MediaBoot,
     ) -> Self {
-        Platform { services, shell, diag }
+        Platform { services, shell, diag, media }
     }
 
     /// Hand the lower layers the platform's `tv` services, once: `run_application` does it before
@@ -125,11 +183,26 @@ impl FrameProbe for HostProbe {
 }
 
 #[cfg(test)]
+impl MediaBoot {
+    /// The media boot of a process with no platform: nothing to initialize and no driver to install.
+    pub(crate) const HOST_TEST: MediaBoot = MediaBoot { early_init: host_test_early_init, compose: host_test_compose };
+}
+
+#[cfg(test)]
+fn host_test_early_init(_mt: &MainThread) {}
+
+#[cfg(test)]
+fn host_test_compose(_adapter: &mut PlayerAdapter, _controlled: bool) -> Composition {
+    Composition::default()
+}
+
+#[cfg(test)]
 impl Platform {
     /// No platform: the loop's host tests, which build an `App` without an entry and say so by passing
     /// this to it. Every entry is what the no-port defaults answered before the shell and the probe
     /// left `tv`. It exists in test builds only: a production entry that passes it does not compile.
-    pub(crate) const HOST_TEST: Platform = Platform::new(&Services::HOST_TEST, &HostShell, &HostProbe);
+    pub(crate) const HOST_TEST: Platform =
+        Platform::new(&Services::HOST_TEST, &HostShell, &HostProbe, MediaBoot::HOST_TEST);
 }
 
 #[cfg(test)]
@@ -142,7 +215,7 @@ mod tests {
     /// call text of the loop's own receiver, and this is the no-op one.
     #[test]
     fn the_host_test_platform_answers_nothing_and_says_so() {
-        let Platform { services, shell: s, diag: p } = Platform::HOST_TEST;
+        let Platform { services, shell: s, diag: p, media } = Platform::HOST_TEST;
 
         assert!(
             matches!((services.identity.system_locale)(), plx_os::tv::LocaleReply::NoPlatform),
@@ -165,5 +238,27 @@ mod tests {
         p.waiting();
         p.acquired();
         assert_eq!(p.fields(), "", "an unarmed probe has nothing to log");
+
+        // SAFETY: a host test owns the one thread it runs the media boot on.
+        let mt = unsafe { MainThread::assume() };
+        (media.early_init)(&mt);
+        let mut adapter = PlayerAdapter::new(mt);
+        let composed = (media.compose)(&mut adapter, false);
+        assert!(composed.resolver.is_none(), "the host platform composes no URI driver");
+        assert_eq!(adapter.composed_backends(), plx_playback_contract::BackendSet::NONE,
+            "and installs no driver of any kind");
+    }
+
+    /// **The one publisher.** A platform that composed nothing still publishes: the session leaves
+    /// its Feed-only default for `NONE`, and the resolver is the absence the compose returned.
+    #[test]
+    fn publishing_a_composition_that_installed_nothing_replaces_the_feed_default_with_none() {
+        let mut session = PlaybackSession::IDLE;
+        assert_eq!(session.backends(), plx_playback_contract::BackendSet::FEED,
+            "the session starts on the Feed-only default");
+        let adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        publish_composition(&mut session, &adapter, Composition::default());
+        assert_eq!(session.backends(), plx_playback_contract::BackendSet::NONE);
+        assert!(session.uri_preflight_port().is_none());
     }
 }
