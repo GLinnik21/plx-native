@@ -1094,11 +1094,13 @@ want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub
 # The method names alone are NOT the pin: `Rig` has `opaque_route` and `clear_opaque_region` too, and
 # `Bridge`'s forwarding (`self.bridge.opaque_route(..)`) is not an OS call. So the pin is the RECEIVER:
 # a call on something named `shell` (`app.platform.shell.pump_bus()`, `p.shell.opaque_route(..)`), on the
-# trait by path (`Shell::pump_bus(..)`, `<dyn Shell>::pump_bus(..)`), or a continuation line of a
-# chain that begins on the line before (`.pump_bus(`, which rustfmt may break out of
-# `app.platform.shell`). A shell held in a differently named local does not match: this is a text gate
-# on the loop's own call shape, and the no-op `Platform::HOST_TEST` shell is driven that way by its pin
-# test.
+# trait by path (`Shell::pump_bus(..)`, `<dyn Shell>::pump_bus(..)`), or a continuation line (`.pump_bus(`
+# first on its line) whose PREVIOUS non-blank line ends in `shell`, which is how rustfmt breaks
+# `app.platform.shell.pump_bus()` apart. A continuation line after any other receiver is not a shell
+# call, so a wrapped `Rig` forward (`self.bridge\n    .opaque_route(true)`, the dispatcher's
+# `rig\n    .clear_opaque_region()`) passes. A shell held in a differently named local does not match: this
+# is a text gate on the loop's own call shape, and the no-op host-test shell is driven that way by its
+# pin test.
 #
 # A self-test that spells two of the three call shapes as STRING
 # LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy of the
@@ -1108,12 +1110,19 @@ want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub
 # double-quote-depth tracking `tmppath` below uses), rather than exempting files by name: an
 # actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
 # used to live) are stripped the same way `grep_code` above does for every other rule.
-frame_pat='(^|[^A-Za-z0-9_])shell[[:space:]]*\.[[:space:]]*(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*\(|Shell>?::(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*\(|^[[:space:]]*\.[[:space:]]*(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*\('
+# `[.]` and `[(]`, not `\.` and `\(`: `awk -v` would eat the backslashes.
+frame_recv='(^|[^A-Za-z0-9_])shell[[:space:]]*[.][[:space:]]*(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*[(]|Shell>?::(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*[(]'
+frame_cont='^[[:space:]]*[.][[:space:]]*(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*[(]'
+frame_tail='(^|[^A-Za-z0-9_])shell[[:space:]]*$'
+# The files to look at: any line of either shape (the cheap `grep` pass); `awk` below decides which hit counts.
+frame_pat="$frame_recv|$frame_cont"
 if want frame; then
 frame_bad=0
 while IFS= read -r f; do
   [ "$f" = "$SRC/app/run.rs" ] && continue
-  hits=$(strip_strings_and_comments "$f" | grep -nE "$frame_pat" || true)
+  hits=$(strip_strings_and_comments "$f" | awk -v recv="$frame_recv" -v cont="$frame_cont" -v tail="$frame_tail" '
+    $0 ~ recv || ($0 ~ cont && prev ~ tail) { print NR ":" $0 }
+    $0 !~ /^[[:space:]]*$/ { prev = $0 }' || true)
   [ -z "$hits" ] && continue
   while IFS= read -r h; do
     ln="${h%%:*}"

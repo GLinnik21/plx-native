@@ -106,7 +106,7 @@ impl FrameProbe for WebosProbe {
 
 /// The webOS platform: what `plex_main` hands `app::run_application`, which installs its services
 /// for the lower layers and keeps it for the loop.
-static PLATFORM: Platform = Platform { services: &SERVICES, shell: &WebosShell, diag: &WebosProbe };
+static PLATFORM: Platform = Platform::new(&SERVICES, &WebosShell, &WebosProbe);
 
 /// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`). The `-> c_int` is only
 /// the C signature: `plex_main` never returns, so neither does this.

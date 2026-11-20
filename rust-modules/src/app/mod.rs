@@ -409,7 +409,7 @@ pub(crate) struct App {
     /// **The platform this process runs on**, handed to `run_application` by the entry and kept here so
     /// the loop reads its shell (the window, the opaque region, the bus pump) and its frame probes from
     /// the value it was given. There is no process-global copy: a missing one is a compile error, not
-    /// a television that boots with no window. A host test builds an `App` with [`platform::Platform::HOST_TEST`].
+    /// a television that boots with no window. A host test builds an `App` with `platform::Platform::HOST_TEST`.
     platform: &'static platform::Platform,
 }
 
@@ -662,7 +662,7 @@ pub(crate) fn run_application(platform: &'static platform::Platform, pms_host: *
     // Returns how it ended and drops nothing: an early-boot refusal has live workers (diagnostics,
     // capability probe, telemetry) just as a played session does, so `exit::entry` leaks the `App`.
     // Ending the process is the entry's (`port::plex_run`); a hosted entry never does.
-    let _ = plx_os::tv::install(platform.services); // once, before anything below reads `tv`
+    platform.install_services(); // once, before anything below reads `tv`
     exit::entry(|| enter_application(platform, pms_host, pms_port), |app| unsafe { run_and_shutdown(app) })
 }
 

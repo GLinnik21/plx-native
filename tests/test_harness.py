@@ -10395,22 +10395,28 @@ impl PersonOwnerGateFixture {
              "pub fn route(shell: &dyn Shell) {\n    Shell::opaque_route(shell, true);\n}\n", None),
             ("_check_deps_selftest_frame_chain.rs",
              "pub fn clear(app: &App) {\n    app.platform\n        .shell\n        .clear_opaque_region();\n}\n", None),
+            ("_check_deps_selftest_frame_chain_tail.rs",
+             "pub fn pump(app: &App) {\n    app.platform.shell\n        .pump_bus();\n}\n", None),
         ]
         r = self._plant_all(plants)
         self._assert_flagged(r, "frame", [
             ("_check_deps_selftest_frame_receiver.rs", "pump_bus"),
             ("_check_deps_selftest_frame_path.rs", "opaque_route"),
             ("_check_deps_selftest_frame_chain.rs", "clear_opaque_region"),
+            ("_check_deps_selftest_frame_chain_tail.rs", "pump_bus"),
         ])
 
     @_grades("frame")
     def test_frame_gate_ignores_a_rig_forward_a_string_and_a_comment(self):
-        """GREEN: `Rig` has `opaque_route` and `clear_opaque_region` of its own (`Bridge` forwards them),
+        """GREEN: `Rig` has `opaque_route` and `clear_opaque_region` of its own (`Bridge` forwards them, and
+        the dispatcher calls them on its `rig`, either on one line or wrapped onto a continuation line),
         and a pin test spells the loop's calls as string data. None of those is a call on the shell."""
         r = self._plant(
             "_check_deps_selftest_frame_ok.rs",
             "pub fn forward(bridge: &mut Bridge) {\n    bridge.opaque_route(true);\n"
-            "    self.bridge.clear_opaque_region();\n}\n"
+            "    self.bridge.clear_opaque_region();\n"
+            "    self.bridge\n        .opaque_route(true);\n"
+            "    rig\n        .clear_opaque_region();\n}\n"
             'pub const PIN: &str = "    app.platform.shell.opaque_route(bound);";\n'
             "// app.platform.shell.pump_bus();\n",
         )

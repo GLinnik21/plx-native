@@ -22,7 +22,7 @@ use std::os::raw::c_void;
 
 /// The platform's window and bus, as the frame loop drives them: the SDL window and its surface, the
 /// opaque-region hint, and the platform bus pump. Every call runs on the loop thread, and every
-/// hook is required: a platform with nothing to do states [`Platform::HOST_TEST`]'s no-ops.
+/// hook is required: a platform with nothing to do states a no-op, as the test-only host platform does.
 pub(crate) trait Shell: Sync {
     /// Hand the platform the SDL window, once, at boot: the window is created deep inside boot and
     /// the platform needs it a long way from there (`textinput::bind`'s shape and its reason).
@@ -61,17 +61,41 @@ pub(crate) trait FrameProbe: Sync {
 }
 
 /// Everything the application needs from its platform. Built by the platform's entry (`port.rs` for
-/// webOS) and passed to `run_application`, which keeps it as `App::platform`.
+/// webOS) with [`Platform::new`] and passed to `run_application`, which keeps it as `App::platform`.
+///
+/// `services` is private to this module on purpose: its hooks are the raw verbs, and `tv`'s own
+/// functions put their guards around them (`sound::output`'s blocking check, `secure`'s test store,
+/// `home`'s request counter). The one thing the application does with it is
+/// [`install_services`](Platform::install_services); nothing in `app` can call a hook directly.
 pub(crate) struct Platform {
-    pub(crate) services: &'static Services,
+    services: &'static Services,
     pub(crate) shell: &'static dyn Shell,
     pub(crate) diag: &'static dyn FrameProbe,
 }
 
-/// The shell of a process with no platform: a host test, where nothing owns a window or a bus.
-#[cfg_attr(not(test), allow(dead_code))]
+impl Platform {
+    /// A platform's entry states its three parts once, in a `static`.
+    pub(crate) const fn new(
+        services: &'static Services,
+        shell: &'static dyn Shell,
+        diag: &'static dyn FrameProbe,
+    ) -> Self {
+        Platform { services, shell, diag }
+    }
+
+    /// Hand the lower layers the platform's `tv` services, once: `run_application` does it before
+    /// anything reads `tv`. A second call is refused by `tv` and changes nothing.
+    pub(crate) fn install_services(&self) {
+        let _ = plx_os::tv::install(self.services);
+    }
+}
+
+/// The shell of a process with no platform: a host test, where nothing owns a window or a bus. Test
+/// builds only, so no entry can boot the application on it.
+#[cfg(test)]
 struct HostShell;
 
+#[cfg(test)]
 impl Shell for HostShell {
     fn bind_window(&self, _win: *mut c_void) {}
     fn grab_surface(&self, _win: *mut c_void) {}
@@ -84,10 +108,11 @@ impl Shell for HostShell {
     fn pump_bus(&self) {}
 }
 
-/// The frame probe of a process with no platform: always unarmed.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The frame probe of a process with no platform: always unarmed. Test builds only.
+#[cfg(test)]
 struct HostProbe;
 
+#[cfg(test)]
 impl FrameProbe for HostProbe {
     fn request(&self) {}
     fn prepare_begin(&self) {}
@@ -99,13 +124,12 @@ impl FrameProbe for HostProbe {
     }
 }
 
+#[cfg(test)]
 impl Platform {
     /// No platform: the loop's host tests, which build an `App` without an entry and say so by passing
     /// this to it. Every entry is what the no-port defaults answered before the shell and the probe
-    /// left `tv`. No production path reads it: an entry that has no platform does not compile.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const HOST_TEST: Platform =
-        Platform { services: &Services::HOST_TEST, shell: &HostShell, diag: &HostProbe };
+    /// left `tv`. It exists in test builds only: a production entry that passes it does not compile.
+    pub(crate) const HOST_TEST: Platform = Platform::new(&Services::HOST_TEST, &HostShell, &HostProbe);
 }
 
 #[cfg(test)]
