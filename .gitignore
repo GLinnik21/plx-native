@@ -68,6 +68,9 @@ rust-modules/target-sim-lab/
 # `make screenshots-sim` — the documentation-screenshot simulator (hostsim + devtriggers).
 rust-modules/target-sim-shots/
 rust-modules/target-sim-video/
+# `simulators.yml` builds into `target-sim-ci` (`make sim-macos SIM_TDIR=...`) and `target-sim-ci-macapp`
+# (the macapp feature set's link), in the checkout; a lane reproducing that job gets the same trees.
+rust-modules/target-sim-ci*/
 # pkg/plxnative-storage's own target dir, deliberately separate from $(RUST_TDIR) — see the
 # Makefile's STORAGE_TDIR comment. One glob for every RELEASE/LAB/SYMBOLS combination.
 rust-modules/target*-storage/

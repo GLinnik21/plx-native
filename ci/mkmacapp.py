@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build `PlxNative.app` — the app core as a SELF-CONTAINED macOS application.
 
-This is the `hostsim` build (`rust-modules/src/bin/sim.rs`): the same UI, the same Plex data layer
-and the same event loop the television runs, wrapped in a bundle that carries its own SDL, its own
+This is the desktop platform's build (`rust-modules/src/platform_desktop.rs`, entered by
+`rust-modules/src/bin/sim.rs`, feature `hostsim`): the same UI, the same Plex data layer and the same
+event loop the television runs, booted on the desktop's own platform and wrapped in a bundle that carries its own SDL, its own
 fonts and its own copy of every non-system library it links, so it starts on a Mac that has none of
 this repo's build environment installed. What it is NOT is a television — there is no video
 pipeline off-device (`play-feed/src/ffi_host.rs`), so Play lands on the app's real failure read-out.

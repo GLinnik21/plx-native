@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Every simulator build that drops the default features still selects the Feed backend.
 
-`hostsim` swaps the television's native video sink for the simulator's (`plx_play_feed::ffi_host`),
-but that stand-in is the Feed backend's, so it exists only when `play-feed` is built. A simulator
-built `--no-default-features --features hostsim` selects NO backend: its app installs `NoSink`, so
-Play can only ever reach the failure read-out and the clock sink (`plxnative-clocksink`) has nothing
-to arm. Three builds drift into that state because they drop `devtools` and `devtriggers` with
-`--no-default-features` and then list `hostsim` alone: the `.app` bundle (`ci/mkmacapp.py`), the
-screenshot simulator (`make screenshots-sim`) and the demo-video simulator (`make site-video-sim`);
-so does the CI step that type-checks the simulator feature set, which then proves nothing about the
+The simulator is its own platform (`platform_desktop`, which `hostsim` compiles), and the video sink
+it hands the application is the Feed backend's host sink (`plx_play_feed::ffi_host`), which exists
+only when `play-feed` is built. A simulator built `--no-default-features --features hostsim` selects
+NO backend: its platform installs `NoSink`, so Play can only ever reach the failure read-out and the
+clock sink (`plxnative-clocksink`) has nothing to arm. Three builds drift into that state because
+they drop `devtools` and `devtriggers` with `--no-default-features` and then list `hostsim` alone:
+the `.app` bundle (`ci/mkmacapp.py`), the screenshot simulator (`make screenshots-sim`) and the
+demo-video simulator (`make site-video-sim`); so do the CI steps that type-check
+(`ci.yml`) and link (`simulators.yml`) the simulator feature set, which then prove nothing about the
 configuration the other three ship.
 
 The scan finds every cargo command line in the files that can hold one, joins its continuations and
@@ -26,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = "Makefile"
 MKMACAPP = "ci/mkmacapp.py"
 CI_YML = ".github/workflows/ci.yml"
+SIMULATORS_YML = ".github/workflows/simulators.yml"
 
 
 def feature_flags(tokens):
@@ -91,7 +93,7 @@ def python_cargo_commands(path):
 
 def scan():
     commands = []
-    for path in (MAKEFILE, CI_YML):
+    for path in (MAKEFILE, CI_YML, SIMULATORS_YML):
         commands += text_cargo_commands(path)
     for path in sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "ci").glob("*.py")):
         commands += python_cargo_commands(path)
@@ -106,7 +108,7 @@ class SimulatorBackend(unittest.TestCase):
     def test_the_scan_reaches_the_builds_it_exists_for(self):
         sims = sim_commands(scan())
         reached = {(path, bool(no_default)) for path, _, _, no_default, _ in sims}
-        for site in (MKMACAPP, MAKEFILE, CI_YML):
+        for site in (MKMACAPP, MAKEFILE, CI_YML, SIMULATORS_YML):
             with self.subTest(site):
                 self.assertIn((site, True), reached, f"no `--no-default-features --features hostsim` build found in {site}")
         makefile_lines = " ".join(line for path, _, line, _, _ in sims if path == MAKEFILE)
@@ -126,10 +128,11 @@ class SimulatorBackend(unittest.TestCase):
         )
 
     def test_each_scripted_simulator_build_is_pinned_to_its_features(self):
-        """The three bundle/screenshot/video builds and the CI type-check, spelled out."""
+        """The three bundle/screenshot/video builds and the CI type-check and link, spelled out."""
         pinned = {
             MKMACAPP: {"hostsim", "play-feed"},
             CI_YML: {"hostsim", "play-feed"},
+            SIMULATORS_YML: {"hostsim", "play-feed"},
         }
         sims = sim_commands(scan())
         for site, expected in pinned.items():
