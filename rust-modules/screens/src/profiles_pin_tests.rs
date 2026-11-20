@@ -40,20 +40,10 @@ fn closing_pin_publishes_the_closed_state_before_the_next_tick() {
 }
 
 // ---------------------------------------------------------------------------------------
-// pin_flash / digit_of — pure, ported verbatim from `ui/profiles.rs`
+// pin_flash — pure, ported verbatim from `ui/profiles.rs`. The digit reader that used to sit beside
+// it, `digit_of`, is now `plx_ui::consts::pin_digit`, and its table is graded there
+// (`consts::action_tests`); the keypad's own reading of a wcode-only press is graded below.
 // ---------------------------------------------------------------------------------------
-
-#[test]
-fn a_pin_digit_is_read_from_either_field() {
-    assert_eq!(digit_of(b'7' as u32, 0), Some(b'7'), "a dev keyboard's sym");
-    assert_eq!(
-        digit_of(0, 55),
-        Some(b'7'),
-        "the remote's wcode, same digit"
-    );
-    assert_eq!(digit_of(b'0' as u32, 0), Some(b'0'));
-    assert_eq!(digit_of(999, 0), None, "not a digit in either field");
-}
 
 /// A 1.4s error window reads as several distinct red pulses, not one — the assertion a static
 /// tint fails no matter how red it is. Ported from `ui/profiles.rs`'s own property test,
@@ -329,7 +319,7 @@ fn a_digit_key_types_into_the_entry_and_backspace_removes_one() {
         None,
     );
     assert_eq!(s.pad.entry, "127");
-    // backspace via the delete cell's OWN digit path is not reachable through `digit_of` (it
+    // backspace via the delete cell's OWN digit path is not reachable through `pin_digit` (it
     // is not in 48..=57) — `press` handles it directly, exercised below through `Activate`.
 }
 

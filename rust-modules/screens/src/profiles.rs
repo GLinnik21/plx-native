@@ -44,7 +44,8 @@
 //! **The digits are handled in `step`; no raw `key(sym)` function survives** (spec open question
 //! 2). A number key types straight into the PIN without moving the visual cursor (the remote's
 //! digit buttons carry the same 48-57 ASCII range in `sym`/`wcode` the legacy `digit_of` read, and
-//! that pure function is unchanged); OK on a keypad cell presses whatever cell the cursor is on,
+//! that pure function is unchanged and now lives in `plx_ui::consts` as `pin_digit`); OK on a keypad
+//! cell presses whatever cell the cursor is on,
 //! delivered as an ordinary `ScreenEvent::Activate` — the keys are `ElemKind::Bare`, so the engine
 //! fires that on the key-DOWN edge with no press arm at all, exactly as a `Card`/`Control` MUST
 //! NOT (see the next paragraph).
@@ -333,15 +334,6 @@ impl Pad {
 /// remainder) so a rejected PIN is red on the very frame it is rejected, at any duration.
 fn pin_flash(error_s: f32) -> Option<bool> {
     (error_s > 0.0).then(|| (((PIN_ERR_S - error_s) / PIN_ERR_HALF_S) as i32) % 2 == 0)
-}
-
-/// Remote number key → keypad digit, ported verbatim: SDL gives a printable key its ASCII sym and
-/// the webOS remote's number buttons carry the same 48-57 ('0'-'9') range in `wcode`.
-fn digit_of(sym: u32, wcode: u32) -> Option<u8> {
-    [sym, wcode]
-        .into_iter()
-        .find(|v| (48..=57).contains(v))
-        .map(|v| v as u8)
 }
 
 /// Avatar-row geometry: (first tile's left x before scroll, per-tile stride). Centred when the
@@ -1773,7 +1765,7 @@ impl<H: AuthLike> Machine<H> for ProfilesScreen {
                         // own `pad_key`
                         return Handled::Yes;
                     }
-                    if let Some(d) = digit_of(*sym, *wcode) {
+                    if let Some(d) = plx_ui::consts::pin_digit(*sym, *wcode) {
                         self.press(d, fx);
                         return Handled::Yes;
                     }

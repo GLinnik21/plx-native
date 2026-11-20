@@ -153,11 +153,11 @@ thread_local! {
     /// Nothing drains it in production: while a field owns text input (`bridge::text_owner`), typed text (the
     /// television's keyboard and the `txt:` remote token alike) goes through `app/run.rs`'s
     /// `ingest_text` into the app's input queue (`app.inputs`) and never reaches this one.
-    /// [`on_event`] fills it only on every other route, where it is a bounded buffer
+    /// [`queue`] fills it only on every other route, where it is a bounded buffer
     /// ([`MAX_PENDING`]) that [`start`] clears, and [`drain`] is read by the tests and nothing else.
     ///
-    /// Main-thread-only by construction: [`on_event`] is called from the SDL event loop in
-    /// `app/run.rs` and from the `txt:` remote token in `app/events.rs`, both on the frame thread. A
+    /// Main-thread-only by construction: [`queue`] is called from the event loop in
+    /// `app/run.rs` and (through [`on_event`]) from the `txt:` remote token in `app/events.rs`, both on the frame thread. A
     /// `thread_local!` for that reason and not a `static mut`:
     /// the queue owns `String`s that `on_event` trims and `start`/`drain` clear, so one process-wide
     /// queue lets two threads free each other's commits, which is how `cargo test`'s parallel threads
@@ -359,9 +359,16 @@ pub(crate) fn decode(ev: &[u8]) -> String {
     decode_text_at(ev, TEXT_OFF)
 }
 
-/// One `SDL_TEXTINPUT` event, straight off the wire. Called from `app.rs`'s event ladder.
+/// One `SDL_TEXTINPUT` event, straight off the wire: [`decode`], then [`queue`]. Called by the
+/// `txt:` remote token (`app/events.rs`), which has the bytes [`encode_event`] built. The event
+/// loop gets its text already decoded (`HostEvent::Text`) and calls [`queue`] itself.
 pub(crate) fn on_event(ev: &[u8]) {
-    let s = decode(ev);
+    queue(decode(ev));
+}
+
+/// One committed string, queued for [`drain`] and bounded by [`MAX_PENDING`]. The loop's route for a
+/// commit no field owns (`app/run.rs`'s `ingest_text_commit`).
+pub(crate) fn queue(s: String) {
     // An empty commit is not a commit. SDL delivers `SDL_TEXTINPUT` for the IME's own bookkeeping
     // as well as for text, and a caller that reads "drain returned something" as "the query moved"
     // would spend a round trip re-asking the server the same question.

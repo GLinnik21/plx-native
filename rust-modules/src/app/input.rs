@@ -1323,7 +1323,7 @@ mod unsupported_key_tests {
     fn a_bound_key_still_wakes_the_hud_without_owning_the_press() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
-        let (armed, dismissed) = press(&ps, SDLK_ESCAPE, 0);
+        let (armed, dismissed) = press(&ps, plx_ui::consts::SDLK_ESCAPE, 0);
         assert!(armed, "physical bookkeeping must leave press ownership to the dispatcher");
         assert!(!dismissed, "…and any key un-dismisses the transport");
     }

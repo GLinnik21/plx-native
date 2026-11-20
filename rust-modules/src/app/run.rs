@@ -1178,9 +1178,16 @@ fn window_step(stage: plx_telemetry::telemetry::window::Stage, playing: Option<b
 ///
 /// The window reacquisition is a platform operation, supplied separately so the recorded/live
 /// ingress boundary can be exercised without an SDL/GL context.
+///
+/// A key edge ([`ingest_key`]) and a text commit ([`ingest_text_commit`]) are the host's input: the
+/// activity that keeps a release-health session open, attributed to input rather than to the page,
+/// and left to the tape under a controlled replay. Quit and the lifecycle edges are the window's.
 unsafe fn ingest_host_event(app: &mut App, fr: &mut Frame, event: HostEvent,
     restore_window: impl FnOnce(*mut c_void)) {
     let playing = matches!(app.route(), AppArg::Player);
+    // A key or text event is the activity that keeps a release-health session open
+    // (`telemetry::session`; consent-gated inside, a no-op while crash reports are off).
+    if matches!(event, HostEvent::Key(_) | HostEvent::Text(_)) { plx_telemetry::telemetry::session::input(); }
     if let HostEvent::Lifecycle(edge) = event {
         // The window gate, telemetry's crash steps and session, and the tape (below) are all
         // SDL-coded: they read the event type this edge arrived as.
@@ -1205,12 +1212,17 @@ unsafe fn ingest_host_event(app: &mut App, fr: &mut Frame, event: HostEvent,
                 app.running = false;
             }
             HostEvent::Lifecycle(Lifecycle::WillForeground) => {}
+            // The tape owns logical ingress; a real key or text commit must not be counted a second time.
+            HostEvent::Key(_) | HostEvent::Text(_) => {}
         }
         return;
     }
-    // Lifecycle changes remain page damage.
-    app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+    // Attribute only the input repaint to its owner; lifecycle changes remain page damage.
+    if matches!(event, HostEvent::Key(_) | HostEvent::Text(_)) { app.note_input_damage(); }
+    else { app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle); }
     match event {
+        HostEvent::Key(press) => ingest_key(app, press),
+        HostEvent::Text(text) => ingest_text_commit(app, text),
         // Nothing is torn down here: the loop ends, then `shutdown` releases what is held.
         HostEvent::Quit => app.running = false,
         HostEvent::Lifecycle(edge) => {
@@ -1377,6 +1389,385 @@ unsafe fn host_foreground(app: &mut App, edge: Lifecycle, playing: bool,
     }
 }
 
+/// One key edge, and the loop's whole reaction to it: the ladder every press goes through.
+///
+/// The ladder reads the key's raw `(sym, wcode)` pair, as it always has: a press with no [`Action`]
+/// (an unsupported key) flows on as exactly the pair it was, the lab trigger is a pair `lab.json`
+/// names, and the tape records the pair. `press.pair()` is the raw pair an SDL event carried or, for
+/// a host that sent only an action, the pair `raw_pair` gives it, so a platform with no SDL key
+/// reaches the same arms a real remote does. What the press MEANS (`press.action()`) is read where
+/// the meaning is the question: the pointer-hide notification, which is no press at all.
+unsafe fn ingest_key(app: &mut App, press: KeyPress) {
+    let RawKey { sym, wcode } = press.pair();
+    // The fork's packed state (low byte 1 is down, 0x100 an auto-repeat), re-derived from the edge
+    // so the arms below, `bridge::key_input` and the tape read it exactly as they read the event.
+    let state = press.state();
+    // The press's IDENTITY, resolved once from the two raw fields
+    // (`ui::consts::classify`, which is where the spellings live and where they
+    // are tested). `sym` and `wcode` are still read raw by the arms below — the
+    // ones that forward them to a screen's own `move_focus`/`key`, and the modal
+    // panels and the CH▲/CH▼ pager, which still spell their own key tests.
+    let key = classify(sym, wcode);
+    // LG can report its own pointer hide as a key-shaped SDL event. It is
+    // a notification, so it must not wake the HUD or spend Back's exit latch.
+    if press.action() == Some(plx_ui::consts::Action::PointerHidden) {
+        app.ptr.edge.stop();
+        return;
+    }
+    if app.boot_initial.is_some() {
+        let event = super::bridge::key_input(sym, wcode, state,
+            plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 }, plx_machine::machine::Source::Sdl);
+        controlled_key_input(app, event);
+        return;
+    }
+    app.rec.input(super::recorder::enc_key(
+        sym,
+        wcode,
+        (state & 0xff) == 1,
+        state & 0x100 != 0,
+    ));
+    // **Does the TREE own this key?** (phase 5b, `app/bridge.rs`'s coexistence
+    // contract.) Asked once, here, above all three edges — because the dispatcher's
+    // press machine wants ALL of them: `Edge::Down` arms, `Edge::Repeat` is the
+    // dropped-key-up net's liveness beat, and `Edge::Up` is the release. Handing it
+    // only the fresh presses would leave a dipped control committing a second later
+    // at `press::MAX_HOLD_MS` instead of on the button coming up.
+    let tree_owns_key = super::bridge::owns_input(&app.pages);
+    // `clock::now()`, not `fr.now`: INGEST runs before the frame stamps its own time
+    // (see `run`'s phase order), so `fr.now` is still 0 here — the same reason the
+    // ladder below reaches for the clock to fill `app.last_input`. `dt_us` is 0
+    // because an event's `at` is a stamp, not a timestep: every machine the
+    // dispatcher steps is driven by the FRAME's tick, which `bridge::frame` supplies.
+    let tree_tick = plx_machine::machine::Tick {
+        ms: clock::now(),
+        dt_us: 0,
+    };
+    if (state & 0xff) != 1 {
+        if tree_owns_key {
+            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
+        }
+        // …and the loop's own key-up bookkeeping runs either way: it retires the sym
+        // from the physically-down slot and releases a deferred press, both of which are
+        // state about the PHYSICAL key rather than about whoever read it. Skipping it
+        // while a surface is up would leave a key the ladders never saw go down looking
+        // held the moment the surface closes.
+        //
+        // **It no longer touches the scrub** (restructure phase 12, PX-PLAYER). It used to
+        // commit, cancel or debounce `PlayerScreen::scrub` from here — a field the page
+        // itself has owned since it began answering `HitSource::Engine`, and which arms its
+        // own `TAP_COMMIT_MS` debounce on the very same `Edge::Up` — so one tap of RIGHT
+        // issued two seeks. The publish that followed went with it: nothing here moves a
+        // published field any more.
+        on_key_up(sym, &mut app.down_sym);
+        return;
+    }
+    // A repeat is only a repeat if we watched the key go down. See `App::down_sym`:
+    // the system keyboard eats key-ups, so the driver stamps 0x100 on presses that are
+    // the FIRST of their own gesture, and dropping those loses one press in two.
+    if state & 0x100 != 0 && sym == app.down_sym {
+        if tree_owns_key {
+            // **Item 13 survives the migration, and only the DIRECTIONS are gated.**
+            // A held key repeats every ~50 ms; a settings row or a line of reading
+            // text per beat is a blur nobody can track, and the focus engine has no
+            // cadence of its own — so `RepeatGate` still throttles the moves. The OK
+            // edges go through UNGATED, deliberately: `dispatch`'s ingest reads an OK
+            // `Edge::Repeat` as `press.note_alive`, so a swallowed beat is a hold that
+            // looks like a lost key-up and springs back without activating.
+            let ok = is_ok(sym);
+            if ok || app.modal_repeat.ready(tree_tick.ms) {
+                app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
+            }
+            return;
+        }
+        // All that is left of the legacy repeat path is the deferred press's liveness
+        // beat: the player's continuous scrub, its last direct consumer, engages from
+        // `PlayerScreen`'s own `Edge::Repeat` (phase 12, PX-PLAYER).
+
+        return;
+    }
+    // From here down this IS a fresh press, whatever the driver stamped on it.
+    app.last_input = clock::now();
+    // The press that pays for a decoder-release restore also says which clock it restores
+    // (`wake_input`): PLAY plays, the PLAYPAUSE toggle plays a park saved Paused, and every
+    // other key — OK included — is only a wake and keeps the saved clock.
+    let wake = match key {
+        Key::Play => WakePress::Play,
+        Key::PlayPause => WakePress::Toggle,
+        _ => WakePress::Wake,
+    };
+    if claim_press_after_decoder_release(app, wake) {
+        // `down_sym` is unconditional for every fresh press (`begin_fresh_press`'s own
+        // doc), and this press never reaches that function: skipping it here left a key
+        // still physically held after the restore read as a FRESH press on its next
+        // hardware auto-repeat, firing the input ladder for real a tick after the restore.
+        app.down_sym = sym;
+        return;
+    }
+    let viewer_paused = viewer_paused_for(&app.player.session, &app.adapters.player);
+    // The bare player samples its HUD in delivery order. The lab trigger is
+    // consumed here, so it keeps the loop's fresh-press bookkeeping.
+    let ordered_player_key = tree_owns_key && !app.pages.surface_up()
+        && matches!(app.route(), AppArg::Player) && !plx_os::labcfg::is_trigger_key(sym, wcode);
+    begin_fresh_press(&mut app.player.session,
+        key,
+        sym,
+        wcode,
+        app.last_input,
+        viewer_paused,
+        &mut app.down_sym,
+        None, // The mounted player samples fresh presses in its own input delivery.
+        &mut app.ptr,
+
+    );
+    if !ordered_player_key {
+        super::bridge::send_player_message(&mut app.pages,
+            plx_screens::registry::AppMsg::PlayerExtendHud { now: app.last_input, duration_ms: HUD_LINGER_MS });
+    }
+
+    // LAB BUILDS ONLY, and above every arm below including the modals: the
+    // diagnostics trigger. It has to outrank the chain because the screen a tester
+    // most needs a snapshot of is the playback failure read-out, whose own arm
+    // `continue`s on every key — and because a snapshot changes no app state, so
+    // there is nothing for a later arm to have wanted first. Compiles to `false`
+    // in every other build (`crate::lab::key_press`).
+    if crate::lab::key_press(sym, wcode, &app.player.session, &app.adapters.player) {
+        return;
+    }
+
+    // ---- the route-scoped arms, each of which `continue`s once it has taken the
+    // press. That makes the chain itself the priority statement: an earlier guard
+    // subsumes each later one it overlaps with, which the playback-failure guard
+    // below does deliberately. Keep it a chain — a `match` over the same routes
+    // compiles and keeps the suite green while silently reordering it, because
+    // exhaustiveness cannot see subsumption.
+    //
+    // **THE DISPATCHER'S ARM, and it is one line because that is the whole point**
+    // (phase 5b). Three hand-written arms stood here — consent above legal above the
+    // settings root — and the height of each in this chain WAS its modality: each
+    // `continue`d on every key, and the ordering was load-bearing because BACK out of
+    // the privacy notice would otherwise have been read as Home's ROOT PRESS and
+    // handed the screen to the television. That ordering is now a container's: the
+    // Settings family is a modal SURFACE on the app's `ModalStack`, whose inner
+    // `NavStack` walks itself on BACK and only then lets the container dismiss it, so
+    // "which of the four answers this key" is a tree walk rather than a chain the next
+    // editor has to keep in order. `owns_input` is the same question the pointer,
+    // click and wheel arms below ask, which is what stops the four drifting apart.
+    //
+    // It stays HIGH in the chain for the reason the old arms did: an owned surface is
+    // modal over whatever route is behind it, and every route arm below would
+    // otherwise act on a page the user cannot see.
+    //
+    // **The fourth root is closed here** (`app/input.rs`'s `back_at_root`). BACK at
+    // the FIRST consent stage used to be swallowed — the step behind it is sign-in,
+    // which cannot be undone — and the old comment recorded why the 2026-09-03 root
+    // rule could not reach it: `ui::consent::on_back` reported `true` for both the
+    // stepped-back and the swallowed case, so a BACK arm could not tell them apart
+    // without changing that module's return type. The owned screen simply says which
+    // it is: `ConsentPage` answers `Handled::No` at a Settings BACK and pushes
+    // `LoopReq::BackAtRoot` at the first stage, and the request drain below performs
+    // it. Nothing is stranded by going to the television's Home — the question is
+    // neither answered nor dismissed, and selecting the tile again comes back to it.
+    if tree_owns_key {
+        // Ingress already resolved the driver's repeat-marked fresh press.
+        let state = if ordered_player_key { state & !0x100 } else { state };
+        app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
+        return;
+    }
+    // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
+    // `Route::Onboard`'s own removal in 5b): both are OWNED screens now, so a key on
+    // either was already taken by `tree_owns_key` above and never reaches this chain.
+    // (`Route::ItemMenu`'s arm stood here, above every route-scoped one — it was MODAL, so it
+    // took every key. The item menu is a `ModalStack` surface since phase 10, so its keys were
+    // already claimed by `tree_owns_key` well above this chain and it can never be reached.)
+    // (The failure read-out's own key arm stood here — OK to the quality ladder, BACK out of
+    // the playback, everything else swallowed, and its guard deliberately subsuming every
+    // player arm below it. It was already unreachable when phase 12 found it, having grown a
+    // `!matches!(app.route, Route::Player)` term that can never hold beside the
+    // `Route::Player` test above it; what it was FOR is `PlayerScreen::handle_key`'s own
+    // `transport_hidden` gate, which asks `failed_key_action` — the same pure policy — before
+    // any ordinary transport arm.)
+    // (Four arms stood here — the track menu, the `…` popover, the Info card and the
+    // Chapters strip, each gated on `overlay_swallows_key` so that a transport key FELL
+    // THROUGH to the ordinary Pause/Play arms below while everything else was swallowed. The
+    // panels are SURFACES on the player page's own `ModalStack` since restructure phase
+    // 9, so `tree_owns_key` at the top of this chain has already handed the key to the one
+    // that is open and returned; the fall-through, which a surface cannot perform, is
+    // `PlayerReq::Transport` — see `screens::player::overlay`'s module doc.)
+    // (The player's UP/DOWN arm stood here. It walked the HUD ring on the mounted
+    // `PlayerScreen`'s own `hud`/`scrub` — which the page also does, through `Screen::links`, the
+    // groups' edge rules and `answer_edge`, for the same key — and was unreachable behind `tree_owns_key` above from the moment the page
+    // answered `FocusSource::Engine`. Deleted in phase 12, PX-PLAYER.)
+    // `Route::Search` is deliberately absent here (phase 6/7 Search cutover, mirroring
+    // `Route::Login | Route::Profiles` above): Search is unconditionally an OWNED screen
+    // now, so `tree_owns_key` above already took every key on this route and returned —
+    // this chain can never see one.
+    // ---- and the arms on key IDENTITY, which the routes above have already had
+    // their pick of. Still one `else if` chain, still in this order: four of its
+    // nine tests carry a route term as well as a key one (this first arm, Stop, the
+    // player's LEFT/RIGHT and the Library pager), so the order is behaviour too.
+    //
+    // The plain syms only (`alt: false`) — the alternate D-pad codes reach no arm
+    // that navigates a non-player screen. See `Key::Left`, which carries that
+    // asymmetry between this test and the player's scrub arm below.
+    if !matches!(app.route(), AppArg::Player)
+        && matches!(
+            key,
+            Key::Up
+                | Key::Down
+                | Key::Left { alt: false }
+                | Key::Right { alt: false }
+        )
+    {
+        // Every non-player route reaching this far down the ladder is an OWNED page
+        // (Home/Library/Search included, since the Search cutover), and an owned page's
+        // directions are taken by `tree_owns_key`'s arm well above this chain — this branch
+        // is reached by nothing and does nothing (`key_move_focus`, the function that used
+        // to live here, was itself already an unconditional no-op and is retired). The
+        // condition stays so this arm keeps its PRECEDENCE over `wcode == WCODE_POINTER_HIDDEN`
+        // below for the documented direction+wcode-hidden combination noted there; removing
+        // the branch instead of its body would let that combination fall through to it.
+    } else if wcode == WCODE_POINTER_HIDDEN {
+        // LG pointer auto-hidden: nothing else to do, but a hidden pointer resting at an
+        // edge no longer scrolls the page (`input::EdgeScroll`).
+        app.ptr.edge.stop();
+        //
+        // THE RAW `wcode`, not `Key::PointerHidden`, and this is the one arm in the
+        // ladder that cannot use the classified value. Its precedence here is
+        // ROUTE-DEPENDENT: the nav arm above it is `!Player && <direction>`, so for
+        // an event carrying BOTH a direction sym and this wcode, Home moves focus
+        // (the nav arm wins, being higher) while the player swallows it (the nav arm
+        // is skipped, and this one catches it before the scrub arm below).
+        //
+        // `classify` is a pure function of the pair and cannot express that — it has
+        // one linear order and no route. Ordering it directions-first reproduces
+        // Home and makes the player SEEK on a pointer notification; ordering it
+        // pointer-first reproduces the player and freezes Home's navigation. So the
+        // classifier keeps directions first (Home correct) and the raw test stays
+        // here, at the position that was always the player's answer.
+        //
+        // Whether any real event carries that pair is unrecorded: nothing in the
+        // tree names the sym beside wcode 0x1e4, `remote_token_key` never emits it,
+        // and the simulator cannot produce one — so `tools/keytable.py` is blind to
+        // this by construction. Settling it needs a `key` line off the television.
+    } else if matches!(key, Key::Ok) {
+        // OK is no arm of this chain. Its one occupant was the player's, and a mounted player
+        // page owns input (`bridge::owns_input`, pinned by
+        // `a_mounted_player_page_owns_input_so_the_ladder_never_sees_ok`), so `tree_owns_key`
+        // above took the key; the row's press is the engine's, `PlayerScreen::row_pressed`.
+        // The arm stays, empty, so OK keeps its place in front of the arms below.
+    } else if matches!(key, Key::Pause) {
+        key_pause(&mut app.player.session, &mut app.adapters.player, app.last_input, &mut app.pages);
+    } else if matches!(key, Key::Play) {
+        key_play(&mut app.player.session,
+            &mut app.adapters.player,
+            app.last_input,
+            &mut app.player.lifecycle,
+            &mut app.repause_at,
+            &mut app.ptr,
+            &mut app.pages,
+            &mut app.runtime.bridge(&mut app.bridge),
+        );
+    } else if matches!(key, Key::PlayPause) {
+        // ONE key, both directions. `key_play`/`key_pause` are each half of the
+        // toggle, so this arm picks; off the player route `key_play` is what starts
+        // playback, which is the right answer for a PLAYPAUSE press on a card.
+        if viewer_paused_for(&app.player.session, &app.adapters.player)
+            || super::bridge::player(&app.pages).is_none() {
+            key_play(&mut app.player.session,
+                &mut app.adapters.player,
+                app.last_input,
+                &mut app.player.lifecycle,
+                &mut app.repause_at,
+                &mut app.ptr,
+                &mut app.pages,
+                &mut app.runtime.bridge(&mut app.bridge),
+            );
+        } else {
+            key_pause(&mut app.player.session, &mut app.adapters.player, app.last_input, &mut app.pages);
+        }
+    } else if matches!(key, Key::Exit) {
+        // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
+        // and unlike BACK at Home's root there is nothing ambiguous about a key
+        // labelled EXIT, so unlike BACK it really does end the process — and it
+        // is now the only key that does.
+        log("EXIT key: terminating");
+        app.running = false;
+    // (Two player arms stood here — STOP's `exit_player`, and LEFT/RIGHT's `key_scrub`. Both
+    // are `PlayerScreen`'s: `Key::Stop` asks for `PlayerReq::Exit` and reaches the very same
+    // ritual through `player_requests`, and the scrub ladder is the page's three edges. Their
+    // route terms were two of the four that made this chain's ORDER behaviour, which is why
+    // they are recorded rather than silently dropped. Phase 12, PX-PLAYER.)
+    } else if matches!(key, Key::Back) {
+        key_back(&mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+        );
+    }
+}
+
+/// A text commit from the platform's keyboard (`HostEvent::Text`).
+///
+/// The television's own keyboard committing text. Gated on `bridge::text_owner`,
+/// and the gate is deliberate. Search on top takes every commit whatever our own
+/// record of the panel says: a panel the OS raised or kept behind our back must
+/// not eat REAL typing, so Search adopts it (`textinput::adopt`, via
+/// `Bridge::adopt_system_keyboard`), and only Search's commit carries that
+/// adoption edge (`bridge::text_panel_edge`). Any other page takes text only while
+/// `Dispatcher::system_keyboard_up()` says it raised the keyboard. Everything
+/// else goes to `textinput::queue`, which queues without checking and which
+/// nothing drains, so for a non-Search field our own flag decides: text that
+/// arrives while it is down is not delivered. The leaks of that queue are closed
+/// downstream, where they can be closed completely: `textinput::start` clears
+/// it, so nothing typed before a field opened can arrive in it, and
+/// `MAX_PENDING` bounds a queue nobody drains. An empty commit is ignored by both.
+fn ingest_text_commit(app: &mut App, text: String) {
+    if super::bridge::text_owner(&app.pages) {
+        let panel = super::bridge::text_panel_edge(&app.pages, crate::textinput::available());
+        ingest_text(app, &text, panel, plx_machine::machine::Source::Sdl);
+    } else {
+        crate::textinput::queue(text);
+    }
+}
+
+/// The SDL event's raw bytes as a log line, before anything acts on them: `key`, `text` or `edit`
+/// (the IME's pre-edit, read by nothing else), 48 bytes of hex. The television's byte layouts have
+/// moved under this app before, and this line is what settles which one a press arrived in
+/// (`docs/remote-keys.md`). Nothing for any other event type.
+fn log_raw_input_event(ev: &[u8]) {
+    let et = rd_u32(ev, 0);
+    if !(et == SDL_KEYDOWN || et == SDL_KEYUP || et == SDL_TEXTINPUT || et == SDL_TEXTEDITING) {
+        return;
+    }
+    // 48 bytes, not 32: a TEXTINPUT event's `text[32]` starts at +16 on the
+    // television (LG's `inputSource` shifts it), so it ENDS at exactly +48. At the
+    // old width the one event whose payload the offsets are most easily wrong
+    // about would have left a forensic trail that stopped just before the payload.
+    let mut hex = String::with_capacity(96);
+    for b in &ev[..48] {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    let what = match et {
+        SDL_TEXTINPUT => "text",
+        // **The IME's PRE-EDIT, and the reason it is logged at all.** The panel's
+        // word prediction is a REPLACE — tapping "summer" under a typed "summ"
+        // means *delete what I was predicting on, then commit this* — and the app
+        // sees only the commit, so the field reads "summsummer" (reported from the
+        // couch 2026-08-15). Whether the delete half reaches us as `SDL_TEXTEDITING`
+        // (`text_model.delete_surrounding_text` mapped onto SDL's pre-edit) or as
+        // nothing at all decides whether the fix can be exact or has to be a
+        // heuristic — and this arm is the only way to find out, since nothing in
+        // the app has ever read this event.
+        SDL_TEXTEDITING => "edit",
+        _ => "key",
+    };
+    log(&format!(
+        "[{}] {what} type=0x{et:x} raw={hex}",
+        clock::now()
+    ));
+}
+
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
     let shell = app.platform.shell;
@@ -1386,12 +1777,18 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
 /// The window reacquisition is a platform operation, supplied separately so the
 /// recorded/live ingress boundary can be exercised without an SDL/GL context.
 ///
-/// Quit and the four lifecycle edges are decoded into a [`HostEvent`] and consumed by
-/// [`ingest_host_event`]. What follows is the raw path: key, text, pointer and wheel events, read
-/// from the event's bytes here until their own steps move them behind the decoder.
+/// Quit, the four lifecycle edges, a key edge and a text commit are decoded into a [`HostEvent`]
+/// and consumed by [`ingest_host_event`]. What follows is the raw path: pointer and wheel events,
+/// and the IME's pre-edit, read from the event's bytes here until their own step (W5c) moves the
+/// pointer and wheel behind the decoder.
 unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     restore_window: impl FnOnce(*mut c_void)) {
     if let Some(event) = decode_host_event(&app.ev) {
+        // A key or text event's raw bytes are logged before anything acts on them. A controlled
+        // replay owns logical ingress and logs nothing for a real event.
+        if matches!(event, HostEvent::Key(_) | HostEvent::Text(_)) && !controlled_replay(app) {
+            log_raw_input_event(&app.ev);
+        }
         ingest_host_event(app, fr, event, restore_window);
         return;
     }
@@ -1406,344 +1803,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     // Attribute only the input repaint to its owner; other events remain page damage.
     if is_input_event(et) { app.note_input_damage(); }
     else { app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle); }
-    if et == SDL_KEYDOWN
-        || et == SDL_KEYUP
-        || et == SDL_TEXTINPUT
-        || et == SDL_TEXTEDITING
-    {
-        // 48 bytes, not 32: a TEXTINPUT event's `text[32]` starts at +16 on the
-        // television (LG's `inputSource` shifts it), so it ENDS at exactly +48. At the
-        // old width the one event whose payload the offsets are most easily wrong
-        // about would have left a forensic trail that stopped just before the payload.
-        let mut hex = String::with_capacity(96);
-        for b in &app.ev[..48] {
-            hex.push_str(&format!("{b:02x}"));
-        }
-        let what = match et {
-            SDL_TEXTINPUT => "text",
-            // **The IME's PRE-EDIT, and the reason it is logged at all.** The panel's
-            // word prediction is a REPLACE — tapping "summer" under a typed "summ"
-            // means *delete what I was predicting on, then commit this* — and the app
-            // sees only the commit, so the field reads "summsummer" (reported from the
-            // couch 2026-08-15). Whether the delete half reaches us as `SDL_TEXTEDITING`
-            // (`text_model.delete_surrounding_text` mapped onto SDL's pre-edit) or as
-            // nothing at all decides whether the fix can be exact or has to be a
-            // heuristic — and this arm is the only way to find out, since nothing in
-            // the app has ever read this event.
-            SDL_TEXTEDITING => "edit",
-            _ => "key",
-        };
-        log(&format!(
-            "[{}] {what} type=0x{et:x} raw={hex}",
-            clock::now()
-        ));
-    }
-    if et == SDL_KEYDOWN || et == SDL_KEYUP {
-        let (state, wcode, sym) = decode_key(&app.ev);
-        // The press's IDENTITY, resolved once from the two raw fields
-        // (`ui::consts::classify`, which is where the spellings live and where they
-        // are tested). `sym` and `wcode` are still read raw by the arms below — the
-        // ones that forward them to a screen's own `move_focus`/`key`, and the modal
-        // panels and the CH▲/CH▼ pager, which still spell their own key tests.
-        let key = classify(sym, wcode);
-        // LG can report its own pointer hide as a key-shaped SDL event. It is
-        // a notification, so it must not wake the HUD or spend Back's exit latch.
-        if key == Key::PointerHidden {
-            app.ptr.edge.stop();
-            return;
-        }
-        if app.boot_initial.is_some() {
-            let event = super::bridge::key_input(sym, wcode, state,
-                plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 }, plx_machine::machine::Source::Sdl);
-            controlled_key_input(app, event);
-            return;
-        }
-        app.rec.input(super::recorder::enc_key(
-            sym,
-            wcode,
-            (state & 0xff) == 1,
-            state & 0x100 != 0,
-        ));
-        // **Does the TREE own this key?** (phase 5b, `app/bridge.rs`'s coexistence
-        // contract.) Asked once, here, above all three edges — because the dispatcher's
-        // press machine wants ALL of them: `Edge::Down` arms, `Edge::Repeat` is the
-        // dropped-key-up net's liveness beat, and `Edge::Up` is the release. Handing it
-        // only the fresh presses would leave a dipped control committing a second later
-        // at `press::MAX_HOLD_MS` instead of on the button coming up.
-        let tree_owns_key = super::bridge::owns_input(&app.pages);
-        // `clock::now()`, not `fr.now`: INGEST runs before the frame stamps its own time
-        // (see `run`'s phase order), so `fr.now` is still 0 here — the same reason the
-        // ladder below reaches for the clock to fill `app.last_input`. `dt_us` is 0
-        // because an event's `at` is a stamp, not a timestep: every machine the
-        // dispatcher steps is driven by the FRAME's tick, which `bridge::frame` supplies.
-        let tree_tick = plx_machine::machine::Tick {
-            ms: clock::now(),
-            dt_us: 0,
-        };
-        if (state & 0xff) != 1 {
-            if tree_owns_key {
-                app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
-            }
-            // …and the loop's own key-up bookkeeping runs either way: it retires the sym
-            // from the physically-down slot and releases a deferred press, both of which are
-            // state about the PHYSICAL key rather than about whoever read it. Skipping it
-            // while a surface is up would leave a key the ladders never saw go down looking
-            // held the moment the surface closes.
-            //
-            // **It no longer touches the scrub** (restructure phase 12, PX-PLAYER). It used to
-            // commit, cancel or debounce `PlayerScreen::scrub` from here — a field the page
-            // itself has owned since it began answering `HitSource::Engine`, and which arms its
-            // own `TAP_COMMIT_MS` debounce on the very same `Edge::Up` — so one tap of RIGHT
-            // issued two seeks. The publish that followed went with it: nothing here moves a
-            // published field any more.
-            on_key_up(sym, &mut app.down_sym);
-            return;
-        }
-        // A repeat is only a repeat if we watched the key go down. See `App::down_sym`:
-        // the system keyboard eats key-ups, so the driver stamps 0x100 on presses that are
-        // the FIRST of their own gesture, and dropping those loses one press in two.
-        if state & 0x100 != 0 && sym == app.down_sym {
-            if tree_owns_key {
-                // **Item 13 survives the migration, and only the DIRECTIONS are gated.**
-                // A held key repeats every ~50 ms; a settings row or a line of reading
-                // text per beat is a blur nobody can track, and the focus engine has no
-                // cadence of its own — so `RepeatGate` still throttles the moves. The OK
-                // edges go through UNGATED, deliberately: `dispatch`'s ingest reads an OK
-                // `Edge::Repeat` as `press.note_alive`, so a swallowed beat is a hold that
-                // looks like a lost key-up and springs back without activating.
-                let ok = is_ok(sym);
-                if ok || app.modal_repeat.ready(tree_tick.ms) {
-                    app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
-                }
-                return;
-            }
-            // All that is left of the legacy repeat path is the deferred press's liveness
-            // beat: the player's continuous scrub, its last direct consumer, engages from
-            // `PlayerScreen`'s own `Edge::Repeat` (phase 12, PX-PLAYER).
-
-            return;
-        }
-        // From here down this IS a fresh press, whatever the driver stamped on it.
-        app.last_input = clock::now();
-        // The press that pays for a decoder-release restore also says which clock it restores
-        // (`wake_input`): PLAY plays, the PLAYPAUSE toggle plays a park saved Paused, and every
-        // other key — OK included — is only a wake and keeps the saved clock.
-        let wake = match key {
-            Key::Play => WakePress::Play,
-            Key::PlayPause => WakePress::Toggle,
-            _ => WakePress::Wake,
-        };
-        if claim_press_after_decoder_release(app, wake) {
-            // `down_sym` is unconditional for every fresh press (`begin_fresh_press`'s own
-            // doc), and this press never reaches that function: skipping it here left a key
-            // still physically held after the restore read as a FRESH press on its next
-            // hardware auto-repeat, firing the input ladder for real a tick after the restore.
-            app.down_sym = sym;
-            return;
-        }
-        let viewer_paused = viewer_paused_for(&app.player.session, &app.adapters.player);
-        // The bare player samples its HUD in delivery order. The lab trigger is
-        // consumed here, so it keeps the loop's fresh-press bookkeeping.
-        let ordered_player_key = tree_owns_key && !app.pages.surface_up()
-            && matches!(app.route(), AppArg::Player) && !plx_os::labcfg::is_trigger_key(sym, wcode);
-        begin_fresh_press(&mut app.player.session,
-            key,
-            sym,
-            wcode,
-            app.last_input,
-            viewer_paused,
-            &mut app.down_sym,
-            None, // The mounted player samples fresh presses in its own input delivery.
-            &mut app.ptr,
-
-        );
-        if !ordered_player_key {
-            super::bridge::send_player_message(&mut app.pages,
-                plx_screens::registry::AppMsg::PlayerExtendHud { now: app.last_input, duration_ms: HUD_LINGER_MS });
-        }
-
-        // LAB BUILDS ONLY, and above every arm below including the modals: the
-        // diagnostics trigger. It has to outrank the chain because the screen a tester
-        // most needs a snapshot of is the playback failure read-out, whose own arm
-        // `continue`s on every key — and because a snapshot changes no app state, so
-        // there is nothing for a later arm to have wanted first. Compiles to `false`
-        // in every other build (`crate::lab::key_press`).
-        if crate::lab::key_press(sym, wcode, &app.player.session, &app.adapters.player) {
-            return;
-        }
-
-        // ---- the route-scoped arms, each of which `continue`s once it has taken the
-        // press. That makes the chain itself the priority statement: an earlier guard
-        // subsumes each later one it overlaps with, which the playback-failure guard
-        // below does deliberately. Keep it a chain — a `match` over the same routes
-        // compiles and keeps the suite green while silently reordering it, because
-        // exhaustiveness cannot see subsumption.
-        //
-        // **THE DISPATCHER'S ARM, and it is one line because that is the whole point**
-        // (phase 5b). Three hand-written arms stood here — consent above legal above the
-        // settings root — and the height of each in this chain WAS its modality: each
-        // `continue`d on every key, and the ordering was load-bearing because BACK out of
-        // the privacy notice would otherwise have been read as Home's ROOT PRESS and
-        // handed the screen to the television. That ordering is now a container's: the
-        // Settings family is a modal SURFACE on the app's `ModalStack`, whose inner
-        // `NavStack` walks itself on BACK and only then lets the container dismiss it, so
-        // "which of the four answers this key" is a tree walk rather than a chain the next
-        // editor has to keep in order. `owns_input` is the same question the pointer,
-        // click and wheel arms below ask, which is what stops the four drifting apart.
-        //
-        // It stays HIGH in the chain for the reason the old arms did: an owned surface is
-        // modal over whatever route is behind it, and every route arm below would
-        // otherwise act on a page the user cannot see.
-        //
-        // **The fourth root is closed here** (`app/input.rs`'s `back_at_root`). BACK at
-        // the FIRST consent stage used to be swallowed — the step behind it is sign-in,
-        // which cannot be undone — and the old comment recorded why the 2026-09-03 root
-        // rule could not reach it: `ui::consent::on_back` reported `true` for both the
-        // stepped-back and the swallowed case, so a BACK arm could not tell them apart
-        // without changing that module's return type. The owned screen simply says which
-        // it is: `ConsentPage` answers `Handled::No` at a Settings BACK and pushes
-        // `LoopReq::BackAtRoot` at the first stage, and the request drain below performs
-        // it. Nothing is stranded by going to the television's Home — the question is
-        // neither answered nor dismissed, and selecting the tile again comes back to it.
-        if tree_owns_key {
-            // Ingress already resolved the driver's repeat-marked fresh press.
-            let state = if ordered_player_key { state & !0x100 } else { state };
-            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
-            return;
-        }
-        // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
-        // `Route::Onboard`'s own removal in 5b): both are OWNED screens now, so a key on
-        // either was already taken by `tree_owns_key` above and never reaches this chain.
-        // (`Route::ItemMenu`'s arm stood here, above every route-scoped one — it was MODAL, so it
-        // took every key. The item menu is a `ModalStack` surface since phase 10, so its keys were
-        // already claimed by `tree_owns_key` well above this chain and it can never be reached.)
-        // (The failure read-out's own key arm stood here — OK to the quality ladder, BACK out of
-        // the playback, everything else swallowed, and its guard deliberately subsuming every
-        // player arm below it. It was already unreachable when phase 12 found it, having grown a
-        // `!matches!(app.route, Route::Player)` term that can never hold beside the
-        // `Route::Player` test above it; what it was FOR is `PlayerScreen::handle_key`'s own
-        // `transport_hidden` gate, which asks `failed_key_action` — the same pure policy — before
-        // any ordinary transport arm.)
-        // (Four arms stood here — the track menu, the `…` popover, the Info card and the
-        // Chapters strip, each gated on `overlay_swallows_key` so that a transport key FELL
-        // THROUGH to the ordinary Pause/Play arms below while everything else was swallowed. The
-        // panels are SURFACES on the player page's own `ModalStack` since restructure phase
-        // 9, so `tree_owns_key` at the top of this chain has already handed the key to the one
-        // that is open and returned; the fall-through, which a surface cannot perform, is
-        // `PlayerReq::Transport` — see `screens::player::overlay`'s module doc.)
-        // (The player's UP/DOWN arm stood here. It walked the HUD ring on the mounted
-        // `PlayerScreen`'s own `hud`/`scrub` — which the page also does, through `Screen::links`, the
-        // groups' edge rules and `answer_edge`, for the same key — and was unreachable behind `tree_owns_key` above from the moment the page
-        // answered `FocusSource::Engine`. Deleted in phase 12, PX-PLAYER.)
-        // `Route::Search` is deliberately absent here (phase 6/7 Search cutover, mirroring
-        // `Route::Login | Route::Profiles` above): Search is unconditionally an OWNED screen
-        // now, so `tree_owns_key` above already took every key on this route and returned —
-        // this chain can never see one.
-        // ---- and the arms on key IDENTITY, which the routes above have already had
-        // their pick of. Still one `else if` chain, still in this order: four of its
-        // nine tests carry a route term as well as a key one (this first arm, Stop, the
-        // player's LEFT/RIGHT and the Library pager), so the order is behaviour too.
-        //
-        // The plain syms only (`alt: false`) — the alternate D-pad codes reach no arm
-        // that navigates a non-player screen. See `Key::Left`, which carries that
-        // asymmetry between this test and the player's scrub arm below.
-        if !matches!(app.route(), AppArg::Player)
-            && matches!(
-                key,
-                Key::Up
-                    | Key::Down
-                    | Key::Left { alt: false }
-                    | Key::Right { alt: false }
-            )
-        {
-            // Every non-player route reaching this far down the ladder is an OWNED page
-            // (Home/Library/Search included, since the Search cutover), and an owned page's
-            // directions are taken by `tree_owns_key`'s arm well above this chain — this branch
-            // is reached by nothing and does nothing (`key_move_focus`, the function that used
-            // to live here, was itself already an unconditional no-op and is retired). The
-            // condition stays so this arm keeps its PRECEDENCE over `wcode == WCODE_POINTER_HIDDEN`
-            // below for the documented direction+wcode-hidden combination noted there; removing
-            // the branch instead of its body would let that combination fall through to it.
-        } else if wcode == WCODE_POINTER_HIDDEN {
-            // LG pointer auto-hidden: nothing else to do, but a hidden pointer resting at an
-            // edge no longer scrolls the page (`input::EdgeScroll`).
-            app.ptr.edge.stop();
-            //
-            // THE RAW `wcode`, not `Key::PointerHidden`, and this is the one arm in the
-            // ladder that cannot use the classified value. Its precedence here is
-            // ROUTE-DEPENDENT: the nav arm above it is `!Player && <direction>`, so for
-            // an event carrying BOTH a direction sym and this wcode, Home moves focus
-            // (the nav arm wins, being higher) while the player swallows it (the nav arm
-            // is skipped, and this one catches it before the scrub arm below).
-            //
-            // `classify` is a pure function of the pair and cannot express that — it has
-            // one linear order and no route. Ordering it directions-first reproduces
-            // Home and makes the player SEEK on a pointer notification; ordering it
-            // pointer-first reproduces the player and freezes Home's navigation. So the
-            // classifier keeps directions first (Home correct) and the raw test stays
-            // here, at the position that was always the player's answer.
-            //
-            // Whether any real event carries that pair is unrecorded: nothing in the
-            // tree names the sym beside wcode 0x1e4, `remote_token_key` never emits it,
-            // and the simulator cannot produce one — so `tools/keytable.py` is blind to
-            // this by construction. Settling it needs a `key` line off the television.
-        } else if matches!(key, Key::Ok) {
-            // OK is no arm of this chain. Its one occupant was the player's, and a mounted player
-            // page owns input (`bridge::owns_input`, pinned by
-            // `a_mounted_player_page_owns_input_so_the_ladder_never_sees_ok`), so `tree_owns_key`
-            // above took the key; the row's press is the engine's, `PlayerScreen::row_pressed`.
-            // The arm stays, empty, so OK keeps its place in front of the arms below.
-        } else if matches!(key, Key::Pause) {
-            key_pause(&mut app.player.session, &mut app.adapters.player, app.last_input, &mut app.pages);
-        } else if matches!(key, Key::Play) {
-            key_play(&mut app.player.session,
-                &mut app.adapters.player,
-                app.last_input,
-                &mut app.player.lifecycle,
-                &mut app.repause_at,
-                &mut app.ptr,
-                &mut app.pages,
-                &mut app.runtime.bridge(&mut app.bridge),
-            );
-        } else if matches!(key, Key::PlayPause) {
-            // ONE key, both directions. `key_play`/`key_pause` are each half of the
-            // toggle, so this arm picks; off the player route `key_play` is what starts
-            // playback, which is the right answer for a PLAYPAUSE press on a card.
-            if viewer_paused_for(&app.player.session, &app.adapters.player)
-                || super::bridge::player(&app.pages).is_none() {
-                key_play(&mut app.player.session,
-                    &mut app.adapters.player,
-                    app.last_input,
-                    &mut app.player.lifecycle,
-                    &mut app.repause_at,
-                    &mut app.ptr,
-                    &mut app.pages,
-                    &mut app.runtime.bridge(&mut app.bridge),
-                );
-            } else {
-                key_pause(&mut app.player.session, &mut app.adapters.player, app.last_input, &mut app.pages);
-            }
-        } else if matches!(key, Key::Exit) {
-            // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
-            // and unlike BACK at Home's root there is nothing ambiguous about a key
-            // labelled EXIT, so unlike BACK it really does end the process — and it
-            // is now the only key that does.
-            log("EXIT key: terminating");
-            app.running = false;
-        // (Two player arms stood here — STOP's `exit_player`, and LEFT/RIGHT's `key_scrub`. Both
-        // are `PlayerScreen`'s: `Key::Stop` asks for `PlayerReq::Exit` and reaches the very same
-        // ritual through `player_requests`, and the scrub ladder is the page's three edges. Their
-        // route terms were two of the four that made this chain's ORDER behaviour, which is why
-        // they are recorded rather than silently dropped. Phase 12, PX-PLAYER.)
-        } else if matches!(key, Key::Back) {
-            key_back(&mut app.player,
-                &mut app.adapters.player,
-                &mut app.repause_at,
-                &mut app.refresh_hubs,
-                &mut app.pages,
-            );
-        }
-    } else if et == SDL_MOUSEMOTION {
+    // The raw bytes of what is left on this path: the IME's pre-edit, which nothing else reads.
+    log_raw_input_event(&app.ev);
+    if et == SDL_MOUSEMOTION {
         app.last_input = clock::now();
         app.ptr.last_motion = app.last_input;
         app.ptr.note_cursor_motion();
@@ -1964,27 +2026,6 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             }
             // `Route::Search` is deliberately absent here: `search_owns_input()` above
             // already took every wheel tick on this route and returned.
-        }
-    } else if et == SDL_TEXTINPUT {
-        // The television's own keyboard committing text. Gated on `bridge::text_owner`,
-        // and the gate is deliberate. Search on top takes every commit whatever our own
-        // record of the panel says: a panel the OS raised or kept behind our back must
-        // not eat REAL typing, so Search adopts it (`textinput::adopt`, via
-        // `Bridge::adopt_system_keyboard`), and only Search's commit carries that
-        // adoption edge (`bridge::text_panel_edge`). Any other page takes text only while
-        // `Dispatcher::system_keyboard_up()` says it raised the keyboard. Everything
-        // else goes to `textinput::on_event`, which queues without checking and which
-        // nothing drains, so for a non-Search field our own flag decides: text that
-        // arrives while it is down is not delivered. The leaks of that queue are closed
-        // downstream, where they can be closed completely: `textinput::start` clears
-        // it, so nothing typed before a field opened can arrive in it, and
-        // `MAX_PENDING` bounds a queue nobody drains.
-        if super::bridge::text_owner(&app.pages) {
-            let text = crate::textinput::decode(&app.ev);
-            let panel = super::bridge::text_panel_edge(&app.pages, crate::textinput::available());
-            ingest_text(app, &text, panel, plx_machine::machine::Source::Sdl);
-        } else {
-            crate::textinput::on_event(&app.ev);
         }
     }
 }
@@ -4572,6 +4613,9 @@ pub(in crate::app) mod lifecycle_regression_tests {
             HostEvent::Lifecycle(Lifecycle::DidBackground) => 0x104,
             HostEvent::Lifecycle(Lifecycle::WillForeground) => 0x105,
             HostEvent::Lifecycle(Lifecycle::DidForeground) => 0x106,
+            HostEvent::Key(_) | HostEvent::Text(_) => {
+                panic!("a key or a text commit arrives as its own bytes (`encode_key`, `encode_event`), not as a type code")
+            }
         }
     }
 
@@ -4808,6 +4852,144 @@ pub(in crate::app) mod lifecycle_regression_tests {
             ("lifecycle".to_owned(), 0x105), ("lifecycle".to_owned(), 0x106)],
             "the four edges, as SDL codes, in order; the quit is not recorded");
         assert_eq!(tapes[0], tapes[1], "the tape is byte-equal whichever way an edge arrives");
+    }
+
+    // ---- W5b: a key edge as a `HostEvent` -------------------------------------------------------
+    //
+    // As above, each key is delivered two ways: as the SDL bytes the drain decodes, and as the
+    // `HostEvent::Key` a platform with no SDL key sends. The hosted press carries the ACTION alone
+    // (`raw: None`), so the loop expands it with `raw_pair`, the pair a remote's press would be.
+
+    /// One edge of `action`, either way.
+    fn deliver_key(app: &mut App, fr: &mut Frame, hosted: bool, action: plx_ui::consts::Action,
+        edge: plx_machine::machine::Edge) {
+        use plx_machine::machine::Edge;
+        if hosted {
+            let press = KeyPress::new(Some(action), edge, None).expect("an action names a press");
+            unsafe { ingest_host_event(app, fr, HostEvent::Key(press), |_| {}) };
+        } else {
+            let (sym, wcode) = plx_ui::consts::raw_pair(action);
+            app.ev = match edge {
+                Edge::Down => encode_key(sym, wcode, true),
+                Edge::Repeat => encode_key_repeat(sym, wcode),
+                Edge::Up => encode_key(sym, wcode, false),
+            };
+            event(app, fr, if edge == Edge::Up { SDL_KEYUP } else { SDL_KEYDOWN });
+        }
+    }
+
+    /// What a key edge left for the next frame (the owned inputs, as the tape would carry them) and
+    /// the physically-down slot a repeat is judged against.
+    fn key_aftermath(app: &mut App) -> (Vec<serde_json::Value>, u32) {
+        let inputs = app.inputs.drain(..)
+            .map(|e| super::super::bootstrap::effects::input(&e).unwrap())
+            .collect();
+        (inputs, app.down_sym)
+    }
+
+    /// **A hosted key is the key an SDL event is.** On a page that owns the keys (Settings), every
+    /// edge of a spread of actions (a direction, OK, BACK, PAUSE, the pager, the edit key, a digit and
+    /// REWIND) leaves the same inputs and the same down slot whichever way it arrives.
+    #[test]
+    fn a_host_key_takes_the_path_an_sdl_key_takes() {
+        use plx_machine::machine::Edge;
+        use plx_ui::consts::Action;
+        let _serial = plx_base::testlock::serial();
+        let actions = [Action::Down, Action::Ok, Action::Back, Action::Pause, Action::PageDown,
+            Action::Backspace, Action::Digit(5), Action::Rewind];
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(plx_screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            let mut steps = Vec::new();
+            for action in actions {
+                for edge in [Edge::Down, Edge::Repeat, Edge::Up] {
+                    clock::set_replay(100);
+                    deliver_key(&mut app, &mut fr, hosted, action, edge);
+                    steps.push(key_aftermath(&mut app));
+                }
+            }
+            seen.push(steps);
+        }
+        assert!(seen[0].iter().any(|(inputs, _)| !inputs.is_empty()), "premise: the page takes the keys");
+        assert_eq!(seen[0], seen[1], "a host's key and an SDL key leave the same inputs and the same down slot");
+    }
+
+    /// **A press with no action flows on as the pair it was.** An unsupported key (the colour
+    /// buttons: `docs/remote-keys.md` section 9's 504) has no `Action`; sent raw-only by a host it
+    /// reaches the loop exactly as the SDL bytes do, and the physically-down slot keeps its sym.
+    #[test]
+    fn an_unbound_host_key_flows_on_as_the_raw_pair_it_was() {
+        use plx_machine::machine::Edge;
+        let _serial = plx_base::testlock::serial();
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(plx_screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            let mut steps = Vec::new();
+            for (edge, down) in [(Edge::Down, true), (Edge::Repeat, true), (Edge::Up, false)] {
+                clock::set_replay(100);
+                if hosted {
+                    let press = KeyPress::new(None, edge, Some(RawKey { sym: 0, wcode: 504 })).unwrap();
+                    unsafe { ingest_host_event(&mut app, &mut fr, HostEvent::Key(press), |_| {}) };
+                } else {
+                    app.ev = if edge == Edge::Repeat { encode_key_repeat(0, 504) }
+                        else { encode_key(0, 504, down) };
+                    event(&mut app, &mut fr, if down { SDL_KEYDOWN } else { SDL_KEYUP });
+                }
+                steps.push(key_aftermath(&mut app));
+            }
+            seen.push(steps);
+        }
+        assert_eq!(seen[0], seen[1], "a raw-only host key and its SDL bytes leave the same loop");
+    }
+
+    /// **The tape is the same whichever way a key arrives**, and it is today's: one `key` row per
+    /// edge carrying the raw pair, `down` and `repeat`, as `enc_key` always wrote them.
+    #[test]
+    fn a_host_key_is_recorded_as_the_pair_it_arrives_as() {
+        use super::super::{bootstrap::Initial, recorder::{Recplay, state_fp}};
+        use plx_machine::machine::Edge;
+        use plx_ui::consts::Action;
+        use plx_ui::rec::{Header, MemSink, Recording};
+        let _serial = plx_base::testlock::serial();
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut tapes = Vec::new();
+        for hosted in [false, true] {
+            let mut app = app();
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            let sink = MemSink::default();
+            let segments = sink.segments.clone();
+            let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+            app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+            app.rec.tick(initial.clock_start, 0.0);
+            for (action, edge) in [(Action::Down, Edge::Down), (Action::Down, Edge::Repeat), (Action::Down, Edge::Up),
+                (Action::Ok, Edge::Down), (Action::Ok, Edge::Up), (Action::Pause, Edge::Down), (Action::Pause, Edge::Up)] {
+                deliver_key(&mut app, &mut fr, hosted, action, edge);
+            }
+            app.rec.end_frame(&|| 7);
+            std::mem::replace(&mut app.rec, Recplay::Off).finish(plx_machine::landgate::fixture_gate());
+            let recording = Recording::parse(&manifest,
+                &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+            tapes.push(recording.frames.iter().flat_map(|frame| frame.inputs.clone()).collect::<Vec<_>>());
+        }
+        let rows: Vec<(String, u64, u64, bool, bool)> = tapes[0].iter()
+            .map(|r| (r["kind"].as_str().unwrap().to_owned(), r["sym"].as_u64().unwrap(), r["wcode"].as_u64().unwrap(),
+                r["down"].as_bool().unwrap(), r["repeat"].as_bool().unwrap()))
+            .collect();
+        let key = |sym, wcode, down, repeat| ("key".to_owned(), sym, wcode, down, repeat);
+        assert_eq!(rows, [
+            key(0x4000_0051, 0, true, false), key(0x4000_0051, 0, true, true), key(0x4000_0051, 0, false, false),
+            key(13, 0, true, false), key(13, 0, false, false),
+            key(0, 72, true, false), key(0, 72, false, false),
+        ], "one `key` row per edge, in `enc_key`'s shape");
+        assert_eq!(tapes[0], tapes[1], "the tape is byte-equal whichever way a key arrives");
     }
 
     #[cfg(feature = "devtriggers")]
@@ -5246,9 +5428,11 @@ pub(in crate::app) mod lifecycle_regression_tests {
             fn drop(&mut self) { unsafe { SDL_Quit(); } }
         }
         let _events = Events;
-        for fifo in [true, false] {
+        // Three doors: the FIFO's token, the television's keyboard as the SDL bytes the drain decodes,
+        // and the same commit as the `HostEvent::Text` a platform with no SDL hands the loop (W5b).
+        for (fifo, hosted) in [(true, false), (false, false), (false, true)] {
             DIALLED.lock().unwrap().clear();
-            let dir = HudDir::new(&fifo.to_string());
+            let dir = HudDir::new(&format!("{fifo}-{hosted}"));
             let (mut app, mut fr, mut now) = hud_address_field_up(&dir.0, record);
 
             // Type it as each door delivers it: the FIFO in one token, the television's keyboard one key, one commit.
@@ -5259,13 +5443,15 @@ pub(in crate::app) mod lifecycle_regression_tests {
             for chunk in commits {
                 if fifo {
                     assert!(unsafe { ingress_token(&mut app, &mut fr, &format!("txt:{chunk}")) });
+                } else if hosted {
+                    unsafe { ingest_host_event(&mut app, &mut fr, HostEvent::Text(chunk.to_owned()), |_| {}) };
                 } else {
                     app.ev = crate::textinput::encode_event(chunk);
                     event(&mut app, &mut fr, SDL_TEXTINPUT);
                 }
                 assert!(matches!(app.inputs.last().map(|input| &input.kind),
                     Some(InputKind::Text(TextEdit::Commit(text))) if &**text == chunk),
-                    "the text reaches the app's input queue (fifo={fifo}), not textinput's");
+                    "the text reaches the app's input queue (fifo={fifo}, hosted={hosted}), not textinput's");
                 let inputs = std::mem::take(&mut app.inputs);
                 now += 16;
                 super::super::bridge::app_frame(&mut app, Tick { ms: now, dt_us: 16_000 }, inputs);

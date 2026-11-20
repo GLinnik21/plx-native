@@ -121,7 +121,7 @@ before `SDL_Init` (§5).
 | `301` | `wcode` | `page_dir`, Library route only | CH▼ pages down (evdev 403 `KEY_CHANNELDOWN`) |
 | `8` | `sym` | `screens::search::SearchScreen::step`, while editing | backspace |
 | `156 \| 1<<30` | `sym` | `screens::search::SearchScreen::step`, while editing | the panel's **Clear all**. **Not producible from the evdev table** — it reaches us through the fork's own text/IME path, which is why it is measured but has no evdev provenance. |
-| `48..=57` | `sym` | `screens::profiles`, PIN keypad | type that digit into the PIN. `screens::profiles::digit_of` also reads the range out of `wcode`, where it is **not** a digit — §9. |
+| `48..=57` | `sym` | `screens::profiles`, PIN keypad | type that digit into the PIN. `consts::pin_digit` (moved from `screens::profiles::digit_of`) also reads the range out of `wcode`, where it is **not** a digit — §9. |
 
 ### Swallowed
 
@@ -201,10 +201,10 @@ change rather than a tidy-up, and the sibling codes (`402`, `415`, `413`) come f
 `linux/input.h` does not name — so unlike `33`/`34` there is no positive evidence about them in
 either direction. **Settle all four together, with the §7 capture plus a USB keyboard, in one pass.**
 
-### 4.3 and 4.4 — `SDLK_SELECT`, and `digit_of`'s `wcode` arm
+### 4.3 and 4.4 — `SDLK_SELECT`, and `pin_digit`'s `wcode` arm
 
 The other two are written up in §9, whose first and third bullets they are: `SDLK_SELECT` is
-`SDL_SCANCODE_END`, and `screens::profiles::digit_of` reads ASCII digits out of the scancode field. Both are
+`SDL_SCANCODE_END`, and `consts::pin_digit` (the old `screens::profiles::digit_of`) reads ASCII digits out of the scancode field. Both are
 misreadings of the same field, both are recorded rather than changed, and the reasons are there.
 `is_bound` (§6) declines to inherit the second of them.
 
@@ -282,11 +282,11 @@ host's SDL rather than the press. The bare player samples the HUD for bound keys
 delivery. A second Back in the same SDL batch sees the first one's dismissal, and an intervening
 bound press spends any exit arming. The LG pointer-hidden notification only stops edge scrolling.
 
-**The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
+**The digit term reads `sym` and not `wcode`, diverging from `consts::pin_digit` (the old `screens::profiles::digit_of`), on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'
 scancodes are 30–39, which is how 33/34 turned out to be `4` and `5` in the first place). Mirroring
-`digit_of` would have put the retired mis-reading straight back inside the gate that exists to stop
-it. The consequence is that `is_bound` is not a strict superset of `digit_of` for a wcode-only
+`pin_digit` would have put the retired mis-reading straight back inside the gate that exists to stop
+it. The same term is `action_of`'s `Action::Digit`, which `is_bound` is now defined by. The consequence is that `is_bound` is not a strict superset of `pin_digit` for a wcode-only
 punctuation press — which is harmless, because the PIN pad has neither a HUD nor an armed click.
 
 Three things stay unconditional, each for its own reason. `held.down_sym` is bookkeeping about the
@@ -432,10 +432,10 @@ reproduce rather than a rule to obey by quitting.
   `SDL_SCANCODE_RETURN`, captured and bound.
 * **§4.2** — `19` is `SDL_SCANCODE_P` and is bound to PLAY. Untested on a device; needs a USB
   keyboard as well as §7.
-* **`screens::profiles`' `digit_of` reads the digit range in `wcode` too**, where 48–57 are not digits at
+* **`consts::pin_digit` (moved from `screens::profiles::digit_of`) reads the digit range in `wcode` too**, where 48–57 are not digits at
   all but `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock — and its own test asserts
-  `digit_of(0, 55) == Some(b'7')`, where scancode 55 is a full stop. No remote has those keys, so it
-  is harmless in practice and `screens/profiles.rs` is left alone here; a USB keyboard on the PIN screen
+  `pin_digit(0, 55) == Some(b'7')`, where scancode 55 is a full stop. No remote has those keys, so it
+  is harmless in practice and the reader moved down to `consts` unchanged; a USB keyboard on the PIN screen
   would type digits from punctuation. `is_bound` deliberately does **not** mirror it (§6). The same
   capture settles both.
 * **`461` and `156` are not producible from the evdev table.** 156 is explained — the panel's *Clear
