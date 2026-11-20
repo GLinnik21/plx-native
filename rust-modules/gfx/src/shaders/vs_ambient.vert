@@ -25,7 +25,15 @@
 attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_screen;
-uniform vec4 u_atl, u_atr, u_abr, u_abl;
+// One name per `uniform` / `varying` / `attribute` statement, here and in every shader. The four
+// corners below were one `uniform vec4 a, b, c, d;` statement, the only multi-declarator in `shaders/`.
+// The Samsung TV 10.0 emulator (YaGL over Mesa) rejected this program with that statement and compiles
+// it with the split (measured there; a host test in `gfx.rs` keeps every such statement to one name).
+// The uniforms are found by name, so a driver that reads either spelling sees the same program.
+uniform vec4 u_atl;
+uniform vec4 u_atr;
+uniform vec4 u_abr;
+uniform vec4 u_abl;
 varying vec4 v_col;
 #ifdef PLX_DITHER_NC
 // The dither tile's coordinate (`shaders/dither.glsl`, cost rule 4): target px / NOISE_DIM, linear

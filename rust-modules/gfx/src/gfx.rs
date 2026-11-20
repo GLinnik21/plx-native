@@ -9554,28 +9554,214 @@ mod tests {
     /// directory, so a new shader is covered by being added.
     #[test]
     fn no_shader_source_names_a_dev_trigger() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
-        let mut scanned = 0;
         let mut found = Vec::new();
-        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
-            let path = entry.expect("a directory entry").path();
-            // Lossy: a stray non-UTF-8 file (a Finder `.DS_Store`) is not a shader and must not
-            // turn this red; the bytes the scan reads are the same either way.
-            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            let text = String::from_utf8_lossy(&bytes);
-            scanned += 1;
+        for (path, text) in shader_files() {
             for (n, line) in text.lines().enumerate() {
                 if line.contains("plxnative-") {
                     found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
                 }
             }
         }
-        assert!(scanned > 0, "no shader sources under {}", dir.display());
         assert!(
             found.is_empty(),
             "shader sources are embedded verbatim in the binary, comments included, and the \
              stable/nightly package scan (ci/check-package.py) refuses any dev-trigger name in it; \
              reword these without the `plxnative-` name:\n{}",
+            found.join("\n")
+        );
+    }
+
+    /// Every file under `shaders/`, as (path, text), in path order: the one directory walk the
+    /// whole-directory source scans share, so a new shader is covered by being added.
+    fn shader_files() -> Vec<(std::path::PathBuf, String)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("a directory entry").path();
+            // Lossy: a stray non-UTF-8 file (a Finder `.DS_Store`) is not a shader and must not
+            // turn a scan red; the bytes a scan reads are the same either way.
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            files.push((path, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+        assert!(!files.is_empty(), "no shader sources under {}", dir.display());
+        files.sort();
+        files
+    }
+
+    /// The `uniform` / `varying` / `attribute` statements in `src` that declare more than one name
+    /// (`uniform vec4 a, b;`), as (line of the storage keyword, the statement on one line).
+    ///
+    /// Comments and preprocessor lines are blanked first (a trailing `// (x, y, 1/w, 1/h)` note
+    /// holds commas), then the text is cut into statements at `;`, `{` and `}`; a statement
+    /// holding a storage keyword as a whole word is multi-declarator when a comma sits outside
+    /// every `(…)` and `[…]`, which keeps an array size such as `u_sc[12]` out of the count and
+    /// catches `u_a[2], u_b` and a statement that runs over several lines.
+    fn multi_declarator_statements(src: &str) -> Vec<(usize, String)> {
+        // Pass 1: blank comments and preprocessor lines, keeping every newline so line numbers hold.
+        let mut code = String::with_capacity(src.len());
+        let mut chars = src.chars().peekable();
+        let mut line_start = true;
+        while let Some(c) = chars.next() {
+            match (c, chars.peek().copied()) {
+                ('/', Some('/')) => {
+                    while chars.peek().is_some_and(|&n| n != '\n') {
+                        chars.next();
+                    }
+                }
+                ('/', Some('*')) => {
+                    chars.next();
+                    let mut prev = ' ';
+                    for n in chars.by_ref() {
+                        if n == '\n' {
+                            code.push('\n');
+                        }
+                        if prev == '*' && n == '/' {
+                            break;
+                        }
+                        prev = n;
+                    }
+                }
+                ('#', _) if line_start => {
+                    // A directive runs to the end of its line, or past a `\` continuation.
+                    let mut prev = ' ';
+                    while let Some(&n) = chars.peek() {
+                        if n == '\n' && prev != '\\' {
+                            break;
+                        }
+                        if n == '\n' {
+                            code.push('\n');
+                        }
+                        prev = n;
+                        chars.next();
+                    }
+                }
+                _ => {
+                    code.push(c);
+                    if c == '\n' {
+                        line_start = true;
+                    } else if !c.is_whitespace() {
+                        line_start = false;
+                    }
+                }
+            }
+        }
+        // Pass 2: statements, and the commas at depth 0 of the storage-qualified ones.
+        let mut found = Vec::new();
+        let mut line = 1;
+        let mut stmt = String::new();
+        let mut stmt_line = 1;
+        for c in code.chars().chain(std::iter::once(';')) {
+            if !matches!(c, ';' | '{' | '}') {
+                if stmt.is_empty() && c.is_whitespace() {
+                    if c == '\n' {
+                        line += 1;
+                    }
+                    continue;
+                }
+                if stmt.is_empty() {
+                    stmt_line = line;
+                }
+                stmt.push(c);
+                if c == '\n' {
+                    line += 1;
+                }
+                continue;
+            }
+            let storage = stmt
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .any(|w| matches!(w, "uniform" | "varying" | "attribute"));
+            if storage {
+                let mut depth = 0i32;
+                let mut multi = false;
+                for ch in stmt.chars() {
+                    match ch {
+                        '(' | '[' => depth += 1,
+                        ')' | ']' => depth -= 1,
+                        ',' if depth == 0 => multi = true,
+                        _ => {}
+                    }
+                }
+                if multi {
+                    found.push((stmt_line, stmt.split_whitespace().collect::<Vec<_>>().join(" ")));
+                }
+            }
+            stmt.clear();
+        }
+        found
+    }
+
+    /// **The scan that keeps a shader to one name per `uniform` / `varying` / `attribute`
+    /// statement is itself right.** It must count `uniform vec4 a, b;` and its array and multi-line
+    /// forms, and must not count a comma in a comment, a function's parameter list, an array
+    /// size, a local declaration or a longer identifier that merely contains a storage keyword.
+    #[test]
+    fn the_one_name_per_declaration_scan_counts_exactly_the_storage_statements_with_two_names() {
+        let hits = |src: &str| multi_declarator_statements(src).len();
+        for src in [
+            "uniform vec4 a, b;",
+            "varying highp vec2 a, b;",
+            "attribute vec2 a, b;",
+            "uniform vec4 u_a[2], u_b;",
+            "uniform vec4 u_a, u_b[2];",
+            "invariant varying vec4 a, b;",
+            "uniform float a,\n  b;",
+            "uniform vec4 a, b, c;",
+            "#ifdef X\nuniform vec4 a, b;\n#endif",
+            "float f(int i) { return 1.0; }\nuniform vec4 a, b;",
+        ] {
+            assert_eq!(hits(src), 1, "must count: {src:?}");
+        }
+        for src in [
+            "uniform vec4 a;\nuniform vec4 b;",
+            "uniform vec4 u_sc[12];",
+            "uniform highp vec4 u_art;    // the art quad: (x, y, 1/w, 1/h) in authored pixels",
+            "// uniform vec4 a, b;",
+            "/* uniform vec4 a,\n b; */ uniform vec4 c;",
+            "float shade_block(int i, vec2 px) { return 1.0; }",
+            "void main(){ vec2 a, b; a = b; }",
+            "float uniform_scale = 1.0, y;",
+            "#define PAIR uniform vec4 a, b;",
+            "#define LONG(a) \\\n  uniform vec4 a, b;\nuniform vec4 c;",
+            "uniform vec4 u_m[2 * (1 + 2)];",
+            "",
+        ] {
+            assert_eq!(hits(src), 0, "must not count: {src:?}");
+        }
+        // The line is that of the storage keyword, past the blanked comments and directives.
+        assert_eq!(
+            multi_declarator_statements("// note\n#define A 1\n\nuniform vec4 a,\n  b;\nuniform vec4 c;"),
+            vec![(4, "uniform vec4 a, b".to_string())]
+        );
+    }
+
+    /// **A shader declares one name per `uniform` / `varying` / `attribute` statement.** The Samsung
+    /// TV 10.0 emulator (YaGL over Mesa llvmpipe) rejected `VS_AMBIENT_DITHERED` at
+    /// `varying highp vec2 v_dither_nc;` ("syntax error, unexpected NEW_IDENTIFIER"), and a required
+    /// shader's rejection stops the app from starting. `vs_ambient.vert`'s
+    /// `uniform vec4 u_atl, u_atr, u_abr, u_abl;` was the only multi-declarator in `shaders/`, and
+    /// splitting it is what made the program compile there. Measured on that emulator with the Tizen
+    /// hello-world probe (`samsung/hello-tpk` at `e8da14ce6`): the unsplit source failed, the split
+    /// source compiled, a cut-down variant did the same, and with the split all 14 required programs
+    /// compiled and linked and `plx_gfx` drew. Why YaGL rejects the statement is not established (the
+    /// message is the one Mesa gives for raw desktop GLSL 1.10, where `highp` is an ordinary
+    /// identifier), and an optional program, the straighten copy variant, still fails there with the
+    /// same kind of error and no multi-declarator, its cause also not established. Every other source
+    /// already spelled one name per statement, and a driver that reads either spelling sees the same
+    /// program, so the sources keep to the spelling the other drivers have read. It lists the
+    /// directory, so a new shader is covered by being added.
+    #[test]
+    fn every_shader_keeps_one_name_per_declaration_in_a_uniform_varying_or_attribute_statement() {
+        let mut found = Vec::new();
+        for (path, text) in shader_files() {
+            for (line, stmt) in multi_declarator_statements(&text) {
+                found.push(format!("{}:{line}: {stmt}", path.display()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "a multi-declarator made the TV 10.0 emulator (YaGL) reject `vs_ambient.vert` until it \
+             was split, so a `uniform` / `varying` / `attribute` statement names one variable; \
+             split these:\n{}",
             found.join("\n")
         );
     }
