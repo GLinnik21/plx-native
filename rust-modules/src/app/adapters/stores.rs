@@ -85,7 +85,7 @@ use plx_plex::plex::{Client, ClientKey, ClientKeys};
 
 use crate::app::bootstrap::HomeIo;
 
-/// The viewer's time zone for a bands read, as the platform layer reads it from the OS: this runner is
+/// The viewer's time zone for a bands read, as the os layer reads it from the OS: this runner is
 /// where the zone may be read (the data job takes it as two plain functions, `Zone`, and no machine
 /// reads it), and a calendar family's edges are converted with it.
 pub(crate) fn launch_watchlist_write(

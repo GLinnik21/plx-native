@@ -2,7 +2,7 @@
 //! a field added to one and forgotten in the other fails here instead of drifting.
 //!
 //! * **T-fields** — `Preferences`' serde field list equals `DESCRIPTORS`' keys.
-//! * **T-account** — `DESCRIPTORS`' account-bound keys equal platform's
+//! * **T-account** — `DESCRIPTORS`' account-bound keys equal the os layer's
 //!   `ACCOUNT_BOUND_PREFERENCES`, and `auto_sign_in` is never account-bound.
 //! * **T-parse** — each descriptor's declared parse policy is the one its field really has.
 //!
@@ -183,23 +183,23 @@ fn quality_is_stored_optional_and_read_as_original() {
     assert_eq!(*QualityPref::stored(&p), Some(PlaybackQuality::Original));
 }
 
-/// **T-account.** Platform names the preference keys sign-out clears; this crate declares which
-/// rows are account-bound. The two lists are held to each other both ways: every key platform
-/// clears has a row that says so, and no row says so that platform does not clear.
+/// **T-account.** The os layer names the preference keys sign-out clears; this crate declares which
+/// rows are account-bound. The two lists are held to each other both ways: every key the os layer
+/// clears has a row that says so, and no row says so that the os layer does not clear.
 #[test]
 fn t_account_the_bound_rows_are_the_platform_bound_keys() {
-    let platform: BTreeSet<&str> = plx_os::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
+    let os_bound: BTreeSet<&str> = plx_os::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
     let declared: BTreeSet<&str> = DESCRIPTORS.iter().filter(|d| d.account_bound).map(|d| d.key).collect();
-    assert_eq!(declared, platform, "account-bound rows and platform's ACCOUNT_BOUND_PREFERENCES drifted");
-    // Every key platform clears is a row at all (a bound key with no row would be unlisted here).
-    for key in &platform {
-        assert!(keys().contains(key), "{key}: platform clears it at sign-out but no row describes it");
+    assert_eq!(declared, os_bound, "account-bound rows and the os layer's ACCOUNT_BOUND_PREFERENCES drifted");
+    // Every key the os layer clears is a row at all (a bound key with no row would be unlisted here).
+    for key in &os_bound {
+        assert!(keys().contains(key), "{key}: the os layer clears it at sign-out but no row describes it");
     }
     // `auto_sign_in` is read by `boot_shows_picker` BEFORE any profile is seated, so it can never be
     // per-profile and never account-bound (sign-out keeps the television's switch).
     let auto = DESCRIPTORS.iter().find(|d| d.key == "auto_sign_in").expect("auto_sign_in has a row");
     assert_eq!(auto.scope, Scope::Install);
-    assert!(!auto.account_bound && !platform.contains("auto_sign_in"));
+    assert!(!auto.account_bound && !os_bound.contains("auto_sign_in"));
     for d in DESCRIPTORS {
         match d.scope {
             Scope::Install => assert!(!d.account_bound, "{}: an Install row is never account-bound", d.key),

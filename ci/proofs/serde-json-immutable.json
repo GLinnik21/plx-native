@@ -373,7 +373,7 @@
     },
     "lock_sha256": "4c8ae319c8db665085f3fe744a30ae925f744feba2e64c3c38de51a94d762b16",
     "manifests": {
-      "Cargo.toml": "834c58e54957a7c8eef3287a9a42f4cce96be0ec3ff6986b550bf4f1f397a027",
+      "Cargo.toml": "1143141629f93032567e2cbf0e119ec0e4381ff32ea84f27f458ae661d715f31",
       "appkit/Cargo.toml": "5cc1214cba7746fe0f2d4cfa5047b599e0d5124abe7bdaebe210381021b88c4a",
       "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
       "data/Cargo.toml": "74f79e6240f0965069ec34916ae276b3f7e5f4b944cf16a0846570a6b115afa0",
@@ -382,7 +382,7 @@
       "media-codecs/Cargo.toml": "503c8681289314b5c8a63195aad6796cbad93fcb3eedd8d7cba9e8ed0233783f",
       "media/Cargo.toml": "f6678328f609a0552573d4be6762c888f4e88aaa0e8b6d2cc9eb1abaa9335a97",
       "net/Cargo.toml": "bfdb3a08200642eeeafc9762733718c407529f26dce8a7b90665bc77ac928171",
-      "os/Cargo.toml": "ec44e037b8d1acf8ee26dda2fc8062b15f942811caa4ea9089338d29a8f5926c",
+      "os/Cargo.toml": "3dbc4c654863f682a01f0750d0e2d1d6b42d56740d040b353d0a4ea00dcd1d9a",
       "owp/Cargo.toml": "2c1354bce16b34f0d006fc04cd4c8eb22ef91f00063b53a1113e32f475ecae33",
       "play-feed/Cargo.toml": "5bd2b67820914b578fcb371b80ed9274eae4b57078391c38161a67fc22df760d",
       "play-uri/Cargo.toml": "48528dd164a910a32f5396ab8f5bc4c6c13f6fd5f1136ee080f8424fe663280b",
@@ -390,7 +390,7 @@
       "plex/Cargo.toml": "5cdb185265b7f7217cff08e54ef683a827735c9b3ae7c50161850f7064667b66",
       "screens/Cargo.toml": "cd42484a49fac394244ebc7b81f30f7e4f9a31cdf7bc1ace5c3fae21afd6d511",
       "session/Cargo.toml": "ecb49fc9f44177be6de36715ad70845b8929799cdbeb5ce9d6939be741704db0",
-      "storage/Cargo.toml": "48be4ed0a20b5c690ea731423ecfbabef27fbcdd4cbe2eace5578fb1c7f72f82",
+      "storage/Cargo.toml": "4b8576b04a5877e95d084a49a16b30224c275ae29b4a192c40725ac819500150",
       "telemetry/Cargo.toml": "9e514e64ae4a35619294621f22534b5e5b109d9dd3b729b94ed20112f47197bf",
       "ui/Cargo.toml": "7375c6a73cb2558c7c0f62da7b0bd4beb2a5b78f5460ee35e93b1045c0e80eec"
     },

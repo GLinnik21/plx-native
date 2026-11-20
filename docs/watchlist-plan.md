@@ -116,7 +116,7 @@ Every file:line is on origin/main adf73d81a.
 | `screens::catalog` | screens | Lightweight page for a Discover-only item (§1.7). |
 | `appkit::hero_layout` | appkit | Hero geometry/meta-line helpers moved out of detail/hero.rs so Detail and catalog share them without breaking the sibling rule. |
 | `ui::icons`, `ui::cards::{landing,grid}`, `ui::popover`, gfx `fs_glass.frag`, gfx text | ui/gfx | DS PRs |
-| `os::i18n` | platform | Month-name dates, strings |
+| `os::i18n` | os | Month-name dates, strings |
 | app (chrome.rs, bridge.rs, content.rs, effects.rs, input) | app | Strip vocabulary, routing, `AppArg::Watchlist`, tab pulse |
 
 Nothing names webOS. Screens never name a sibling screen or app.

@@ -1048,7 +1048,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 STORAGE_TDIR = $(RUST_TDIR)-storage
 # The helper is its own cargo package (rust-modules/storage) that does NOT depend on the app crate,
 # so the `cargo rustc -p plxnative-storage` below compiles only it, not the application library. What
-# it does read of the platform layer crate is the handful of files it shares by `#[path]`
+# it does read of the os layer crate is the handful of files it shares by `#[path]`
 # (os/src/storage_service/ and os/src/storage/state.rs) and the install-identity
 # generator in build_support/; that is all it names here, so an edit to the UI no longer relinks it. `ci/test_storage_package_isolated.py` holds the
 # "no app library" line.

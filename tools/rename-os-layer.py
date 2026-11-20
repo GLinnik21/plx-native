@@ -24,7 +24,9 @@ plain rename elsewhere) and rewrites, in every text file that is not exempt:
   * `SRC_PLATFORM` -> `SRC_OS`, the build-bench scenario id, the cargo-seed manifest part.
 It does NOT run rustfmt, does not touch `Cargo.lock`'s order (cargo re-sorts it), and leaves the two
 reviewed certificates (`ci/proofs/`) and their pins to be regenerated and re-pinned by hand.
-Prose that merely says "the platform layer" is left alone.
+Prose that names the layer ("the platform layer", a table cell, a heading, a list of layers) is rewritten by
+the enumerated per-file sites in LITERALS: a sweep of every standalone `platform` found them one by one. A
+`platform` that is the host platform, a Plex or Sentry field, `sys.platform` or the webOS platform is left alone.
 
 `--reverse` rewrites only the sites the forward pass writes: a backport cherry-pick written after the
 rename can be turned back into the old names to apply on a release line. Its weak patterns (a
@@ -39,7 +41,8 @@ changes is printed to standard error as `file:line: old -> new`, for the person 
 
 `--check` fails on any hit of the three spellings (the package; the path, in its bare and `../`
 forms, also after a `/`; the layer token, also unquoted in a list written with spaces, commas or
-arrows between layer names unless SEP_KEEP names the hit), on every enumerated literal site the forward pass rewrites, and on any
+arrows between layer names unless SEP_KEEP names the hit, as a table cell, or before `layer`/`crate`),
+on every enumerated literal site the forward pass rewrites, and on any
 quoted `"platform"` that is not classified (a JSON key, a Sentry field, `sys.platform`): a quoted
 `platform` in a list of layer names is never a keeper, because `walk` over a missing directory
 passes silently (Fable N1). It is a PR gate, not a standing CI step: later waves legitimately use
@@ -114,6 +117,8 @@ RUN_NEW = re.compile(r'\b(base|machine) os\b')
 # `platform` beside a layer name with a space, comma, `>` or `-` between them: `for c in net platform gfx`,
 # `--only machine,platform`, `base -> platform -> ui`. Every hit is a site unless SEP_KEEP names it.
 SEP_OLD = re.compile(r'\b(?:%s)\b[ ,>-]+platform\b|\bplatform\b[ ,>-]+(?:%s)\b' % (('|'.join(LAYERS),) * 2))
+CELL_OLD = re.compile(r'\|\s*platform\s*\|')  # a markdown table cell that is the layer's name: `| platform | members |`
+NOUN_OLD = re.compile(r"\bplatform(?:'s)? (?:layer|crate)\b")  # `the platform layer`, `the platform crate's build script`
 ROW_OLD = re.compile(r'(\+ )platform(?= (?:machine )?base\b)')  # the `+ platform machine base` column of the layer table
 ROW_NEW = re.compile(r'(\+ )os(?= (?:machine )?base\b)')
 MODPATH_OLD = re.compile(r'(?<![A-Za-z0-9_:])platform::(?=(?:' + MEMBERS + r')\b)')
@@ -144,6 +149,85 @@ LITERALS = [
     ('docs/module-layers.md', 'platform' + ' ' * 77 + 'machine base', 'os' + ' ' * 83 + 'machine base'),
     ('docs/watchlist-plan.md', 'base, machine, platform. NOT net', 'base, machine, os. NOT net'),
     ('rust-modules/base/src/eventlog/scrub.rs', 'machine, net, platform, gfx, ui', 'machine, net, os, gfx, ui'),
+    # The sweep of every standalone `platform`/`Platform` left after the general rules: each hit that names
+    # the layer (its crate, a table cell, a heading, the layer's own constants and locals) and none that
+    # is the host platform, a Plex or Sentry field or `sys.platform`. Where one file mixes `platform's` and
+    # `the platform`, the longer entry comes first, so `--reverse` restores each form exactly.
+    ('.claude/hooks/release-config-check-test.py', "the platform layer crate's source", "the os layer crate's source"),
+    ('Makefile', 'of the platform layer crate', 'of the os layer crate'),
+    ('ci/check-localization.py', 'platform = root / LAYER_SRCS[0]', 'os_src = root / LAYER_SRCS[0]'),
+    ('ci/check-localization.py', 'yield platform / rel', 'yield os_src / rel'),
+    ('ci/list-caps.ini', '# ---- platform ' + '-' * 60, '# ---- os ' + '-' * 60),
+    ('ci/readonly_dependencies.py', 'or the platform enum producer', 'or the os enum producer'),
+    ('ci/test_build_bench.py', 'PLATFORM_LEAF = "rust-modules/os/src/devcaps.rs"', 'OS_LEAF = "rust-modules/os/src/devcaps.rs"'),
+    ('ci/test_build_bench.py', 'PLATFORM_LEAF: "pub fn platform() {}\\n"', 'OS_LEAF: "pub fn os() {}\\n"'),
+    ('ci/test_build_not_always_dirty.py', "belong to the platform crate's build script", "belong to the os crate's build script"),
+    ('ci/test_build_not_always_dirty.py', 'of the platform crate, whose build', 'of the os crate, whose build'),
+    ('ci/test_build_not_always_dirty.py', 'PLATFORM_CRATE', 'OS_CRATE'),
+    ('ci/test_storage_package_isolated.py', 'source files with the platform layer crate', 'source files with the os layer crate'),
+    ('tools/build-bench.py', 'leaf file of the PLATFORM layer crate', 'leaf file of the os layer crate'),
+    ('tools/build-bench.py', 'stay fresh, the platform crate and the app crate', 'stay fresh, the os crate and the app crate'),
+    ('tools/build-bench.py', 'PLATFORM_LEAF_FILE', 'OS_LEAF_FILE'),
+    ('tools/build-bench.py', 'PLATFORM_PACKAGE', 'OS_PACKAGE'),
+    ('.agents/agents/fw-compat-reviewer.md', 'with the platform feature `uri-transport`', "with the os crate's feature `uri-transport`"),
+    ('docs/module-layers.md', "platform's `i18n storage webos`", "os's `i18n storage webos`"),
+    ('docs/module-layers.md', 'L15 took the platform\n', 'L15 took the os\n'),
+    ('docs/module-layers.md', '| platform | `webos storage', '| os | `webos storage'),
+    ('docs/module-layers.md', 'machine sits below platform.', 'machine sits below os.'),
+    ('docs/module-layers.md', 'lab config to platform', 'lab config to os'),
+    ('docs/module-layers.md', 'are the platform module `labcfg`', 'are the os module `labcfg`'),
+    ('docs/module-layers.md', 'platform owns its types', 'os owns its types'),
+    ('docs/module-layers.md', '### Split 3: platform', '### Split 3: os'),
+    ('docs/module-layers.md', 'the platform crate cannot see it', 'the os crate cannot see it'),
+    ('docs/module-layers.md', 'The platform layer does not know', 'The os layer does not know'),
+    ('docs/module-layers.md', 'it rebuilds the platform crate', 'it rebuilds the os crate'),
+    ('docs/watchlist-plan.md', '| `os::i18n` | platform |', '| `os::i18n` | os |'),
+    ('docs/sans-io.md', 'the actual platform language include', 'the actual os language include'),
+    ('docs/playback-diagnostics.md', 'The platform adapter owns native logging', "The os layer's adapter owns native logging"),
+    ('rust-modules/Cargo.toml', 'The platform layer (ci/module-layers.ini `[os]`)', 'The os layer (ci/module-layers.ini `[os]`)'),
+    ('rust-modules/Cargo.toml', "Likewise the platform layer's seams", "Likewise the os layer's seams"),
+    ('rust-modules/build.rs', "generated by the platform layer's own build script", "generated by the os layer's own build script"),
+    ('rust-modules/storage/Cargo.toml', 'the platform layer crate (`os/src/storage_service', 'the os layer crate (`os/src/storage_service'),
+    ('rust-modules/storage/build.rs', "the platform crate's own build script uses", "the os crate's own build script uses"),
+    ('rust-modules/os/Cargo.toml', 'PlxNative platform layer: what this television', 'PlxNative os layer: what this television'),
+    ('rust-modules/os/build.rs', 'Code generation for the platform layer:', 'Code generation for the os layer:'),
+    ('rust-modules/os/src/devcaps.rs', '`plex` sits above the platform layer;', '`plex` sits above the os layer;'),
+    ('rust-modules/os/src/i18n/mod.rs', 'here in the platform layer and never in a machine', 'here in the os layer and never in a machine'),
+    ('rust-modules/os/src/i18n/mod.rs', "this is the platform layer's read of the OS time zone", "this is the os layer's read of the OS time zone"),
+    ('rust-modules/os/src/storage/state.rs', '(the platform crate and the storage helper)', '(the os crate and the storage helper)'),
+    ('rust-modules/src/app/adapters/stores.rs', 'as the platform layer reads it from the OS', 'as the os layer reads it from the OS'),
+    ('rust-modules/src/app/boot.rs', "and platform's `storage_service/`", "and the os layer's `storage_service/`"),
+    ('rust-modules/src/lab/mod.rs', 'live in `plx_os::labcfg` (platform):', 'live in `plx_os::labcfg` (the os layer):'),
+    ('rust-modules/plex/src/plex/CLAUDE.md', "to platform's `ACCOUNT_BOUND_PREFERENCES`", "to the os layer's `ACCOUNT_BOUND_PREFERENCES`"),
+    ('rust-modules/plex/src/plex/CLAUDE.md', "(platform's own\n", "(the os layer's own\n"),
+    ('rust-modules/plex/src/plex/CLAUDE.md', 'with nothing sheddable left the platform still does', 'with nothing sheddable left the os layer still does'),
+    ('rust-modules/plex/src/plex/transcoder.rs', '(the platform layer intersects it', '(the os layer intersects it'),
+    ('rust-modules/plex/src/plex/session/persistence.rs', 'the platform', 'the os layer'),
+    ('rust-modules/plex/src/plex/session/persistence.rs', 'The platform', 'The os layer'),
+    ('rust-modules/plex/src/plex/session/prefs.rs', "to platform's account-bound list", "to the os layer's account-bound list"),
+    ('rust-modules/plex/src/plex/session/prefs.rs', "(platform's counting rule)", "(the os layer's counting rule)"),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory.rs', "(platform's counting rule)", "(the os layer's counting rule)"),
+    ('rust-modules/plex/src/plex/session/tier1_characterisation_tests.rs', 'fed through the platform state codec', "fed through the os layer's state codec"),
+    ('rust-modules/plex/src/plex/session/tier1_characterisation_tests.rs', 'through the platform codec', "through the os layer's codec"),
+    ('rust-modules/plex/src/plex/session/tier1_characterisation_tests.rs', 'to the platform codec', "to the os layer's codec"),
+    ('rust-modules/plex/src/plex/session/tier1_characterisation_tests.rs', 'the platform codec, then', "the os layer's codec, then"),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', "account-bound keys equal platform's", "account-bound keys equal the os layer's"),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', '**T-account.** Platform names', '**T-account.** The os layer names'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', 'every key platform\n', 'every key the os layer\n'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', 'that platform does not clear', 'that the os layer does not clear'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', 'let platform: BTreeSet<&str>', 'let os_bound: BTreeSet<&str>'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', 'assert_eq!(declared, platform, "account-bound rows and platform\'s ACCOUNT_BOUND_PREFERENCES',
+     'assert_eq!(declared, os_bound, "account-bound rows and the os layer\'s ACCOUNT_BOUND_PREFERENCES'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', '// Every key platform clears', '// Every key the os layer clears'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', 'for key in &platform {', 'for key in &os_bound {'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', '"{key}: platform clears it at sign-out', '"{key}: the os layer clears it at sign-out'),
+    ('rust-modules/plex/src/plex/session/prefs_tests.rs', '!platform.contains("auto_sign_in")', '!os_bound.contains("auto_sign_in")'),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory_document_tests.rs', "the guard against platform's OWN code", "the guard against the os layer's OWN code"),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory_document_tests.rs', "and platform's own apply", "and the os layer's own apply"),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory_document_tests.rs', "the projection is platform's own document", "the projection is the os layer's own document"),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory_document_tests.rs', 'through the platform codec', "through the os layer's codec"),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory_document_tests.rs', 'the platform', 'the os layer'),
+    ('rust-modules/plex/src/plex/session/prefs/track_memory_document_tests.rs', 'The platform', 'The os layer'),
 ]
 
 # A quoted `platform` that is not the layer. Never a keeper if its line also looks like a layer list.
@@ -169,11 +253,18 @@ def quoted_layers(line, name):
     return {layer for layer in LAYERS if re.search(r'''["']%s["']''' % layer, line)} - {name}
 
 
+def head_name(rel):
+    """`rel` as the head tree names it. The per-file tables (LITERALS, NATURAL_OS, SECTION_FILES) are keyed by head
+    paths, but a reverse run (and a forward dry run) reads files that still sit under `rust-modules/platform/`."""
+    return NEW_DIR + rel[len(OLD_DIR):] if rel.startswith(OLD_DIR + '/') else rel
+
+
 def rewrite(text, rel, reverse, weak=True):
     """The forward (or reverse) rewrite of one file's text; the same text back when nothing applies.
     `weak=False` (reverse only) skips the patterns whose new form is the bare word `os` (a backticked
     `os`, a quoted "os" in a layer list, `base os`, `+ os machine base`, `os::member`, `os/` in a
     directory list): `reverse_patch` runs both ways and names every line the weak patterns change."""
+    rel = head_name(rel)
     natural = rel in NATURAL_OS
     if not reverse:
         text = PKG_OLD.sub('plx_os', text)
@@ -311,6 +402,8 @@ def check_patterns():
         ('3 layer token `platform`', re.compile(re.escape(TICK_OLD))),
         ('3 layer token in a list', RUN_OLD),
         ('3 layer token in the layer table', ROW_OLD),
+        ('3 layer token in a table cell', CELL_OLD),
+        ('3 layer token before layer/crate', NOUN_OLD),
         ('3 layer token platform::member', MODPATH_OLD),
         ('3 fence keyword [port X]', FENCE_OLD),
         ('3 SRC_PLATFORM', re.compile(r'\bSRC_PLATFORM\b')),
@@ -352,7 +445,7 @@ def check(root):
             if rel == 'ci/module-layers.ini' and line.startswith('uses') and re.search(r'\bplatform\b', line):
                 problems.append((rel, number, '3 layer token in a uses line', line.strip()))
             for path, old, _ in LITERALS:
-                if path == rel and old in line: problems.append((rel, number, 'enumerated site', line.strip()))
+                if path == head_name(rel) and old in line: problems.append((rel, number, 'enumerated site', line.strip()))
             if QUOTED.search(line):
                 label = classify_quoted(rel, line)
                 if label is None: problems.append((rel, number, 'UNCLASSIFIED quoted "platform"', line.strip()))
