@@ -20,8 +20,8 @@ const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = &plx_os::webos::video_sink::
 #[cfg(test)]
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 
-/// What the lower layers read: the webOS identity, key manager, Home key and toast, and the native
-/// playback seam. The window, the bus pump and the frame probe are the loop's own, in [`PLATFORM`].
+/// What the lower layers read: the webOS identity, key manager, Home key and toast, the storage helper
+/// and the native playback seam. The window, the bus pump and the frame probe are the loop's own, in [`PLATFORM`].
 static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
     identity: plx_os::tv::IdentityHooks {
         probe_device: plx_os::webos::probe,
@@ -42,6 +42,7 @@ static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
         poll_home: plx_os::webos::poll_home,
         deliver_toast: plx_os::webos::toast::deliver,
     },
+    storage: plx_os::tv::StorageHooks { authority: plx_os::tv::authority::Authority::Helper },
     legacy_webos_media: plx_os::tv::LegacyWebosMedia {
         sink: SINK,
         display_sink: DISPLAY,
@@ -147,4 +148,43 @@ pub unsafe extern "C" fn plx_launch_args(json: *const c_char) {
     }
     let raw = unsafe { std::ffi::CStr::from_ptr(json) }.to_string_lossy();
     plx_os::tv::launch::offer(&raw);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SERVICES;
+    use plx_os::tv::authority::Authority;
+
+    /// The webOS table states the storage helper as the home of the session, the install's preferences
+    /// and the consent record. The persistence layers choose their store from this value, so a table
+    /// that stated anything else would move a television's account out of DB8.
+    #[test]
+    fn the_webos_table_states_the_storage_helper_as_the_authority() {
+        assert_eq!(SERVICES.storage.authority, Authority::Helper);
+        assert_eq!(SERVICES.secure.mode, plx_os::tv::secure::StoreMode::Durable);
+    }
+
+    /// `run_application` installs the services before anything else runs. The authority is read by
+    /// whatever persists first, and an uninstalled television reads `Files` and would write a
+    /// plaintext session file, so the install has to come before `exit::entry` runs `enter_application`.
+    /// Reads the source, like `app::boot`'s `seam_order_tests`, because no host test can run the entry.
+    #[test]
+    fn the_services_are_installed_before_the_application_enters() {
+        let source = include_str!("app/mod.rs");
+        let body = source
+            .split_once("fn run_application(")
+            .expect("run_application")
+            .1
+            .split_once("\n}\n")
+            .expect("end of run_application")
+            .0;
+        let install = body.find("platform.install_services();").expect("run_application installs the services");
+        let enter = body.find("exit::entry(").expect("run_application enters through exit::entry");
+        assert!(install < enter, "install_services must run before exit::entry");
+        assert_eq!(
+            source.matches("install_services()").count(),
+            1,
+            "one production install; a second would be refused by tv and could hide a missing first"
+        );
+    }
 }
