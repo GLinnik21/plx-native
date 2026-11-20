@@ -3394,7 +3394,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             };
                             plx_gfx::gfx::draw_number(
                                 *fps_shown,
-                                SCR_W as f32 - 70.0,
+                                plx_base::surface::LOGICAL_W - 70.0,
                                 64.0,
                                 46.0,
                                 fps_col.as_ptr(),
