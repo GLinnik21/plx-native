@@ -20,8 +20,9 @@ mod coldstart; // retires old last-page bookmarks; authenticated cold boots now 
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 /// The one narrow public face of the application for a platform crate: the types it builds and implements
-/// (`Platform`, `Shell`, `Surface`, `EventSink`, ...) and the entry `run`, as re-exports. Everything else of
-/// the application stays private (`docs/platform-ports.md`, Target shape 8).
+/// (`Platform`, `Shell`, `Surface`, `EventSink`, ...) and the entry `run`, as re-exports. Every other module of
+/// the application stays private to a television build (`docs/platform-ports.md`, Target shape 8; a `hostsim`
+/// build also exposes the simulator binary's own doors below).
 pub mod host;
 // The simulator's HUD tools (`--hud-lint`, `--hud-schema`, `--hud-export`): a library function the thin
 // `src/bin/sim.rs` calls before it reads a PMS host. `pub` because that binary is a separate crate; absent

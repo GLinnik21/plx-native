@@ -4,11 +4,13 @@
 //! The application's modules are private (`mod app;`), so a crate that is a sibling of this one cannot
 //! name `app::Platform` or implement a crate-private `Shell`. This is the one narrow public face: re-exports
 //! of the types a platform builds or implements, an [`EventSink`] through which it reports input, and
-//! [`run`], the one function in here (it hands the platform to the application's entry). Nothing else of
-//! the application is public. `HostEvent`, the loop's own event type, stays private: a platform reports
-//! input through [`EventSink`] and the application converts it. The owner's ruling (2026-11-21, Decision 3
-//! amended): `Shell`, `Surface`, `Platform`, `Services`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit`
-//! and `Release` are reachable only through this module.
+//! [`run`], the one function in here (it hands the platform to the application's entry). No other module of the
+//! application is public to a television build (a `hostsim` build also keeps the simulator binary's own doors:
+//! `platform_desktop::run`, `hud_cli`, the `sim_*` helpers). `HostEvent`, the loop's own event type, stays
+//! private: a platform reports input through [`EventSink`] and the application converts it. The owner's ruling (2026-11-21, Decision 3
+//! amended): `Shell`, `Surface`, `Platform`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit` and `Release`
+//! are reachable only through this module (`Services` is `plx_os::tv::Services`, a lower layer's type that this
+//! module re-exports for one-stop naming).
 //!
 //! The split is by thread. A [`Platform`] is registration data in a `static`: function pointers and
 //! `&'static dyn` of `Sync` types, [`Shell`] included as a factory. The thread-affine state (the window,

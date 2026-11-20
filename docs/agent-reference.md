@@ -138,7 +138,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   stack is mostly a chain, so cargo has little to run side by side and the front end (parse,
   type-check, borrow-check) is single-threaded per crate by default. `-Zthreads=N` (N = the core
   count, capped at 8) parallelises it for the host `cargo test` recipes (`check-cargo-unit-default`,
-  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `test-hostsim`, `build-bench`) through
+  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `test-hostsim`, `test-host-interface`, `build-bench`) through
   `CARGO_BUILD_RUSTFLAGS`. Measured 2026-10-05 on an M4 (10 cores) on nightly, `make build-bench`
   non-incremental edit-rebuilds, medians of 5: `plx_base` leaf 20.1 s to 17.8 s, `plx_ui` 10.7 to
   7.8, `plx_screens` 8.3 to 5.7, app 4.8 to 2.9; the incremental `test-fast` loop is unchanged
@@ -1281,7 +1281,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `abnormal`, like a freeze's; one made after backgrounding (the PLX-NATIVE-1P shape) finds no open
   session, because backgrounding already ended it `exited` (`telemetry::session`), so only the
   `error` event exists.
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland), `rust-modules/shell-sdl/` (crate `plx_shell_sdl`: `SDL_Init`, the window, the GL swap, the event decode and the text-input calls, which `app/platform.rs`'s `Shell` opens as the app-private `Surface`),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland), `rust-modules/shell-sdl/` (crate `plx_shell_sdl`: `SDL_Init`, the window, the GL swap, the event decode and the text-input calls, which `app/platform.rs`'s `Shell` opens as the `Surface` the `App` owns (`Shell` and `Surface` are reachable from outside the crate only through `plxnative_modules::host`; `HostEvent` stays app-private)),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `abr/` and `route/`, and `ff.rs`, which

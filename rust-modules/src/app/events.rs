@@ -77,9 +77,10 @@ pub(crate) fn host_wcode(sym: u32) -> u32 {
 }
 
 /// What the platform tells the loop: a key press, a text commit, the pointer, the wheel, the window
-/// leaving or returning to the screen, and the host asking the application to end. App-private, like
-/// [`Shell`](super::platform::Shell): no platform reaches it by a type of its own until the
-/// platform contract is settled (`docs/platform-ports.md`, Target shape 2).
+/// leaving or returning to the screen, and the host asking the application to end. App-private, unlike
+/// [`Shell`](super::platform::Shell) and [`Surface`](super::platform::Surface), which `host` publishes: a
+/// platform reports input through [`EventSink`](super::platform::EventSink) and the application converts it
+/// to this type in [`HostQueue`] (`docs/platform-ports.md`, Target shapes 2 and 8).
 ///
 /// The SDL drain decodes SDL's events into it ([`decode_host_event`]) and the loop consumes it in
 /// ONE function (`run::ingest_host_event`), so a host that stops the application without SDL

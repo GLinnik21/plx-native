@@ -581,8 +581,8 @@ ARM_PROFILE_FLAG = $(if $(filter release,$(ARM_PROFILE)),--release,--profile $(A
 #     make RUST_TOOLCHAIN=nightly HOST_THREADS=8 test-fast
 #
 # A HOST_THREADS above 1 on a non-nightly toolchain is a hard error here rather than a cargo failure
-# in the middle of a recipe. Which recipes: ONLY the host `cargo test` / `check-cargo-unit-*` builds,
-# `test-fast`, `test-crate`, `test-hostsim` and `build-bench` carry `$(HOST_ENV)`. It is NOT exported, so the ARM
+# in the middle of a recipe. Which recipes: the host `cargo test` builds and nothing else
+# (`grep -n HOST_ENV Makefile` is the exact set; `ci/test_host_threads.py`'s `HOST_RECIPES` pins it). It is NOT exported, so the ARM
 # staticlib recipes (which set RUSTFLAGS themselves), the simulators' builds, clippy and the package
 # steps never see it (ci/test_host_threads.py pins both). 0 and 1 mean the serial front end. A
 # RUSTFLAGS the caller exported wins over it (cargo reads CARGO_BUILD_RUSTFLAGS last).
@@ -1646,9 +1646,10 @@ check:
 # best. A bare `cargo test` builds for the host triple, which is exactly what we want — and it is
 # also why this suite cannot cover anything that links the TV's own libraries: media-codecs/src/ffi.rs gates its four
 # `#[link]` directives out of cfg(test) so the crate's pure logic stays host-testable, and a test
-# that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crate's own
-# `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
-# on-device Python harness, a different thing entirely).
+# that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crates' own
+# `#[cfg(test)]` blocks. The one integration test, `rust-modules/tests/host_interface.rs`, needs `hostsim`
+# and runs in `check-cargo-unit-hostsim` (and `make test-host-interface`), not here; the repo-root `tests/`
+# is the on-device Python harness, a different thing entirely.
 # NB the suite APPENDS to `/tmp/plxnative-events.log` on the dev Mac, and deliberately cannot be
 # pointed elsewhere. Since 2026-08-15 enough of the tree logs its failures (stream, posters, img,
 # account, remote) that host tests exercising those paths write real lines. `PLXNATIVE_RUNTIME_DIR`
