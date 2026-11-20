@@ -376,7 +376,13 @@ mod uri_boot_tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            assert_eq!(rig.requests.lock().unwrap().len(), served, "{set:?}: refused before any server work");
+            // The rig's own background traffic (a `GET /` reachability probe) may reach the server
+            // meanwhile; the item's resolve (its metadata, a decision) is what must not. That no
+            // resolve was dispatched at all is `play_pending` below.
+            let asked: Vec<String> = rig.requests.lock().unwrap()[served..].to_vec();
+            assert!(!asked.iter().any(|request| request.contains("/library/metadata/")
+                    || request.contains("playQueues") || request.contains("decision")),
+                "{set:?}: refused before any server work, yet the server was asked {asked:?}");
             assert!(!preview::occupies(), "{set:?}: the machine stays Idle");
             assert!(!plx_media::route::play_pending(), "{set:?}: no resolve was started");
             assert!(!plx_media::route::play_refused(&rig.app.player.session),
@@ -411,8 +417,11 @@ mod uri_boot_tests {
             &ask, 0), HeroPreview::Started);
         assert!(rig.entered.recv_timeout(Duration::from_secs(1)).is_ok(), "the resolve reached the server");
         assert!(preview::occupies(), "the preview machine holds the request");
+        // The page's focus leaves the hero while the resolve is parked on the server (the halted
+        // preview's own test): the landing is discarded, so no Engine is left behind to tear down.
+        preview::halt(&mut rig.app.player.session, &mut rig.app.adapters.player);
         rig.release.send(()).unwrap();
-        poll_until("the preview's resolve never landed", || {
+        poll_until("the halted preview's resolve never settled", || {
             let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
             fr.now = t;
             unsafe {
