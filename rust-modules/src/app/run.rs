@@ -5371,41 +5371,60 @@ pub(in crate::app) mod lifecycle_regression_tests {
     }
 
     /// **The `wheel:<dy>` token still drives the wheel.** `remote_synth_wheel` writes the television's
-    /// shape (`Sint32 y` at +20) and `SDL_PushEvent` brings it back as the simulator's (the float at
-    /// +32): the whole carrier, through SDL's own queue and the real decoder, ends as the direction key.
+    /// shape (`Sint32 y` at +20) and `SDL_PushEvent` hands it back as whatever this host's SDL makes of
+    /// it: sdl2-compat (the Mac simulator) returns the count as the float at +32, which the decoder
+    /// reads here, while genuine SDL2 (the Linux CI job) returns the bytes as pushed, whose +32 is
+    /// zero, so the same token decodes to a zero tick there. The test follows the carrier: it polls
+    /// the event, requires the count to have survived in one of the two fields, and expects the direction
+    /// key exactly when it survived at the offset this build reads, through SDL's own queue and the real
+    /// decoder either way.
     #[test]
-    fn the_wheel_fifo_token_reaches_the_loop_as_the_direction_key_through_sdl() {
+    fn the_wheel_fifo_token_reaches_the_loop_through_sdl_as_far_as_the_carrier_keeps_it() {
         use plx_machine::machine::{Edge, Key};
         let _serial = plx_base::testlock::serial();
         let _events = SdlEvents::init();
         let (mut app, mut fr) = settings_app();
         clock::set_replay(1_000);
         remote_synth_wheel(-2);
-        unsafe { drain_sdl(&mut app, &mut fr) };
-        assert_eq!(queued(&app).2, [(Key::Down, Edge::Down), (Key::Down, Edge::Up)],
-            "a `wheel:-2` token is one tick DOWN");
+        let polled = unsafe { SDL_PollEvent(app.ev.as_mut_ptr() as *mut c_void) };
+        assert_eq!(polled, 1, "SDL handed the pushed wheel event back");
+        let precise = rd_f32(&app.ev, 32);
+        assert!(rd_i32(&app.ev, 20) == -2 || precise == -2.0, "premise: the tick survived SDL's round trip in one field");
+        unsafe { ingest_sdl_event(&mut app, &mut fr) };
+        let expected: &[(Key, Edge)] = if precise == -2.0 { &[(Key::Down, Edge::Down), (Key::Down, Edge::Up)] } else { &[] };
+        assert_eq!(queued(&app).2, expected, "a `wheel:-2` token is one tick DOWN where the count is at +32 (carried at +32: {})",
+            precise == -2.0);
+    }
+
+    /// A Settings page with a control face's press armed by a click, either way: the press on the
+    /// dispatcher's input machine (`app.pages.input.press`), the one the loop's key ingress can abandon.
+    fn armed_press_app(hosted: bool) -> (App, Frame) {
+        use plx_ui::{screen::{Activate, Hover, Stop}, Rect};
+        let (mut app, mut fr) = settings_app();
+        let key = app.pages.focus().unwrap();
+        app.pages.input.hit.fill(vec![Stop { key, rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL,
+            hover: Hover::Focus, activate: Activate::Press }]);
+        app.pages.input.hit.swap();
+        deliver_pointer(&mut app, &mut fr, hosted, PointerEdge::Down, 400, 300);
+        deliver_inputs(&mut app, 120);
+        assert!(app.pages.input.press.is_live(), "premise: the click armed the control face's press (hosted {hosted})");
+        (app, fr)
     }
 
     /// **An unsupported key leaves a press in flight alone, observed on the real press.** The press a
-    /// control face arms lives on the dispatcher's input machine (`app.pages.input.press`), not in
-    /// `note_global_press`, which only wakes the HUD: so the guard has to arm THAT one, with a click
-    /// on a control face, and send the unbound key through the loop's own key ingress. A colour button
-    /// (504) is bound to nothing, so the press must still be armed after it; the OK key-up is what
-    /// releases it. Either way of delivery.
+    /// control face arms lives on the dispatcher's input machine, not in `note_global_press` (which
+    /// only wakes the HUD), so the guard arms THAT one with a click on a control face and sends the key
+    /// through the loop's own key ingress. It reads `is_live`, not `is_active`: an abandoned press stays
+    /// active for the ~200 ms its spring-back plays, so `is_active` cannot tell a kept press from a
+    /// cancelled one. A colour button (504) is bound to nothing and must leave the press live; the
+    /// control, a direction key through the same door, must abandon it, which is what shows the
+    /// observation can fail. Either way of delivery.
     #[test]
-    fn an_unbound_key_leaves_the_press_a_click_armed_in_flight() {
+    fn an_unbound_key_leaves_the_press_a_click_armed_live_and_a_direction_key_abandons_it() {
         use plx_machine::machine::Edge;
-        use plx_ui::{screen::{Activate, Hover, Stop}, Rect};
         let _serial = plx_base::testlock::serial();
         for hosted in [false, true] {
-            let (mut app, mut fr) = settings_app();
-            let key = app.pages.focus().unwrap();
-            app.pages.input.hit.fill(vec![Stop { key, rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL,
-                hover: Hover::Focus, activate: Activate::Press }]);
-            app.pages.input.hit.swap();
-            deliver_pointer(&mut app, &mut fr, hosted, PointerEdge::Down, 400, 300);
-            deliver_inputs(&mut app, 120);
-            assert!(app.pages.input.press.is_active(), "premise: the click armed the control face's press");
+            let (mut app, mut fr) = armed_press_app(hosted);
             if hosted {
                 let press = KeyPress::new(None, Edge::Down, Some(RawKey { sym: 0, wcode: 504 })).unwrap();
                 unsafe { ingest_host_event(&mut app, &mut fr, HostEvent::Key(press), |_| {}) };
@@ -5414,7 +5433,57 @@ pub(in crate::app) mod lifecycle_regression_tests {
                 event(&mut app, &mut fr, SDL_KEYDOWN);
             }
             deliver_inputs(&mut app, 136);
-            assert!(app.pages.input.press.is_active(), "an unsupported key must not abandon the press (hosted {hosted})");
+            assert!(app.pages.input.press.is_live(), "an unsupported key must not abandon the press (hosted {hosted})");
+
+            let (mut app, mut fr) = armed_press_app(hosted);
+            deliver_key(&mut app, &mut fr, hosted, plx_ui::consts::Action::Down, Edge::Down);
+            deliver_inputs(&mut app, 136);
+            assert!(app.pages.input.press.is_active() && !app.pages.input.press.is_live(),
+                "control: a direction key abandons it, and the spring-back plays (hosted {hosted})");
+        }
+    }
+
+    /// **A real pointer or wheel event is dropped under a controlled replay, as a real key is.** The tape
+    /// owns logical ingress, so an ambient pointer motion, button or wheel tick (a hand on the remote
+    /// while a scenario replays) must reach no input and no pointer state. The same events on a live loop
+    /// are the control: they do queue, so the empty queue is the replay's doing.
+    #[test]
+    fn a_real_pointer_or_wheel_event_is_dropped_under_a_controlled_replay() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use plx_machine::machine::Tick;
+        use plx_ui::{dispatch::Tap, rec::{Header, Recording}};
+        let _serial = plx_base::testlock::serial();
+        for hosted in [false, true] {
+            for replaying in [false, true] {
+                let (mut app, mut fr) = settings_app();
+                if replaying {
+                    let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+                    let recording = Recording {
+                        header: Header::new(state_fp(), &initial),
+                        frames: vec![plx_ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                            st: Some(7), focus: Some(None), ..Default::default() }],
+                        metrics: Default::default(), stopped_at: None,
+                    };
+                    app.boot_initial = Some(initial.clone());
+                    app.rec = Recplay::controlled(
+                        Preflight::Replay { initial: initial.clone(), recording, mode: ReplayMode::Targets },
+                        &initial).unwrap();
+                    Tap::focus(&mut app.rec, 0, None);
+                }
+                for (edge, x, y) in [(PointerEdge::Move, 400, 300), (PointerEdge::Down, 400, 300), (PointerEdge::Up, 400, 300)] {
+                    deliver_pointer(&mut app, &mut fr, hosted, edge, x, y);
+                }
+                clock::set_replay(1_000);
+                deliver_wheel(&mut app, &mut fr, hosted, -2);
+                assert_eq!(app.inputs.is_empty(), replaying,
+                    "a real pointer and wheel event queue exactly when no tape owns the input (replaying {replaying}, hosted {hosted})");
+                if replaying {
+                    assert!(!app.ptr.button_down && app.ptr.last_wheel == 0
+                        && app.ptr.prev_mx.to_bits() == Pointer::IDLE.prev_mx.to_bits(),
+                        "and they leave the pointer's own state untouched");
+                    assert!(app.rec.failure().is_none(), "dropping them is no failure of the tape");
+                }
+            }
         }
     }
 
