@@ -53,7 +53,7 @@ order: the arrow keys, OK, Back, Play/Pause, Stop, rewind and fast-forward, red/
 the digits 0-9 and CH+/CH- (the instruction line says so). Each press shows in the panel's key
 list and changes the colour. **Back does not exit** (nothing treats any key as quit); leave with the
 TV's Home. Then photograph the screen. A second photo after pressing Home and re-opening the app
-shows the lifecycle line (`pause +12.3s | resume +15.1s`).
+shows the lifecycle line (`pause +12.3s | resume, paused 2.8s +15.1s`).
 
 **What to send back:** the photo(s), the TV's model and year, and how it was installed (Apps2Samsung
 or other) and whether it asked anything.
@@ -86,7 +86,7 @@ and `>>` there (and says so nowhere else: it is not a failure).
 | keys listed, colour changes | keys arrive; the codes to read off the photo |
 | the panel frozen after Home | expected: the render loop idles while the app is in the background |
 
-**Not verified (see also the last section).** Nothing here has run on a Samsung TV or emulator. Whether
+**Not verified (see also the last section).** The panel build has not run on any TV or emulator (the H5 probe before it passed on the TV 10.0 emulator, as reported to us). Whether
 the media and colour keys reach an ordinary app at all is open: some TVs may deliver them only after the app
 registers the key with the platform, which this build does not do, so a key missing from the photo
 means "does not arrive unregistered", which is itself the answer wanted. The
@@ -345,7 +345,7 @@ screen colour (below) still answers questions 1 to 4.
    6 to 11 Ecore/window/key handlers, 12 to 16 EGL, 17 to 19 the render thread. Host-side: -1 .so not
    found, -2 export missing, -3 other.
 
-## Unverified (the app has not run yet: the first emulator install stopped at signing)
+## Unverified (the panel build has not run on any device; the H5 probe before it passed on the TV 10.0 emulator, as reported)
 
 H5 and the tester-build panel, on the Mac (no Tizen device, no Linux), only these were run: `cargo test`
 (stub, 27 tests), `--host-test` (35 tests: the label and the panel render to surfaces with the right
