@@ -753,6 +753,32 @@ fn a_change_that_arrives_while_the_first_read_is_out_is_kept_and_asked_after_it(
     assert!(stores.notify_owed_for_test().is_empty());
 }
 
+/// A delete that arrives while the first read is out cannot be followed to a tile (the list is not
+/// ready), so it asks after every title of the kind. That is not a feed gap's sweep: it waits for its
+/// server's quiet like any other change, and the burst it belongs to is asked once, not twice.
+#[test]
+fn a_delete_during_the_first_read_waits_for_the_servers_quiet_and_asks_once() {
+    let _g = plx_base::testlock::serial();
+    let sid = ServerId::from_raw(0);
+    let mut stores = Stores::default();
+    stores.watchlist = super::watchlist::tests::reading_for_test(sid, 3);
+    map(&mut stores, &library(sid, vec![deleted("11")]), &[]);
+    // The first read lands while the server's feed is still settling.
+    let (watchlist, script) = scripted_for_test(sid, 3, &[(1, "11")]);
+    stores.watchlist = watchlist;
+    script.forget_asked();
+    for _ in 1..LIBRARY_QUIET_FRAMES {
+        map(&mut stores, &NotifyOut::default(), &[]);
+        assert!(script.asked().is_empty(), "not while the feed may still be busy: {:?}", script.asked());
+    }
+    map(&mut stores, &NotifyOut::default(), &[]);
+    assert_eq!(script.asked().len(), 1, "the burst is asked once, at the quiet: {:?}", script.asked());
+    assert_eq!(script.asked()[0].len(), 3, "every title of the kind: the delete was not followed to a tile");
+    quiet_frames(&mut stores, LIBRARY_QUIET_FRAMES);
+    assert_eq!(script.asked().len(), 1, "and not again: {:?}", script.asked());
+    assert!(stores.notify_owed_for_test().is_empty());
+}
+
 #[test]
 fn a_feed_that_came_back_after_a_gap_sweeps_the_titles_of_that_server() {
     let _g = plx_base::testlock::serial();

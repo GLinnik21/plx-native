@@ -49,7 +49,9 @@
 //! (the first read matches the library as it is then: a change that arrives while the list is not
 //! ready and no read is out is dropped, since the read that follows asks after it; one that arrives
 //! while the first read is out is kept, since that read's matching may already have asked) and is made through the store's own
-//! worker; the tile flips when the answer lands, through the same §1.5 derivation as any
+//! worker. A delete kept that way cannot be followed to a tile, so it asks again about every title of
+//! the kind, but it waits for its server's quiet like any other entry: only a feed gap's sweep skips
+//! the wait. The tile flips when the answer lands, through the same §1.5 derivation as any
 //! re-match.
 //!
 //! **Library changes also move the server's lists.** When the wait is over the server's Home source
@@ -182,9 +184,30 @@ struct LibraryOwed {
     gone: Vec<String>,
     /// An item was created: ask again about every title the server was not seen to hold.
     added: bool,
-    /// The exact change was not followed (the Watchlist had not loaded, or the feed had a gap):
-    /// ask again about every title of the kind.
-    sweep: bool,
+    /// Whether every title of the kind is asked again, because the exact change was not followed, and
+    /// whether that waits for the server's quiet.
+    sweep: Sweep,
+}
+
+impl LibraryOwed {
+    /// Ask after every title of the kind, at least as eagerly as `how`.
+    fn sweep_to(&mut self, how: Sweep) {
+        self.sweep = self.sweep.max(how);
+    }
+}
+
+/// How a `(server, kind)` owes the Watchlist a re-match of every title of the kind. The variants are in
+/// the order of urgency, so two reasons to sweep merge into the more urgent one.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Sweep {
+    /// The owe asks only about what the entries named (`gone`, `added`).
+    #[default]
+    No,
+    /// A delete could not be followed to a tile (the Watchlist had not loaded): the entries are still
+    /// waited for like any other library change, and the sweep is made at the server's quiet.
+    AfterQuiet,
+    /// The feed had a gap, so the exact changes were missed: made at once, not held for the wait.
+    Now,
 }
 
 /// A server's finished library entries that have not been spent, waiting for its feed to go quiet.
@@ -423,7 +446,7 @@ impl Stores {
             // Whatever the library did during the gap was missed.
             if self.watchlist.is_ready() {
                 for kind in [WatchKind::Movie, WatchKind::Show] {
-                    self.notify_map.library_owe(*sid, kind).sweep = true;
+                    self.notify_map.library_owe(*sid, kind).sweep_to(Sweep::Now);
                 }
             }
         }
@@ -493,7 +516,7 @@ impl Stores {
                 LibraryState::Deleted => {
                     deleted += 1;
                     let Some(held) = &held else {
-                        self.notify_map.library_owe(sid, kind).sweep = true;
+                        self.notify_map.library_owe(sid, kind).sweep_to(Sweep::AfterQuiet);
                         continue;
                     };
                     let tile = e.item_id.trim().parse::<i64>().ok().and_then(|rk| held.get(&rk));
@@ -519,15 +542,16 @@ impl Stores {
         let queued = std::mem::take(&mut self.notify_map.library);
         let mut kept = Vec::new();
         for ((sid, kind), owe) in queued {
-            // A sweep asks after every title of the kind, so it covers every entry that has arrived; an
-            // entry still to come makes a new owe, which waits for its own quiet. It is not held.
-            let waits = !owe.sweep && self.notify_map.library_settling(sid);
+            // A feed gap's sweep asks after every title of the kind, so it covers every entry that has
+            // arrived; an entry still to come makes a new owe, which waits for its own quiet. It is not
+            // held. A delete that could not be followed sweeps too, but it is one of those entries.
+            let waits = owe.sweep != Sweep::Now && self.notify_map.library_settling(sid);
             if !self.watchlist.is_ready() || waits || !self.notify_map.library_due(sid, kind) {
                 kept.push(((sid, kind), owe));
                 continue;
             }
             let mut asks: Vec<(String, WatchKind)> = owe.gone.iter().map(|g| (g.clone(), kind)).collect();
-            if owe.sweep {
+            if owe.sweep != Sweep::No {
                 asks.extend(self.watchlist.rows_of(kind));
             } else if owe.added {
                 asks.extend(self.watchlist.unmatched_on(sid, kind));
