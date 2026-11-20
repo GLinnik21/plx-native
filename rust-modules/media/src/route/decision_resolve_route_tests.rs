@@ -3784,6 +3784,54 @@ fn experimental_offers_an_mp4_original_that_standard_streams() {
         "a streamable container is the one the opt-in carries");
 }
 
+/// Where this firmware's Dolby Vision splitter takes only an IDR as the first picture
+/// (`Caps::dv_first_picture`, a `devcaps::EXCLUSIONS` row: the CX's 5.5.0-19 and the C1's 6.5.3-47), a
+/// Dolby Vision original stays on Standard. The TV's own demuxer flags an MP4's Dolby Vision, a URI play
+/// then builds the same splitter (`docs/uri-mode.md`, the Dolby Vision row's (e)), and a landing on a CRA
+/// sits on Buffering with nothing on the URI path to withdraw and reload; Standard's `dv_start` guard
+/// does both. The same file where the splitter takes any random access point first is offered, and so is
+/// a file without Dolby Vision on the IDR-only set.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn experimental_leaves_a_dolby_vision_original_on_standard_where_the_splitter_takes_only_an_idr() {
+    use crate::route::uri_preflight::UriDecline;
+    use plx_os::devcaps::dv::DvCapability;
+    use plx_os::devcaps::{Caps, DvFirstPicture};
+    use plx_plex::plex::session::UriEngine;
+    const MP4: &str = "/library/parts/36013/1/file.mp4";
+    // Standard's wire is 2 requests (the MDE ask and the PlayQueue); a URI offer is made before the
+    // MDE ask, so it makes only the PlayQueue's.
+    let resolve = |name, requests, first, capability, dovi| uri_engine_part_resolve(MP4, name,
+        UriEngine::On, requests, MDE_DIRECTPLAY, vec![cold_track(1, "ac3", "eng", true, "")], "ac3",
+        |env, item| {
+            env.caps = std::sync::Arc::new(Caps { dv_first_picture: first, ..Caps::assumed() });
+            env.dv_capability = capability;
+            env.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Auto;
+            item.dovi = dovi;
+        }).0;
+    let any_irap = resolve("uri-dv-any-irap", 1, DvFirstPicture::AnyIrap, DvCapability::Supported, p8());
+    assert!(any_irap.src_dv_decision.presentation.declared().is_some(),
+        "the premise: Standard plays this MP4 as Dolby Vision");
+    assert!(any_irap.uri_original.is_some() && any_irap.uri_source_ready,
+        "a splitter that takes any random access point first: the opt-in carries it");
+    let idr_only = resolve("uri-dv-idr-only", 2, DvFirstPicture::IdrOnly, DvCapability::Supported, p8());
+    assert!(idr_only.uri_original.is_none() && !idr_only.uri_source_ready, "an IDR-only splitter: Standard");
+    assert!(idr_only.url.contains("/library/parts/36013/"), "Standard direct-plays it: {}", idr_only.url);
+    assert_eq!(idr_only.uri_decline, Some(UriDecline::DolbyVisionIdrFirst));
+    assert_eq!(uri_decline_line(UriEngine::On, &idr_only).as_deref(), Some(concat!(
+        "uri: original declined (the file has Dolby Vision and this firmware's Dolby Vision splitter ",
+        "takes only an IDR as the first picture, which can hang a seek; Standard recovers from that)")));
+    // The demuxer's Dolby Vision switch is the pipeline's own configd read, not this app's probe, so a
+    // probe that did not answer (Standard plays the base layer, undeclared) is no proof the URI play
+    // builds no splitter.
+    let unknown = resolve("uri-dv-idr-only-unknown", 2, DvFirstPicture::IdrOnly, DvCapability::Unknown, p8());
+    assert!(unknown.src_dv_decision.presentation.declared().is_none(), "the premise: undeclared in Standard");
+    assert_eq!(unknown.uri_decline, Some(UriDecline::DolbyVisionIdrFirst));
+    let plain = resolve("uri-sdr-idr-only", 1, DvFirstPicture::IdrOnly, DvCapability::Supported,
+        plx_data::metadata::Dovi::NONE);
+    assert!(plain.uri_original.is_some(), "no Dolby Vision, no splitter: the opt-in carries it");
+}
+
 
 /// Exercise the production queue/publication runner and the exact outcome consumed by
 /// the demux session. Refusing a private candidate must leave the active route usable.

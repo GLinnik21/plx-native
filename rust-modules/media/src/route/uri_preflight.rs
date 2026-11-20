@@ -170,6 +170,12 @@ pub enum UriDecline {
     SubtitleOff,
     /// The file carries Dolby Vision and Settings > Dolby Vision is Off.
     DolbyVisionOff,
+    /// The file carries Dolby Vision and this firmware's Dolby Vision splitter takes only an IDR as the
+    /// first picture after its init or a flush ([`OriginalRequest::dv_first_picture`]). A URI play builds
+    /// that splitter wherever the TV's demuxer flags the stream as Dolby Vision, so a seek or a resume
+    /// landing on a CRA would never show a picture. Standard withdraws its declaration and reloads at
+    /// such a landing (the Feed's `dv_start` guard); the URI engine has nothing that does.
+    DolbyVisionIdrFirst,
     /// A trailer preview, which the exported window cannot place.
     Preview,
     /// The Part has no known duration or no URL.
@@ -222,6 +228,8 @@ impl UriDecline {
             Self::ClientSubtitle => "the selected subtitle is an external file",
             Self::SubtitleOff => "the file has subtitle streams and none is selected; subtitle streams keep a play in Standard today",
             Self::DolbyVisionOff => "the file has Dolby Vision and the Dolby Vision setting is Off",
+            Self::DolbyVisionIdrFirst =>
+                "the file has Dolby Vision and this firmware's Dolby Vision splitter takes only an IDR as the first picture, which can hang a seek; Standard recovers from that",
             Self::Preview => "a trailer preview",
             Self::NoDurationOrUrl => "no duration or URL for the file",
             Self::NotCertified => "the qualifier did not certify the file",
@@ -256,6 +264,11 @@ pub struct OriginalRequest {
     /// Exact selected-source layering; a positive DV verdict must certify this record.
     pub dolby_vision: plx_data::metadata::Dovi,
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
+    /// Which first picture this set's Dolby Vision splitter takes, off the ATTEMPT's caps
+    /// (`ResolveEnv::caps`, [`plx_os::devcaps::Caps::dv_first_picture`]), never the process-wide answer.
+    /// [`DvFirstPicture::IdrOnly`](plx_os::devcaps::DvFirstPicture::IdrOnly) keeps a Dolby Vision
+    /// original off the URI engine ([`UriDecline::DolbyVisionIdrFirst`]).
+    pub dv_first_picture: plx_os::devcaps::DvFirstPicture,
     /// The viewer turned on Settings > Playback > Playback engine (`UriEngine::On`). That choice is
     /// the viewer's own qualification of a URI source for their own playback and nobody else's: a
     /// qualifier answers for it, never without it, and never past [`standard`](Self::standard).
@@ -679,6 +692,13 @@ impl ResolvePort {
         else if request.dolby_vision.present
             && request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off {
             Some(UriDecline::DolbyVisionOff)
+        } else if request.dolby_vision.present
+            && request.dv_first_picture == plx_os::devcaps::DvFirstPicture::IdrOnly {
+            // Any Dolby Vision, not only what Standard would declare: the TV's demuxer decides it from
+            // the container, the profile and the pipeline's own configd read (`docs/uri-mode.md`, the
+            // Dolby Vision row), none of which this route can confirm, and a probe that did not answer
+            // is no proof the set has no Dolby Vision. Standard plays every such file.
+            Some(UriDecline::DolbyVisionIdrFirst)
         } else if request.preview && !evidence.display.preview_rectangle { Some(UriDecline::Preview) }
         else { None }
     }
@@ -1132,7 +1152,8 @@ mod tests {
             server_origin: plx_plex::plex::Origin::http("192.0.2.5", 32499),
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "h264".to_owned(), dolby_vision: plx_data::metadata::Dovi::NONE,
-            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in,
+            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
+            dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap, uri_opt_in,
             standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false,
             subtitle_source: None, subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
@@ -1311,7 +1332,8 @@ mod tests {
             server_origin: plx_plex::plex::Origin::http("192.0.2.5", 32499),
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
-            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto, uri_opt_in: false,
+            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
+            dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap, uri_opt_in: false,
             standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
@@ -1382,7 +1404,7 @@ mod tests {
         let p8 = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
             ..plx_data::metadata::Dovi::NONE };
         type Tweak = fn(&mut OriginalRequest);
-        let cases: [(&str, &str, Option<UriDecline>, Tweak); 17] = [
+        let cases: [(&str, &str, Option<UriDecline>, Tweak); 19] = [
             ("the control", "known", None, |_| {}),
             ("speed", "refused", Some(UriDecline::Rate),
                 |r| r.requested_rate_permille = plx_playback_contract::RATE_NORMAL + 250),
@@ -1403,6 +1425,18 @@ mod tests {
                 r.dolby_vision = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
                     ..plx_data::metadata::Dovi::NONE };
                 r.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Off;
+            }),
+            ("dolby vision on an idr-only splitter", "refused", Some(UriDecline::DolbyVisionIdrFirst), |r| {
+                r.dolby_vision = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
+                    ..plx_data::metadata::Dovi::NONE };
+                r.dv_first_picture = plx_os::devcaps::DvFirstPicture::IdrOnly;
+            }),
+            // The viewer's own setting is named before the firmware's splitter.
+            ("dolby vision off on an idr-only splitter", "refused", Some(UriDecline::DolbyVisionOff), |r| {
+                r.dolby_vision = plx_data::metadata::Dovi { present: true, profile: 8, bl_compat: 1,
+                    ..plx_data::metadata::Dovi::NONE };
+                r.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Off;
+                r.dv_first_picture = plx_os::devcaps::DvFirstPicture::IdrOnly;
             }),
             ("preview", "refused", Some(UriDecline::Preview), |r| r.preview = true),
             ("no duration", "unknown", Some(UriDecline::NoDurationOrUrl), |r| r.duration_ms = None),
@@ -1427,10 +1461,14 @@ mod tests {
             tweak(&mut request);
             assert_eq!(answer(&port.qualify(&off, request)), (kind, reason), "{what}");
         }
-        // A Dolby Vision file with the setting on Auto still carries (the record is certified).
+        // A Dolby Vision file with the setting on Auto still carries (the record is certified), and a
+        // file without Dolby Vision carries on a set whose splitter takes only an IDR first.
         let mut dv = opt_in_request(true);
         dv.dolby_vision = p8;
         assert_eq!(answer(&port.qualify(&off, dv)).0, "known", "Dolby Vision on Auto");
+        let mut plain = opt_in_request(true);
+        plain.dv_first_picture = plx_os::devcaps::DvFirstPicture::IdrOnly;
+        assert_eq!(answer(&port.qualify(&off, plain)).0, "known", "no Dolby Vision, no splitter");
     }
 
     /// The checks after a qualifier answered Known: each leaves the answer Unknown, and the one that
@@ -1542,7 +1580,7 @@ mod tests {
         use UriDecline::*;
         let all = [NoPort, NotOffered, TrackPickUnresolved, Rate, QualityOrDirectPlay, Relay,
             AutoOnNonLocalLink, AudioEnhancement, SubtitleBurn, ClientSubtitle, SubtitleOff,
-            DolbyVisionOff, Preview, NoDurationOrUrl, NotCertified, NotOptedIn, StandardVideo,
+            DolbyVisionOff, DolbyVisionIdrFirst, Preview, NoDurationOrUrl, NotCertified, NotOptedIn, StandardVideo,
             StandardDolbyVision, StandardAudio, StandardContainer, ManyAudioTracksExported,
             CertificateMismatch, SubtitleNotCarried, NoDisplayEvidence];
         let mut seen = std::collections::HashSet::new();

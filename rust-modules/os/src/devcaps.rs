@@ -176,9 +176,13 @@ pub enum AppLossy {
     All,
 }
 
-/// Which first picture a set's Dolby Vision splitter (`libgstdvsplitter.so`, built only when a Load
-/// carries a `DolbyHdrInfo` node) takes after its init or a flush. Read by the player at a landing
-/// (`route::dv_first_picture`, through the attempt's caps), never by the planner or a PMS profile.
+/// Which first picture a set's Dolby Vision splitter (`libgstdvsplitter.so`) takes after its init or a
+/// flush. A Feed play builds the splitter only when its Load carries a `DolbyHdrInfo` node; a URI play
+/// builds it wherever the TV's own demuxer flags the stream as Dolby Vision (`docs/uri-mode.md`, the
+/// Dolby Vision row of Results). Read through the attempt's caps by the player at a landing
+/// (`route::dv_first_picture`) and by the URI original's offer, which keeps a Dolby Vision original on
+/// Standard where this is [`IdrOnly`](Self::IdrOnly) (`route::uri_preflight::UriDecline::DolbyVisionIdrFirst`);
+/// never by a PMS profile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DvFirstPicture {
     /// Any HEVC random access point, a CRA or a BLA included: the default, what [`Caps::assumed`] and a
@@ -333,7 +337,8 @@ pub enum Limit {
 /// although the family's own codec table lists it: a native-audio combination ([`Limit::Audio`]), which
 /// is converted exactly as a track the set never listed, by the server; or a Dolby Vision splitter that
 /// takes only an IDR first ([`Limit::DvFirstPictureIdr`]), which the player answers by withdrawing the
-/// declaration at a landing the splitter would skip.
+/// declaration at a landing the splitter would skip, and the URI original's offer by keeping a Dolby
+/// Vision original on Standard.
 ///
 /// The key is the firmware codename (`tv::device::WebosDetail::codename`, nyx's `webos_release_codename`),
 /// the one identity the app reads reliably on every set: it groups the sets that run the same

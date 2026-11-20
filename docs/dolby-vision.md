@@ -35,7 +35,7 @@ removed plays. One set measured; webOS 4+ and an unreadable version keep configd
 
 **On webOS 5.5.0-19 (`jhericurl-jervisbay`) and 6.5.3-47 (`kisscurl-koli`, the LG C1) a Dolby Vision
 play withdraws its declaration at a landing the splitter would skip** (#1166). The 5.5.0-19
-`libgstdvsplitter.so` (built only when the Load carries the node) lets only an HEVC IDR be the first
+`libgstdvsplitter.so` (on a Feed play, built only when the Load carries the node) lets only an HEVC IDR be the first
 picture after its init or a flush, so a file whose later random access points are CRAs sits on
 Buffering after every seek and every resume (observed on a CX). The 6.5.3-47 image's splitter has the
 same dispatch, read from its disassembly; the hang was not observed on a C1. The shared device
@@ -49,7 +49,11 @@ the viewer gets the HDR10 base layer, a seek back to 0:00 stays HDR10, and so do
 Original after a trip to HLS, because the stored Original candidate is downgraded with the route);
 the next play is planned again. Only a declared direct play is withdrawn: a Profile 5 (no base layer) and a remux that copies
 the video are reported in the log and fed as before. `platform_gate` is not the vehicle: it removes
-Dolby Vision from every play on a set, while this keeps it wherever the landing is an IDR.
+Dolby Vision from every play on a set, while this keeps it wherever the landing is an IDR. The URI
+(Experimental) engine has no such guard, and a URI play builds the same splitter, node or not,
+wherever the TV's demuxer flags the stream as Dolby Vision (`docs/uri-mode.md`, the Dolby Vision row of
+Results), so on a set whose caps say IDR-first a Dolby Vision original is not offered to it and plays
+on Standard (`UriDecline::DolbyVisionIdrFirst`).
 
 | Source | Confirmed supported | Unsupported / unknown |
 |---|---|---|
@@ -546,7 +550,10 @@ human at the panel, check whether the platform already publishes it.
   6.5.3-47 (`239b3e04`) splitters are read (`docs/measurements/issue1166-cra.md`): 4.10.2 admits 16
   to 21, so a CRA first is accepted and the dev set cannot reproduce the hang; 6.5.3-47 admits only
   19 and 20, so the C1 has a row. The C1 row is from the disassembly; the hang was not observed on
-  a C1. Still open: the 4 s threshold is unmeasured on any 5.x or 6.x set; the watch reads the
+  a C1, and a static read of 2026-11-20 found no splitter in 6.5.3-47's Dolby Vision chain
+  (`docs/uri-mode.md`, the Dolby Vision row of Results, (e)), which contradicts the row. The row stays
+  until a C1 settles it; meanwhile it also keeps the C1's Dolby Vision originals off the URI engine,
+  the safe side. Still open: the 4 s threshold is unmeasured on any 5.x or 6.x set; the watch reads the
   pipeline's 5 Hz position updates (`SHARED.frames`), not presented pictures, so a firmware that
   keeps sending them while presenting nothing is not caught (a listed build is covered by its row);
   the panel's Dolby Vision to HDR10 switch on the withdrawing reload and a PMS video-copy remux

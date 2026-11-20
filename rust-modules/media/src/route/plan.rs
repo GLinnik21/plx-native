@@ -2091,6 +2091,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     video_codec: vcodec.to_owned(),
                     dolby_vision: dovi,
                     dolby_vision_mode: env.dolby_vision_mode,
+                    dv_first_picture: env.caps.dv_first_picture,
                     uri_opt_in: env.uri_engine == plx_plex::plex::session::UriEngine::On,
                     standard: super::uri_preflight::StandardDirectPlay {
                         video: source_decodable,
