@@ -584,7 +584,7 @@ fn clear_under_a_redirected_legacy_fixture_never_touches_the_canonical_authority
 /// `signout-leaves-token-in-unswept-candidates`: `clear()` must actually reach
 /// `persistence::cleanup_after_confirmed_clear()` after a durable canonical commit — the step
 /// that retires the full recognized migration-candidate set
-/// (`paths::session_migration_candidates()`, plus the pre-DB8 canonical JSON wrapper on ARM),
+/// (`paths::session_migration_candidates()`, plus the pre-DB8 canonical JSON wrapper where the helper is canonical),
 /// which is a strict superset of the legacy `auth_paths()` list `clear()`'s own loop sweeps.
 ///
 /// **On the honesty of this test**: `persistence::bootstrap`/`cleanup_after_confirmed_clear`

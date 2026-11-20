@@ -504,9 +504,11 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   - `CompletionOutcome` (`plex/src/plex/session/async_persistence.rs:112`) and `LiveWrite` are matched in
     `session.rs`, `session/{persistence,async_persistence,prefs/profile_prefs}.rs`, `session/src/auth/owner.rs`,
     `telemetry/src/telemetry/incident.rs:592-600`, `src/app/adapters/session.rs` and three test files.
-  - `install_preferences::candidates` (`:40`) and `clear_for_erase` (`session.rs:5341`) key on the ARM cfg, so
-    Tizen ARM reads `native = true`; `load` accepts `version == 1` only (`:59`) and `Saved` is
-    `deny_unknown_fields`. The ARM canonical write is cfg'd out of host tests (`session/persistence.rs:1400-1425`).
+  - `install_preferences::candidates` (`:40`) and `clear_for_erase` (`session.rs:5341`) keyed on the ARM cfg, so
+    Tizen ARM read `native = true` (W8a re-keyed them to `tv::authority::authority()`); `load` accepts
+    `version == 1` only (`:59`) and `Saved` is `deny_unknown_fields`. The ARM canonical write was cfg'd out of
+    host tests (`session/persistence.rs:1400-1425`); it is now the `Helper` arm of `persistence::*_via`, which every
+    host runs over a fake transport.
   - `ci/check-deps.sh`: `plex/` is in `FORK_SCOPE`, `session.rs` in `MACHINES` (`:1406-1408`): a new
     `cfg(test)` branch there is a `forks` line, a new static a `statics` line. `platform/` is not in `FORK_SCOPE`,
     and only `platform/src/tv/plane.rs` is in `MACHINES` (`:1406-1408`; the scan `find` at `:1439` lists it too). The
