@@ -15,7 +15,7 @@ use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use plx_data::stores::StoreJob;
 use plx_data::stores::notify_job::NotifyStreamReq;
 use crate::app::adapters::stores::NotifyTransport;
-use plx_data::stores::notify_map::Shown;
+use plx_data::stores::notify_map::{Shown, LIBRARY_QUIET_FRAMES};
 use plx_ui::dispatch::Rig as _;
 use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState, Notification};
 use plx_plex::plex::{GrantEvidence, ServerId};
@@ -178,6 +178,20 @@ fn the_notify_pump_starts_the_read_a_library_change_asked_for() {
     // Scripted eligible input is explicit, not an ambient credential-policy override.
     rig.bridge.bridge().retained.client_keys.refill_roster_with_stream_policy(rig.own, 1, 1, [rig.own],
         plx_plex::plex::client_for, plx_plex::plex::server_facts, |_| None, |_| true);
+    let (_, endpoints) = rig.bridge.bridge().notify_pump_captured(&[], Shown::ALL);
+    assert!(endpoints.is_empty());
+    // The refresh a library entry owes waits for its server's feed to go quiet (#1458). The frames
+    // up to the one that ends the wait go to the map alone (the script would deliver its entry again
+    // on a reconnect), and the pass that ends it is the pump's.
+    assert!(!rig.bridge.bridge().stores.browse.borrow().hubs_read_out_for_test(), "not while the feed may be busy");
+    {
+        let bridge = rig.bridge.bridge();
+        for _ in 1..LIBRARY_QUIET_FRAMES {
+            let quiet = plx_data::stores::notify::NotifyOut::default();
+            let spent = bridge.stores.notify_map(&quiet, &[], Shown::ALL, bridge.retained.directory.view(), &bridge.retained.client_keys);
+            assert_eq!(spent, Default::default());
+        }
+    }
     let (_, endpoints) = rig.bridge.bridge().notify_pump_captured(&[], Shown::ALL);
     assert!(endpoints.is_empty());
 
