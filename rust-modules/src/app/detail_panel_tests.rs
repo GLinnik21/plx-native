@@ -229,6 +229,8 @@ struct PickTap {
     last: Option<Asked>,
     /// `(what was asked, who asked, how it ended)`, in the order the runner finished them.
     commands: Vec<(Asked, MachineId, plx_machine::machine::AppCommandOutcome)>,
+    /// How many times a panel reported a picked version (`AppMsg::PlayVersion`) to its page.
+    play_version_reported: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +245,10 @@ enum Asked {
 
 impl plx_ui::dispatch::Tap<AppHost> for PickTap {
     fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
-        use plx_screens::registry::{AppFx, ContentArg, ContentReq, PlayIntent};
+        use plx_screens::registry::{AppFx, AppMsg, ContentArg, ContentReq, PlayIntent};
+        if let Fx::Deliver(_, plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(AppMsg::PlayVersion(_)))) = &stamped.fx {
+            self.play_version_reported += 1;
+        }
         if let Fx::App(app) = &stamped.fx {
             self.last = Some(match app {
                 AppFx::Content(ContentReq::Play { play, .. }) => Asked::Play(match play {
@@ -373,6 +378,7 @@ fn a_version_pick_asks_for_no_play_when_the_platform_composed_no_driver() {
     let mut bridge = w.bridge.bridge();
     pick_key(&mut w.d, &mut bridge, &mut t, Key::Down, &mut tap);
     pick_key(&mut w.d, &mut bridge, &mut t, Key::Ok, &mut tap);
+    assert_eq!(tap.play_version_reported, 0, "a disabled row reports nothing to the page: {}", tap.account());
     assert!(tap.ended(host, &Asked::Play(Some(pick))).is_empty(), "no play was asked: {}", tap.account());
     assert!(tap.commands.iter().all(|(asked, ..)| !matches!(asked, Asked::Play(_))), "{}", tap.account());
     assert!(!matches!(w.d.top_arg(), Some(AppArg::Player)), "the player was not entered");
