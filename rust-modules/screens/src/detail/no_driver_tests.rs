@@ -332,9 +332,10 @@ fn enter_makes_the_seat_the_pages_own_only_for_a_fresh_open_with_no_driver() {
     use plx_ui::screen::Enter;
     let sid = ServerId::UNSET;
     let fresh = Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
+    let built = DetailScreen::new(EntryId(7), sid, "movie".into(), plx_data::pms::HubsSnapshot::empty_for_test().view());
+    assert!(!built.provisional, "a body nothing has entered claims no seat");
     // (what, no driver, item landed, the enters in order, the page's own seat after them)
     for (what, no_driver, landed, enters, own) in [
-        ("a body nothing has entered", true, false, vec![], false),
         ("a fresh open before its item lands", true, false, vec![fresh], true),
         ("a fresh open whose item is already there", true, true, vec![fresh], true),
         ("a fresh open with a driver composed", false, false, vec![fresh], false),
