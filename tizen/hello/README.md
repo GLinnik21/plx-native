@@ -688,7 +688,7 @@ screen colour (below) still answers questions 1 to 4.
 9. H7: the panel's `8 gfx` lines (all of them, the last one is the shader-bisect summary), the log's
    `H7 ...` lines (`H7 RESULT:` and its `RESULT+N:` continuations, the settled `H7 RESULT@60:` after 60
    frames, `GL_VERSION`, `GL_EXTENSIONS`, each `shader pair` and its `info log:`, `entering ...` and
-   `... returned in N ms`, `H7 font: ...`, `H7 gfx: ... GL error ...`) and, whether or not a shader failed, every
+   `... returned in N ms`, `H7 font: ...`, `H7 gfx: glGetError after init = ...`, `... after the draw = ...`) and, whether or not a shader failed, every
    `H7 bisect ...` line (the compile result, the info log and the read-back per variant, then the
    `H7 bisect:` summary), and whether the PANEL STILL DRAWS after the inits (the whole panel, not just the
    corner) and whether the rounded rectangle and the `plx_gfx text` line are on screen in the
