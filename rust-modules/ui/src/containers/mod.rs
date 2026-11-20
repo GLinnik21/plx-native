@@ -248,10 +248,16 @@ impl<H: Host> Navigation<H> {
     /// routing performed here cannot drift.
     pub fn request(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) -> Vec<Life<H>> {
         if self.moves_page(&op) {
-            let ret = if let Some(InputOwner::Entry(owner)) = self.modals.input_owner() {
-                if let Some(e) = self.modals.entry_mut(owner) { e.ret = ret; }
-                self.top_page().map(|e| e.ret.clone()).unwrap_or_default()
-            } else { ret };
+            // `ret` lands on the page only when it was captured there: a live surface keeps its
+            // own, and one captured on a surface that has closed since is dropped.
+            let ret = match self.modals.input_owner() {
+                Some(InputOwner::Entry(owner)) => {
+                    if let Some(e) = self.modals.entry_mut(owner) { e.ret = ret; }
+                    None
+                }
+                _ if ret.focus.is_some_and(|f| self.top_page().map(|e| e.id) != Some(f.entry)) => None,
+                _ => Some(ret),
+            }.unwrap_or_else(|| self.top_page().map(|e| e.ret.clone()).unwrap_or_default());
             self.tabs.stack.request(op, ret);
             return Vec::new();
         }
