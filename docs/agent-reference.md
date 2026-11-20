@@ -333,6 +333,24 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any checkout, so no tool
   counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
   under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
+- `make test-host-interface` — W7a's gate (`docs/platform-ports.md`, Target shape 8): the application crate's
+  `host` module (`rust-modules/src/host.rs`, the one path a platform crate names) used from OUTSIDE the crate by
+  `rust-modules/tests/host_interface.rs`, an integration test and so a crate of its own. It builds a `static
+  Platform` from a fake `Shell`, `Surface` and `FrameProbe`, boots it through `host::run` (the real
+  `run_application`) and asserts that `init` ran before `open`, the `OpenAsk` the application made, and the fake's
+  refusal returned as the entry's `Exit`. The boot cannot go further: after `open` it makes real GL calls, and a fake
+  surface has no GL context (nothing stubs GL under `test-support`), so frames and the loop are graded by the
+  in-crate tests of `make test-hostsim`, not here. It needs `hostsim`, because only there does `PLXNATIVE_RUNTIME_DIR`
+  steer the runtime root, so the boot's event log and crash log land in the recipe's throwaway directory; the boot
+  replaces the process's panic hook (`install_panic_logger`, which wraps the previous hook and also writes the
+  event and crash logs), and only one test in the file boots, because the platform's services install once per
+  process. The file also holds a source scan that every path into the application crate starts
+  `plxnative_modules::host`. Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
+  `$(UNIT_RUN)` (a `--test` line is passed through), refused under `RELEASE=1`, in `SIDE_EFFECT_FREE` and
+  `DISK_ENTRIES`. `make check` runs the same test non-incrementally as the second cargo line of
+  `check-cargo-unit-hostsim` (`--lib` never builds an integration test), pinned in `ci/test_ci_split.py`'s `GATES`.
+  The file needs no `[[test]]` entry (cargo finds `rust-modules/tests/*.rs`), so the root manifest and the
+  `ci/proofs` certificates that hash it are unchanged.
 - `make fuzz-hud [T=<target> ...] [SECS=60]` — the `cargo fuzz` package over every parser a HUD package or the
   registry reaches (`docs/hud-plugins.md`, threat model): `admit` (the whole admission path),
   `bundle_read`, `archive_read` (the 1.0 ZIP container), `svg_check` (the SVG gate in front of nanosvg),

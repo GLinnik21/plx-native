@@ -894,17 +894,20 @@ There is no `default_backend` (review M8, critic M1): the backend set is derived
 `Shell` (the factory) opens the loop's `Surface`: `create_surface`, `make_current`, `swap`, `drawable_size`,
 `gl_proc_address`; `release`/`reacquire` around background; `video_hole(Option<Rect>)`, which replaces
 `arm_opaque_region`, `opaque_route` and `clear_opaque_region`; `pump()`, which replaces `pump_bus`. The trait doc
-states which thread runs each call (Target shape 7). `Shell`, `Surface` and `HostEvent` stay app-private until
-H1 and H2 return (critic M5; H3, H4 and H5 returned on the emulator only, E6, E8, E10; Decision 3, A): code moves
-now, but no type a Samsung shell must match leaves the app crate; Target shape 8 is the one narrow, public
-construction interface. The dispatcher's rig hooks (`ui/src/dispatch.rs:728-730`) keep delegating through
-`run::rig_*`.
+states which thread runs each call (Target shape 7). `Shell`, `Surface` and `HostEvent` stayed app-private until
+H1 and H2 return (critic M5; H3, H4 and H5 returned on the emulator only, E6, E8, E10; Decision 3, A). The owner then
+ruled (2026-11-21, Decision 3 amended) that `Shell` and `Surface`, with the rest of the construction interface,
+are reachable ONLY through `plxnative_modules::host` (Target shape 8), never as general `pub` items of the
+application crate; `HostEvent` stays app-private, and a platform reports input through `EventSink`. W7a publishes
+today's `Shell` (12 methods) and `Surface` (5, plus `deliver`) as they are; the fold toward the shape above (one
+`Surface`, `video_hole`, `pump`) is W9's, which is the first change with a second implementation to fold toward.
+The dispatcher's rig hooks (`ui/src/dispatch.rs:728-730`) keep delegating through `run::rig_*`.
 
 ### 2. Input and lifecycle: canonical actions (review M6, C8; critic F11)
 
 This replaces two earlier designs, "`HostEvent::Key` carries SDL keycodes plus LG scancodes" and critic M7's "map
 Ecore names to `remote_token_key` pairs".
-- `HostEvent` (app-private, like `Shell`) has:
+- `HostEvent` (app-private; `Shell` is published through `host` only, Target shape 8) has:
   - `Key { action: Option<Action>, edge: Edge, raw: Option<RawKey> }`, `Edge` being `Down | Repeat | Up` as in
     `InputKind::Key` (F33). `action` is `Option` because unbound keys flow today as raw pairs (`k:0,269` HOME,
     `app/events.rs:202-212`), the configurable lab trigger consumes pairs no `Action` names, and the recorder
@@ -1177,23 +1180,40 @@ Ecore names to `remote_token_key` pairs".
   (`src/lib.rs:17`), so a sibling cannot name `app::Platform` or implement a crate-private `Shell`; and a
   `static PLATFORM` must be `Sync`, while window state is thread-affine (`MainThread` is `!Send + !Sync`,
   `base/src/task.rs:129`).
-- The interface. One narrow public module, `plxnative_modules::host`, of re-exports only: `Platform`, `Services`,
-  `Shell`, `Surface`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit`, `Release` and an `EventSink` trait. The
-  split is by thread: registration data (the `static PLATFORM`: function pointers and `&'static dyn` of `Sync`
-  types, `Shell` included as a factory) is `Sync` and shared; thread-affine state (window, GL context, the
-  Ecore handles) lives only in a `Surface` that `Shell::open(&self, &MainThread)` returns on the loop thread and
-  that the app owns inside `App`. The platform reports input through `EventSink` (`key(Option<Action>,
-  Option<RawKey>, Edge)`, `text`, `pointer`, `wheel`, `lifecycle`, `quit`, ...); the APP converts to its private
-  `HostEvent`, so the owner's decision that the event API stays private holds. `Action`, `RawKey` and `Edge`
-  are already public lower-layer types.
-- Gate. Before extraction, a desktop-shaped root is compiled against `host` alone: an integration test
+- The interface. One narrow public module, `plxnative_modules::host`: re-exports, and ONE function, `run(&'static
+  Platform, &CStr, u16) -> Exit`, which forwards to `run_application` (the single exception to "re-exports
+  only": the entry is `pub(crate)`, and a platform crate has nothing else to call). The re-exports are `Platform`,
+  `Services`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit`, `Release` and an `EventSink`
+  trait, with the vocabulary their signatures use: `MainThread`, `OpenAsk`, `Placement`, `Lifecycle`, `PointerEdge`,
+  `Action`, `RawKey` and `Edge`. Those nine are reachable ONLY through `host` (owner ruling, 2026-11-21; Decision 3,
+  amended): `Exit` and `Release` are `pub` inside the private `app`, and `Platform` and the traits are `pub` in a
+  private module, so no path outside `host` names them. The split is by thread: registration data (the `static
+  PLATFORM`: function pointers and `&'static dyn` of `Sync` types, `Shell` included as a factory) is `Sync` and
+  shared; thread-affine state (window, GL context, the Ecore handles) lives only in a `Surface` that
+  `Shell::open(&self, &MainThread, &OpenAsk)` returns on the loop thread and that the app owns inside `App`.
+- Events. The platform reports input through `EventSink` (`key(Option<Action>, Option<RawKey>, Edge) -> bool`, `text`,
+  `pointer`, `wheel`, `lifecycle`, `quit`); the APP converts to its private `HostEvent` (a private `HostQueue`, the
+  one place), so the owner's decision that the event API stays private holds. `Action`, `RawKey` and `Edge` are
+  lower-layer types: `RawKey` moved to `plx_ui::consts` beside `raw_pair` and `action_of` (a `pub(crate) use` keeps
+  the app's old path). `Surface::deliver(&self, &mut dyn EventSink)` is ADDITIVE, beside `Surface::poll`: `deliver` is
+  required, `poll` is defaulted to `false` and `#[doc(hidden)]`, and the loop's `drain_sdl` drains `poll` as before and
+  then calls `deliver` once. The SDL shells deliver nothing through the sink, so every SDL event still comes through
+  `poll` (a unit test pins both). `poll` is RETIRED once the SDL shells deliver through the sink, W9 at the latest.
+- Gate. Before extraction, a platform is compiled against `host` alone: an integration test
   (`rust-modules/tests/host_interface.rs`, a separate crate that can name only `pub` items) builds a
-  `static PLATFORM` with a fake `Shell` and boots it under `hostsim`. W7b extracts only after it passes.
+  `static PLATFORM` from a fake `Shell`, `Surface` and `FrameProbe` and boots it through the real `run_application`
+  (`host::run`) to the fake `Shell::open`'s refusal, under `hostsim` and a throwaway `PLXNATIVE_RUNTIME_DIR`. It
+  asserts `init` before `open`, the `OpenAsk` the application means to make, and the refusal returned as the entry's
+  `Exit`. It cannot run frames, and no fake `Surface` could take it further: after `open` the boot makes real GL calls
+  (`init_gl` links the renderer's programs), which need a current GL context, and nothing stubs GL under
+  `test-support`. The loop's fake-surface tests stay in the crate (`make test-hostsim`). The test's one source rule is
+  that every path into the application crate begins `plxnative_modules::host`; the lower-layer crates a platform
+  lists as its own dependencies (`plx_os`, `plx_media`) are fair to name. W7b extracts only after it passes.
 - Runner (G8; F52). No target runs it today (every one is `cargo test --lib`; `rust-modules/tests/` does not
   exist), so a test file alone would be a gate nobody runs. W7a adds (1) `make test-host-interface`: `cargo
   test -p plxnative-modules --features hostsim --test host_interface`, incrementally in `target-hostsim` like
-  `make test-hostsim`, through `$(UNIT_RUN)` if it accepts `--test` (UNVERIFIED: F52) and as a plain `cargo test`
-  otherwise; it is a cargo-running target, so it joins `DISK_ENTRIES` (with its `DISK_TREE` line) or
+  `make test-hostsim`, through `$(UNIT_RUN)` (it accepts `--test`: it passes the cargo line through and requires one
+  executable per `-p`, which one integration test is); it is a cargo-running target, so it joins `DISK_ENTRIES` (with its `DISK_TREE` line) or
   `ci/test_disk_preflight.py` fails; and (2) the same invocation as a recipe line of `check-cargo-unit-hostsim`, the
   `host-unit-hostsim` CI job's target, so `make check` and CI run it, pinned in `ci/test_ci_split.py`'s `GATES`.
 
@@ -1649,19 +1669,20 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   hidden W10 work critic M1 named, and they land here.
 
 ### W7 (N, accepted T). Extract the platform crates (W7a -> W7b)
-- W7a: the interface of Target shape 8: `pub mod host` in `src/lib.rs`, `host_interface.rs`, a desktop-shaped root
-  compiled against it. W7b: `[platform webos]` becomes `rust-modules/platform-webos` and `[platform desktop]`
+- W7a: the interface of Target shape 8: `pub mod host` in `src/lib.rs`, `host_interface.rs`, a fake platform compiled
+  against it and booted to its refusal. W7b: `[platform webos]` becomes `rust-modules/platform-webos` and `[platform desktop]`
   becomes `rust-modules/platform-desktop`. `RUST_LIB` (`Makefile:882`) archives `plx_platform_webos`; the gate
   learns "platform as crate above app". `tv/plane.rs` and `tv::uri` stay in the bottom layer until W11a.
 - Order: after W0, W4, W6, W6b, W6c and Wave R. W0's reading (the desktop counts as the second implementation)
   reverses `docs/module-layers.md:22-24`; the owner's yes is Decision 3, A. The owner's condition was H1-H4 from
   the emulator or a set: H3 and H4 returned on the emulator (E6, E8) and are recorded as answered on the
   emulator only; H1 and H2 are open (E9), recorded as open, and gate a retail set, not W7 (nor the emulator MVP of W9,
-  Decision 8). `HostEvent` and `Shell` stay app-private.
+  Decision 8). `HostEvent` stays app-private; `Shell` and `Surface` are reachable only through `host` (Decision 3,
+  amended 2026-11-21).
 - The Cargo mechanism of the PLATFORM axis lands here: the ARM recipe passes `RUST_FEATFLAGS`
   (`Makefile:1023-1024`), so each platform crate depends on the app with `default-features = false` and forwards
   every app feature the Makefile passes (`rust-modules/Cargo.toml:78-82`), same defaults.
-- Files: `src/lib.rs`, `rust-modules/tests/host_interface.rs`, `rust-modules/Cargo.toml`, the `Makefile` `RUST_LIB`
+- Files: `src/lib.rs`, `src/host.rs`, `rust-modules/tests/host_interface.rs`, `rust-modules/Cargo.toml`, the `Makefile` `RUST_LIB`
   and `cargo rustc` lines and (W7a, G8; F52) the new `test-host-interface` target with its `DISK_ENTRIES` entry and a
   line in `check-cargo-unit-hostsim`, `ci/test_ci_split.py` (its `GATES`), `ci/check-staticlib-artifact.py`
   (`CRATE`, F25), `ci/check-module-layers.py`,
@@ -1831,8 +1852,13 @@ emulator runs E11 and E12); they are recorded below and the body follows them.
 - 2026-11-20, Decision 3 (W7 gate): A. W7 may start. H3 and H4 recorded as answered on the emulator only; H1 and
   H2 stay open and gate W9, not W7. `Shell` and `HostEvent` stay app-private. Read with Decision 8: the emulator MVP
   of W9 does not wait for H1 and H2 either.
+- 2026-11-21, Decision 3 amended (owner): `Shell`, `Surface`, `Platform`, `Services`, `FrameProbe`, `MediaBoot`,
+  `Composition`, `Exit` and `Release` are reachable only through `plxnative_modules::host`, never as general `pub`
+  items of the application crate. `HostEvent` stays app-private; `EventSink` is the public face of input. This
+  replaces "`Shell` and `HostEvent` stay app-private" above for `Shell` and only `Shell`.
 - 2026-11-20, Decision 4 (order): A. The three contracts (W3a-c) first, then the rest, the Samsung-facing types
-  app-private. Cut into the waves of "Workstreams".
+  app-private (`Shell` and `Surface` are published through `host` only, by the 2026-11-21 amendment to Decision 3).
+  Cut into the waves of "Workstreams".
 - 2026-11-20, Decision 5 (probes): go. H5 was built on `samsung/hello-tpk` for the emulator and passed there (E10,
   `64c609a46`); the tester request on #1460 for H1, H2 and H6 is posted only with the owner's
   approval; the tester build with an on-screen diagnostics and key-code panel ran on the emulator (E11) and is the
