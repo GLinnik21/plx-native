@@ -174,10 +174,8 @@ placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
 #
 # What it changes, and nothing else: the media seam (29 symbols that exist only on a television),
 # the GL context request (macOS has no GLES2 driver), the window flags, the keyboard event decode
-# (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the desktop platform it compiles
-# (`platform_desktop`, which supplies the tables the television's `port` supplies on a set; the
-# television's wayland/glib code is compiled either way and is not what this feature switches).
-# Everything else — all of `ui/`, the whole Plex data layer, the demux
+# (LG's SDL fork shifts SDL_KeyboardEvent; stock SDL2 does not), and the wayland/glib calls that
+# have no host equivalent. Everything else — all of `ui/`, the whole Plex data layer, the demux
 # orchestration — is compiled identically for both.
 hostsim = ["dep:xxhash-rust", "plx_base/hostsim", "plx_machine/hostsim", "plx_os/hostsim", "plx_gfx/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim", "plx_data/hostsim", "plx_session/hostsim", "plx_media/hostsim", "plx_play_feed?/hostsim"]
 
