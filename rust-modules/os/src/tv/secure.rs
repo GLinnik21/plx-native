@@ -4,7 +4,6 @@
 //! Beside them, [`StoreMode`] says whether this platform keeps a credential across launches at
 //! all.
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,7 +39,7 @@ pub fn seal(plain: &[u8]) -> Option<Sealed> {
     if let Some(store) = STORE_FOR_TEST.with(|cell| cell.get()) {
         return (store.seal)(plain);
     }
-    (super::port().seal)(plain)
+    (super::services().secure.seal)(plain)
 }
 
 pub fn open(sealed: &Sealed) -> Option<Vec<u8>> {
@@ -48,7 +47,7 @@ pub fn open(sealed: &Sealed) -> Option<Vec<u8>> {
     if let Some(store) = STORE_FOR_TEST.with(|cell| cell.get()) {
         return (store.open)(sealed);
     }
-    (super::port().open)(sealed)
+    (super::services().secure.open)(sealed)
 }
 
 pub fn remove(backend: &Backend, key: &str) {
@@ -56,7 +55,7 @@ pub fn remove(backend: &Backend, key: &str) {
     if let Some(store) = STORE_FOR_TEST.with(|cell| cell.get()) {
         return (store.remove)(backend, key);
     }
-    (super::port().remove)(backend, key)
+    (super::services().secure.remove)(backend, key)
 }
 
 /// Whether this platform keeps the signed-in session across launches.
@@ -76,25 +75,19 @@ pub enum StoreMode {
     MemoryOnly,
 }
 
-/// The mode the platform published at startup, set once. Unset reads as [`StoreMode::Durable`],
-/// which is what every platform before this value existed was.
-static MODE: OnceLock<StoreMode> = OnceLock::new();
-
-/// Publish the platform's mode before the first session read. Once; later calls are ignored.
-pub fn publish_mode(mode: StoreMode) {
-    let _ = MODE.set(mode);
-}
-
 /// The persistence mode of this process: what the session layer reads before it touches a store.
+/// The platform states it once, as the `mode` of its [`SecureHooks`](super::SecureHooks); a process
+/// that installed none is a host test, whose `NONE` group says [`StoreMode::Durable`], which is
+/// what every platform before this value existed was.
 pub fn mode() -> StoreMode {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(mode) = mode_override() {
         return mode;
     }
-    MODE.get().copied().unwrap_or_default()
+    super::services().secure.mode
 }
 
-/// A host test's replacement for the published mode. It cannot be thread-local like
+/// A host test's replacement for the platform's stated mode. It cannot be thread-local like
 /// [`STORE_FOR_TEST`]: the session writes on `plx_base::storage_worker`, a thread the test that
 /// sets it does not own. It is a process global, so [`set_mode_for_test`] asserts the crate test
 /// lock is held and its guard clears the override.
@@ -152,7 +145,7 @@ mod tests {
     fn the_default_mode_is_durable() {
         let _serial = plx_base::testlock::serial();
         assert_eq!(StoreMode::default(), StoreMode::Durable);
-        assert_eq!(mode(), StoreMode::Durable, "nothing is published in a test process");
+        assert_eq!(mode(), StoreMode::Durable, "no services are installed in a test process");
     }
 
     #[test]

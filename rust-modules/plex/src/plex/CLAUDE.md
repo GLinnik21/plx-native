@@ -683,7 +683,7 @@ a dead source is **absent** from Home and states itself in its own library secti
     separate `CACHE` today; when it is wired up, it must install into/drop the cache above
     (`install_locked`/`drop_cache_locked`, under `IO`) instead of maintaining a second copy of the
     session.
-  - **Under `StoreMode::MemoryOnly` (`plx_os::tv::secure`, published once at boot; `Durable` is the
+  - **Under `StoreMode::MemoryOnly` (`plx_os::tv::secure`, the `mode` the platform's `Services.secure` states; `Durable` is the
     default and what webOS and desktop run) the cache is the ONE authority, not a write-through
     copy** (`session/memory_only.rs`): reads, guarded edits, revocation and clear all resolve
     against it, and no credential is committed anywhere, canonical store, sealed or plaintext

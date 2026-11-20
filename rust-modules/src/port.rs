@@ -1,10 +1,12 @@
-//! The webOS port: the one table that fills the `tv` interfaces, and the C entry that installs it.
+//! The webOS port: the two tables that fill the platform, and the C entry that installs them.
 //!
-//! Everything outside this module reaches the television through `plx_os::tv`; this is the only
-//! place that names `webos`, `keymanager`, `system` and the native video sink together. Its functions keep
-//! their own `cfg(any(hostsim, test))` arms, so the simulator installs this same table and behaves
-//! as it always did.
-use std::os::raw::{c_char, c_int};
+//! `plx_os::tv::Services` is what the lower layers read, and `app::platform::Platform` adds the shell
+//! and the frame probe the loop alone reads. Everything outside this module reaches the television
+//! through those; this is the only place that names `webos`, `keymanager`, `system` and the native
+//! video sink together. Its functions keep their own `cfg(any(hostsim, test))` arms, so the
+//! simulator installs these same tables and behaves as it always did.
+use crate::app::platform::{FrameProbe, Platform, Shell};
+use std::os::raw::{c_char, c_int, c_void};
 
 #[cfg(all(not(feature = "hostsim"), not(test), feature = "play-feed"))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::webos::video_sink::StarfishSink;
@@ -22,35 +24,88 @@ const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = &plx_os::webos::video_sink::
 #[cfg(any(feature = "hostsim", test))]
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 
-static PORT: plx_os::tv::Port = plx_os::tv::Port {
-    probe_device: plx_os::webos::probe,
-    start_capability_probe: plx_os::webos::caps::start_probe,
-    repair_sandbox: plx_os::webos::jail_repair::execute,
-    seal: plx_os::keymanager::seal,
-    open: plx_os::keymanager::open,
-    remove: plx_os::keymanager::remove,
-    system_locale: plx_os::webos::system_locale,
-    sound_output: plx_os::webos::sound_output,
-    go_home: plx_os::webos::go_home,
-    poll_home: plx_os::webos::poll_home,
-    deliver_toast: plx_os::webos::toast::deliver,
-    bind_window: plx_os::webos::bind_window,
-    grab_surface: crate::system::sys_grab_wayland,
-    release_surface: crate::system::sys_release_wayland,
-    arm_opaque_region: crate::system::opaque_region_init,
-    opaque_route: crate::system::opaque_route,
-    clear_opaque_region: crate::system::clear_opaque_region,
-    pump_bus: crate::system::ls2_pump,
-    frame_probe_request: crate::system::frame_probe_request,
-    frame_probe_prepare_begin: crate::system::frame_probe_prepare_begin,
-    frame_probe_prepare_end: crate::system::frame_probe_prepare_end,
-    frame_probe_waiting: crate::system::frame_probe_waiting,
-    frame_probe_acquired: crate::system::frame_probe_acquired,
-    frame_probe_fields: crate::system::frame_probe_fields,
-    sink: SINK,
-    display_sink: DISPLAY,
-    uri_media: plx_os::webos::URI_MEDIA,
+/// What the lower layers read: the webOS identity, key manager, Home key and toast, and the native
+/// playback seam. The window, the bus pump and the frame probe are the loop's own, in [`PLATFORM`].
+static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
+    identity: plx_os::tv::IdentityHooks {
+        probe_device: plx_os::webos::probe,
+        start_capability_probe: plx_os::webos::caps::start_probe,
+        repair_sandbox: plx_os::webos::jail_repair::execute,
+        system_locale: plx_os::webos::system_locale,
+        sound_output: plx_os::webos::sound_output,
+    },
+    secure: plx_os::tv::SecureHooks {
+        seal: plx_os::keymanager::seal,
+        open: plx_os::keymanager::open,
+        remove: plx_os::keymanager::remove,
+        mode: plx_os::tv::secure::StoreMode::Durable,
+    },
+    system: plx_os::tv::SystemHooks {
+        go_home: plx_os::webos::go_home,
+        poll_home: plx_os::webos::poll_home,
+        deliver_toast: plx_os::webos::toast::deliver,
+    },
+    legacy_webos_media: plx_os::tv::LegacyWebosMedia {
+        sink: SINK,
+        display_sink: DISPLAY,
+        uri_media: plx_os::webos::URI_MEDIA,
+    },
 };
+
+/// The webOS shell: the SDL window's Wayland surface, the opaque-region hint and the LS2 bus pump.
+/// The bodies stay in `crate::system` (and `webos::bind_window`); this is the table over them.
+struct WebosShell;
+
+impl Shell for WebosShell {
+    fn bind_window(&self, win: *mut c_void) {
+        plx_os::webos::bind_window(win);
+    }
+    fn grab_surface(&self, win: *mut c_void) {
+        crate::system::sys_grab_wayland(win);
+    }
+    fn release_surface(&self) -> bool {
+        crate::system::sys_release_wayland()
+    }
+    fn arm_opaque_region(&self) {
+        crate::system::opaque_region_init();
+    }
+    fn opaque_route(&self, player: bool) {
+        crate::system::opaque_route(player);
+    }
+    fn clear_opaque_region(&self) {
+        crate::system::clear_opaque_region();
+    }
+    fn pump_bus(&self) {
+        crate::system::ls2_pump();
+    }
+}
+
+/// The webOS frame probe, over `crate::system`'s compositor-callback clock.
+struct WebosProbe;
+
+impl FrameProbe for WebosProbe {
+    fn request(&self) {
+        crate::system::frame_probe_request();
+    }
+    fn prepare_begin(&self) {
+        crate::system::frame_probe_prepare_begin();
+    }
+    fn prepare_end(&self) {
+        crate::system::frame_probe_prepare_end();
+    }
+    fn waiting(&self) {
+        crate::system::frame_probe_waiting();
+    }
+    fn acquired(&self) {
+        crate::system::frame_probe_acquired();
+    }
+    fn fields(&self) -> String {
+        crate::system::frame_probe_fields()
+    }
+}
+
+/// The webOS platform, installed once by `plex_main` before anything reads it.
+static PLATFORM: Platform = Platform { services: &SERVICES, shell: &WebosShell, diag: &WebosProbe };
 
 /// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`). The `-> c_int` is only
 /// the C signature: `plex_main` never returns, so neither does this.
@@ -59,7 +114,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     plex_main(pms_host, pms_port)
 }
 
-/// The process entry: install the port, hand over to `app::run_application`, then end the process
+/// The process entry: install the platform, hand over to `app::run_application`, then end the process
 /// with the status it returned.
 ///
 /// The executable owns the process end: `exit_now` (`_exit`, never libc's `exit`, #1115) right after
@@ -73,7 +128,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 /// `run_application` and `run_and_shutdown` when those started to return an `Exit`: a later edit that
 /// lets this return does not compile.
 fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
-    let _ = plx_os::tv::install(&PORT);
+    crate::app::platform::install(&PLATFORM);
     #[cfg(target_os = "linux")]
     let _ = plx_os::storage::client::install_activator(plx_os::webos::activate_storage_helper);
     plx_base::process::exit_now(crate::app::run_application(pms_host, pms_port).code)
@@ -97,7 +152,7 @@ pub unsafe extern "C" fn plx_launch_args(json: *const c_char) {
 
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod tests {
-    use super::PORT;
+    use super::SERVICES;
 
     /// The app's plane boot resolves the display through `display_installed()` (this table's
     /// `display_sink`), where media's old `acb_init` resolved it through `player::display()`. In
@@ -106,8 +161,9 @@ mod tests {
     #[test]
     fn the_simulator_port_display_is_the_host_sink_the_acb_init_reads() {
         let host = std::ptr::from_ref(&crate::app::adapters::hostsim::HOST_SINK).cast::<()>();
-        assert_eq!(std::ptr::from_ref(PORT.display_sink).cast::<()>(), host,
+        let media = &SERVICES.legacy_webos_media;
+        assert_eq!(std::ptr::from_ref(media.display_sink).cast::<()>(), host,
             "display_installed() is the host sink");
-        assert_eq!(std::ptr::from_ref(PORT.sink).cast::<()>(), host, "so is the video sink");
+        assert_eq!(std::ptr::from_ref(media.sink).cast::<()>(), host, "so is the video sink");
     }
 }

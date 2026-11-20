@@ -3,6 +3,7 @@
 //! verbatim in phase 1a of the UI restructure (a pure move; `pub(crate)` widening only).
 
 use super::*;
+use super::platform::platform;
 
 /// What a DESKTOP window is asked to be, before the display's pixel density is known.
 #[cfg(any(feature = "hostsim", test))]
@@ -1390,10 +1391,7 @@ pub(crate) unsafe fn boot(
     // so it is handed over here, before any playback can land. Replay boots take it too.
     plx_media::route::install_up_next_still_warm(super::playback::warm_up_next_still);
     // The dev frame probe's clock is `os`'s, which `gfx` does not depend on.
-    plx_gfx::gfx::install_clear_probe(
-        plx_os::tv::window::frame_probe_waiting,
-        plx_os::tv::window::frame_probe_acquired,
-    );
+    plx_gfx::gfx::install_clear_probe(|| platform().diag.waiting(), || platform().diag.acquired());
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
         super::bootstrap::Preflight::Record => {
@@ -1647,7 +1645,7 @@ pub(crate) unsafe fn construct(
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
-    plx_os::tv::window::bind_window(win);
+    platform().shell.bind_window(win);
     let wflags = SDL_GetWindowFlags(win);
     log(&format!(
         "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -1656,11 +1654,11 @@ pub(crate) unsafe fn construct(
         i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)
     ));
 
-    plx_os::tv::window::grab(win);
+    platform().shell.grab_surface(win);
     // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
-    plx_os::tv::window::arm_opaque_region();
+    platform().shell.arm_opaque_region();
     // A required shader the driver refuses is a refusal like any other (`Exit::from(GfxFault)`):
     // the same status the process always ended with, returned instead of `exit_now`'d from inside GL.
     plx_gfx::gfx::init_gl()?;

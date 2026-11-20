@@ -10381,6 +10381,43 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — sink", out)
 
+    @_grades("frame")
+    def test_frame_gate_catches_a_shell_call_outside_the_loop(self):
+        """D4, and W2 of the platform plan: the window and the bus are the platform's `Shell`, and its
+        three privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) belong to
+        `app/run.rs` alone. RED: each way to spell a call on the shell, planted outside `run.rs`, must
+        fail `frame` and be named: on a receiver called `shell`, through the trait's path, and as a
+        chain broken onto a continuation line."""
+        plants = [
+            ("_check_deps_selftest_frame_receiver.rs",
+             "pub fn pump() {\n    platform().shell.pump_bus();\n}\n", None),
+            ("_check_deps_selftest_frame_path.rs",
+             "pub fn route(shell: &dyn Shell) {\n    Shell::opaque_route(shell, true);\n}\n", None),
+            ("_check_deps_selftest_frame_chain.rs",
+             "pub fn clear() {\n    platform()\n        .shell\n        .clear_opaque_region();\n}\n", None),
+        ]
+        r = self._plant_all(plants)
+        self._assert_flagged(r, "frame", [
+            ("_check_deps_selftest_frame_receiver.rs", "pump_bus"),
+            ("_check_deps_selftest_frame_path.rs", "opaque_route"),
+            ("_check_deps_selftest_frame_chain.rs", "clear_opaque_region"),
+        ])
+
+    @_grades("frame")
+    def test_frame_gate_ignores_a_rig_forward_a_string_and_a_comment(self):
+        """GREEN: `Rig` has `opaque_route` and `clear_opaque_region` of its own (`Bridge` forwards them),
+        and a pin test spells the loop's calls as string data. None of those is a call on the shell."""
+        r = self._plant(
+            "_check_deps_selftest_frame_ok.rs",
+            "pub fn forward(bridge: &mut Bridge) {\n    bridge.opaque_route(true);\n"
+            "    self.bridge.clear_opaque_region();\n}\n"
+            'pub const PIN: &str = "    platform().shell.opaque_route(bound);";\n'
+            "// platform().shell.pump_bus();\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — frame", out)
+
     @_grades("textmeasure")
     def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
         """Phase 12, D4: `textmeasure` went from an allowlist to zero-tolerance. RED: a raw

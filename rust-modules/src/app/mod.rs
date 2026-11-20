@@ -140,6 +140,7 @@ pub(crate) mod playback;
 mod preferences;
 pub(crate) mod input;
 pub(crate) mod bridge;
+pub(crate) mod platform;
 mod runtime_owners;
 pub(crate) mod chrome;
 mod collections_probe;

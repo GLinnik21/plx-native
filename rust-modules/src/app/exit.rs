@@ -523,32 +523,7 @@ mod lifecycle_tests {
                 assert!(prod.contains("fn run_application"), "the scan must still reach run_application");
             }
             if f == root.join("src/port.rs") {
-                // The process entry ends the process itself and is typed `-> !`: `plex_run` returns
-                // into `__libc_start_main`'s libc `exit` if it ever returns (#1115). The const is the
-                // compile-time proof for `plex_main` only; `plex_run`, the C entry, is `-> c_int`, so
-                // an early `return 2;` above its call to `plex_main` would compile (`!` coerces). This
-                // holds the const still there, `plex_main` still the one that exits, and `plex_run`
-                // exactly the one call. All of it is read off comment-stripped lines, so a commented-out
-                // const or call cannot satisfy it (and no block comment may exist to defeat that).
-                assert!(!prod.contains("/*"), "port.rs has a block comment; strip those as well");
-                let code: String =
-                    prod.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
-                let main = code.split_once("fn plex_main(").expect("port.rs must keep plex_main").1;
-                let main = main.split_once("\n}\n").expect("the end of plex_main").0;
-                assert!(main.contains(exit_now), "plex_main must end the process through exit_now");
-                assert!(
-                    code.contains("const _: fn(*const c_char, c_int) -> ! = plex_main;"),
-                    "the const proving plex_main never returns is gone"
-                );
-                let run = code.split_once("fn plex_run(").expect("port.rs must keep plex_run").1;
-                let run = run.split_once('{').expect("the start of plex_run's body").1;
-                let run = run.split_once('}').expect("the end of plex_run's body").0;
-                assert_eq!(
-                    run.split_whitespace().collect::<Vec<_>>().join(" "),
-                    "plex_main(pms_host, pms_port)",
-                    "plex_run must be exactly the call to plex_main: no `return`, no other statement, \
-                     or it can return into libc `exit` (#1115)"
-                );
+                assert_process_entry(&text, exit_now);
             }
             for (n, line) in prod.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or("");
@@ -565,6 +540,93 @@ mod lifecycle_tests {
             "exit through plx_base::process::exit_now from an entry that owns the process end, \
              never libc exit (#1115) and never from library code a host runs: {hits:?}"
         );
+    }
+
+    /// `port.rs`'s code with its `//` comments dropped, so a commented-out call, const or definition
+    /// cannot satisfy or trip a scan of it. (A block comment would defeat that, and is refused where
+    /// this is used.)
+    fn without_line_comments(text: &str) -> String {
+        text.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n")
+    }
+
+    /// **The process entry in `port.rs`: `plex_run` is exactly one call, and `plex_main` ends the
+    /// process.** The process entry ends the process itself and is typed `-> !`: `plex_run` returns
+    /// into `__libc_start_main`'s libc `exit` if it ever returns (#1115). The const is the
+    /// compile-time proof for `plex_main` only; `plex_run`, the C entry, is `-> c_int`, so an early
+    /// `return 2;` above its call to `plex_main` would compile (`!` coerces). This holds the const
+    /// still there, `plex_main` still the one that exits, and `plex_run` exactly the one call. All of
+    /// it is read off comment-stripped lines, so a commented-out const or call cannot satisfy it (and
+    /// no block comment may exist to defeat that).
+    ///
+    /// Both entries must also be DEFINED exactly once, anywhere in the file. This scan and
+    /// `ci/check-deps.sh`'s `fnlen` budgets read only the FIRST `fn plex_run(` and the first
+    /// `fn plex_main(`, so a second, cfg-gated definition would be the one a build runs while both
+    /// guards graded the other.
+    fn assert_process_entry(text: &str, exit_now: &str) {
+        assert!(!text.contains("/*"), "port.rs has a block comment; strip those as well");
+        let every = without_line_comments(text);
+        for entry in ["fn plex_main(", "fn plex_run("] {
+            assert_eq!(
+                every.matches(entry).count(),
+                1,
+                "port.rs must define `{entry}` exactly once: the guards read only the first, so a \
+                 second (cfg-gated) one would run unguarded (#1115)"
+            );
+        }
+        let code = without_line_comments(production_prefix(text));
+        let main = code.split_once("fn plex_main(").expect("port.rs must keep plex_main").1;
+        let main = main.split_once("\n}\n").expect("the end of plex_main").0;
+        assert!(main.contains(exit_now), "plex_main must end the process through exit_now");
+        assert!(
+            code.contains("const _: fn(*const c_char, c_int) -> ! = plex_main;"),
+            "the const proving plex_main never returns is gone"
+        );
+        let run = code.split_once("fn plex_run(").expect("port.rs must keep plex_run").1;
+        let run = run.split_once('{').expect("the start of plex_run's body").1;
+        let run = run.split_once('}').expect("the end of plex_run's body").0;
+        assert_eq!(
+            run.split_whitespace().collect::<Vec<_>>().join(" "),
+            "plex_main(pms_host, pms_port)",
+            "plex_run must be exactly the call to plex_main: no `return`, no other statement, \
+             or it can return into libc `exit` (#1115)"
+        );
+    }
+
+    const ENTRY: &str = "\
+#[no_mangle]
+pub extern \"C\" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
+    plex_main(pms_host, pms_port)
+}
+fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
+    plx_base::process::exit_now(crate::app::run_application(pms_host, pms_port).code)
+}
+const _: fn(*const c_char, c_int) -> ! = plex_main;
+";
+
+    /// The scan's own control: the entry shape it accepts, so the refusals below fail on what they
+    /// plant and not on a premise the fixture lacks.
+    #[test]
+    fn the_process_entry_scan_accepts_the_one_call_entry() {
+        assert_process_entry(ENTRY, concat!("exit_", "now("));
+    }
+
+    /// A second `plex_run` behind a cfg that is never true compiles everywhere and is invisible to a
+    /// reader of the first, so the scan counts definitions instead of trusting its first match. The
+    /// plant follows a test module too: the production prefix must not be where the count stops.
+    #[test]
+    #[should_panic(expected = "must define `fn plex_run(` exactly once")]
+    fn a_second_cfg_gated_plex_run_is_refused() {
+        let planted = format!(
+            "{ENTRY}#[cfg(test)]\nmod tests {{\n}}\n#[cfg(any())]\nfn plex_run(h: *const c_char, p: c_int) -> c_int {{\n    return 2;\n}}\n"
+        );
+        assert_process_entry(&planted, concat!("exit_", "now("));
+    }
+
+    #[test]
+    #[should_panic(expected = "must define `fn plex_main(` exactly once")]
+    fn a_second_cfg_gated_plex_main_is_refused() {
+        let planted = format!("{ENTRY}#[cfg(any())]\nfn plex_main(h: *const c_char, p: c_int) -> ! {{\n    loop {{}}\n}}\n");
+        assert_process_entry(&planted, concat!("exit_", "now("));
     }
 
     /// The text above the file's first `#[cfg(test)]` MODULE. A `#[cfg(test)]` import or field on the

@@ -645,7 +645,7 @@ pub fn bind_window(win: *mut std::os::raw::c_void) {
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
-/// The URI media pipe the port installs (`tv::Port::uri_media`): the explicitly enabled bus
+/// The URI media pipe the port installs (`tv::LegacyWebosMedia::uri_media`): the explicitly enabled bus
 /// worker on the television, or `NoUriMedia` in a feature-off build, simulator or test.
 /// This does not select the URI playback route.
 #[cfg(all(feature = "uri-transport", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
