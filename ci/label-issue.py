@@ -20,17 +20,24 @@ How a label is chosen:
   for the run is exchanged for a short-lived Anthropic access token (`federation_token`), by the
   federation rule named in the repository variables ANTHROPIC_FEDERATION_RULE_ID,
   ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_SERVICE_ACCOUNT_ID and (optional) ANTHROPIC_WORKSPACE_ID.
+* When Anthropic cannot answer (the sign-in or the request fails, e.g. the organization is out of
+  credit), the same request goes to OpenRouter's Anthropic-compatible Messages endpoint with the
+  secret OPENROUTER_API_KEY: the same Haiku (OPENROUTER_MODEL), and OpenRouter itself retries on
+  OPENROUTER_FALLBACKS (a non-Anthropic model) if that fails too. A run that fell back is green but
+  carries a `::warning::` naming why, so a broken federation rule still shows in Actions. With no
+  OPENROUTER_API_KEY the fallback is off and the run behaves as before.
 * There is no keyword fallback. A guess from single words ("play", "ass", "skip") put wrong areas
   on most issues, and a silent fallback hid that the model had stopped answering for weeks. When
-  the key is missing or the model fails or answers nonsense, only `user-report` is added, the
-  reason is printed, and the run exits 1 so the failed job is visible in Actions.
+  every model fails or answers nonsense, only `user-report` is added, the reason is printed, and
+  the run exits 1 so the failed job is visible in Actions.
 
 Triage outcomes (`duplicate`, `invalid`, `wontfix`, `good first issue`, `help wanted`) are a
 maintainer's call and are never candidates. `question` is retired (questions go to Discussions >
 Q&A) and is never a candidate either.
 
     ci/label-issue.py --issue 478            # label one issue (GITHUB_TOKEN, GITHUB_REPOSITORY,
-                                             # ACTIONS_ID_TOKEN_REQUEST_*, ANTHROPIC_* federation ids)
+                                             # ACTIONS_ID_TOKEN_REQUEST_*, ANTHROPIC_* federation ids,
+                                             # optional OPENROUTER_API_KEY)
     ci/label-issue.py --unlabeled            # label every open issue that has no labels
     ci/label-issue.py --issue 478 --dry-run  # print the decision, change nothing
     ci/label-issue.py --selftest             # pure logic, no network; `make check` runs it
@@ -53,6 +60,12 @@ AUDIENCE = "https://api.anthropic.com"
 FEDERATION_VARS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID")
 # A label pick is a short classification over a few hundred tokens; the small model is plenty.
 MODEL = "claude-haiku-5-5"
+# The fallback, used only when Anthropic gives no usable answer: the same model through OpenRouter,
+# billed from OpenRouter credit, then (OpenRouter's own retry) a model from another vendor, so an
+# Anthropic outage is covered too. The Messages endpoint takes at most 3 fallbacks.
+OPENROUTER_URL = "https://openrouter.ai/api/v1/messages"
+OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
+OPENROUTER_FALLBACKS = ("google/gemini-3.1-flash-lite",)
 
 KINDS = ("bug", "enhancement")
 USER_REPORT = "user-report"
@@ -208,9 +221,21 @@ def federation_token(env):
         return None
 
 
-def model_asker(get_token):
-    """`ask(messages) -> str | None` against the Anthropic Messages API, signed in by `get_token()`;
-    None when there is no token or on an API error."""
+def http_reason(e):
+    """The useful part of an API error: for an HTTP error the status and the start of its body
+    (`credit balance is too low` lives there, not in the status line)."""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - a body we cannot read changes nothing
+            body = ""
+        return f"HTTP {e.code} {body[:300]}".strip()
+    return str(e)
+
+
+def messages_asker(name, url, model, get_token, extra=None):
+    """`ask(messages) -> str | None` against a Messages-API endpoint signed in by `get_token()`;
+    None (reason printed) when there is no token or on an API error."""
     def ask(messages):
         token = get_token()
         if not token:
@@ -218,13 +243,47 @@ def model_asker(get_token):
         system, user = messages[0]["content"], messages[1:]
         headers = {"authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
                    "content-type": "application/json"}
-        payload = {"model": MODEL, "max_tokens": 600, "system": system, "messages": user}
+        payload = {"model": model, "max_tokens": 600, "system": system, "messages": user, **(extra or {})}
         try:
-            resp = request("POST", ANTHROPIC_URL, None, payload, headers)
+            resp = request("POST", url, None, payload, headers)
+            answered = resp.get("model") or model
+            if answered != model:
+                print(f"{name}: answered by {answered}", file=sys.stderr)
             return "".join(b.get("text", "") for b in resp["content"] if b.get("type") == "text")
-        except (urllib.error.URLError, KeyError, TypeError, ValueError, TimeoutError) as e:
-            print(f"Claude unavailable: {e}", file=sys.stderr)
+        except (urllib.error.URLError, KeyError, TypeError, ValueError, TimeoutError, AttributeError) as e:
+            print(f"{name} unavailable: {http_reason(e)}", file=sys.stderr)
             return None
+    return ask
+
+
+def model_asker(get_token):
+    """Claude through the Anthropic Messages API, signed in by `get_token()`."""
+    return messages_asker("Claude", ANTHROPIC_URL, MODEL, get_token)
+
+
+def openrouter_asker(key):
+    """The same request through OpenRouter's Messages endpoint, or None when there is no key."""
+    if not key:
+        return None
+    return messages_asker("OpenRouter", OPENROUTER_URL, OPENROUTER_MODEL, lambda: key,
+                          {"fallbacks": [{"model": m} for m in OPENROUTER_FALLBACKS]})
+
+
+def with_fallback(primary, fallback):
+    """`ask` that tries `primary` and, when it gives no usable answer, `fallback` (if any).
+
+    A fallback that answered is announced as a `::warning::`: the run stays green, but the reason
+    Anthropic failed is not hidden."""
+    if fallback is None:
+        return primary
+
+    def ask(messages):
+        answer = primary(messages)
+        if answer is not None and parse_answer(answer) is not None:
+            return answer
+        print("::warning::Claude gave no usable answer; asking OpenRouter instead", file=sys.stderr)
+        second = fallback(messages)
+        return second if second is not None else answer
     return ask
 
 
@@ -279,8 +338,9 @@ def main():
             print("every open issue already has a label")
             return 0
         sys.exit("nothing to do: pass --issue N or --unlabeled")
-    print(f"classifier: {MODEL}")
-    ask = model_asker(lambda: federation_token(os.environ))
+    fallback = openrouter_asker(os.environ.get("OPENROUTER_API_KEY"))
+    print(f"classifier: {MODEL}" + (f", fallback {OPENROUTER_MODEL} via OpenRouter" if fallback else ""))
+    ask = with_fallback(model_asker(lambda: federation_token(os.environ)), fallback)
     results = [label_issue(repo, n, token, repo_labels, ask, args.dry_run, args.only_if_unlabeled or args.unlabeled)
                for n in numbers]
     return 0 if all(results) else 1
@@ -391,6 +451,52 @@ def selftest():
 
         def test_model_is_the_current_haiku(self):
             self.assertEqual(MODEL, "claude-haiku-5-5")
+
+        def test_fallback_answers_when_claude_does_not(self):
+            asked = []
+            ask = with_fallback(lambda m: None, lambda m: asked.append(1) or '{"labels": ["bug", "subtitles"]}')
+            self.assertEqual(decide(arabic, labels, ask), (["bug", "subtitles", "user-report"], True))
+            self.assertEqual(asked, [1])
+
+        def test_fallback_is_not_asked_when_claude_answers(self):
+            ask = with_fallback(lambda m: '{"labels": ["bug"]}', lambda m: self.fail("fallback asked"))
+            self.assertEqual(decide(arabic, labels, ask), (["bug", "user-report"], True))
+
+        def test_fallback_after_an_unusable_answer(self):
+            ask = with_fallback(lambda m: "I cannot help", lambda m: '{"labels": ["bug"]}')
+            self.assertEqual(decide(arabic, labels, ask), (["bug", "user-report"], True))
+
+        def test_both_down_still_fails(self):
+            self.assertEqual(decide(arabic, labels, with_fallback(lambda m: None, lambda m: None)),
+                             (["user-report"], False))
+
+        def test_no_openrouter_key_means_no_fallback(self):
+            self.assertIsNone(openrouter_asker(None))
+            self.assertIsNone(openrouter_asker(""))
+            primary = lambda m: None
+            self.assertIs(with_fallback(primary, None), primary)
+
+        def test_openrouter_request(self):
+            global request
+            real, calls = request, []
+
+            def fake(method, url, token, payload=None, headers=None):
+                calls.append((method, url, payload, headers))
+                return {"model": OPENROUTER_MODEL, "content": [{"type": "text", "text": '{"labels": ["bug"]}'}]}
+            request = fake
+            try:
+                answer = openrouter_asker("sk-or-v1-x")(prompt(arabic, candidates(labels)))
+            finally:
+                request = real
+            self.assertEqual(answer, '{"labels": ["bug"]}')
+            method, url, payload, headers = calls[0]
+            self.assertEqual((method, url), ("POST", "https://openrouter.ai/api/v1/messages"))
+            self.assertEqual(headers["authorization"], "Bearer sk-or-v1-x")
+            self.assertEqual(payload["model"], "anthropic/claude-haiku-5.5")
+            self.assertEqual(payload["fallbacks"], [{"model": "google/gemini-3.1-flash-lite"}])
+            self.assertLessEqual(len(payload["fallbacks"]), 3)
+            self.assertIn("triage GitHub issues", payload["system"])
+            self.assertEqual([m["role"] for m in payload["messages"]], ["user"])
 
         def test_question_is_retired(self):
             # Questions live in Discussions > Q&A; the label may still exist, but is never applied.
