@@ -139,6 +139,11 @@ LITERALS = [
     ('ci/test_build_bench.py', "art('/platform',", "art('/os',"),
     ('ci/test_build_bench.py', 'machine,platform,gfx', 'machine,os,gfx'),
     ('ci/test_build_bench.py', 'by_id["platform"]', 'by_id["os"]'),
+    # The layer named without a quote, a backtick or a `base`/`machine` neighbour the general rules read:
+    # the layer graph's own row (`os` keeps the `machine base` column where it was) and two layer lists.
+    ('docs/module-layers.md', 'platform' + ' ' * 77 + 'machine base', 'os' + ' ' * 83 + 'machine base'),
+    ('docs/watchlist-plan.md', 'base, machine, platform. NOT net', 'base, machine, os. NOT net'),
+    ('rust-modules/base/src/eventlog/scrub.rs', 'machine, net, platform, gfx, ui', 'machine, net, os, gfx, ui'),
 ]
 
 # A quoted `platform` that is not the layer. Never a keeper if its line also looks like a layer list.

@@ -109,7 +109,7 @@ play_uri       playback_contract                                          + os b
 media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
 owp
-platform                                                                             machine base
+os                                                                                   machine base
 machine                                                                                      base
 base
 ```
