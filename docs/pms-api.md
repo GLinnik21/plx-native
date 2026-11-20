@@ -999,6 +999,20 @@ GET /library/metadata/{rk}?includeMarkers=1&includeChapters=1
   playhead routinely stops short of — treat it as open-ended rather than exclusive, or an
   end-of-item prompt blinks out over the last frames.
 
+### Reads by key — `skipRefresh` (the spec, and timed on one PMS)
+
+`plex-openapi.json` describes `skipRefresh=1` on `GET /library/metadata/{ids}` as skipping the synchronous
+local media agent and analysis refresh, which the default (false) runs. This client's background reads by
+key (`plex::Client::metadata_many`, which a Home row re-read, a hub or listing page's batch, the
+view-state read-back after Mark Watched or a stopped play and a person's filmography go through,
+`Client::metadata_background`, and the `includePreferences=1` show-preferences read of every episode play)
+send `skipRefresh=1`; the preferences read still returns the same `Preferences` with it (3 shows on one
+PMS). The detail read (`Client::metadata`), which a viewer opened, sends none. Plex Web 4.162.1 sends `skipRefresh=1` on its
+re-reads by key and never takes the refresh. On one household PMS the first batch read without it took 138
+to 948 ms in four of five sets, and no read with it was slow; a field log over a remote link read 4 to 9 s
+per Home row, with a timeline "item processed" notification about once a second while Home scrolled
+(issue #1458).
+
 ### Up Next — the `continuous=1` PlayQueue already carries it (verified live 2026-07-29)
 
 There is no "what plays next" endpoint to call: the `POST /playQueues?continuous=1` the app makes

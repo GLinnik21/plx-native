@@ -1,6 +1,6 @@
 //! The catalog id a Watchlist write needs, from a catalog row (`PmsMovie`): decoded once where the
 //! row is built, and — when the row carries none — read off the item's own server record the way
-//! `viewstate::resolved_guid` does (`client.metadata(rk or show_rk).guid`). No server is asked: the
+//! `viewstate::resolved_guid` does (`client.metadata_background(rk or show_rk).guid`). No server is asked: the
 //! "client" is a closure that hands back a parsed `Metadata`, exactly what `client.metadata` returns.
 
 use plx_plex::plex::{catalog_hex_of_guid, resolve_catalog_hex, Envelope, Metadata};

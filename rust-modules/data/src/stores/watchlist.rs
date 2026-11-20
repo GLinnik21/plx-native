@@ -1062,7 +1062,7 @@ pub fn rematch_on(&mut self, sid: ServerId, asks: Vec<(String, Kind)>) -> bool {
     }
 
     /// A card row carried no catalog id: ask for it to be read off the item's own server record
-    /// (`client.metadata(rk).guid`, on a worker, at the next pump). Idempotent per `(server, rk)`.
+    /// (`client.metadata_background(rk).guid`, on a worker, at the next pump). Idempotent per `(server, rk)`.
     /// The answer is [`WatchlistView::resolved_hex`]; a menu opened after it lands offers the row.
     pub fn want_hex(&self, sid: ServerId, rk: &str) {
         let key = (sid, rk.to_owned());

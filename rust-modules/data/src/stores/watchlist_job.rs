@@ -96,7 +96,7 @@ pub fn finish_resolve_job(port: &ResolvePort, addr: Addr, req: ResolveReq,
     lookup: fn(ServerId) -> Option<&'static Client>) {
     let end = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let clients = KeyedClients::new(&req.keys, lookup);
-        let guid = clients.client(req.sid).and_then(|client| client.metadata(&req.rk)).map(|m| m.guid);
+        let guid = clients.client(req.sid).and_then(|client| client.metadata_background(&req.rk)).map(|m| m.guid);
         ResolveEnd::Answer(guid.map(|g| plx_plex::plex::resolve_catalog_hex(None, || Some(g))))
     })).unwrap_or(ResolveEnd::Panicked);
     port.done(addr, end);
