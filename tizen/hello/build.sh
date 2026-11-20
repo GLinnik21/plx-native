@@ -422,8 +422,9 @@ build_tpk() {
   cp "$SO" "$HOST/lib/libplx.so"
 
   # res/ is generated (gitignored): the H5 probe's font with its licence and, with --log-host and
-  # --mock-host, log-host.txt and mock-host.txt. A stale res/ or a stale copy in the SDK's staging directory would silently switch the
-  # network log on (or leave an old address in), so both go first. The font is the app's own Inter
+  # --mock-host, log-host.txt and mock-host.txt. A stale res/ or a stale copy in the SDK's staging
+  # directory would silently switch the network log (or the H8 request) on, or leave an old address in,
+  # so both go first. The font is the app's own Inter
   # (SIL OFL); the licence travels with it. Copied here, not in build_so, so --tpk-only works on a
   # machine that never built the library.
   rm -rf "$HOST/res" "$HOST/bin/Release/tizen80/tpkroot"

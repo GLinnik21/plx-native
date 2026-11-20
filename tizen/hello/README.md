@@ -330,9 +330,13 @@ context step 1 made current, from the frame after the panel's first (and after H
    the call.
 3. Every frame after, over the panel, bottom-right corner: a rounded rect and the line `plx_gfx text`
    drawn by `plx_gfx`'s own `draw_rect` and `draw_text` (the text through its SDL_ttf glyph path, so a
-   font that did not open shows as a missing line and a text width of 0). The panel's own GL state is
-   saved and restored around it (`plx_gfx` wants its vertex buffer, attribute 0 and blending; the panel's
-   draw uses client-side arrays and blending off).
+   font that did not open shows as a missing line and a text width of 0). The two renderers share the one
+   GL context, so the state is handed over by hand: before the swatch the probe binds `plx_gfx`'s vertex
+   buffer, enables attribute 0 and blending; after it, after each init, and also when a draw or an init
+   panics, it unbinds the buffer, disables the attributes, blending and the scissor test and re-enables
+   dither (GL's defaults, which is what the panel's draw, with its client-side arrays, was written
+   against). A panel drawn with `plx_gfx`'s buffer still bound would read its arrays as offsets and
+   vanish.
 
 **The panel line** (`8 gfx`, two lines, the verdict first; the full text is in the log as
 `H7 RESULT: ...`):
@@ -366,8 +370,13 @@ entered: <why>` and the app carries on with the colour and the panel.
    prepends a `#version` line by the GL kind it detects) and every GL function it imports exists in the
    opened library. A test reads `gfx.rs` and `text.rs` and fails if a shader pair the renderer
    passes to `link_program` is missing from the table, so a shader added later cannot silently escape the
-   preflight. If the real renderer's own compile still fails after the preflight passed (the same source,
-   so not expected) the process exits and the log ends at `H7 gfx: entering init_gl`.
+   preflight. Those two sites are the only exits: `exit_now` has no other caller in `rust-modules/gfx`,
+   `plx_machine` or `plx_base`, nothing there calls `process::exit` or `abort`, and `link_program` (the
+   exiting kind) has exactly 14 call sites, 8 in `init_gl`, 1 in `init_image`, 2 in `blur_lazy_init` (which
+   `init_blur` runs at once) and 3 in `init_text`; every other program the renderer builds, lazily at draw time included, goes through
+   `link_optional_program` and degrades. If the real renderer's own compile still fails after the
+   preflight passed (the same source, so not expected) the process exits and the log ends at
+   `H7 gfx: entering init_gl`.
 2. **`plx_gfx` links its GL at build time (`glClear`, ... as plain imports); `libplx.so` must not have a
    `DT_NEEDED` for the GL library** (step 1 opens libEGL/libGLESv2 itself, and the cdylib is `BIND_NOW`, so
    one unresolved `gl*` name would make `dlopen("libplx.so")` fail and the whole app with it). The
@@ -397,12 +406,13 @@ forwarders). The svg object does not reach the `libplx.so` link: its nanosvg sym
 no undefined `svg` symbol). If this does not link or `build.sh`'s allowlist check fails, **`--no-gfx`**
 builds the library without `plx_gfx` and the panel's `8 gfx` says so.
 
-**Dependencies.** `cargo tree --features gfx` adds, below `plx_gfx`: `image` 0.25 (with `png`, `zune-jpeg`,
-`moxcms`, `flate2`/`miniz_oxide`, `crc32fast`, `fdeflate`, `bytemuck`, `byteorder-lite`, `num-traits`,
-`bitflags`, `simd-adler32`, `adler2`, `zune-core`, `pxfm`; the deepest chain is plx_gfx -> image -> png ->
-flate2 -> miniz_oxide -> adler2, five levels), `plx_machine` (-> `plx_base`) and `libc`: 21 more
-crates in all than the build without the feature, all pure Rust, no FFmpeg, Sentry or webOS-only
-link. (The ARM `libplx.so` grows from 2,749,312 to 3,079,212 bytes.)
+**Dependencies.** `cargo tree --features gfx` (ARM target, normal edges) adds 20 packages to the tree
+without the feature: `plx_gfx`, `plx_machine` (-> `plx_base`) and `image` 0.25 with `png`, `zune-jpeg`,
+`moxcms`, `flate2`, `miniz_oxide` (in two versions, 0.8.9 and 0.9.1), `crc32fast`, `cfg-if`, `fdeflate`,
+`bytemuck`, `byteorder-lite`, `num-traits`, `bitflags`, `simd-adler32`, `adler2`, `zune-core` and `pxfm`.
+The deepest chain is plx_gfx -> image -> png -> flate2 -> miniz_oxide -> adler2 (five levels below
+`plx_gfx`). All pure Rust: no FFmpeg, Sentry or webOS-only link. (The ARM `libplx.so` grows from
+2,749,312 to 3,079,212 bytes.)
 
 ## H8: libcurl and the mock server
 

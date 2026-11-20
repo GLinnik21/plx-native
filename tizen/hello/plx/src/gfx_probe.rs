@@ -962,6 +962,35 @@ impl RealEnv {
 /// Bottom-right corner of `plx_gfx`'s fixed 1920x1080 canvas: the swatch's rect, in canvas pixels.
 const SWATCH: (f32, f32, f32, f32) = (1568.0, 1004.0, 336.0, 64.0);
 
+/// Run `body`, then ALWAYS `restore`, even when `body` panics: the panic then continues to the caller
+/// (the probe's own `catch_unwind`, which names it in the report).
+fn then_restore<R>(restore: impl FnOnce(), body: impl FnOnce() -> R) -> R {
+    let result = catch_unwind(AssertUnwindSafe(body));
+    restore();
+    match result {
+        Ok(v) => v,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Put the GL state the panel's own draw (`label_gl`) relies on back, after `plx_gfx` ran: no vertex buffer
+/// bound (the panel's arrays are client-side) and no attribute left enabled, blending and the scissor test
+/// off, dither on (all GL's defaults, which is what the panel was written against), texture unit 0 active.
+/// Everything else the panel's draw sets for itself on every frame (program, texture, both attribute
+/// pointers); the viewport is set by the swatch's own draw to the window's size, which is the panel's too.
+fn restore_panel_gl(s: &ProbeSyms) {
+    // SAFETY: the render thread's context is current.
+    unsafe {
+        (s.bind_buffer)(GL_ARRAY_BUFFER, 0);
+        (s.disable_vertex_attrib_array)(0);
+        (s.disable_vertex_attrib_array)(1);
+        (s.disable)(GL_BLEND);
+        (s.disable)(GL_SCISSOR_TEST);
+        (s.enable)(GL_DITHER);
+        (s.active_texture)(GL_TEXTURE0);
+    }
+}
+
 impl Env for RealEnv {
     fn available(&self) -> bool {
         cfg!(feature = "gfx")
@@ -1017,23 +1046,35 @@ impl Env for RealEnv {
     fn init(&mut self, stage: Stage) {
         #[cfg(feature = "gfx")]
         {
-            match stage {
-                Stage::InitGl => {
-                    plx_gfx::gfx::init_gl();
-                    // `init_gl` leaves its vertex buffer bound and never rebinds it; keep its name so every
-                    // later draw can put it back after the panel's client-side arrays used the binding.
-                    if let Some(s) = self.syms() {
-                        let mut b = 0i32;
-                        // SAFETY: a current context on this thread; one int out.
-                        unsafe { (s.get_integerv)(GL_ARRAY_BUFFER_BINDING, &mut b) };
-                        self.vbo = b.max(0) as u32;
-                        plog!("H7 gfx: plx_gfx's vertex buffer is {}", self.vbo);
+            let syms = self.syms().copied();
+            let mut vbo = self.vbo;
+            // However the init ends, a panic included, the panel's GL state is put back: the panel's next
+            // frame draws with client-side arrays and must find no buffer bound.
+            then_restore(
+                || {
+                    if let Some(s) = &syms {
+                        restore_panel_gl(s)
                     }
-                }
-                Stage::InitText => plx_gfx::text::init_text(),
-                Stage::InitImage => plx_gfx::gfx::init_image(),
-                Stage::InitBlur => plx_gfx::gfx::init_blur(),
-            }
+                },
+                || match stage {
+                    Stage::InitGl => {
+                        plx_gfx::gfx::init_gl();
+                        // `init_gl` leaves its vertex buffer bound and never rebinds it; keep its name so every
+                        // later draw can put it back after the panel's client-side arrays used the binding.
+                        if let Some(s) = &syms {
+                            let mut b = 0i32;
+                            // SAFETY: a current context on this thread; one int out.
+                            unsafe { (s.get_integerv)(GL_ARRAY_BUFFER_BINDING, &mut b) };
+                            vbo = b.max(0) as u32;
+                            plog!("H7 gfx: plx_gfx's vertex buffer is {vbo}");
+                        }
+                    }
+                    Stage::InitText => plx_gfx::text::init_text(),
+                    Stage::InitImage => plx_gfx::gfx::init_image(),
+                    Stage::InitBlur => plx_gfx::gfx::init_blur(),
+                },
+            );
+            self.vbo = vbo;
         }
         #[cfg(not(feature = "gfx"))]
         let _ = stage;
@@ -1056,34 +1097,35 @@ impl Env for RealEnv {
             (s.disable)(GL_SCISSOR_TEST);
             (s.active_texture)(GL_TEXTURE0);
         }
-        #[cfg(feature = "gfx")]
-        let px = {
-            use plx_gfx::gfx::Zoom;
-            // Forget which program `plx_gfx` believes is bound: the panel bound its own since.
-            plx_gfx::gfx::use_prog(0);
-            plx_gfx::text::begin_frame();
-            plx_gfx::gfx::straighten::frame_begin();
-            let (x, y, w, h) = SWATCH;
-            let fill = [0.85f32, 0.10, 0.80, 1.0];
-            let ink = [1.0f32, 1.0, 1.0, 1.0];
-            plx_gfx::gfx::draw_rect(x, y, w, h, 0.0, 12.0, fill.as_ptr(), fill.as_ptr(), 0.0, 1.0);
-            let px = plx_gfx::text::draw_text(c"plx_gfx text".as_ptr(), x + 18.0, y + 13.0, 30 as c_int, ink.as_ptr(), 0, 0, Zoom::NONE);
-            plx_gfx::gfx::use_prog(0);
-            px
-        };
-        #[cfg(not(feature = "gfx"))]
-        let px = {
-            let _ = SWATCH;
-            0.0
-        };
-        // SAFETY: as above.
-        unsafe {
-            (s.bind_buffer)(GL_ARRAY_BUFFER, 0);
-            (s.disable_vertex_attrib_array)(0);
-            // Blending was off when the panel drew (GL's default); leave it as found.
-            (s.disable)(GL_BLEND);
-        }
-        px
+        // The state is put back for the panel even when a draw panics (the panic then goes on to the
+        // caller's own `catch_unwind`, which names it): a panel drawn with `plx_gfx`'s buffer still bound
+        // would read its client-side arrays as offsets and vanish, which is the one thing this probe must
+        // never cause.
+        then_restore(
+            || restore_panel_gl(&s),
+            || {
+                #[cfg(feature = "gfx")]
+                {
+                    use plx_gfx::gfx::Zoom;
+                    // Forget which program `plx_gfx` believes is bound: the panel bound its own since.
+                    plx_gfx::gfx::use_prog(0);
+                    plx_gfx::text::begin_frame();
+                    plx_gfx::gfx::straighten::frame_begin();
+                    let (x, y, w, h) = SWATCH;
+                    let fill = [0.85f32, 0.10, 0.80, 1.0];
+                    let ink = [1.0f32, 1.0, 1.0, 1.0];
+                    plx_gfx::gfx::draw_rect(x, y, w, h, 0.0, 12.0, fill.as_ptr(), fill.as_ptr(), 0.0, 1.0);
+                    let px = plx_gfx::text::draw_text(c"plx_gfx text".as_ptr(), x + 18.0, y + 13.0, 30 as c_int, ink.as_ptr(), 0, 0, Zoom::NONE);
+                    plx_gfx::gfx::use_prog(0);
+                    px
+                }
+                #[cfg(not(feature = "gfx"))]
+                {
+                    let _ = SWATCH;
+                    0.0
+                }
+            },
+        )
     }
 
     fn font(&self) -> (String, bool) {
@@ -1118,6 +1160,23 @@ impl Env for RealEnv {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    // --- the panel's GL state is put back whatever the draw does ------------------------------------
+
+    #[test]
+    fn the_panels_gl_state_is_restored_after_a_draw_and_after_one_that_panics() {
+        let restored = std::cell::Cell::new(0u32);
+        let got = then_restore(|| restored.set(restored.get() + 1), || 7.5f32);
+        assert_eq!((got, restored.get()), (7.5, 1), "a normal draw: the value comes back and the state was restored once");
+
+        let before = restored.get();
+        let hushed = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            then_restore(|| restored.set(restored.get() + 1), || -> f32 { panic!("a draw blew up") })
+        }));
+        assert_eq!(restored.get(), before + 1, "a draw that panics still restores the state before the panic moves on");
+        let payload = hushed.expect_err("the panic must reach the probe's own catch_unwind, not be swallowed here");
+        assert_eq!(panic_text(payload.as_ref()), "a draw blew up", "the panic's own words survive, so the report can name it");
+    }
 
     // --- a fake GL ---------------------------------------------------------------------------------
 
