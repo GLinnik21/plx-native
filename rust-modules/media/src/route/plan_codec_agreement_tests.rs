@@ -14,8 +14,8 @@ use crate::player::engine::{load_video_refused, LoadVideo};
 
 const CODECS: [&str; 4] = ["h264", "hevc", "vp9", "av1"];
 
-fn caps(hevc: bool, vp9: bool, av1: bool) -> plx_platform::devcaps::Caps {
-    plx_platform::devcaps::Caps { hevc, vp9, av1, ..plx_platform::devcaps::Caps::assumed() }
+fn caps(hevc: bool, vp9: bool, av1: bool) -> plx_os::devcaps::Caps {
+    plx_os::devcaps::Caps { hevc, vp9, av1, ..plx_os::devcaps::Caps::assumed() }
 }
 
 #[test]

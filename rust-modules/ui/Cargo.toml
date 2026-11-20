@@ -27,7 +27,7 @@ default = []
 # Forwarded from the application crate, which is the only one that sets them. Each is named here
 # only because some code in this crate has a `cfg` on it (`threadcheck`: the runtime-warning
 # surface; `devtriggers`: the dev instruments of `tex`, `glassload`, `testpat`, ...).
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers"]
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_os/devtriggers", "plx_gfx/devtriggers"]
 threadcheck = ["plx_base/threadcheck"]
 # **The pixel oracle of the placeholder accounting** (`placeholder.rs`): every placeholder is
 # painted flat in one exact colour (#FF00FE) at alpha 1, ignoring the painter's alpha cascade and
@@ -39,12 +39,12 @@ placeholder-sentinel = []
 # `cfg(test)` alone cannot give a dependent (the GL calls a host test must not make, the draw
 # census). Enabled from the dependents' `[dev-dependencies]`; never in a shipped build. It enables
 # the lower layers' own `test-support` because the seams here call into them.
-test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx/test-support"]
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_os/test-support", "plx_gfx/test-support"]
 
 [dependencies]
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
-plx_platform = { path = "../platform" }
+plx_os = { path = "../os" }
 plx_gfx = { path = "../gfx" }
 libc = "0.2"
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
@@ -54,7 +54,7 @@ qrcodegen = "=1.8.0"
 [dev-dependencies]
 plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
-plx_platform = { path = "../platform", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
 plx_gfx = { path = "../gfx", features = ["test-support"] }
 
 [lints]

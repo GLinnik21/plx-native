@@ -11,7 +11,7 @@
 
 use std::borrow::Cow;
 use plx_machine::machine::ScreenId;
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 use plx_screens::registry::page_id;
 use super::bridge::AppViews;
 

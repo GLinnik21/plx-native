@@ -829,7 +829,7 @@ fn live_cell_indices_are_pinned() {
 /// **What a cell reads before anything has restored it** (the seeds): quality Original, skip 10 s,
 /// size Medium, everything else the first variant, tone White, enhancements none. The statics are
 /// shared by the whole test binary, so this runs in a CHILD process that executes only this test
-/// (the pattern of `platform::storage::diagnostics`'s umask test); the parent asserts the child ran
+/// (the pattern of `os::storage::diagnostics`'s umask test); the parent asserts the child ran
 /// and passed.
 #[test]
 fn unrestored_cells_hold_their_seeds() {

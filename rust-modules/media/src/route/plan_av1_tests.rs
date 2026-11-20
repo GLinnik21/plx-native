@@ -3,8 +3,8 @@
 use super::*;
 
 /// The caps a set with an AV1 row in its table reports, at the A2's documented UHD bound.
-fn caps_on() -> plx_platform::devcaps::Caps {
-    plx_platform::devcaps::Caps { av1: true, av1_row: (3840, 2160, 60), ..plx_platform::devcaps::Caps::assumed() }
+fn caps_on() -> plx_os::devcaps::Caps {
+    plx_os::devcaps::Caps { av1: true, av1_row: (3840, 2160, 60), ..plx_os::devcaps::Caps::assumed() }
 }
 
 #[test]
@@ -12,7 +12,7 @@ fn av1_direct_plays_only_with_the_row() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
     assert!(video_direct_plays("av1", 3840, 2160, dp, &caps_on()));
     assert!(
-        !video_direct_plays("av1", 3840, 2160, dp, &plx_platform::devcaps::Caps::assumed()),
+        !video_direct_plays("av1", 3840, 2160, dp, &plx_os::devcaps::Caps::assumed()),
         "a set whose table has no AV1 decoder never direct-plays AV1",
     );
 }
@@ -20,7 +20,7 @@ fn av1_direct_plays_only_with_the_row() {
 #[test]
 fn av1_is_bounded_by_its_own_row() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
-    let caps = plx_platform::devcaps::Caps { av1_row: (1920, 1080, 60), ..caps_on() };
+    let caps = plx_os::devcaps::Caps { av1_row: (1920, 1080, 60), ..caps_on() };
     assert!(!video_direct_plays("av1", 3840, 2160, dp, &caps), "above the AV1 row");
     assert!(video_direct_plays("av1", 1920, 1080, dp, &caps), "at the AV1 row");
     assert!(
@@ -32,7 +32,7 @@ fn av1_is_bounded_by_its_own_row() {
 #[test]
 fn av1_is_bounded_by_the_shared_bound_too() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         av1_row: (7680, 4320, 60),
         hevc_max: (1920, 1088),
         ..caps_on()
@@ -46,15 +46,15 @@ fn av1_is_bounded_by_the_shared_bound_too() {
 #[test]
 fn forced_feed_admits_av1_only_with_the_row() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
-    assert!(!video_feed_supported("av1", dp, &plx_platform::devcaps::Caps::assumed()));
+    assert!(!video_feed_supported("av1", dp, &plx_os::devcaps::Caps::assumed()));
     assert!(video_feed_supported("av1", dp, &caps_on()));
-    assert!(video_feed_supported("h264", dp, &plx_platform::devcaps::Caps::assumed()));
+    assert!(video_feed_supported("h264", dp, &plx_os::devcaps::Caps::assumed()));
 }
 
 #[test]
 fn a_dv_refusal_still_refuses_av1() {
     let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
-        .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
+        .presentation(false, plx_os::devcaps::dv::DvCapability::Unsupported, true);
     assert!(!video_direct_plays("av1", 3840, 2160, blocked_dv, &caps_on()));
     assert!(!video_feed_supported("av1", blocked_dv, &caps_on()));
 }
@@ -65,7 +65,7 @@ fn vp9_never_direct_plays_without_the_row() {
     // the AV1 row says nothing about VP9
     assert!(!video_direct_plays("vp9", 1920, 1080, dp, &caps_on()));
     assert!(!video_feed_supported("vp9", dp, &caps_on()));
-    let assumed = plx_platform::devcaps::Caps::assumed();
+    let assumed = plx_os::devcaps::Caps::assumed();
     assert!(!video_direct_plays("vp9", 1920, 1080, dp, &assumed));
     assert!(!video_feed_supported("vp9", dp, &assumed));
 }
@@ -74,30 +74,30 @@ fn vp9_never_direct_plays_without_the_row() {
 #[test]
 fn vp9_direct_plays_with_the_row_and_is_bounded_by_it() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         vp9: true,
         vp9_row: (3840, 2160, 60),
-        ..plx_platform::devcaps::Caps::assumed()
+        ..plx_os::devcaps::Caps::assumed()
     };
     assert!(video_direct_plays("vp9", 3840, 2160, dp, &caps));
     assert!(video_feed_supported("vp9", dp, &caps));
     assert!(!video_direct_plays("vp9", 4096, 2160, dp, &caps), "above the VP9 row");
-    let unstated = plx_platform::devcaps::Caps { vp9_row: (0, 0, 0), ..caps.clone() };
+    let unstated = plx_os::devcaps::Caps { vp9_row: (0, 0, 0), ..caps.clone() };
     assert!(video_direct_plays("vp9", 3840, 2160, dp, &unstated), "an unstated row bounds nothing");
-    let roomy_row = plx_platform::devcaps::Caps { vp9_row: (7680, 4320, 60), hevc_max: (3840, 2176), ..caps };
+    let roomy_row = plx_os::devcaps::Caps { vp9_row: (7680, 4320, 60), hevc_max: (3840, 2176), ..caps };
     assert!(!video_direct_plays("vp9", 7680, 4320, dp, &roomy_row), "the shared bound still applies");
     // and VP9 never loosens another codec's gate
     assert!(!video_direct_plays("av1", 1920, 1080, dp, &roomy_row));
 }
 
-/// A recovery that took a refused 4K H.264 out of the attempt ([`plx_platform::devcaps::Facet::Video`])
+/// A recovery that took a refused 4K H.264 out of the attempt ([`plx_os::devcaps::Facet::Video`])
 /// holds ONLY that codec to the 1080p floor: the direct-play gate, which the planner, the remux flag
 /// and the detail Preview share, reads the attempt's bound, so the rebuilt request converts the video.
 #[test]
 fn video_direct_plays_honours_the_attempts_codec_ceiling() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
-    let assumed = plx_platform::devcaps::Caps::assumed();
-    let facet = plx_platform::devcaps::Facet::Video { codec: "h264".into(), width: 3840, height: 2160 };
+    let assumed = plx_os::devcaps::Caps::assumed();
+    let facet = plx_os::devcaps::Facet::Video { codec: "h264".into(), width: 3840, height: 2160 };
     assert!(video_direct_plays("h264", 3840, 2160, dp, &assumed));
     let narrowed = assumed.without(&facet);
     assert!(!video_direct_plays("h264", 3840, 2160, dp, &narrowed), "the refused raster is no longer direct played");

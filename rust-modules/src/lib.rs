@@ -58,7 +58,7 @@ pub fn sim_runtime_dir() -> std::path::PathBuf {
 /// webOS-1-3-only Interface resolution row stays hidden.
 #[cfg(feature = "hostsim")]
 pub fn publish_sim_webos_major(major: u32) {
-    plx_platform::tv::device::publish_info(plx_platform::tv::device::Info { major, ..Default::default() });
+    plx_os::tv::device::publish_info(plx_os::tv::device::Info { major, ..Default::default() });
 }
 
 /// The event log's path, built by the ONE expression [`plx_base::eventlog::log`] uses.

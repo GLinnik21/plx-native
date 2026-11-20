@@ -18,7 +18,7 @@ import re
 import tarfile
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'serde-json-immutable.json'
-CERTIFICATE_SHA256 = '915ab64bde4c59b8218471f4560136450414d8dd5e9cd671233ab79130766540'
+CERTIFICATE_SHA256 = '47228bf8faff2b162797c50c24d9516efb67ba2f2be928be16f0bb722132fec9'
 SCHEMA = 'plx.readonly.locked-json.v1'
 REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index'
 SUPPORTED = ['alloc', 'arbitrary_precision', 'default', 'float_roundtrip', 'raw_value', 'std', 'unbounded_depth']
@@ -204,7 +204,7 @@ def _workspace_hashes(root, paths):
     """Pin all bytes except the root app's coherent, non-resolving release number.
 
     The app build.rs reports this number; it does not select the locked JSON
-    source or the platform enum producer. Member/dependency versions, features,
+    source or the os enum producer. Member/dependency versions, features,
     source identities, comments and all other metadata remain byte-pinned.
     """
     manifest = (root / 'Cargo.toml').read_bytes().replace(b'\r\n', b'\n').decode('utf-8')

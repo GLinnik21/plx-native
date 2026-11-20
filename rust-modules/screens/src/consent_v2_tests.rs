@@ -6,7 +6,7 @@ use super::*;
 use super::test_support::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, SHIPPED};
+use plx_os::i18n::{language_on_this_thread_for_test, msg, SHIPPED};
 
 fn settings_page(m: &FixtureMeasure) -> ConsentPage {
     let c = test_cx(m);

@@ -148,7 +148,7 @@ fn footer_scroll_items() -> [Item; 3] {
 /// on `cy` and the label in the footer band at `fy`. Marks, not controls — there is nothing to
 /// focus, so they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
 fn draw_scroll_hint(p: Painter, x: f32, cy: f32, fy: f32, cw: f32) {
-    let hint = plx_platform::i18n::msg::widgets_hint_scroll_c();
+    let hint = plx_os::i18n::msg::widgets_hint_scroll_c();
     let items = footer_scroll_items();
     for (span, icon) in HStack::new(&items, FOOTER_SCROLL_GAP, Align::Leading(x))
         .placed()
@@ -272,7 +272,7 @@ pub fn fmt_size(bytes: i64) -> Option<String> {
     }
     // Below a kilobyte the Info panel spells the count in words rather than as a bare `B`.
     Some(if bytes < 1024 {
-        plx_platform::i18n::msg::widgets_tracks_bytes(bytes)
+        plx_os::i18n::msg::widgets_tracks_bytes(bytes)
     } else {
         plx_ui::fmt::bytes(bytes, (2, 2, 2))
     })
@@ -323,7 +323,7 @@ fn title_case(s: &str) -> String {
 /// `"10-bit · 4:2:0"` — bit depth and chroma as ONE fact, because neither is meaningful without
 /// the other. Either half alone still draws, so a container that reports only one is not silent.
 pub fn fmt_depth_chroma(bit_depth: i64, chroma: &str) -> Option<String> {
-    let d = (bit_depth > 0).then(|| plx_platform::i18n::msg::widgets_tracks_depth(bit_depth));
+    let d = (bit_depth > 0).then(|| plx_os::i18n::msg::widgets_tracks_depth(bit_depth));
     let c = (!chroma.trim().is_empty()).then(|| chroma.trim().to_string());
     match (d, c) {
         (Some(d), Some(c)) => Some(format!("{d} \u{b7} {c}")),
@@ -347,7 +347,7 @@ pub fn fmt_fps(fps: f64) -> Option<String> {
         return None;
     }
     let rate = localized_precision(fps, 3);
-    Some(plx_platform::i18n::msg::widgets_tracks_fps(&rate))
+    Some(plx_os::i18n::msg::widgets_tracks_fps(&rate))
 }
 
 /// `"2.35"` — the display aspect as PMS sends it, trailing zeros trimmed.
@@ -366,7 +366,7 @@ fn localized_precision(value: f64, max_scale: i16) -> String {
         coefficient /= 10;
         scale -= 1;
     }
-    plx_platform::i18n::current().decimal(coefficient, scale)
+    plx_os::i18n::current().decimal(coefficient, scale)
 }
 
 /// A channel layout in the design's spelling: `"5.1(side)"` → `"5.1"`, `"stereo"` → `"Stereo"`.
@@ -380,9 +380,9 @@ pub fn fmt_layout(layout: &str, channels: i64) -> String {
     if base.is_empty() {
         return match channels {
             0 => String::new(),
-            1 => plx_platform::i18n::msg::widgets_tracks_mono().to_string(),
-            2 => plx_platform::i18n::msg::widgets_tracks_stereo().to_string(),
-            n => plx_platform::i18n::msg::widgets_tracks_channels(n),
+            1 => plx_os::i18n::msg::widgets_tracks_mono().to_string(),
+            2 => plx_os::i18n::msg::widgets_tracks_stereo().to_string(),
+            n => plx_os::i18n::msg::widgets_tracks_channels(n),
         };
     }
     // a numeric layout ("5.1", "7.1") is already how it is written; a word one is capitalised
@@ -390,8 +390,8 @@ pub fn fmt_layout(layout: &str, channels: i64) -> String {
         base.to_string()
     } else {
         match base {
-            "mono" => plx_platform::i18n::msg::widgets_tracks_mono().to_string(),
-            "stereo" => plx_platform::i18n::msg::widgets_tracks_stereo().to_string(),
+            "mono" => plx_os::i18n::msg::widgets_tracks_mono().to_string(),
+            "stereo" => plx_os::i18n::msg::widgets_tracks_stereo().to_string(),
             _ => title_case(base),
         }
     }
@@ -438,7 +438,7 @@ pub fn audio_detail(s: &Stream) -> String {
         parts.push(b);
     }
     if s.selected {
-        parts.push(plx_platform::i18n::msg::widgets_tracks_playing().to_string());
+        parts.push(plx_os::i18n::msg::widgets_tracks_playing().to_string());
     }
     parts.join(" \u{b7} ")
 }
@@ -454,7 +454,7 @@ pub fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
         .iter()
         .map(|s| TrackRow {
             name: if s.lang.trim().is_empty() {
-                plx_platform::i18n::msg::widgets_tracks_unknown().to_string()
+                plx_os::i18n::msg::widgets_tracks_unknown().to_string()
             } else {
                 s.lang.clone()
             },
@@ -482,7 +482,7 @@ pub fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
     for s in subs {
         let name = if s.lang.trim().is_empty() {
-            plx_platform::i18n::msg::widgets_tracks_unknown().to_string()
+            plx_os::i18n::msg::widgets_tracks_unknown().to_string()
         } else {
             s.lang.clone()
         };
@@ -496,9 +496,9 @@ pub fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         // has; the parsed kind only ADDS a flag the title spelled out.
         let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
         for (on, tag) in [
-            (forced, plx_platform::i18n::msg::widgets_tracks_forced()),
-            (sdh, plx_platform::i18n::msg::widgets_badge_sdh()),
-            (s.external, plx_platform::i18n::msg::widgets_tracks_external()),
+            (forced, plx_os::i18n::msg::widgets_tracks_forced()),
+            (sdh, plx_os::i18n::msg::widgets_badge_sdh()),
+            (s.external, plx_os::i18n::msg::widgets_tracks_external()),
         ] {
             if on {
                 head = if head.is_empty() {
@@ -525,9 +525,9 @@ pub fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         .map(|(_, name, head, n)| {
             let detail = match (head.is_empty(), n) {
                 (true, 1) => String::new(),
-                (true, n) => plx_platform::i18n::msg::widgets_tracks_count(n as i64),
+                (true, n) => plx_os::i18n::msg::widgets_tracks_count(n as i64),
                 (false, 1) => head,
-                (false, n) => plx_platform::i18n::msg::widgets_tracks_count_detail(n as i64, &head),
+                (false, n) => plx_os::i18n::msg::widgets_tracks_count_detail(n as i64, &head),
             };
             TrackRow { name, detail }
         })
@@ -543,16 +543,16 @@ pub fn file_rows(d: &Detail) -> Vec<Pair> {
         }
     };
     push(
-        plx_platform::i18n::msg::widgets_tracks_container(),
+        plx_os::i18n::msg::widgets_tracks_container(),
         (!d.container.is_empty()).then(|| d.container.to_uppercase()),
     );
-    push(plx_platform::i18n::msg::widgets_tracks_size(), fmt_size(d.size));
-    push(plx_platform::i18n::msg::widgets_tracks_total_bitrate(), fmt_bitrate(d.bitrate));
+    push(plx_os::i18n::msg::widgets_tracks_size(), fmt_size(d.size));
+    push(plx_os::i18n::msg::widgets_tracks_total_bitrate(), fmt_bitrate(d.bitrate));
     push(
-        plx_platform::i18n::msg::widgets_tracks_duration(),
+        plx_os::i18n::msg::widgets_tracks_duration(),
         (d.dur_ms > 0).then(|| plx_ui::fmt::clock(d.dur_ms)),
     );
-    push(plx_platform::i18n::msg::widgets_tracks_aspect(), fmt_aspect(d.aspect_ratio));
+    push(plx_os::i18n::msg::widgets_tracks_aspect(), fmt_aspect(d.aspect_ratio));
     v
 }
 
@@ -572,14 +572,14 @@ pub fn video_rows(d: &Detail) -> Vec<Pair> {
         .filter(|s| !s.is_empty())
         .unwrap_or(d.vcodec.as_str());
     let profile = vs.map(|s| s.profile.as_str()).unwrap_or("");
-    push(plx_platform::i18n::msg::widgets_tracks_codec(), fmt_codec_profile(codec, profile));
-    push(plx_platform::i18n::msg::widgets_tracks_resolution(), fmt_frame_size(d.width, d.height));
-    push(plx_platform::i18n::msg::widgets_tracks_frame_rate(), fmt_fps(d.video_fps));
+    push(plx_os::i18n::msg::widgets_tracks_codec(), fmt_codec_profile(codec, profile));
+    push(plx_os::i18n::msg::widgets_tracks_resolution(), fmt_frame_size(d.width, d.height));
+    push(plx_os::i18n::msg::widgets_tracks_frame_rate(), fmt_fps(d.video_fps));
     // the STREAM's bitrate, not the file's — `d.bitrate` is already the FILE column's own row, and
     // repeating it here would state the same number twice under two different labels
-    push(plx_platform::i18n::msg::widgets_tracks_bitrate(), vs.and_then(|s| fmt_bitrate(s.bitrate)));
+    push(plx_os::i18n::msg::widgets_tracks_bitrate(), vs.and_then(|s| fmt_bitrate(s.bitrate)));
     push(
-        plx_platform::i18n::msg::widgets_tracks_bit_depth(),
+        plx_os::i18n::msg::widgets_tracks_bit_depth(),
         vs.and_then(|s| fmt_depth_chroma(s.bit_depth, &s.chroma)),
     );
     v
@@ -600,17 +600,17 @@ pub fn dovi_rows(d: &Detail) -> Vec<Pair> {
             v.push(Pair { label, value });
         }
     };
-    push(plx_platform::i18n::msg::widgets_tracks_profile(), (dv.profile > 0).then(|| dv.profile.to_string()));
-    push(plx_platform::i18n::msg::widgets_tracks_level(), (dv.level > 0).then(|| dv.level.to_string()));
-    push(plx_platform::i18n::msg::widgets_tracks_version(), dv.version_str());
-    push(plx_platform::i18n::msg::widgets_tracks_base_layer(), dv.bl_present.then(|| plx_platform::i18n::msg::widgets_tracks_present().to_string()));
-    push("RPU", dv.rpu_present.then(|| plx_platform::i18n::msg::widgets_tracks_present().to_string()));
+    push(plx_os::i18n::msg::widgets_tracks_profile(), (dv.profile > 0).then(|| dv.profile.to_string()));
+    push(plx_os::i18n::msg::widgets_tracks_level(), (dv.level > 0).then(|| dv.level.to_string()));
+    push(plx_os::i18n::msg::widgets_tracks_version(), dv.version_str());
+    push(plx_os::i18n::msg::widgets_tracks_base_layer(), dv.bl_present.then(|| plx_os::i18n::msg::widgets_tracks_present().to_string()));
+    push("RPU", dv.rpu_present.then(|| plx_os::i18n::msg::widgets_tracks_present().to_string()));
     v
 }
 
 /// A section head as it is drawn: `AUDIO · 8 TRACKS`. Caps, because the head names the group.
 pub fn track_head(word: &str, n: usize) -> String {
-    plx_platform::i18n::msg::widgets_tracks_count_heading(n as i64, word)
+    plx_os::i18n::msg::widgets_tracks_count_heading(n as i64, word)
 }
 
 // ---- the scroll: pages, mask edges and the rail (also PURE) --------------------------------------
@@ -970,8 +970,8 @@ struct Content {
 fn content_of(d: &Detail) -> Content {
     Content {
         cols: [
-            (plx_platform::i18n::msg::widgets_tracks_file_heading(), file_rows(d)),
-            (plx_platform::i18n::msg::widgets_tracks_video_heading(), video_rows(d)),
+            (plx_os::i18n::msg::widgets_tracks_file_heading(), file_rows(d)),
+            (plx_os::i18n::msg::widgets_tracks_video_heading(), video_rows(d)),
             ("DOLBY VISION", dovi_rows(d)),
         ],
         audio: (d.audio.len(), audio_rows(&d.audio)),
@@ -1029,7 +1029,7 @@ fn body_flow(
     // subtitles those are different numbers — that is the whole point of grouping them, and
     // passing `rows.len()` here is how the head came to say "SUBTITLES · 3 TRACKS" over a list
     // describing nine of them.
-    for (word, (total, rows)) in [(plx_platform::i18n::msg::widgets_tracks_audio_heading(), &c.audio), (plx_platform::i18n::msg::widgets_tracks_subtitles_heading(), &c.subs)] {
+    for (word, (total, rows)) in [(plx_os::i18n::msg::widgets_tracks_audio_heading(), &c.audio), (plx_os::i18n::msg::widgets_tracks_subtitles_heading(), &c.subs)] {
         if rows.is_empty() {
             continue;
         }
@@ -1065,7 +1065,7 @@ impl TracksPanelScreen {
         let cx = r.x + PAD;
         let cw = PANEL_W - 2.0 * PAD;
         let hd = header(r.y + PAD);
-        let eyebrow = plx_platform::i18n::msg::widgets_tracks_heading_c();
+        let eyebrow = plx_os::i18n::msg::widgets_tracks_heading_c();
         Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY).h(theme::alert::TEXT_ALIGN)
             .bold()
             .v(VAlign::CapTop)
@@ -1134,7 +1134,7 @@ impl TracksPanelScreen {
         // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
         // — which HUGS its label's cap band, where the design's KeyCap is a fixed 82x36 with a MICRO
         // bold label. The shared cap is the fixed band, so the panels all draw one object.)
-        let back_hint = plx_ui::widgets::KeyHint::translated(plx_platform::i18n::msg::widgets_hint_return("\u{fffc}"), c"BACK");
+        let back_hint = plx_ui::widgets::KeyHint::translated(plx_os::i18n::msg::widgets_hint_return("\u{fffc}"), c"BACK");
         back_hint.draw(p, cx + cw - back_hint.width(measure), cy, measure);
     }
 }
@@ -1378,7 +1378,7 @@ pub(crate) mod tests {
                 draw_scroll_hint(Painter::recording(), 100.0, 300.0, 280.0, 600.0);
             });
         });
-        let label = runs.iter().find(|r| r.text == plx_platform::i18n::msg::widgets_hint_scroll_c().to_str().unwrap()).expect("the label is painted");
+        let label = runs.iter().find(|r| r.text == plx_os::i18n::msg::widgets_hint_scroll_c().to_str().unwrap()).expect("the label is painted");
         assert_eq!((label.size, label.ink), (theme::size::CAPTION, theme::TEXT_TERTIARY));
         let ink = |icon: Icon| {
             let (_, r) = icons.iter().find(|(i, _)| *i == icon).unwrap_or_else(|| panic!("{icon:?} is painted"));

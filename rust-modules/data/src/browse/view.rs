@@ -213,7 +213,7 @@ impl ListingSnapshot {
                 sorts: Arc::new(vec![SortEntry {
                     desc_key: String::new(),
                     key: "titleSort".into(),
-                    title: plx_platform::i18n::msg::browse_library_title().into(),
+                    title: plx_os::i18n::msg::browse_library_title().into(),
                     default_desc: false,
                 }]),
                 genres: Arc::new(Vec::new()),
@@ -1096,7 +1096,7 @@ mod tests {
             section.sorts = Arc::new(vec![SortEntry {
                 desc_key: String::new(),
                 key: "titleSort".into(),
-                title: plx_platform::i18n::msg::browse_library_title().into(),
+                title: plx_os::i18n::msg::browse_library_title().into(),
                 default_desc: false,
             }]);
             section.genres = Arc::new(vec![GenreEntry {

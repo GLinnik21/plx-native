@@ -1,9 +1,9 @@
-//! The DOCUMENT per-show track memory lives in: the DB8 state the platform caps at 256 KiB
+//! The DOCUMENT per-show track memory lives in: the DB8 state the os layer caps at 256 KiB
 //! (`MAX_LOGICAL_BYTES`), and the guard in `persistence::commit_session_with` that keeps a preference
 //! write from being refused because per-profile memory grew. The data layer itself (the entry, its
 //! bounds, the stamp, the household budget) is `track_memory_tests`.
 //!
-//! * the guard against platform's OWN code: the projection it sizes is exactly what
+//! * the guard against the os layer's OWN code: the projection it sizes is exactly what
 //!   `CanonicalState::apply` produces, and what it sheds is what makes `apply` pass;
 //! * the order it sheds in, and only as far as the document needs;
 //! * the worst-case household, written through the production coordinator;
@@ -17,11 +17,11 @@ use super::super::{
 use super::track_memory::*;
 use super::track_memory_tests::{put, show, typical, worst, STAMP};
 use super::ProfileList;
-use plx_platform::storage::state::{self, logical_size, MAX_LOGICAL_BYTES};
-use plx_platform::storage::wire::{
+use plx_os::storage::state::{self, logical_size, MAX_LOGICAL_BYTES};
+use plx_os::storage::wire::{
     AuthLoad, ErrorCode, MigrationMutation, ProtectionRequest, Request, SecretString, WireMutation,
 };
-use plx_platform::storage::client;
+use plx_os::storage::client;
 use serde_json::{json, Value};
 
 // ---- the household, at its bounds --------------------------------------------------------------
@@ -202,7 +202,7 @@ fn count(preferences: &Value, key: &str) -> usize {
 struct Db8 {
     record: Option<Value>,
 }
-impl plx_platform::storage::keymanager::Rpc for Db8 {
+impl plx_os::storage::keymanager::Rpc for Db8 {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         match uri {
             "luna://com.palm.db/get" => Ok(json!({"returnValue":true,"results":self.record.iter().cloned().collect::<Vec<_>>()})),
@@ -220,10 +220,10 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
         }
     }
 }
-type Store = plx_platform::storage::backend::Backend<Db8>;
+type Store = plx_os::storage::backend::Backend<Db8>;
 
 fn store() -> Store {
-    plx_platform::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
+    plx_os::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
 }
 fn try_commit(store: &mut Store, session: &Session, authority: SaveAuthority) -> persistence::CanonicalCommit {
     let mut transport = |request: Request| Ok(store.dispatch(request));
@@ -262,7 +262,7 @@ fn seed_pad(store: &mut Store, len: usize) {
     record["state"] = json!(state.to_string());
 }
 
-// ---- states built by hand, and platform's own apply -------------------------------------------
+// ---- states built by hand, and the os layer's own apply -------------------------------------------
 
 fn canonical(public: &state::PublicPayload, envelope: usize) -> state::CanonicalState {
     let mut canonical = state::CanonicalState::new(state::Flavor::Stable, state::Generation([1; 16]));
@@ -273,7 +273,7 @@ fn canonical(public: &state::PublicPayload, envelope: usize) -> state::Canonical
     canonical
 }
 
-/// What the platform makes of `mutation` on `state`, with the worst-case operation id the guard
+/// What the os layer makes of `mutation` on `state`, with the worst-case operation id the guard
 /// sizes, and the plaintext digest the helper stamps on the ledger entry of an auth write before it
 /// persists the candidate (`storage_service::backend`).
 fn real_apply(state: &state::CanonicalState, mutation: state::Mutation) -> Result<state::CanonicalState, state::StateError> {
@@ -331,16 +331,16 @@ fn over_by_for(
     public
 }
 
-// ---- the projection is platform's own document -------------------------------------------------
+// ---- the projection is the os layer's own document -------------------------------------------------
 
-/// **The guard sizes what the platform builds.** For an `UpdatePreferences` the projected size is
+/// **The guard sizes what the os layer builds.** For an `UpdatePreferences` the projected size is
 /// EXACTLY the logical size of the state `CanonicalState::apply` returns, with a full ledger, an
 /// empty one, and a stored refresh that the update cancels; for a one-put `ReplaceAuth` it is exactly
-/// that too (the consent a replace keeps included); and a staged one is a document the platform
+/// that too (the consent a replace keeps included); and a staged one is a document the os layer
 /// accepts as `pending_auth` and promotes.
 ///
 /// It holds at every revision, in particular where `revision + 1` is one digit wider than
-/// `revision` (9 -> 10, 99 -> 100): the platform stamps the new revision on the document, so a
+/// `revision` (9 -> 10, 99 -> 100): the os layer stamps the new revision on the document, so a
 /// projection that kept the old one would be a byte short exactly there.
 #[test]
 fn the_projection_is_the_document_the_platform_builds() {
@@ -425,7 +425,7 @@ fn projection_is_the_platform_document_at(revision: u64) {
 
     // a strict refresh is STAGED: the active state stays as it is, and the new public half and a
     // freshly sealed envelope ride in `pending_auth` beside the old ones. Built here the way
-    // `Backend::stage_strict` builds it. The platform validates it, AND the document it becomes once
+    // `Backend::stage_strict` builds it. The os layer validates it, AND the document it becomes once
     // promoted, so the projection is the larger of the two.
     let mut base = canonical(&public, envelope);
     base.revision = revision;
@@ -441,7 +441,7 @@ fn projection_is_the_platform_document_at(revision: u64) {
     .unwrap();
     let mut staged = base.clone();
     staged.pending_auth = Some(state::PendingAuth { operation, plaintext_digest: state::digest_bytes(b"the sealed plaintext") });
-    staged.encode().expect("the platform accepts the staged document");
+    staged.encode().expect("the os layer accepts the staged document");
     let (promoted, _) = staged.pending_candidate().expect("and its candidate").expect("is there");
     promoted.encode().expect("and the promoted one validates");
     let staged_size = logical_size(&serde_json::to_value(&staged).unwrap());
@@ -469,7 +469,7 @@ fn projection_is_the_platform_document_at(revision: u64) {
 /// A keymanager that seals nothing and answers with what AES-GCM would: the plaintext plus a 16-byte
 /// tag, base64. That is all `keymanager::seal` needs to build an envelope of the real size.
 struct LengthKeymanager;
-impl plx_platform::storage::keymanager::Rpc for LengthKeymanager {
+impl plx_os::storage::keymanager::Rpc for LengthKeymanager {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         // base64 of `n` zero bytes
         let zeros = |n: usize| format!("{}{}", "AAAA".repeat(n / 3), ["", "AA==", "AAA="][n % 3]);
@@ -488,7 +488,7 @@ impl plx_platform::storage::keymanager::Rpc for LengthKeymanager {
 /// **A keymanager envelope is bigger than its plaintext by more than base64.** The ciphertext seals
 /// the INNER document `{"context", "payload"}`, whose payload is the plaintext JSON-escaped (every
 /// quote of a credential bundle costs a byte), so sizing the raw plaintext falls short by a third of
-/// the escapes and the context, and a staged write sized that way is refused by the platform. The
+/// the escapes and the context, and a staged write sized that way is refused by the os layer. The
 /// estimate is held to the envelope `keymanager::seal` really builds, small and at the largest roster.
 #[test]
 fn the_keymanager_estimate_covers_the_envelope_the_helper_seals() {
@@ -498,7 +498,7 @@ fn the_keymanager_estimate_covers_the_envelope_the_helper_seals() {
     context.auth_generation = worst;
     for (users, sources) in [(1, 0), (2, 1), (USERS, USERS)] {
         let (_, protected) = split_canonical(&household(users, sources)).unwrap();
-        let sealed = plx_platform::storage::keymanager::seal(
+        let sealed = plx_os::storage::keymanager::seal(
             &mut LengthKeymanager,
             &worst.key_name(),
             &protected,
@@ -587,7 +587,7 @@ fn without(public: &state::PublicPayload, keys: &[&str]) -> state::PublicPayload
 
 /// **The guard sheds `track_memory`, then `subtitle_offsets`, then `library_sorts`, each oldest
 /// first from the record holding the most, and only as far as the document needs** — and what is
-/// left is a document the platform applies. An unrelated preference is never touched.
+/// left is a document the os layer applies. An unrelated preference is never touched.
 ///
 /// Each tier's overshoot is measured, not guessed: the unrelated pad is sized so the document is over
 /// the cap by exactly what a list (or several) take out of it, plus one byte for "past".
@@ -650,7 +650,7 @@ fn the_guard_sheds_in_order_and_only_as_far_as_the_document_needs() {
         let applied = real_apply(&base, update(&next));
         if case == "past everything" {
             // nothing sheddable is left and the document is still over: the guard never invents room,
-            // so the platform refuses this write exactly as it did before the guard
+            // so the os layer refuses this write exactly as it did before the guard
             assert!(applied.is_err(), "{case}");
         } else {
             let applied = applied.unwrap_or_else(|e| panic!("{case}: {e:?}"));
@@ -913,7 +913,7 @@ fn a_write_that_fits_evicts_nothing() {
 
 /// **An ACL write that fits is not evicted for.** The envelope of a credential write on the ACL-only
 /// tier is the plaintext beside a small context; sized as a keymanager envelope (a third bigger) the
-/// same write would look over the cap and the guard would evict memory from a write the platform
+/// same write would look over the cap and the guard would evict memory from a write the os layer
 /// stores. This one is sized to land exactly AT the cap as the ACL tier writes it, with the keymanager
 /// figure over it: nothing is evicted and nothing is logged.
 #[test]
@@ -948,7 +948,7 @@ fn an_acl_credential_write_that_fits_evicts_nothing() {
         assert_eq!(opened(&mut store).account_token, changed.account_token, "and the credential write landed");
         let stored = snapshot(&mut store).state;
         assert!(logical_size(&serde_json::to_value(&stored).unwrap()) <= MAX_LOGICAL_BYTES);
-        stored.encode().expect("and it passes the platform's own validation");
+        stored.encode().expect("and it passes the os layer's own validation");
     });
 }
 
@@ -959,7 +959,7 @@ fn an_acl_credential_write_that_fits_evicts_nothing() {
 /// its cap with every string at its bound (`track_memory` at the 32 KiB budget), sixteen servers' pins
 /// and consent, four recent searches each. Together that is far more than 256 KiB, and it is written
 /// through the production coordinator on the ACL-only tier (webOS 4.x): the guard sheds the three
-/// memory lists in order until the document passes the platform's own validation, the credentials
+/// memory lists in order until the document passes the os layer's own validation, the credentials
 /// and every unsheddable preference are untouched, and an unrelated quality write afterwards lands.
 ///
 /// The figures it stands on are asserted, not assumed: with ALL per-profile memory gone the same
@@ -968,7 +968,7 @@ fn an_acl_credential_write_that_fits_evicts_nothing() {
 ///
 /// **The limit it also states.** At this size one envelope is over a third of the cap, so a STRICT
 /// refresh (staged: the old and the new envelope side by side) cannot fit even with every list shed.
-/// That comes from the credentials alone and was so before per-profile memory existed (the platform
+/// That comes from the credentials alone and was so before per-profile memory existed (the os layer
 /// refuses that write as it always did); `a_staged_write_is_guarded_where_two_envelopes_fit` covers
 /// the staged shape where the household leaves room for it.
 #[test]
@@ -1032,7 +1032,7 @@ fn worst_case_household_document_fits() {
         let loaded = snapshot(&mut store);
         let document = logical_size(&serde_json::to_value(&loaded.state).unwrap());
         assert!(document <= MAX_LOGICAL_BYTES, "the stored document is {document} bytes");
-        loaded.state.encode().expect("and it passes the platform's own validation");
+        loaded.state.encode().expect("and it passes the os layer's own validation");
         let preferences = &loaded.state.public.preferences;
         let kept = lists(preferences);
         let sheds = logged().matches("prefs: evicted").count();
@@ -1053,7 +1053,7 @@ fn worst_case_household_document_fits() {
 
         // THE LIMIT, stated: a STRICT refresh stages the new envelope beside the stored one, and two
         // of them do not fit at this size however little else the document holds. The guard sheds
-        // everything it may and sends the write, and the platform refuses it as it always did.
+        // everything it may and sends the write, and the os layer refuses it as it always did.
         let mut bare = public.clone();
         let mut at_rest = signed_in.clone();
         at_rest.auth_envelope = Some("e".repeat(keymanager_envelope));
@@ -1083,7 +1083,7 @@ const STAGED_SOURCES: usize = 4;
 /// **A staged write is guarded where the household leaves room for it.** The strict tier STAGES the
 /// next credential write: the document then carries the old public half and envelope AND the new
 /// ones in `pending_auth`. Sixteen users with `STAGED_SOURCES` servers each and full memory: the guard
-/// sheds the memory the staged document cannot hold, and the document it builds is one the platform
+/// sheds the memory the staged document cannot hold, and the document it builds is one the os layer
 /// accepts, and the document it becomes once promoted (the state the helper builds, step by step).
 #[test]
 fn a_staged_write_is_guarded_where_two_envelopes_fit() {
@@ -1117,7 +1117,7 @@ fn a_staged_write_is_guarded_where_two_envelopes_fit() {
     )
     .unwrap();
     at_rest.pending_auth = Some(state::PendingAuth { operation, plaintext_digest: state::digest_bytes(b"the plaintext") });
-    at_rest.encode().expect("the platform accepts the worst-case staged document");
+    at_rest.encode().expect("the os layer accepts the worst-case staged document");
     let (promoted, _) = at_rest.pending_candidate().expect("with a candidate").expect("that is there");
     promoted.encode().expect("and the one it is promoted to");
 }
@@ -1158,7 +1158,7 @@ fn the_guard_assumes_the_shape_of_a_first_write() {
 /// grew: a legacy file migrating in, or a sign-in on a session that already carries memory, meets an
 /// ABSENT record, and the helper starts it from a fresh state. The same household as
 /// `worst_case_household_document_fits` is over the cap before any shedding, and lands through each
-/// kind of first write; without the guard the platform refuses it.
+/// kind of first write; without the guard the os layer refuses it.
 #[test]
 fn a_first_write_onto_no_record_is_guarded_too() {
     plx_base::eventlog::with_private_log(|| {
@@ -1186,7 +1186,7 @@ fn a_first_write_onto_no_record_is_guarded_too() {
             assert!(matches!(result, persistence::CanonicalCommit::Durable { .. }), "{case}: {result:?}");
             assert_eq!(seen, [persistence::missing_write(migration, authority, 4)], "{case}: the write that was sent");
             let stored = snapshot(&mut store).state;
-            stored.encode().expect("the stored document passes the platform's own validation");
+            stored.encode().expect("the stored document passes the os layer's own validation");
             assert!(logical_size(&serde_json::to_value(&stored).unwrap()) <= MAX_LOGICAL_BYTES, "{case}");
             assert_eq!(lists(&stored.public.preferences).0, 0, "{case}: track memory goes first");
             assert_eq!(opened(&mut store).profiles.len(), USERS, "{case}: the credentials are untouched");
@@ -1225,7 +1225,7 @@ fn sign_out_drops_the_track_memory() {
 
 /// **A0 item 16, the real shape.** A0 feeds tier 1 a track memory in shapes nothing writes. This is
 /// the shape this build writes (an array of profile records, each with an account stamp and its
-/// entries), through the platform codec and the PREVIOUS build's frozen parse: credentials and today's
+/// entries), through the os layer's codec and the PREVIOUS build's frozen parse: credentials and today's
 /// keys intact, the key opaque, and the previous build's own rewrite of it byte-identical; this
 /// build then reads back exactly what it wrote.
 #[test]

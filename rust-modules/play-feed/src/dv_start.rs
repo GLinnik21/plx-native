@@ -29,7 +29,7 @@
 //! [`Landing`], so every rule is a unit test. One [`Guard`] lives on the Engine and is re-armed at every
 //! landing ([`Guard::rearm`]: the Engine's start, and each in-place seek).
 
-use plx_platform::devcaps::DvFirstPicture;
+use plx_os::devcaps::DvFirstPicture;
 use plx_playback_contract::feed::{DvLandingPlan, DvWithdrawal};
 use std::os::raw::c_int;
 

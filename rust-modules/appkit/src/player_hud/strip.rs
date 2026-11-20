@@ -302,7 +302,7 @@ impl<'a, E> Cards<'a, E> {
     fn name(&self, i: usize) -> String {
         let ch = &self.chapters[i];
         if ch.title.trim().is_empty() {
-            plx_platform::i18n::msg::widgets_chapters_number(ch.index)
+            plx_os::i18n::msg::widgets_chapters_number(ch.index)
         } else {
             ch.title.clone()
         }

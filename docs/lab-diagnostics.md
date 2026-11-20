@@ -170,7 +170,7 @@ by forgetting a flag.
 | file | what it owns |
 | --- | --- |
 | `lab/mod.rs` | the feature boundary, boot/config gating and the main-thread control mailbox seam |
-| `labcfg/config.rs` | (a `platform` module, so `ui/` and `screens/` can ask `labcfg::is_trigger_key` and `labcfg::menu_row_enabled`) reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
+| `labcfg/config.rs` | (a `os` module, so `ui/` and `screens/` can ask `labcfg::is_trigger_key` and `labcfg::menu_row_enabled`) reads `lab.json` **from the app directory** (`paths::in_app_dir("lab.json")`) once at boot: `{endpoint, session, secret, pin, control, trigger_wcodes[]}`. Absent or malformed → the feature is inert and says so in one log line. Missing `control` is false, so an older package remains upload-only. |
 | `lab/control.rs` | one persistent pinned HTTPS long-poll worker, ordered command parsing, the main-thread mailbox, dispatch acknowledgement and bounded reconnect backoff |
 | `base/src/eventlog/ring.rs` | the bounded buffer: `VecDeque<(u32 t_ms, String)>`, capped by **both** 4000 records and 768 KB of text, evicting oldest, counting evictions. One `Mutex`. |
 | `lab/snapshot.rs` | envelope construction from `Diag` + `webos` + `devcaps` + `paths` + uptime. Pure and host-testable. |
@@ -441,7 +441,7 @@ not pretending the old filesystem contract exists.
 
 * `make check` is green in both configurations. **Take the counts yourself** — this repository has
   rotted four written test counts already and the fifth is not going to be this one:
-  `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp -- --list | grep -c ': test'`, with and without
+  `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_owp -- --list | grep -c ': test'`, with and without
   `--features lab-diagnostics`. What the feature's own tests cover: the ring's two caps and its
   `dropped` delta, the `lab.json` parse and each refusal it names, the five scrub rewrites and the
   outright refusal (including the bare address and the household name the device test found), the

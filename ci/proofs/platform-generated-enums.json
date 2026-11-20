@@ -1,18 +1,76 @@
 {
-  "schema": "plx.readonly.generated-unit-enums.v1",
-  "package": "plx_platform",
-  "module": "platform/src/i18n/mod.rs",
+  "assumptions": [
+    "Offline source-backed unit-enum proof; certificate changes require source review.",
+    "",
+    "No Cargo, cached output, generator execution, Copy axiom or type-name exemption.",
+    "The certificate pins the entire production pipeline and include namespace, not the",
+    "language list. Its reviewed template emits unit variants in every configuration.",
+    "Only enum values are certified: LocaleContext/OnceLock and methods are not.",
+    "Assumes ordinary Cargo/Rust/std/serde execution, no external build/config/compiler",
+    "overrides, output tampering or unsafe-code/compiler unsoundness attestation."
+  ],
+  "configs": {
+    "../.cargo/config": null,
+    "../.cargo/config.toml": null,
+    ".cargo/config": null,
+    ".cargo/config.toml": "82f061c716740e16cfee63a74d87159e0e0dc253e1092b87c54190c603515b14"
+  },
+  "grammar": {
+    "Language": {
+      "catalogue_unit_variants": true,
+      "suffix": [
+        "Pseudo"
+      ]
+    },
+    "Preference": {
+      "catalogue_unit_variants": true,
+      "prefix": [
+        "System"
+      ]
+    }
+  },
   "include": "include!(concat!(env!(\"OUT_DIR\"), \"/languages.rs\"));",
+  "lock": "4c8ae319c8db665085f3fe744a30ae925f744feba2e64c3c38de51a94d762b16",
+  "machine_newtype": "reviewed local newtype macro emits pub struct Name(pub u32); doc attributes only",
+  "manifests": {
+    "Cargo.toml": "1143141629f93032567e2cbf0e119ec0e4381ff32ea84f27f458ae661d715f31",
+    "appkit/Cargo.toml": "5cc1214cba7746fe0f2d4cfa5047b599e0d5124abe7bdaebe210381021b88c4a",
+    "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
+    "data/Cargo.toml": "74f79e6240f0965069ec34916ae276b3f7e5f4b944cf16a0846570a6b115afa0",
+    "gfx/Cargo.toml": "c8889dd95a481938966c41635f85702695ce9c59956381768e6c56d215d8fc0e",
+    "machine/Cargo.toml": "0bc99e95272916b8d00e1a8dad81440bc4998de12ccd9a00e7853f438c813d03",
+    "media-codecs/Cargo.toml": "503c8681289314b5c8a63195aad6796cbad93fcb3eedd8d7cba9e8ed0233783f",
+    "media/Cargo.toml": "f6678328f609a0552573d4be6762c888f4e88aaa0e8b6d2cc9eb1abaa9335a97",
+    "net/Cargo.toml": "bfdb3a08200642eeeafc9762733718c407529f26dce8a7b90665bc77ac928171",
+    "os/Cargo.toml": "3dbc4c654863f682a01f0750d0e2d1d6b42d56740d040b353d0a4ea00dcd1d9a",
+    "owp/Cargo.toml": "2c1354bce16b34f0d006fc04cd4c8eb22ef91f00063b53a1113e32f475ecae33",
+    "play-feed/Cargo.toml": "5bd2b67820914b578fcb371b80ed9274eae4b57078391c38161a67fc22df760d",
+    "play-uri/Cargo.toml": "48528dd164a910a32f5396ab8f5bc4c6c13f6fd5f1136ee080f8424fe663280b",
+    "playback-contract/Cargo.toml": "bde335ea645552d4f7481b007b80204ecb5bb592caaca22af58a8361cd050dcf",
+    "plex/Cargo.toml": "5cdb185265b7f7217cff08e54ef683a827735c9b3ae7c50161850f7064667b66",
+    "screens/Cargo.toml": "cd42484a49fac394244ebc7b81f30f7e4f9a31cdf7bc1ace5c3fae21afd6d511",
+    "session/Cargo.toml": "ecb49fc9f44177be6de36715ad70845b8929799cdbeb5ce9d6939be741704db0",
+    "storage/Cargo.toml": "4b8576b04a5877e95d084a49a16b30224c275ae29b4a192c40725ac819500150",
+    "telemetry/Cargo.toml": "9e514e64ae4a35619294621f22534b5e5b109d9dd3b729b94ed20112f47197bf",
+    "ui/Cargo.toml": "7375c6a73cb2558c7c0f62da7b0bd4beb2a5b78f5460ee35e93b1045c0e80eec"
+  },
+  "module": "os/src/i18n/mod.rs",
+  "package": "plx_os",
+  "review": [
+    "build.rs -> catalog::build(locales, OUT_DIR), no cfg-dependent producer",
+    "parse_registry derives variant solely from validated ASCII tag",
+    "discover preserves validated LanguageSpec; compile sorts by row",
+    "languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code",
+    "string slots use Rust Debug escaping; numeric slots are integers",
+    "install_identities writes only install_identities.rs, never languages.rs",
+    "PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged",
+    "PR1385: Canon byte-feed loops inlined (impl Canon and canon_tests only, FNV-1a byte stream unchanged); newtype macro and its ten u32 invocations unchanged",
+    "UI FIFO on PR1385: AppCommandId(u64), AppCommandOutcome and generic AppCommand<F,R> appended after unchanged doc-only newtype producer and its ten u32 invocations; none certified as generated declarations",
+    "Owned runtime: HoldHintRead/Event, ModalRead, PageImageRead, Cx/Fx projections, AppEffect partition and PresentationAuthority/Receipt added outside the unchanged doc-only newtype macro and ten u32 invocations; Arc-bearing receipts and effect contracts are not certified; canonical include namespace unchanged"
+  ],
+  "schema": "plx.readonly.generated-unit-enums.v1",
   "sources": {
-    "platform/Cargo.toml": "4181b79fa53a7ff6e8b0157f4d1ffe258737896603d267b4802551dee0812472",
-    "platform/src/lib.rs": "0836abd640849f56afbe66af39632b28648609e6464fda0bd4c51087c1070acb",
-    "platform/src/i18n/mod.rs": [
-      "40a13d07a43c772b10587e510a69502684abfa1f582ce355b22fd935a8c46f45",
-      "2c978e3aa3a9215a2e96ebaec9dd5ae3cf3ee85cf1afb43a36b5f42f17ff4d52"
-    ],
-    "platform/build.rs": "58a7a2f8d8851b995648f40fb0a179c3ae743fb0e4e92dd3e19b93f9b86940c8",
-    "platform/build_support/catalog.rs": "b02769b2de34bf6cf53a60d05bc9fc3080e6012778e30b400b13f772b43f7083",
-    "build_support/install_identities.rs": "8039b85c09d27c1f9a80aded1245dd4a0c7b7ac3b633e28cb9b7a0f6d62ed621",
+    "build_support/install_identities.rs": "ee38a9be37796abe5a9a98e9ff3562012e4ac7cfb01c32e24755a1518fcaa982",
     "machine/src/lib.rs": [
       "105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188",
       "c35d39ae620b5607e7035222ab1023799adaf091d6a4f737a847dd70b26c1b36"
@@ -26,73 +84,15 @@
       "ff378a339f0b4934a4934ab25aa4965a51a27f38d053fe19c1abb382b690ee45",
       "1fafb56dcc9f423d7c00fd989a3f11bd21022d64d62d8f71f70e3eb97f6b4975",
       "8f46da48c81057c28aa19524d80a585e5aa136bcdd841a1a5359a9f576bbf7b5"
-    ]
+    ],
+    "os/Cargo.toml": "3dbc4c654863f682a01f0750d0e2d1d6b42d56740d040b353d0a4ea00dcd1d9a",
+    "os/build.rs": "18fa32daed4cc9c01806c060e362468dffec7ba8b85331a20677211662f3aa2a",
+    "os/build_support/catalog.rs": "b02769b2de34bf6cf53a60d05bc9fc3080e6012778e30b400b13f772b43f7083",
+    "os/src/i18n/mod.rs": [
+      "40a13d07a43c772b10587e510a69502684abfa1f582ce355b22fd935a8c46f45",
+      "867bb41013e0016d186e699698c762685325aa02f01ebe92d39797c0a41a37e1"
+    ],
+    "os/src/lib.rs": "c0f79543c6b5a8099e84918a7de17451fe21a452412a68ad82c7e884863a27d9"
   },
-  "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
-  "manifests": {
-    "Cargo.toml": "bc1d99641ae550b5ea510bb5364c971fed278358019073e5cf8fb7759ab71218",
-    "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
-    "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
-    "data/Cargo.toml": "90a763a8a9e22bda7e95f8ede4dc10ec6e92a62b90bd0fd2e622c617d75ec6c7",
-    "gfx/Cargo.toml": "c8889dd95a481938966c41635f85702695ce9c59956381768e6c56d215d8fc0e",
-    "machine/Cargo.toml": "0bc99e95272916b8d00e1a8dad81440bc4998de12ccd9a00e7853f438c813d03",
-    "media/Cargo.toml": "2b3bb41264db9b9f30869015dfe0dd6656147c432728c9ea9301988c710a4202",
-    "media-codecs/Cargo.toml": "503c8681289314b5c8a63195aad6796cbad93fcb3eedd8d7cba9e8ed0233783f",
-    "net/Cargo.toml": "bfdb3a08200642eeeafc9762733718c407529f26dce8a7b90665bc77ac928171",
-    "owp/Cargo.toml": "2c1354bce16b34f0d006fc04cd4c8eb22ef91f00063b53a1113e32f475ecae33",
-    "platform/Cargo.toml": "4181b79fa53a7ff6e8b0157f4d1ffe258737896603d267b4802551dee0812472",
-    "play-feed/Cargo.toml": "b85320257da74a1affd81238b8fb6caa7f28960181d5ea0e07704ceef4800515",
-    "play-uri/Cargo.toml": "107832fa33c96b7d2a4150c294aea9cd40954c3aabf66f809fc771bb52f5c280",
-    "playback-contract/Cargo.toml": "bde335ea645552d4f7481b007b80204ecb5bb592caaca22af58a8361cd050dcf",
-    "plex/Cargo.toml": "886ef07d7de8881d1a01666ea6aea70f228b5e0c8b8bbfc79b8693c59e1c8af7",
-    "screens/Cargo.toml": "ebe7f8c0d22492de6bd494cfa760dd99999bfd616b7952e753fe5a26dafc6a73",
-    "session/Cargo.toml": "331a64ed32fbc88988e4c1c33c7b9aa954deab219d1e74fbdec70a4c30690e61",
-    "storage/Cargo.toml": "8865be804f87c69c5ab6fdf3f3f5388b8bfc254195329623c7b1f5cf614e3e81",
-    "telemetry/Cargo.toml": "19ccd3f933efcda0052c8f0fdd9c9275c566f6d445e77a1049d0c3bd16e71b36",
-    "ui/Cargo.toml": "0957d2057cadbd522ae2ee2446727c9c4022c75fba9cfb2347fd341a10fdacf4"
-  },
-  "configs": {
-    ".cargo/config": null,
-    ".cargo/config.toml": "82f061c716740e16cfee63a74d87159e0e0dc253e1092b87c54190c603515b14",
-    "../.cargo/config": null,
-    "../.cargo/config.toml": null
-  },
-  "lock": "fae665206e8c713c34753e06eaca52d43e0eb9b7b5d10e2420e7ec33152dfe78",
-  "grammar": {
-    "Preference": {
-      "prefix": [
-        "System"
-      ],
-      "catalogue_unit_variants": true
-    },
-    "Language": {
-      "catalogue_unit_variants": true,
-      "suffix": [
-        "Pseudo"
-      ]
-    }
-  },
-  "machine_newtype": "reviewed local newtype macro emits pub struct Name(pub u32); doc attributes only",
-  "review": [
-    "build.rs -> catalog::build(locales, OUT_DIR), no cfg-dependent producer",
-    "parse_registry derives variant solely from validated ASCII tag",
-    "discover preserves validated LanguageSpec; compile sorts by row",
-    "languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code",
-    "string slots use Rust Debug escaping; numeric slots are integers",
-    "install_identities writes only install_identities.rs, never languages.rs",
-    "PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged",
-    "PR1385: Canon byte-feed loops inlined (impl Canon and canon_tests only, FNV-1a byte stream unchanged); newtype macro and its ten u32 invocations unchanged",
-    "UI FIFO on PR1385: AppCommandId(u64), AppCommandOutcome and generic AppCommand<F,R> appended after unchanged doc-only newtype producer and its ten u32 invocations; none certified as generated declarations",
-    "Owned runtime: HoldHintRead/Event, ModalRead, PageImageRead, Cx/Fx projections, AppEffect partition and PresentationAuthority/Receipt added outside the unchanged doc-only newtype macro and ten u32 invocations; Arc-bearing receipts and effect contracts are not certified; canonical include namespace unchanged"
-  ],
-  "assumptions": [
-    "Offline source-backed unit-enum proof; certificate changes require source review.",
-    "",
-    "No Cargo, cached output, generator execution, Copy axiom or type-name exemption.",
-    "The certificate pins the entire production pipeline and include namespace, not the",
-    "language list. Its reviewed template emits unit variants in every configuration.",
-    "Only enum values are certified: LocaleContext/OnceLock and methods are not.",
-    "Assumes ordinary Cargo/Rust/std/serde execution, no external build/config/compiler",
-    "overrides, output tampering or unsafe-code/compiler unsoundness attestation."
-  ]
+  "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1"
 }

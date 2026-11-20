@@ -85,16 +85,16 @@ impl PosterKind {
     /// The row on the Under posters page that opens this kind's picker, and that picker's title.
     fn row_label(self) -> &'static str {
         match self {
-            PosterKind::Movie => plx_platform::i18n::msg::under_posters_movie_details_row(),
-            PosterKind::Show => plx_platform::i18n::msg::under_posters_show_details_row(),
+            PosterKind::Movie => plx_os::i18n::msg::under_posters_movie_details_row(),
+            PosterKind::Show => plx_os::i18n::msg::under_posters_show_details_row(),
         }
     }
 
     /// The sentence beside that row on the page.
     fn row_sentence(self) -> &'static str {
         match self {
-            PosterKind::Movie => plx_platform::i18n::msg::under_posters_movie_details_detail(),
-            PosterKind::Show => plx_platform::i18n::msg::under_posters_show_details_detail(),
+            PosterKind::Movie => plx_os::i18n::msg::under_posters_movie_details_detail(),
+            PosterKind::Show => plx_os::i18n::msg::under_posters_show_details_detail(),
         }
     }
 
@@ -102,8 +102,8 @@ impl PosterKind {
     /// it (`browse.kind.movie`, `browse.kind.tv_show`). Upper-cased where it is drawn.
     fn caption(self) -> &'static str {
         match self {
-            PosterKind::Movie => plx_platform::i18n::msg::browse_kind_movie(),
-            PosterKind::Show => plx_platform::i18n::msg::browse_kind_tv_show(),
+            PosterKind::Movie => plx_os::i18n::msg::browse_kind_movie(),
+            PosterKind::Show => plx_os::i18n::msg::browse_kind_tv_show(),
         }
     }
 
@@ -118,7 +118,7 @@ impl PosterKind {
 
 /// A part's name in a picker and in a details row's value.
 fn part_label(part: DetailPart) -> &'static str {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match part {
         DetailPart::Year => msg::under_posters_part_year(),
         DetailPart::Length => msg::under_posters_part_length(),
@@ -142,7 +142,7 @@ const NAMES_BUDGET_CHARS: usize = 26;
 /// ("Year · Length"), "Nothing" when none, and the count ("3 details") when the joined names run
 /// past [`NAMES_BUDGET_CHARS`] and would end in an ellipsis in the row.
 fn names_value(parts: DetailParts) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     if parts.is_empty() {
         return msg::under_posters_none().to_string();
     }
@@ -155,7 +155,7 @@ fn names_value(parts: DetailParts) -> String {
 pub(super) fn summary(v: UnderPosters) -> String {
     // "Title" when the title is all a movie's poster wears (never "Nothing" beside a name).
     if v.title && v.details.is_empty() {
-        return plx_platform::i18n::msg::under_posters_title_row().to_string();
+        return plx_os::i18n::msg::under_posters_title_row().to_string();
     }
     names_value(v.details)
 }
@@ -202,7 +202,7 @@ enum UpAction {
 /// **The sentence the focused row states beside the table.** A pure function of the row's identity:
 /// the page's own sentence when nothing is focused.
 fn sentence_for(id: Option<&UpId>) -> &'static str {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match id {
         Some(UpId::Title) => msg::under_posters_title_detail(),
         Some(UpId::MovieDetails) => PosterKind::Movie.row_sentence(),
@@ -221,7 +221,7 @@ fn dimmed_columns_for(id: Option<&UpId>) -> [bool; 2] {
 
 /// The page's rows from plain inputs (the text-fit tests call this directly).
 fn under_posters_form(v: UnderPosters) -> Form<UpId, UpAction, SettingsPage> {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let rows = FormSection::new("")
         .item(UpId::Title, RowKind::Toggle, UpAction::Title, Row::new(msg::under_posters_title_row()).toggle(v.title));
     let rows = [PosterKind::Movie, PosterKind::Show].into_iter().fold(rows, |rows, kind| {
@@ -305,7 +305,7 @@ impl UnderPostersPage {
     }
 
     fn view(&self) -> TableScreen<'_> {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         TableScreen::new(
             Header::new(RouteLayout::screen(), Some(msg::settings_title()), msg::under_posters_title(), msg::under_posters_copy())
                 .with_follow(&self.follow),
@@ -384,7 +384,7 @@ const SAMPLE_YEAR: i32 = 2019;
 
 /// The sample facts a tile with no poster behind it is captioned from.
 fn sample_facts() -> CaptionFacts {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     CaptionFacts {
         title: Some(msg::under_posters_sample_title().to_string()),
         year: Some(SAMPLE_YEAR),
@@ -403,7 +403,7 @@ fn kind_sample(kind: PosterKind) -> CaptionFacts {
     match kind {
         PosterKind::Movie => CaptionFacts { year: Some(2024), duration_min: Some(112), is_movie: true, ..sample_facts() },
         PosterKind::Show => CaptionFacts {
-            title: Some(plx_platform::i18n::msg::browse_kind_show().to_string()),
+            title: Some(plx_os::i18n::msg::browse_kind_show().to_string()),
             year: Some(SAMPLE_YEAR), duration_min: None, season_count: Some(6), is_show: true,
             content_rating: Some("TV-14".to_string()), audience_rating: Some(8.4), ..sample_facts()
         },
@@ -637,7 +637,7 @@ plx_ui::focusable_via_view!(UnderPostersPage, InnerHost, view);
 impl Screen<InnerHost> for UnderPostersPage {
     fn name(&self) -> &'static str { crate::registry::word::UNDER_POSTERS }
     fn state(&self) -> &dyn LogicalState { &self.state }
-    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title())) }
+    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_os::i18n::msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let posters = preview_posters(f.cx);
@@ -683,7 +683,7 @@ impl FormId for PartId {
 /// no genre, say) shows the kind's sample ([`kind_sample`]) instead, so a row always shows an
 /// example beside the switch and under the preview poster when enabled.
 fn part_example(kind: PosterKind, part: DetailPart, facts: &CaptionFacts) -> String {
-    let cx = plx_platform::i18n::current();
+    let cx = plx_os::i18n::current();
     part_value(part, facts, cx).or_else(|| part_value(part, &kind_sample(kind), cx)).unwrap_or_default()
 }
 
@@ -691,7 +691,7 @@ fn part_example(kind: PosterKind, part: DetailPart, facts: &CaptionFacts) -> Str
 /// release year, like 2024.") or, for a row that cannot be ticked because four already are, why
 /// ("Up to four details fit under a poster. Remove one to add genre.").
 fn picker_sentence(kind: PosterKind, parts: DetailParts, part: DetailPart, example: &str) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     if !parts.fits(part) {
         return match part {
             DetailPart::Year => msg::under_posters_blocked_year(),
@@ -721,7 +721,7 @@ fn picker_sentence(kind: PosterKind, parts: DetailParts, part: DetailPart, examp
 /// the maximum ticked, the others are DISABLED (the shared control state, `Row::disabled`): focusable so the viewer can land
 /// on one and read why, and inert to OK.
 fn details_form(kind: PosterKind, parts: DetailParts, facts: &CaptionFacts) -> Form<PartId, DetailPart, SettingsPage> {
-    let mut section = FormSection::new(plx_platform::i18n::msg::under_posters_picker_header());
+    let mut section = FormSection::new(plx_os::i18n::msg::under_posters_picker_header());
     for part in kind.offered().iter().copied() {
         let row = Row::new(part_label(part)).value(part_example(kind, part, facts));
         section = section.choice(PartId(part), part, row, |id| parts.contains(id.0)).disabled(!parts.fits(part));
@@ -814,7 +814,7 @@ impl DetailsPage {
 
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
-            Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::under_posters_title()), self.kind.row_label(), self.follow.text())
+            Header::new(RouteLayout::screen(), Some(plx_os::i18n::msg::under_posters_title()), self.kind.row_label(), self.follow.text())
                 .with_follow(&self.follow),
             &self.form.table, GroupId(0), self.entry,
         ).keyed(&self.form)
@@ -908,7 +908,7 @@ impl Screen<InnerHost> for DetailsPage {
         }
     }
     fn state(&self) -> &dyn LogicalState { &self.state }
-    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_platform::i18n::msg::under_posters_title())) }
+    fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(plx_os::i18n::msg::under_posters_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         // The picker chooses one kind's parts, so the picture is the same two tiles the page draws

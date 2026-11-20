@@ -853,7 +853,7 @@ impl SessionAdapter {
             let diagnostics = all_local;
             #[cfg(test)]
             let diagnostics = diagnostics && self.resource_test_io.is_none();
-            if diagnostics { plx_platform::storage::diagnostics::disable(); }
+            if diagnostics { plx_os::storage::diagnostics::disable(); }
             self.erasures.push_back(PendingErase {
                 epoch, all_local, diagnostics, ticket: None, retry_at: crate::app::clock::now(), incomplete: 0,
                 kept: None,
@@ -881,7 +881,7 @@ impl SessionAdapter {
             }
             plx_plex::plex::session::revoke_cached_session();
             let mut failures: Vec<String> = if diagnostics {
-                plx_platform::storage::diagnostics::finish_disable(plx_base::paths::runtime_dir())
+                plx_os::storage::diagnostics::finish_disable(plx_base::paths::runtime_dir())
                     .err()
                     .into_iter()
                     .collect()
@@ -916,7 +916,7 @@ impl SessionAdapter {
                 return None;
             }
             Ok(outcome) => {
-                plx_platform::i18n::set_saved_preference(outcome.kept.language);
+                plx_os::i18n::set_saved_preference(outcome.kept.language);
                 outcome.failures
             }
         };
@@ -938,7 +938,7 @@ impl SessionAdapter {
                         super::super::input::remove_or_prove_absent).len())
                     } else { 0 }; // Other host cache/runtime sweeps remain disabled in resource tests.
                 }
-                plx_platform::imgcache::clear();
+                plx_os::imgcache::clear();
                 if all_local {
                     let leftovers = super::super::input::delete_all_local_data(meta, worker_failures);
                     if super::super::input::delete_outcome(leftovers.len()).report_leftovers {
@@ -1048,7 +1048,7 @@ impl SessionAdapter {
     pub(crate) fn claim_root_press(&mut self) -> bool {
         if self.controlled_home { return false; }
         match &mut self.resources {
-            Resources::Live { .. } => plx_platform::tv::home::take_root_press(),
+            Resources::Live { .. } => plx_os::tv::home::take_root_press(),
             #[cfg(test)]
             Resources::Fixture(resources) => std::mem::replace(&mut resources.root_press_available, false),
         }
@@ -1059,8 +1059,8 @@ impl SessionAdapter {
         match &mut self.resources {
             Resources::Live { .. } => {
                 match super::super::input::after_cancel(resumed) {
-                    super::super::input::AfterCancel::BackedOut => plx_platform::tv::home::release_root_press(),
-                    super::super::input::AfterCancel::Home => plx_platform::tv::home::go_home(),
+                    super::super::input::AfterCancel::BackedOut => plx_os::tv::home::release_root_press(),
+                    super::super::input::AfterCancel::Home => plx_os::tv::home::go_home(),
                 }
             }
             #[cfg(test)]
@@ -1479,11 +1479,11 @@ mod tests {
     /// The webOS 4.10.2 mount: the session candidate does not exist and every unlink in its
     /// directory answers EROFS. Returns the fault guard and the adapter.
     fn erase_behind_a_read_only_mount(session: &plx_plex::plex::session::TempSession,
-        mt: &plx_base::task::MainThread) -> (plx_platform::storage::UnlinkFaultForTest, SessionAdapter) {
+        mt: &plx_base::task::MainThread) -> (plx_os::storage::UnlinkFaultForTest, SessionAdapter) {
         plx_plex::plex::session::save(&plx_plex::plex::session::Session {
             client_id: "install".into(), account_token: "old".into(), ..Default::default() });
         std::fs::remove_file(session.path()).unwrap();
-        let erofs = plx_platform::storage::UnlinkFaultForTest::install(session.path().parent().unwrap(), libc::EROFS);
+        let erofs = plx_os::storage::UnlinkFaultForTest::install(session.path().parent().unwrap(), libc::EROFS);
         (erofs, SessionAdapter::live_resources_for_test(mt, false))
     }
 
@@ -1534,22 +1534,22 @@ mod tests {
     /// next-launch preference the Language screen shows.
     #[test]
     fn signout_keeps_the_install_language_and_only_delete_all_resets_it() {
-        use plx_platform::i18n::Preference;
+        use plx_os::i18n::Preference;
         use plx_plex::plex::session::UiResolution;
         let _serial = plx_base::testlock::serial();
         let session = plx_plex::plex::session::TempSession::new("erase-language");
         struct Restore(Preference);
         impl Drop for Restore {
-            fn drop(&mut self) { plx_platform::i18n::set_saved_preference(self.0); }
+            fn drop(&mut self) { plx_os::i18n::set_saved_preference(self.0); }
         }
-        let _restore = Restore(plx_platform::i18n::saved_preference());
+        let _restore = Restore(plx_os::i18n::saved_preference());
         plx_plex::plex::session::save(&plx_plex::plex::session::Session {
             client_id: "install".into(), account_token: "old".into(), ..Default::default() }
             .with_ui_resolution(UiResolution::Hd720));
         assert!(plx_plex::plex::session::set_language(Preference::Be), "setup: a durable language");
         let relaunch = || {
             plx_plex::plex::session::redirect_for_test(Some(session.path()));
-            plx_platform::i18n::set_saved_preference(Preference::System);
+            plx_os::i18n::set_saved_preference(Preference::System);
             plx_plex::plex::session::load()
         };
         let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -1560,7 +1560,7 @@ mod tests {
         plx_base::storage_worker::drain_for_test();
         assert!(matches!(adapter.take_erased(&mut meta),
             Some(plx_session::auth::owner::SessionEvent::Erased { epoch: 1, .. })));
-        assert_eq!(plx_platform::i18n::saved_preference(), Preference::Be,
+        assert_eq!(plx_os::i18n::saved_preference(), Preference::Be,
             "sign-out must not change the confirmed next-launch language");
         let signed_out = relaunch();
         assert!(signed_out.account_token.is_empty(), "sign-out still revokes the credential");
@@ -1569,12 +1569,12 @@ mod tests {
         assert_eq!(signed_out.ui_resolution(), UiResolution::Hd720,
             "and the install-wide Interface resolution");
 
-        plx_platform::i18n::set_saved_preference(Preference::Be);
+        plx_os::i18n::set_saved_preference(Preference::Be);
         assert!(adapter.begin_erase(2, true, &mut meta).is_none());
         plx_base::storage_worker::drain_for_test();
         assert!(matches!(adapter.take_erased(&mut meta),
             Some(plx_session::auth::owner::SessionEvent::Erased { epoch: 2, .. })));
-        assert_eq!(plx_platform::i18n::saved_preference(), Preference::System,
+        assert_eq!(plx_os::i18n::saved_preference(), Preference::System,
             "Delete all local data resets the confirmed next-launch language");
         assert_eq!(relaunch().language, Preference::System,
             "Delete all local data must not leave the language behind on disk");
@@ -2017,7 +2017,7 @@ mod tests {
         struct ClearInjectedFailure;
         impl Drop for ClearInjectedFailure {
             fn drop(&mut self) {
-                plx_platform::storage::clear_injected_commit_failure_for_test();
+                plx_os::storage::clear_injected_commit_failure_for_test();
             }
         }
         let _clear_injected_failure = ClearInjectedFailure;
@@ -2065,7 +2065,7 @@ mod tests {
         // the record has actually been renamed into place (the real production seam; see
         // `storage::JsonStore::commit`), so `save_locked_with_authority` takes the `!durable`
         // branch and falls through to the legacy write, which succeeds.
-        plx_platform::storage::inject_next_commit_failure_for_test(plx_platform::storage::CommitStage::ParentSync);
+        plx_os::storage::inject_next_commit_failure_for_test(plx_os::storage::CommitStage::ParentSync);
 
         let reply = adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan);
         // The registry/admission bookkeeping is unrelated to this finding; only the completion's
@@ -2077,7 +2077,7 @@ mod tests {
         assert!(
             matches!(completion.outcome,
                 plx_plex::plex::session::async_persistence::CompletionOutcome::Uncertain {
-                    stage: plx_platform::storage::CommitStage::ParentSync, ..
+                    stage: plx_os::storage::CommitStage::ParentSync, ..
                 }),
             "an Uncertain canonical commit must surface as Uncertain even though the legacy \
              fall-through write succeeded — it must NEVER be reported as Durable: {:?}",

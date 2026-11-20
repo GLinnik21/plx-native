@@ -193,8 +193,8 @@ pub fn pill_face(m: Membership) -> PillFace {
 
 fn pill_label(m: Membership) -> &'static std::ffi::CStr {
     match m {
-        Membership::On => plx_platform::i18n::msg::watchlist_action_on_list_c(),
-        Membership::Off | Membership::Unknown => plx_platform::i18n::msg::watchlist_action_add_c(),
+        Membership::On => plx_os::i18n::msg::watchlist_action_on_list_c(),
+        Membership::Off | Membership::Unknown => plx_os::i18n::msg::watchlist_action_add_c(),
     }
 }
 
@@ -211,7 +211,7 @@ pub fn coming_line(status: Status, release: Option<&str>) -> Option<String> {
     if status != Status::ComingSoon {
         return None;
     }
-    plx_ui::fmt::coming_on(release?, plx_platform::i18n::MonthWidth::Long)
+    plx_ui::fmt::coming_on(release?, plx_os::i18n::MonthWidth::Long)
 }
 
 /// The status line's icon. A dated coming-soon title says it in the larger *Coming ...* line
@@ -230,8 +230,8 @@ pub fn status_icon(status: Status, release: Option<&str>) -> Option<Icon> {
 /// no separate not-found string (docs/watchlist.md, "A record the service does not know").
 pub fn verdict_text(load: &Load) -> Option<&'static str> {
     match load {
-        Load::NotFound => Some(plx_platform::i18n::msg::watchlist_state_on_no_server()),
-        Load::Unreachable => Some(plx_platform::i18n::msg::watchlist_empty_unreachable()),
+        Load::NotFound => Some(plx_os::i18n::msg::watchlist_state_on_no_server()),
+        Load::Unreachable => Some(plx_os::i18n::msg::watchlist_empty_unreachable()),
         Load::Loaded { .. } | Load::Loading => None,
     }
 }
@@ -239,17 +239,17 @@ pub fn verdict_text(load: &Load) -> Option<&'static str> {
 /// The status line's words, present exactly when [`status_icon`] is.
 pub fn status_text(status: Status, release: Option<&str>) -> Option<&'static str> {
     match (status_icon(status, release)?, status) {
-        (Icon::Clock, _) => Some(plx_platform::i18n::msg::watchlist_state_coming_soon()),
-        (_, Status::ServerOffline) => Some(plx_platform::i18n::msg::watchlist_state_server_offline()),
-        _ => Some(plx_platform::i18n::msg::watchlist_state_on_no_server()),
+        (Icon::Clock, _) => Some(plx_os::i18n::msg::watchlist_state_coming_soon()),
+        (_, Status::ServerOffline) => Some(plx_os::i18n::msg::watchlist_state_server_offline()),
+        _ => Some(plx_os::i18n::msg::watchlist_state_on_no_server()),
     }
 }
 
 /// The meta line's runs: kind, up to two genres, year.
 pub fn meta_parts(kind: Kind, genres: &[String], year: Option<i32>) -> Vec<String> {
     let mut parts = vec![match kind {
-        Kind::Movie => plx_platform::i18n::msg::browse_kind_movie().to_string(),
-        Kind::Show => plx_platform::i18n::msg::browse_kind_tv_show().to_string(),
+        Kind::Movie => plx_os::i18n::msg::browse_kind_movie().to_string(),
+        Kind::Show => plx_os::i18n::msg::browse_kind_tv_show().to_string(),
     }];
     parts.extend(genres.iter().filter(|g| !g.is_empty()).take(2).cloned());
     parts.extend(year.filter(|&y| y > 0).map(|y| y.to_string()));

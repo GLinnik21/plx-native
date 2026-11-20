@@ -543,7 +543,7 @@ const KEY: &std::ffi::CStr = c"OK";
 
 /// The catalog sentence, `{key}` held by the object-replacement character.
 fn sentence() -> String {
-    plx_platform::i18n::msg::widgets_hint_hold_options("\u{fffc}")
+    plx_os::i18n::msg::widgets_hint_hold_options("\u{fffc}")
 }
 
 /// One measured arrangement of the three runs — the single place width is summed, so the capsule
@@ -577,7 +577,7 @@ impl Layout {
     /// The layout for the current language under `measure`, resolved once and reused until the
     /// language (or the measurer's cap width) changes.
     fn cached(measure: &dyn Measure) -> std::rc::Rc<Self> {
-        let locale = plx_platform::i18n::current() as *const _ as usize;
+        let locale = plx_os::i18n::current() as *const _ as usize;
         let probe = widgets::key_cap_w_with(CapFace::Label(KEY), CapMetrics::HINT, measure);
         LAYOUT.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -1413,7 +1413,7 @@ mod tests {
     /// language changes (the sentence is the catalog's, so a new language is a new layout).
     #[test]
     fn the_layout_is_reused_across_frames_and_rebuilt_on_a_language_change() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_os::i18n::{language_on_this_thread_for_test, Preference};
         let (_g, _, _) = fresh();
         let resolves = || RESOLVES.with(|r| r.get());
         let en = HoldHint::width(&FixtureMeasure);
@@ -1466,8 +1466,8 @@ mod tests {
             plx_gfx::gfx::blur_region(0.0, y, crate::consts::SCR_W, h)
         };
         let mut widest = 0.0f32;
-        for language in plx_platform::i18n::SHIPPED {
-            let _guard = plx_platform::i18n::language_on_this_thread_for_test(language);
+        for language in plx_os::i18n::SHIPPED {
+            let _guard = plx_os::i18n::language_on_this_thread_for_test(language);
             let lay = Layout::resolve(&ShippedMeasure, &sentence());
             for lift in [0.0, RISE_PX] {
                 let r = lay.rect(lift);
@@ -1543,8 +1543,8 @@ mod tests {
     fn the_capsule_fits_the_safe_frame_in_every_shipped_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         let mut bad = Vec::new();
-        for language in plx_platform::i18n::SHIPPED {
-            let _guard = plx_platform::i18n::language_on_this_thread_for_test(language);
+        for language in plx_os::i18n::SHIPPED {
+            let _guard = plx_os::i18n::language_on_this_thread_for_test(language);
             let message = sentence();
             let tag = language.tag();
             if message.matches('\u{fffc}').count() != 1 {

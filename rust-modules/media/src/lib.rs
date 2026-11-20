@@ -5,7 +5,7 @@
 //! and route selection (`route`). The HLS parser and access-unit queues live in `plx_play_feed`.
 //! It is the `media` layer of `ci/module-layers.ini`: it
 //! uses `playback-contract`, `media-codecs`, `base`, `machine`,
-//! `platform`, `gfx`, `net`, `plex`, `telemetry` and `data`, and nothing above them. The remaining
+//! `os`, `gfx`, `net`, `plex`, `telemetry` and `data`, and nothing above them. The remaining
 //! media orchestration members (`abr`, `curlio`, `player` and
 //! `route`) and the `ff` facade share a crate. The bundled FFmpeg binding, encoder and pure
 //! audio DSP live in `plx_media_codecs` below this layer.

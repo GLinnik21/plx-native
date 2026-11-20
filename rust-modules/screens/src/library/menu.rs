@@ -173,13 +173,13 @@ fn source_draft(
         library_form(epoch, groups, sections, &source_rows, Tail::None, &mut stamp);
     stamp.bool(refreshing);
     // placeholder-exempt: inline refresh status beside an action; the library list stays available.
-    let loading = plx_platform::i18n::msg::browse_library_loading();
+    let loading = plx_os::i18n::msg::browse_library_loading();
     let actions = choice(MenuSection::new(""), "recheck".into(), Action::Recheck,
-        Row::new(plx_platform::i18n::msg::widgets_source_new_shares())
+        Row::new(plx_os::i18n::msg::widgets_source_new_shares())
             .value(if refreshing { loading } else { "" }).value_slot(loading))
         .disabled(refreshing);
     let actions = choice(actions, "favourites".into(), Action::Favourites,
-        Row::new(plx_platform::i18n::msg::settings_libraries_title()).chevron(true));
+        Row::new(plx_os::i18n::msg::settings_libraries_title()).chevron(true));
     let form = form.section(actions);
     MenuDraft {
         stamp: stamp.finish(),
@@ -266,7 +266,7 @@ fn library_form(
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
     let mut stamp = Stamp::default();
     let mut selected = None;
-    let section = sort_section(plx_platform::i18n::msg::browse_library_sort_by(), sorts, sort_index, sort_desc, &mut stamp, &mut selected);
+    let section = sort_section(plx_os::i18n::msg::browse_library_sort_by(), sorts, sort_index, sort_desc, &mut stamp, &mut selected);
     MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected }
 }
 
@@ -328,7 +328,7 @@ fn listing_kind(
 fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
     let mut stamp = Stamp::default();
     let mut selected = None;
-    let section = type_section(plx_platform::i18n::msg::browse_library_filter_by(), section_kind, current,
+    let section = type_section(plx_os::i18n::msg::browse_library_filter_by(), section_kind, current,
         LibraryType::offered(section_kind), &mut stamp, &mut selected);
     MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected }
 }
@@ -362,16 +362,16 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: b
 
 /// The Unwatched toggle and the Genre row, stamped into `stamp`.
 fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool, stamp: &mut Stamp) -> MenuSection {
-    let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_filter()).item_keyed(
+    let mut section = MenuSection::new(plx_os::i18n::msg::browse_library_filter()).item_keyed(
         "unwatched".into(),
         RowKey(0),
         RowKind::Toggle,
         Action::Edit(QueryEdit::Unwatched(!unwatched)),
-        Row::new(plx_platform::i18n::msg::browse_library_unwatched_only()).toggle(unwatched),
+        Row::new(plx_os::i18n::msg::browse_library_unwatched_only()).toggle(unwatched),
     );
     if genres_supported {
-        let mut row = Row::new(plx_platform::i18n::msg::browse_library_genre())
-            .value(genre.map(|g| g.title.as_str()).unwrap_or(plx_platform::i18n::msg::browse_library_all()))
+        let mut row = Row::new(plx_os::i18n::msg::browse_library_genre())
+            .value(genre.map(|g| g.title.as_str()).unwrap_or(plx_os::i18n::msg::browse_library_all()))
             .chevron(true);
         // A chosen genre is the server's tag title; "All" is the app's.
         if genre.is_some() { row = row.server_value(); }
@@ -407,10 +407,10 @@ fn sort_filter_draft(
     let shown: Vec<LibraryType> = LibraryType::offered(section_kind).iter().copied()
         .filter(|kind| *kind != LibraryType::Collections).collect();
     if shown.len() > 1 {
-        form = form.section(type_section(plx_platform::i18n::msg::library_header_show(), section_kind,
+        form = form.section(type_section(plx_os::i18n::msg::library_header_show(), section_kind,
             current, &shown, &mut stamp, &mut selected));
     }
-    form = form.section(sort_section(plx_platform::i18n::msg::browse_library_sort(), sorts, sort_index,
+    form = form.section(sort_section(plx_os::i18n::msg::browse_library_sort(), sorts, sort_index,
         sort_desc, &mut stamp, &mut selected));
     form = form.section(filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp));
     MenuDraft { stamp: stamp.finish(), form, selected }
@@ -419,10 +419,10 @@ fn sort_filter_draft(
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
     let mut section = choice(
-        MenuSection::new(plx_platform::i18n::msg::browse_library_genre()),
+        MenuSection::new(plx_os::i18n::msg::browse_library_genre()),
         "genre:all".into(),
         Action::Edit(QueryEdit::Genre(None)),
-        Row::new(plx_platform::i18n::msg::browse_library_all_genres()).checked(current.is_none()),
+        Row::new(plx_os::i18n::msg::browse_library_all_genres()).checked(current.is_none()),
     );
     let mut stamp = Stamp::default();
     stamp.tag(10);
@@ -581,12 +581,12 @@ impl LibraryMenu {
         directory: plx_data::stores::browse::DirectoryView<'_>,
     ) -> MenuDraft {
         let title = match self.kind {
-            LibraryMenuKind::Type => plx_platform::i18n::msg::browse_library_filter_by(),
-            LibraryMenuKind::Sort => plx_platform::i18n::msg::browse_library_sort_by(),
-            LibraryMenuKind::Filter => plx_platform::i18n::msg::browse_library_filter(),
-            LibraryMenuKind::Genre => plx_platform::i18n::msg::browse_library_genre(),
-            LibraryMenuKind::Sources => plx_platform::i18n::msg::browse_library_libraries(),
-            LibraryMenuKind::SortFilter => plx_platform::i18n::msg::library_header_sort_filter(),
+            LibraryMenuKind::Type => plx_os::i18n::msg::browse_library_filter_by(),
+            LibraryMenuKind::Sort => plx_os::i18n::msg::browse_library_sort_by(),
+            LibraryMenuKind::Filter => plx_os::i18n::msg::browse_library_filter(),
+            LibraryMenuKind::Genre => plx_os::i18n::msg::browse_library_genre(),
+            LibraryMenuKind::Sources => plx_os::i18n::msg::browse_library_libraries(),
+            LibraryMenuKind::SortFilter => plx_os::i18n::msg::library_header_sort_filter(),
         };
         let mut section = MenuSection::new(title);
         match self.kind {
@@ -624,7 +624,7 @@ impl LibraryMenu {
                     section,
                     "recheck".into(),
                     Action::Recheck,
-                    Row::new(plx_platform::i18n::msg::browse_library_check_shares()),
+                    Row::new(plx_os::i18n::msg::browse_library_check_shares()),
                 );
             }
         }
@@ -1144,7 +1144,7 @@ impl LibraryLike for HostFixture {
         use plx_ui::a11y::conform;
         use plx_ui::a11y::Role;
         let _guard = plx_base::testlock::serial();
-        let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _locale = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let mut namespaces = Vec::new();
         let mut page = |kind, draft: MenuDraft, want: &[(&str, Role)]| {
             let mut menu = LibraryMenu::new(EntryId(7), menu_arg(kind, [0; 4]));
@@ -1215,7 +1215,7 @@ impl LibraryLike for HostFixture {
 
     #[test]
     fn sort_refresh_updates_the_direction_word_and_the_next_action_direction() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let sorts = vec![SortEntry {
             desc_key: String::new(),
             key: "titleSort".into(),
@@ -1793,7 +1793,7 @@ impl LibraryLike for HostFixture {
     /// popover actually gets.
     #[test]
     fn every_type_row_fits_the_popover_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -1822,9 +1822,9 @@ impl LibraryLike for HostFixture {
         let show = titles(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         let movie = titles(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         assert_eq!(show.len(), 3, "TV libraries open only Show, Sort and Filter");
-        assert_eq!(show[0], plx_platform::i18n::msg::library_header_show());
+        assert_eq!(show[0], plx_os::i18n::msg::library_header_show());
         assert_eq!(movie.len(), 2, "a Movies library has one type to show, so no Show section");
-        assert_eq!(movie[0], plx_platform::i18n::msg::browse_library_sort());
+        assert_eq!(movie[0], plx_os::i18n::msg::browse_library_sort());
         let laid = lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         assert!(!laid.rows.iter().any(|(id, ..)| id == &format!("type:{}", LibraryType::Collections.code())), "Collections has its own control");
         assert_ne!(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir).stamp,
@@ -1884,7 +1884,7 @@ impl LibraryLike for HostFixture {
     #[test]
     fn library_options_opens_the_contextual_favorite_editor() {
         let _guard = plx_base::testlock::serial();
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let directory = switcher_directory(SourceState::Reachable);
         let laid = switcher_menu(&directory);
         assert!(laid.sections.iter().all(|section| section.header.is_empty()));
@@ -1929,7 +1929,7 @@ impl LibraryLike for HostFixture {
     #[test]
     fn the_switcher_offers_a_non_favourite_only_on_a_server_that_can_be_opened() {
         let _guard = plx_base::testlock::serial();
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let offered = |state| {
             let laid = switcher_menu(&switcher_directory(state));
             let ids: Vec<String> = laid.rows.iter().map(|(id, ..)| id.clone())
@@ -1957,7 +1957,7 @@ impl LibraryLike for HostFixture {
     #[test]
     fn the_switcher_is_absent_with_one_library_of_the_kind() {
         let _guard = plx_base::testlock::serial();
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let (groups, mut sections) = source_sections();
         sections[1].kind = SecKind::Show;
         let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
@@ -1979,7 +1979,7 @@ impl LibraryLike for HostFixture {
     #[test]
     fn the_library_on_view_stays_listed_when_its_server_cannot_be_opened() {
         let _guard = plx_base::testlock::serial();
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let (mut groups, mut sections) = source_sections();
         groups[1].state = SourceState::Unreachable;
         sections[1].row.pinned = false;
@@ -2006,7 +2006,7 @@ impl LibraryLike for HostFixture {
     #[test]
     fn a_share_arriving_while_the_menu_is_open_rebuilds_the_switcher() {
         let _guard = plx_base::testlock::serial();
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let (groups, mut sections) = source_sections();
         let mut shared = sections.pop().expect("the friend's library");
         shared.row.pinned = false;
@@ -2043,11 +2043,11 @@ impl LibraryLike for HostFixture {
     /// client-side Plays entry (app text); Filter covers both the "All" value and a chosen genre.
     #[test]
     fn every_sort_filter_and_genre_row_fits_the_popover_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let sorts = vec![
             SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
             SortEntry { key: plx_data::browse::PLAYS_SORT_KEY.into(), desc_key: String::new(),
-                title: plx_platform::i18n::msg::browse_library_plays().into(), default_desc: true },
+                title: plx_os::i18n::msg::browse_library_plays().into(), default_desc: true },
         ];
         let genres = vec![GenreEntry { id: "1".into(), title: "Drama".into() }];
         let measure = plx_base::fontcov::advances::ShippedMeasure;

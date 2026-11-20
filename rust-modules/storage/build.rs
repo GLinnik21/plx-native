@@ -1,5 +1,5 @@
-//! Generates the `Flavor` enum `platform/src/storage/state.rs` includes, through the same generator
-//! the platform crate's own build script uses (`build_support/install_identities.rs`), so the helper
+//! Generates the `Flavor` enum `os/src/storage/state.rs` includes, through the same generator
+//! the os crate's own build script uses (`build_support/install_identities.rs`), so the helper
 //! and the client cannot disagree about which installs exist. Nothing else happens at build time here.
 
 use std::path::Path;

@@ -392,7 +392,7 @@ mod tests {
     // ---- every shipped language, measured with the TV's own advances ---------------------------
 
     use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
 
     /// The board's drafts for the usual line (S2 E4, 38 min left), by language tag: the whole line,
     /// or for a language whose tag the board drops, the status alone. `ca` and `hu` are not on the
@@ -428,7 +428,7 @@ mod tests {
 
     /// `(tag, status)` of the usual line and of the worst case, in the thread's language.
     fn cases() -> [(&'static str, String, String); 2] {
-        let cx = plx_platform::i18n::current();
+        let cx = plx_os::i18n::current();
         [
             ("usual", crate::fmt::footer_tag_in(cx, 2, 4), crate::fmt::footer_left_minutes_in(cx, 38)),
             ("worst", crate::fmt::footer_tag_in(cx, 12, 24), crate::fmt::footer_left_minutes_in(cx, 72)),
@@ -502,8 +502,8 @@ mod tests {
         for language in SHIPPED {
             let tag = language.tag();
             let _g = language_on_this_thread_for_test(language);
-            let cx = plx_platform::i18n::current();
-            let (t, s) = (crate::fmt::footer_tag_in(cx, 12, 24), plx_platform::i18n::msg::widgets_card_new_episode_in(cx).to_owned());
+            let cx = plx_os::i18n::current();
+            let (t, s) = (crate::fmt::footer_tag_in(cx, 12, 24), plx_os::i18n::msg::widgets_card_new_episode_in(cx).to_owned());
             let f = fit_of(&t, &s, FOOTER_CUE_SLOT, false, &ShippedMeasure);
             assert!(
                 FOOTER_INNER_W - FOOTER_CUE_SLOT - f.status_w >= 0.0,
@@ -619,8 +619,8 @@ mod tests {
                     assert!(g.bar_w >= FOOTER_BAR_MIN_W - EPS && g.bar_w <= FOOTER_BAR_W + EPS, "{tag} {case} {i}/40: {g:?}");
                 }
             }
-            let cx = plx_platform::i18n::current();
-            let (t, s) = (crate::fmt::footer_tag_in(cx, 12, 24), plx_platform::i18n::msg::widgets_card_new_episode_in(cx).to_owned());
+            let cx = plx_os::i18n::current();
+            let (t, s) = (crate::fmt::footer_tag_in(cx, 12, 24), plx_os::i18n::msg::widgets_card_new_episode_in(cx).to_owned());
             let f = fit_of(&t, &s, FOOTER_CUE_SLOT, false, &ShippedMeasure);
             for i in 0..=40 {
                 let g = footer_geometry(inner, f, i as f32 / 40.0);

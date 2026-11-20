@@ -1,4 +1,4 @@
-//! Code generation for the platform layer: the `i18n::msg` localization catalog and the language registry's `Preference`/`Language` enums and the
+//! Code generation for the os layer: the `i18n::msg` localization catalog and the language registry's `Preference`/`Language` enums and the
 //! install-identity `Flavor` enum `storage::state` includes. Nothing else happens at build time
 //! here, and nothing here links anything: the host link configuration (SDL, GL, the nanosvg object)
 //! belongs to the application crate's build script, which owns the final binary.

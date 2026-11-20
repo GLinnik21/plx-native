@@ -82,7 +82,7 @@ impl ClockWarm {
                 (fmt_time(next_remaining * SEC_NS, true), 0, cap),
             ];
             let ends = end_time
-                .and_then(|time| plx_platform::i18n::current().time_of_day(time))
+                .and_then(|time| plx_os::i18n::current().time_of_day(time))
                 .into_iter()
                 .flat_map(|time| [(time, 0, cap), (String::from("\u{b7}"), 0, cap)]);
             // the elapsed clock also draws at the size it grows to during a scrub with no card

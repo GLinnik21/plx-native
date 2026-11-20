@@ -9,9 +9,9 @@ use crate::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle, Phase};
 use crate::acb_envelope::Ls2VideoInfo;
 use crate::uri_protocol::{AbrBps, AcbSource, Ev, Message, Method, UriCall};
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::{Refusal, Shown};
-use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
-use plx_platform::tv::uri::{Shape, UriMedia};
+use plx_os::tv::plane::{Refusal, Shown};
+use plx_os::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
+use plx_os::tv::uri::{Shape, UriMedia};
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
     ContentTime, DispatchResult, DriverEvent, DriverSet, EvidenceSource, ExitDisposition,
     Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
@@ -151,7 +151,7 @@ pub struct Config {
     pub transport: &'static dyn UriMedia,
     pub display: &'static dyn DisplaySink,
     /// The process's plane owner: grants the one ACB binding and releases it.
-    pub plane: &'static plx_platform::tv::plane::PlaneOwner,
+    pub plane: &'static plx_os::tv::plane::PlaneOwner,
     pub clock: Box<dyn MonotonicClock>,
     pub app_id: String,
     pub binding: Binding,
@@ -201,7 +201,7 @@ pub struct UriBackend {
     played_once: bool,
     subscribed: bool,
     dispatching: Option<PendingControl>,
-    controls: BTreeMap<plx_platform::tv::uri::RequestId, PendingControl>,
+    controls: BTreeMap<plx_os::tv::uri::RequestId, PendingControl>,
     pending: VecDeque<DriverEvent>,
     close_reported: bool,
     quarantine_reported: bool,
@@ -587,7 +587,7 @@ impl UriBackend {
     /// `seekDone`): the startup plan's wait is over. It lands on the event alone, in whatever order
     /// the call's own reply came (first, later or, for all this knows, never), and one that already
     /// refused is gone from the ledger, so a `seekDone` after a refusal lands nothing.
-    fn land_seek(&mut self, request: plx_platform::tv::uri::RequestId, acknowledged: bool,
+    fn land_seek(&mut self, request: plx_os::tv::uri::RequestId, acknowledged: bool,
         current_time: Option<i64>) {
         if !self.controls.get(&request).is_some_and(|pending| matches!(pending.kind, ControlKind::Seek)) {
             return;
@@ -608,7 +608,7 @@ impl UriBackend {
         }
     }
 
-    fn retire_control(&mut self, request: plx_platform::tv::uri::RequestId) {
+    fn retire_control(&mut self, request: plx_os::tv::uri::RequestId) {
         // A confirmed request cannot correlate a later selection of the same native index.
         // Keep the lifecycle's request set aligned with the interactive command ledger.
         self.lifecycle.step(LifeEvent::Retire { request }, &mut Vec::new());
@@ -1135,7 +1135,7 @@ impl UriDriver for UriBackend {
 mod tests {
     #[test]
     fn composition_selects_the_acb_plane_on_an_acb_display_before_its_handle_exists() {
-        use plx_platform::tv::sink::{VP_ACB, VP_NONE};
+        use plx_os::tv::sink::{VP_ACB, VP_NONE};
         // The URI engine's handle is created when the first source is offered (#1394), so an ACB
         // display is able to take URI plays at composition: "not created yet" is not "unbound". The
         // gate the Start re-checks decides each play. The exported-window table has no say on an
@@ -1151,7 +1151,7 @@ mod tests {
     /// (production's is `EXPORTED_STRATA`; a test passes its own, so no table forks the build).
     #[test]
     fn the_exported_window_is_selected_only_for_a_listed_firmware_major() {
-        use plx_platform::tv::sink::{VP_ACB, VP_NONE};
+        use plx_os::tv::sink::{VP_ACB, VP_NONE};
         let exported = Binding::Exported { canvas: EXPORTED_CANVAS };
         assert_eq!(EXPORTED_CANVAS, (1_920, 1_080));
         let at = |mode, major, strata: &[u32]| product_binding(mode, major, strata);
@@ -1167,8 +1167,8 @@ mod tests {
     }
 
     use super::*;
-    use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink, ScriptedWindowSink, WindowCall};
-    use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
+    use plx_os::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink, ScriptedWindowSink, WindowCall};
+    use plx_os::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
     use plx_playback_contract::{BackendState, Event as ContractEvent, Fidelity,
         Fx as ContractFx, InitialPlayback, Intent, Requirements, SourceKind, StopReason};
     use std::sync::{atomic::{AtomicU64, Ordering}, Mutex};
@@ -1257,24 +1257,24 @@ mod tests {
     impl Rig {
         fn new() -> Self {
             Self::with(Binding::Unbound, Box::leak(Box::new(NoSink)),
-                Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())))
+                Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new())))
         }
         /// An ACB-bound backend over a scripted sink and its own plane owner with both handles already
         /// made: Feed's (player type 10, a boot's) and the URI engine's (player type 0, the measured
         /// sequence, which an offer would otherwise create on demand), each confirmed initialized.
-        fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
+        fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_os::tv::plane::PlaneOwner) {
             let sink: &'static ScriptedPlaneSink =
                 Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
-            let plane: &'static plx_platform::tv::plane::PlaneOwner =
-                Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-            plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
-            plane.boot_handle(plx_platform::tv::plane::PlaneHandle::Uri,
-                plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 },
-                plx_platform::tv::plane::HandleSeat { id: 0, initialized: true });
+            let plane: &'static plx_os::tv::plane::PlaneOwner =
+                Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
+            plane.boot(plx_os::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+            plane.boot_handle(plx_os::tv::plane::PlaneHandle::Uri,
+                plx_os::tv::plane::PlaneFacts { handle: true, player_type: 0 },
+                plx_os::tv::plane::HandleSeat { id: 0, initialized: true });
             (Self::with(Binding::Acb, sink, plane), sink, plane)
         }
         fn with(binding: Binding, display: &'static dyn DisplaySink,
-            plane: &'static plx_platform::tv::plane::PlaneOwner) -> Self {
+            plane: &'static plx_os::tv::plane::PlaneOwner) -> Self {
             let clock = std::sync::Arc::new(AtomicU64::new(0));
             let bus = Box::leak(Box::new(Bus::new()));
             let driver = UriBackend::new(Config { transport: bus, display, plane,
@@ -2134,7 +2134,7 @@ mod tests {
     /// The firmware's completion callbacks of the bind's window and PLAYING calls (the ids the
     /// scripted sink answered `plane_finish` with).
     fn plane_tasks() -> (i64, i64) {
-        use plx_platform::tv::sink::{SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
+        use plx_os::tv::sink::{SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
         (i64::from(SCRIPTED_DISPLAY_TASK), i64::from(SCRIPTED_PLAYING_TASK))
     }
 
@@ -2288,9 +2288,9 @@ mod tests {
         let (display, playing) = plane_tasks();
         let sink: &'static ScriptedPlaneSink =
             Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
-        let plane: &'static plx_platform::tv::plane::PlaneOwner =
-            Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-        plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 });
+        let plane: &'static plx_os::tv::plane::PlaneOwner =
+            Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
+        plane.boot(plx_os::tv::plane::PlaneFacts { handle: true, player_type: 0 });
         let mut rig = Rig::with(Binding::Unbound, sink, plane);
         rig.opened();
         assert_eq!(presented(&rig.service_plays()), 0);
@@ -2303,17 +2303,17 @@ mod tests {
     #[test]
     fn acb_start_refuses_unless_every_gate_fact_holds() {
         // The URI engine's handle as the boot recorded it; Feed's is irrelevant to this gate.
-        let boot = |handle, player_type, initialized| -> &'static plx_platform::tv::plane::PlaneOwner {
-            let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-            plane.boot_handle(plx_platform::tv::plane::PlaneHandle::Uri,
-                plx_platform::tv::plane::PlaneFacts { handle, player_type },
-                plx_platform::tv::plane::HandleSeat { id: 0, initialized });
+        let boot = |handle, player_type, initialized| -> &'static plx_os::tv::plane::PlaneOwner {
+            let plane = Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
+            plane.boot_handle(plx_os::tv::plane::PlaneHandle::Uri,
+                plx_os::tv::plane::PlaneFacts { handle, player_type },
+                plx_os::tv::plane::HandleSeat { id: 0, initialized });
             plane
         };
         let scripted = || -> &'static ScriptedPlaneSink {
             Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })))
         };
-        let cases: [(&str, &'static ScriptedPlaneSink, &'static dyn DisplaySink, &'static plx_platform::tv::plane::PlaneOwner); 4] = {
+        let cases: [(&str, &'static ScriptedPlaneSink, &'static dyn DisplaySink, &'static plx_os::tv::plane::PlaneOwner); 4] = {
             let (a, b, c, d) = (scripted(), scripted(), scripted(), scripted());
             [("a created handle is not an initialized one", a, a, boot(true, 0, false)),
              ("the measured sequence initialized player type 0", b, b, boot(true, 10, true)),
@@ -2333,13 +2333,13 @@ mod tests {
     /// What a normal boot leaves: Feed's handle (player type 10) booted and the URI engine's NOT. The
     /// sink answers `ids` to the creates it is asked for.
     fn boot_without_the_uri_handle(ids: &[std::os::raw::c_long])
-        -> (&'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
+        -> (&'static ScriptedPlaneSink, &'static plx_os::tv::plane::PlaneOwner) {
         let sink: &'static ScriptedPlaneSink =
             Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
         sink.create_ids.lock().unwrap().extend(ids.iter().copied());
-        let plane: &'static plx_platform::tv::plane::PlaneOwner =
-            Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
-        plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+        let plane: &'static plx_os::tv::plane::PlaneOwner =
+            Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
+        plane.boot(plx_os::tv::plane::PlaneFacts { handle: true, player_type: 10 });
         (sink, plane)
     }
 
@@ -2356,7 +2356,7 @@ mod tests {
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
         });
         assert_eq!(sink.created_player_types(), [0], "player type 0, once");
-        assert!(plane.initialized(plx_platform::tv::plane::PlaneHandle::Uri));
+        assert!(plane.initialized(plx_os::tv::plane::PlaneHandle::Uri));
         assert!(log.contains("acb handle=uri ptype=0 create=22 initialized=true\n"), "{log}");
         let mut second = Rig::with(Binding::Acb, sink, plane);
         assert_eq!(second.start(A), DispatchResult::Queued);
@@ -2472,7 +2472,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event, DriverEvent::Observation { observation:
             Observation::Playback(Observed { value: Playback::ReadyAwaitPlay, .. }), .. })));
         assert_eq!(sink.calls(), ["plane_media_id m1"]);
-        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Bound);
+        assert_eq!(plane.phase(), plx_os::tv::plane::Phase::Bound);
         assert!(rig.driver.plane_owned(), "from the owner's grant on, the plane is this attempt's");
         for (t, expect) in [(199, 1), (200, 2), (399, 2), (400, 2), (599, 2), (600, 3), (899, 3), (900, 4)] {
             rig.at(t);
@@ -2532,7 +2532,7 @@ mod tests {
         assert!(sink.calls().is_empty(), "nothing binds before the service has loaded the media");
         rig.subscription_says(CAPTURED_LOAD_COMPLETED);
         assert_eq!(sink.calls(), ["plane_media_id m1"]);
-        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Bound);
+        assert_eq!(plane.phase(), plx_os::tv::plane::Phase::Bound);
         for t in [200, 400, 600, 900] { rig.at(t); rig.driver.poll(&rig.mt); }
         let len = captured_envelope().to_string().len();
         assert_eq!(sink.calls(), ["plane_media_id m1", "plane_loaded",
@@ -2624,9 +2624,9 @@ mod tests {
     fn acb_a_refused_bind_is_a_typed_failure_that_unloads_nothing() {
         let (mut rig, sink, plane) = Rig::acb();
         // Another backend (Feed, over its own handle) already holds the plane.
-        assert_eq!(plane.bind(sink, &rig.mt, plx_platform::tv::plane::PlaneHandle::Feed,
-            plx_platform::tv::plane::BindPolicy::Rebind, "other"),
-            plx_platform::tv::plane::BindVerdict::Granted);
+        assert_eq!(plane.bind(sink, &rig.mt, plx_os::tv::plane::PlaneHandle::Feed,
+            plx_os::tv::plane::BindPolicy::Rebind, "other"),
+            plx_os::tv::plane::BindVerdict::Granted);
         rig.acb_loading();
         rig.bus.say("subscribe", ENVELOPE);
         let events = rig.driver.poll(&rig.mt);
@@ -2642,8 +2642,8 @@ mod tests {
         let (mut rig, sink, plane) = Rig::acb();
         // Feed's handle held the plane and is being released: the URI engine's bind waits for that
         // handle's UNLOADED.
-        plane.bind(sink, &rig.mt, plx_platform::tv::plane::PlaneHandle::Feed,
-            plx_platform::tv::plane::BindPolicy::Rebind, "previous");
+        plane.bind(sink, &rig.mt, plx_os::tv::plane::PlaneHandle::Feed,
+            plx_os::tv::plane::BindPolicy::Rebind, "previous");
         plane.unload(sink, &rig.mt);
         rig.acb_loading();
         rig.bus.say("subscribe", ENVELOPE);
@@ -2675,11 +2675,11 @@ mod tests {
         // The firmware's callback for the UNLOADED task (and another task's, which is no fence).
         sink.mailbox.push(4, 1);
         rig.driver.poll(&rig.mt);
-        assert_ne!(plane.phase(), plx_platform::tv::plane::Phase::Released);
+        assert_ne!(plane.phase(), plx_os::tv::plane::Phase::Released);
         sink.mailbox.push(5, 1);
         let events = rig.driver.poll(&rig.mt);
         assert!(events.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Released }), "{events:?}");
-        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Released);
+        assert_eq!(plane.phase(), plx_os::tv::plane::Phase::Released);
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
         assert!(!rig.driver.plane_owned());
     }
@@ -2717,12 +2717,12 @@ mod tests {
         rig.driver.poll(&rig.mt);
         rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop));
         rig.driver.poll(&rig.mt);
-        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Releasing);
+        assert_eq!(plane.phase(), plx_os::tv::plane::Phase::Releasing);
         // The owner measures its deadline on its own monotonic clock.
-        std::thread::sleep(std::time::Duration::from_millis(plx_platform::tv::plane::RELEASE_FENCE_MS + 100));
+        std::thread::sleep(std::time::Duration::from_millis(plx_os::tv::plane::RELEASE_FENCE_MS + 100));
         let events = rig.driver.poll(&rig.mt);
         assert!(events.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Quarantined }), "{events:?}");
-        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Quarantined(plx_platform::tv::plane::Why::Deadline));
+        assert_eq!(plane.phase(), plx_os::tv::plane::Phase::Quarantined(plx_os::tv::plane::Why::Deadline));
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
         assert_eq!(sink.unload_count(), 1);
     }
@@ -2778,7 +2778,7 @@ mod tests {
         /// `VP_EXPORTED`) over a sink that records every window verb and accepts every placement.
         fn exported() -> (Self, &'static ScriptedWindowSink) {
             let sink: &'static ScriptedWindowSink = Box::leak(Box::new(ScriptedWindowSink::new(1)));
-            let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+            let plane = Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
             (Self::with(Binding::Exported { canvas: FULL }, sink, plane), sink)
         }
     }
@@ -2857,7 +2857,7 @@ mod tests {
     #[test]
     fn only_the_exported_binding_creates_or_places_a_window() {
         let sink: &'static ScriptedWindowSink = Box::leak(Box::new(ScriptedWindowSink::new(1)));
-        let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+        let plane = Box::leak(Box::new(plx_os::tv::plane::PlaneOwner::new()));
         let mut rig = Rig::with(Binding::Unbound, sink, plane);
         rig.opened();
         rig.subscription_says(CAPTURED_VIDEO_INFO);

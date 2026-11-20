@@ -1383,9 +1383,9 @@ mod tests {
         }
         let measure = TitleMeasure;
         let min_content = RouteLayout::screen().content.w;
-        for preference in plx_platform::i18n::SHIPPED {
-            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            let title = plx_platform::i18n::msg::browse_person_filmography_in(&locale);
+        for preference in plx_os::i18n::SHIPPED {
+            let locale = plx_os::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let title = plx_os::i18n::msg::browse_person_filmography_in(&locale);
             let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
             let full_width = measure.width_str(title, TITLE_SIZE, true);
             assert!(layout.narrative.w >= full_width, "route label must fit in full: {title}");
@@ -1448,10 +1448,10 @@ mod tests {
         }
         let measure = QuestionMeasure;
         let layout = RouteLayout::screen();
-        for preference in plx_platform::i18n::SHIPPED {
-            let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
-            for question in [plx_platform::i18n::msg::settings_consent_crash_title_in(&locale),
-                plx_platform::i18n::msg::settings_consent_product_title_in(&locale)] {
+        for preference in plx_os::i18n::SHIPPED {
+            let locale = plx_os::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            for question in [plx_os::i18n::msg::settings_consent_crash_title_in(&locale),
+                plx_os::i18n::msg::settings_consent_product_title_in(&locale)] {
                 let title = RouteLayout::narrative_title(question).with_measure(&measure);
                 assert!(!title.truncates(layout.narrative.w), "question was elided: {question}");
                 let height = title.measure_h(layout.narrative.w);

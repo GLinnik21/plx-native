@@ -174,7 +174,7 @@ pub struct SubtitleOffsets {
 #[derive(Serialize, Deserialize)]
 pub struct CanonicalSessionPreferences {
     #[serde(default)]
-    pub language: plx_platform::i18n::Preference,
+    pub language: plx_os::i18n::Preference,
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     pub playback_quality: Option<PlaybackQuality>,
     #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
@@ -217,7 +217,7 @@ pub struct CanonicalSessionPreferences {
 impl Default for CanonicalSessionPreferences {
     fn default() -> Self {
         Self {
-            language: plx_platform::i18n::Preference::System,
+            language: plx_os::i18n::Preference::System,
             playback_quality: None,
             direct_play_mode: DirectPlayMode::Auto,
             auto_sign_in: false,
@@ -252,8 +252,8 @@ impl CanonicalSessionPreferences {
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Session {
-    #[serde(default, skip_serializing_if = "plx_platform::i18n::Preference::is_system")]
-    pub language: plx_platform::i18n::Preference,
+    #[serde(default, skip_serializing_if = "plx_os::i18n::Preference::is_system")]
+    pub language: plx_os::i18n::Preference,
     #[serde(default)]
     pub client_id: String,
     #[serde(default)]

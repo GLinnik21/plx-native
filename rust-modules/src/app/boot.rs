@@ -544,7 +544,7 @@ mod seam_order_tests {
     #[test]
     fn no_production_code_calls_libc_exit_outside_the_shared_helper() {
         // The app process links every crate under rust-modules except `storage` (the separate
-        // `plxstorage` helper binary, no OpenSSL workers) and platform's `storage_service/` (that
+        // `plxstorage` helper binary, no OpenSSL workers) and the os layer's `storage_service/` (that
         // helper's body). `base/src/process.rs` is the helper itself.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
@@ -631,13 +631,13 @@ mod seam_order_tests {
     /// The storage diagnostics worker probes `app_dir()` on its own thread, so it starts only after the
     /// live identity preamble has written the first two event-log lines. Reads the source like the
     /// test above, for the same reason: no host test can run `enter_application`. It lived in
-    /// `plx_platform::storage::diagnostics` until that crate stopped being able to see this file.
+    /// `plx_os::storage::diagnostics` until that crate stopped being able to see this file.
     #[test]
     fn worker_start_follows_the_live_boot_identity_preamble() {
         let source = include_str!("mod.rs");
         assert_eq!(
             source
-                .matches("plx_platform::storage::diagnostics::start(")
+                .matches("plx_os::storage::diagnostics::start(")
                 .count(),
             1,
             "every start site must stay behind the identity preamble"
@@ -665,7 +665,7 @@ mod seam_order_tests {
             .find(".then(pre_boot_diagnostics)")
             .expect("identity preamble");
         let diagnostics = body
-            .find("plx_platform::storage::diagnostics::start(")
+            .find("plx_os::storage::diagnostics::start(")
             .expect("diagnostics start");
         let boot = body.find("boot(pms_host").expect("application boot");
         assert!(identity < diagnostics && diagnostics < boot);
@@ -903,7 +903,7 @@ fn requested_drawable(session: &plx_plex::plex::session::Session) -> Option<(c_i
         }
     }
     let chosen = session.ui_resolution();
-    let major = plx_platform::tv::device::info().major;
+    let major = plx_os::tv::device::info().major;
     let size = drawable_for_setting(major, chosen);
     log(&format!("surface: webOS major {major}, Interface resolution {chosen:?} -> {size:?}"));
     size
@@ -918,11 +918,11 @@ fn window_fallback(asked: (c_int, c_int)) -> Option<(c_int, c_int)> {
 
 /// The window an Interface resolution choice asks for on firmware `major`: `None` for Automatic,
 /// the native canvas, and `None` on every set the setting is not offered on (webOS 4+ or unknown,
-/// [`plx_platform::tv::device::offers_ui_resolution`]) whatever is stored, so a record carried over
+/// [`plx_os::tv::device::offers_ui_resolution`]) whatever is stored, so a record carried over
 /// from another set cannot shrink the interface where the owner has no way to change it back.
 #[cfg(any(not(feature = "hostsim"), test))]
 fn drawable_for_setting(major: u32, chosen: plx_plex::plex::session::UiResolution) -> Option<(c_int, c_int)> {
-    if plx_platform::tv::device::offers_ui_resolution(major) { chosen.size() } else { None }
+    if plx_os::tv::device::offers_ui_resolution(major) { chosen.size() } else { None }
 }
 
 
@@ -1046,7 +1046,7 @@ unsafe extern "C" fn wrapped_message(msg: *mut std::ffi::c_void) -> *const std::
             let main = libc::pthread_self() as usize == MAIN_THREAD.load(std::sync::atomic::Ordering::Relaxed);
             log(&format!("relaunch tap: {} bytes on the {} thread, parameters={}",
                 payload.len(), if main { "main" } else { "other" }, payload.contains("\"parameters\"")));
-            plx_platform::tv::launch::offer(&payload);
+            plx_os::tv::launch::offer(&payload);
         }
     }
     p
@@ -1455,10 +1455,10 @@ pub(crate) unsafe fn boot(
     // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
     // so it is handed over here, before any playback can land. Replay boots take it too.
     plx_media::route::install_up_next_still_warm(super::playback::warm_up_next_still);
-    // The dev frame probe's clock is `platform`'s, which `gfx` does not depend on.
+    // The dev frame probe's clock is `os`'s, which `gfx` does not depend on.
     plx_gfx::gfx::install_clear_probe(
-        plx_platform::tv::window::frame_probe_waiting,
-        plx_platform::tv::window::frame_probe_acquired,
+        plx_os::tv::window::frame_probe_waiting,
+        plx_os::tv::window::frame_probe_acquired,
     );
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
@@ -1713,7 +1713,7 @@ pub(crate) unsafe fn construct(
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `tv::home::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
-    plx_platform::tv::window::bind_window(win);
+    plx_os::tv::window::bind_window(win);
     let wflags = SDL_GetWindowFlags(win);
     log(&format!(
         "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -1722,11 +1722,11 @@ pub(crate) unsafe fn construct(
         i32::from(wflags & SDL_WINDOW_INPUT_FOCUS != 0)
     ));
 
-    plx_platform::tv::window::grab(win);
+    plx_os::tv::window::grab(win);
     // EXPERIMENT (`/tmp/plxnative-opaque`), no-op without the trigger: build the full-surface
     // wl_region once, so `opaque_route` below can declare the UI plane opaque on every screen
     // that has nothing behind it. See `system.rs`'s section on it.
-    plx_platform::tv::window::arm_opaque_region();
+    plx_os::tv::window::arm_opaque_region();
     plx_gfx::gfx::init_gl();
     plx_gfx::text::init_text();
     plx_gfx::gfx::init_image();
@@ -1881,7 +1881,7 @@ pub(crate) unsafe fn construct(
     crate::dev::scenarios::clock_fact::arm_at_boot();
 
     #[cfg(not(test))]
-    plx_platform::i18n::initialize(session.language, controlled);
+    plx_os::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
     let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| {
         let origin = crate::dev::scenarios::pms_origin()

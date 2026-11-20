@@ -85,7 +85,7 @@ fn an_episode_names_the_show() {
     let add = menu(build_episode("9", PosterMark::None, &[], Some(&face(Membership::Off, Kind::Show, true))));
     assert_eq!(add.label(ItemRow::WatchlistAdd), "Add Show to Watchlist");
     let on = menu(build_episode("9", PosterMark::None, &[], Some(&face(Membership::On, Kind::Show, true))));
-    assert_eq!(on.label(ItemRow::WatchlistRemove), plx_platform::i18n::msg::watchlist_action_remove_show());
+    assert_eq!(on.label(ItemRow::WatchlistRemove), plx_os::i18n::msg::watchlist_action_remove_show());
     assert_eq!(on.action(ItemRow::WatchlistRemove), Action::WatchlistRemove(guid_of(Kind::Show, &HEX)));
     let ep_card = card(3, Some(&face(Membership::Off, Kind::Show, true)));
     assert_eq!(ep_card.label(ItemRow::WatchlistAdd), "Add Show to Watchlist");

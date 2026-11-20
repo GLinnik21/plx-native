@@ -483,7 +483,7 @@ fn a_folded_row_that_starts_a_title_names_it() {
     let minimal = plx_appkit::player_hud::loaded::load(
         &plx_appkit::hud_format::fixtures::bytes("minimal"),
         "0.0.0-test",
-        plx_platform::i18n::english(),
+        plx_os::i18n::english(),
         &FixtureMeasure,
     )
     .expect("the minimal fixture loads")
@@ -623,7 +623,7 @@ fn a_folded_row_closes_more_first_and_asks_the_one_performer() {
     let minimal = plx_appkit::player_hud::loaded::load(
         &plx_appkit::hud_format::fixtures::bytes("minimal"),
         "0.0.0-test",
-        plx_platform::i18n::english(),
+        plx_os::i18n::english(),
         &FixtureMeasure,
     )
     .expect("the minimal fixture loads")

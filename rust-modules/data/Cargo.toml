@@ -19,19 +19,19 @@ default = []
 # Forwarded from the application crate, which is the only one that sets them. Each is named here
 # only because some code in this crate has a `cfg` on it (the dev-trigger stand-ins of `metadata`
 # and `person`, the simulator's detail source).
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers"]
-hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim"]
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_os/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers"]
+hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_os/hostsim", "plx_plex/hostsim", "plx_telemetry/hostsim"]
 # The `cfg(test)` seams other crates' tests use (`pms::seed_for_test`, `metadata::set_current_for_test`,
 # `browse::view::*::fixture`, the stores' `*_for_test` drivers, ...) plus the test-mode arms
 # `cfg(test)` alone cannot give a dependent. Enabled from the dependents' `[dev-dependencies]`;
 # never in a shipped build.
-test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_plex/test-support", "plx_telemetry/test-support"]
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_os/test-support", "plx_plex/test-support", "plx_telemetry/test-support"]
 
 [dependencies]
 plx_playback_contract = { path = "../playback-contract" }
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
-plx_platform = { path = "../platform" }
+plx_os = { path = "../os" }
 plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }
 # `rc`: Home cards are `Arc<PmsMovie>`, which the derived (de)serializers must be able to carry.
@@ -49,7 +49,7 @@ ed25519-compact = { version = "=2.6.1", default-features = false, features = ["o
 [dev-dependencies]
 plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
-plx_platform = { path = "../platform", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
 plx_net = { path = "../net", features = ["test-support"] }
 # THE RULE for a layer crate whose own tests need the development feature set (the same in every
 # crate that has it): the crate dev-depends on ITSELF with `devtriggers`, so `cargo test -p plx_data`

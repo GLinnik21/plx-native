@@ -43,7 +43,7 @@ impl Rig {
         assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let pms = Pms::serve(one_movie);
-        let _ = plx_platform::tv::launch::take_all();
+        let _ = plx_os::tv::launch::take_all();
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("deeplink", "127.0.0.1", pms.port, "t", "c-deeplink");
         plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
@@ -125,8 +125,8 @@ fn a_paramless_relaunch_right_behind_a_link_does_not_lose_it() {
     let mut rig = Rig::new(AppArg::Home);
     // The cold argv link and a second tile press (no `plex` object) both arrive before a frame
     // takes either: the later, link-less payload must not displace the link.
-    plx_platform::tv::launch::offer(&payload(KNOWN));
-    plx_platform::tv::launch::offer(r#"{"event":"relaunch","parameters":{}}"#);
+    plx_os::tv::launch::offer(&payload(KNOWN));
+    plx_os::tv::launch::offer(r#"{"event":"relaunch","parameters":{}}"#);
     rig.run();
     assert!(rig.stack() == vec![
         AppArg::Home,
@@ -145,7 +145,7 @@ fn a_link_lands_on_its_detail_page_with_home_alone_behind_it() {
     assert_eq!(rig.stack().len(), 2);
 
     // Arrives the way a relaunch does, mid-session, and is taken by the tick.
-    plx_platform::tv::launch::offer(&payload(KNOWN));
+    plx_os::tv::launch::offer(&payload(KNOWN));
     rig.run();
     assert!(rig.stack() == vec![
         AppArg::Home,
@@ -157,7 +157,7 @@ fn a_link_lands_on_its_detail_page_with_home_alone_behind_it() {
 #[test]
 fn a_key_the_server_does_not_know_leaves_home_in_place() {
     let mut rig = Rig::new(AppArg::Home);
-    plx_platform::tv::launch::offer(&payload("999"));
+    plx_os::tv::launch::offer(&payload("999"));
     rig.run();
     assert!(rig.stack() == vec![AppArg::Home], "Home alone stays");
     plx_plex::plex::reset_servers_for_test();
@@ -168,7 +168,7 @@ fn a_key_the_server_does_not_know_leaves_home_in_place() {
 #[test]
 fn a_link_with_no_account_waits_through_sign_in() {
     let mut rig = Rig::new(AppArg::Login);
-    plx_platform::tv::launch::offer(&payload(KNOWN));
+    plx_os::tv::launch::offer(&payload(KNOWN));
     rig.frames(60);
     assert!(rig.stack() == vec![AppArg::Login], "sign-in stays alone");
     assert!(!rig.link.is_idle(), "the link is still pending");
@@ -189,7 +189,7 @@ fn a_link_waits_under_the_consent_sheet() {
     open_first_run_consent_at(&mut rig.d, 0);
     rig.frames(20);
     assert!(rig.d.surface_up(), "premise: the sheet is up");
-    plx_platform::tv::launch::offer(&payload(KNOWN));
+    plx_os::tv::launch::offer(&payload(KNOWN));
     rig.frames(60);
     assert!(rig.bridge.metadata_view().detail_request_status(rig.sid, KNOWN).is_none(),
         "the link asked for its item under the sheet");
@@ -208,7 +208,7 @@ fn a_link_waits_under_the_consent_sheet() {
 #[test]
 fn a_link_with_a_server_survives_sign_in() {
     let mut rig = Rig::new(AppArg::Login);
-    plx_platform::tv::launch::offer(&payload_naming(&rig));
+    plx_os::tv::launch::offer(&payload_naming(&rig));
     rig.frames(20);
     nav_root(&mut rig.d, AppArg::Home);
     rig.run();
@@ -225,7 +225,7 @@ fn a_link_with_a_server_survives_sign_in() {
 fn a_serverless_link_that_waited_across_sign_in_is_dropped() {
     plx_base::eventlog::with_private_log(|| {
         let mut rig = Rig::new(AppArg::Login);
-        plx_platform::tv::launch::offer(&payload(KNOWN));
+        plx_os::tv::launch::offer(&payload(KNOWN));
         rig.frames(20);
         nav_root(&mut rig.d, AppArg::Home);
         rig.run();
@@ -276,7 +276,7 @@ fn a_play_landing_waits_for_an_abandoning_preview() {
     let mut rig = Rig::new(AppArg::Home);
     let _reset = PreviewReset;
     hold_a_preview(&mut rig);
-    plx_platform::tv::launch::offer(&play_payload(KNOWN));
+    plx_os::tv::launch::offer(&play_payload(KNOWN));
     rig.until_loaded();
     assert!(preview::abandoning(), "premise: the halt left the preview abandoning");
     assert!(!plx_media::route::play_pending(), "the Play went through an engine a preview still holds");
@@ -299,7 +299,7 @@ fn a_play_landing_behind_a_preview_that_never_returns_gives_up() {
         let mut rig = Rig::new(AppArg::Home);
         let _reset = PreviewReset;
         hold_a_preview(&mut rig);
-        plx_platform::tv::launch::offer(&play_payload(KNOWN));
+        plx_os::tv::launch::offer(&play_payload(KNOWN));
         rig.run();
         assert!(!plx_media::route::play_pending(), "the Play went through an engine a preview still holds");
         let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();

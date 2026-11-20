@@ -136,7 +136,7 @@ pub fn folded_rows(
     meta: plx_data::metadata::MetadataView<'_>,
 ) -> Vec<FoldedRow> {
     use crate::player_hud::command::{Section, TrackTab};
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     folds
         .iter()
         .filter_map(|fold| {
@@ -171,8 +171,8 @@ impl MorePage {
     /// The title band's text.
     fn title(self) -> String {
         match self {
-            Self::Quality => plx_platform::i18n::msg::widgets_menu_quality().to_string(),
-            Self::Speed => plx_platform::i18n::msg::widgets_menu_speed().to_string(),
+            Self::Quality => plx_os::i18n::msg::widgets_menu_quality().to_string(),
+            Self::Speed => plx_os::i18n::msg::widgets_menu_speed().to_string(),
         }
     }
 
@@ -409,7 +409,7 @@ fn root_form(
     speeds: &[i32],
     folded: &[FoldedRow],
 ) -> MoreForm {
-    let mut options = FormSection::new(plx_platform::i18n::msg::widgets_menu_options());
+    let mut options = FormSection::new(plx_os::i18n::msg::widgets_menu_options());
     for a in rows.iter().copied().filter(|a| !matches!(a, Action::SetQuality(_))) {
         options = options.item(MoreRow::Act(a), RowKind::Button, a, row_for(ps, a));
     }
@@ -418,7 +418,7 @@ fn root_form(
         MoreRow::OpenQuality,
         RowKind::Nav(MorePage::Quality),
         Action::None,
-        Row::new(plx_platform::i18n::msg::widgets_menu_quality()).value(quality_readout(ps, current)),
+        Row::new(plx_os::i18n::msg::widgets_menu_quality()).value(quality_readout(ps, current)),
     )
     // Offered under Force Direct Play too: a speed changes how fast the picture plays, not what
     // the server sends. Not offered where this playback cannot play any speed but 1x
@@ -428,7 +428,7 @@ fn root_form(
         MoreRow::OpenSpeed,
         RowKind::Nav(MorePage::Speed),
         Action::None,
-        Row::new(plx_platform::i18n::msg::widgets_menu_speed()).value(speed_label(speed)),
+        Row::new(plx_os::i18n::msg::widgets_menu_speed()).value(speed_label(speed)),
     );
     let mut form = Form::new().section(quality);
     // The commands the package places nowhere: after Quality and Speed, before Options, in the compiler's order.
@@ -456,7 +456,7 @@ fn speed_form(ps: &plx_media::route::PlaybackSession, speed: i32, speeds: &[i32]
 /// A speed's name: `Normal` at 1x, else the multiplier (`plx_media::player::rate_name`).
 fn speed_label(permille: i32) -> String {
     if permille == plx_media::player::RATE_NORMAL {
-        return plx_platform::i18n::msg::widgets_speed_normal().to_string();
+        return plx_os::i18n::msg::widgets_speed_normal().to_string();
     }
     plx_media::player::rate_name(permille)
 }
@@ -471,7 +471,7 @@ fn quality_readout(ps: &plx_media::route::PlaybackSession, current: plx_media::r
     let joined = |second: String| format!("{} \u{b7} {second}", current.short_label());
     match (current, plx_media::route::playing_quality(ps)) {
         (Quality::Original | Quality::Auto, PlayingQuality::Converted) => {
-            joined(plx_platform::i18n::msg::widgets_menu_quality_converted().to_owned())
+            joined(plx_os::i18n::msg::widgets_menu_quality_converted().to_owned())
         }
         (Quality::Auto, PlayingQuality::Original) => joined(Quality::Original.label()),
         (Quality::Auto, PlayingQuality::Rung(lines)) => joined(format!("{lines}p")),
@@ -501,7 +501,7 @@ fn quality_form(
         |sec, a| {
             let mut row = row_for(ps, a);
             if a == Action::SetQuality(current) && quality_conversion_note(ps, current) {
-                row = row.detail(plx_platform::i18n::msg::widgets_menu_quality_converted_note());
+                row = row.detail(plx_os::i18n::msg::widgets_menu_quality_converted_note());
             }
             sec.choice(MoreRow::Act(a), a, row, |id| {
                 *id == MoreRow::Act(Action::SetQuality(current))
@@ -994,7 +994,7 @@ fn rows_for(forced: bool) -> Vec<Action> {
             .collect()
     };
     v.push(Action::ToggleStats);
-    if plx_platform::labcfg::menu_row_enabled() {
+    if plx_os::labcfg::menu_row_enabled() {
         v.push(Action::SendDiagnostics);
     }
     v
@@ -1002,12 +1002,12 @@ fn rows_for(forced: bool) -> Vec<Action> {
 
 fn label(a: Action) -> std::borrow::Cow<'static, str> {
     match a {
-        Action::ToggleStats => plx_platform::i18n::msg::widgets_menu_stats().into(),
+        Action::ToggleStats => plx_os::i18n::msg::widgets_menu_stats().into(),
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
         Action::SetQuality(q) => q.label().into(),
         Action::SetSpeed(r) => speed_label(r).into(),
-        Action::SendDiagnostics => plx_platform::i18n::msg::widgets_menu_diagnostics().into(),
+        Action::SendDiagnostics => plx_os::i18n::msg::widgets_menu_diagnostics().into(),
         Action::None => "".into(),
         // a folded row is labelled by its `FoldedRow`, which knows the content
         Action::Hud(_) => "".into(),
@@ -1982,7 +1982,7 @@ mod focus_tests {
     #[test]
     fn every_row_fits_the_panel_in_every_language() {
         plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let ps = plx_media::route::PlaybackSession::default();
         let mut out = Vec::new();
         let rows = rows_for(false);
@@ -2038,7 +2038,7 @@ mod focus_tests {
             let meta = plx_data::stores::metadata::MetadataStore::default();
             let mut folded = folded_rows(&every, &full, meta.view());
             assert_eq!(folded.len(), every.len(), "{}: every command offers a row", language.tag());
-            for go in [plx_platform::i18n::msg::widgets_info_go_show(), plx_platform::i18n::msg::widgets_info_go_movie()] {
+            for go in [plx_os::i18n::msg::widgets_info_go_show(), plx_os::i18n::msg::widgets_info_go_movie()] {
                 folded[6].label = go;
                 for q in plx_media::route::QUALITY_LADDER {
                     let mut root = MoreMenuState::new(&ps);
@@ -2080,8 +2080,8 @@ mod focus_tests {
     fn the_quality_row_reads_choice_then_what_is_playing() {
         use plx_media::route::{EnhTestFixture, Quality};
         let _g = plx_base::testlock::serial();
-        let note = plx_platform::i18n::msg::widgets_menu_quality_converted_note();
-        let converted = plx_platform::i18n::msg::widgets_menu_quality_converted();
+        let note = plx_os::i18n::msg::widgets_menu_quality_converted_note();
+        let converted = plx_os::i18n::msg::widgets_menu_quality_converted();
         let original = Quality::Original.label();
         let auto = Quality::Auto.label();
         let fixture = |remux, quality| EnhTestFixture { remux, quality, ..Default::default() };
@@ -2134,7 +2134,7 @@ mod focus_tests {
     /// The converted read-out and note fit the panel in every shipped language.
     #[test]
     fn the_converted_marks_fit_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let _g = plx_base::testlock::serial();
         let (ps, _) = plx_media::route::enhancement_test_session(plx_media::route::EnhTestFixture {
             remux: Some(false),
@@ -2290,7 +2290,7 @@ mod folded_tests {
     const REFERENCE: &str = include_str!("hud_format/fixtures/reference/hud.json");
 
     fn compiled(text: &str) -> Arc<crate::hud_format::compile::Compiled> {
-        load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).expect("the fixture loads").compiled
+        load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_os::i18n::english(), &plx_ui::fixture::FixtureMeasure).expect("the fixture loads").compiled
     }
 
     /// A frame's model for an episode with both neighbours (or a movie with none), chapters and a detail page.

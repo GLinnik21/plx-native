@@ -35,7 +35,7 @@ use plx_play_feed::pcm_lead::{pcm_output_lead, PCM_LEAD_BY_OUTPUT, PCM_SINK_LEAD
 use plx_play_feed::{
     fed_fps_rational, opus_head, pcm_rate_khz, ENVELOPE_FHD60, ENVELOPE_UHD60, PAYLOAD_AV,
 };
-pub(crate) use plx_platform::devcaps::LoadVideo;
+pub(crate) use plx_os::devcaps::LoadVideo;
 #[cfg(test)]
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
@@ -49,7 +49,7 @@ use super::log;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
 #[cfg(test)]
-use plx_platform::devcaps::AudioStack;
+use plx_os::devcaps::AudioStack;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
 #[cfg(all(test, feature = "hostsim"))]
 use std::os::raw::{c_char, c_int};
@@ -174,7 +174,7 @@ fn window_step(stage: WindowStage) {
 /// route.
 pub(crate) fn speed_fps_ceiling(
     video: Option<LoadVideo>,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     measured: bool,
 ) -> f64 {
     let row_fps = match video {
@@ -503,7 +503,7 @@ mod native_lifecycle_host_seam_tests {
         let mt = unsafe { MainThread::assume() };
         let epoch = loaded_epoch(&mt);
         crate::player::plane().reset_for_test();
-        crate::player::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+        crate::player::plane().boot(plx_os::tv::plane::PlaneFacts { handle: true, player_type: 10 });
         release_native_object(&mt, epoch);
         crate::player::plane().reset_for_test();
         let recorded = plx_telemetry::telemetry::window::take_recorded_for_test();
@@ -678,9 +678,9 @@ mod payload_tests {
             ("aac", "AAC"),
             ("dts", "DTS"),
         ];
-        let video: &[(&str, &str, plx_platform::devcaps::dv::DvCapability)] = &[
-            ("h264", "H264", plx_platform::devcaps::dv::DvCapability::Unsupported),
-            ("hevc", "H265", plx_platform::devcaps::dv::DvCapability::Unsupported),
+        let video: &[(&str, &str, plx_os::devcaps::dv::DvCapability)] = &[
+            ("h264", "H264", plx_os::devcaps::dv::DvCapability::Unsupported),
+            ("hevc", "H265", plx_os::devcaps::dv::DvCapability::Unsupported),
         ];
         // The 1080p60 direct-play envelope — the shape a 5.1/7.1 Bluray direct play carries.
         let env = SinkEnvelope { w: 1920, h: 1080, fps: 60 };
@@ -738,7 +738,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ));
         let payload = build_av_payload(
             &ps,
@@ -756,7 +756,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            plx_platform::devcaps::dv::DvCapability::Unsupported,
+            plx_os::devcaps::dv::DvCapability::Unsupported,
         ));
         let payload = build_av_payload(
             &ps,
@@ -779,7 +779,7 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ));
         let env = SinkEnvelope { w: 3840, h: 2160, fps: 60 };
         assert!(build_av_payload(&ps, "H265", "AC3 PLUS", env).contains("DolbyHdrInfo"));
@@ -808,7 +808,7 @@ mod payload_tests {
             23.976,
             p10,
             false,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ));
         assert_eq!(crate::route::stream_dovi(&ps).profile, 10);
         let payload = build_av_payload(
@@ -830,7 +830,7 @@ mod payload_tests {
             23.976,
             p10,
             false,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ));
         assert!(crate::route::stream_dv_presentation(&ps).declared().is_none());
         let payload = build_av_payload(
@@ -852,11 +852,11 @@ mod payload_tests {
             23.976,
             p8(),
             false,
-            plx_platform::devcaps::dv::DvCapability::Unknown,
+            plx_os::devcaps::dv::DvCapability::Unknown,
         ));
         let fresh = p8().presentation(
             true,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
             true,
         );
         assert!(fresh.declared().is_some(), "a subsequent decision sees Supported");
@@ -988,7 +988,7 @@ mod payload_tests {
         // what `build_av_payload` hands it: the AV template with the codec already set to H265,
         // which is what a native HEVC direct play — the only kind that can be Dolby Vision — sends
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
-        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true));
+        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, plx_os::devcaps::dv::DvCapability::Supported, true));
         assert!(
             out.contains(r#""provider":"plxnative","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#),
             "{out}"
@@ -1026,9 +1026,9 @@ mod payload_tests {
             ..Dovi::NONE
         };
         for dv in [
-            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
-            unconvertible_p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
-            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            Dovi::NONE.presentation(true, plx_os::devcaps::dv::DvCapability::Supported, true),
+            unconvertible_p7.presentation(true, plx_os::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(false, plx_os::devcaps::dv::DvCapability::Supported, true),
         ] {
             assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
         }
@@ -1048,7 +1048,7 @@ mod payload_tests {
         let out = with_dolby_hdr_info(
             PAYLOAD_AV,
             "H265",
-            p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p7.presentation(true, plx_os::devcaps::dv::DvCapability::Supported, true),
         );
         const NODE: &str =
             r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":8}"#;
@@ -1108,7 +1108,7 @@ mod payload_tests {
     fn dolby_vision_and_atmos_are_siblings_inside_contents() {
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
         let out = with_immersive(
-            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true)),
+            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, plx_os::devcaps::dv::DvCapability::Supported, true)),
             "AC3 PLUS",
             true,
         );
@@ -1133,7 +1133,7 @@ mod payload_tests {
     #[test]
     fn a_declaration_never_rides_a_non_hevc_payload() {
         assert_eq!(
-            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true)),
+            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, plx_os::devcaps::dv::DvCapability::Supported, true)),
             PAYLOAD_AV
         );
     }
@@ -4209,7 +4209,7 @@ mod pcm_info_tests {
     #[test]
     fn the_sample_rate_is_declared_in_kilohertz() {
         let want = ["8", "12", "16", "22.05", "24", "32", "44.1", "48"];
-        for (hz, khz) in plx_platform::devcaps::PCM_SAMPLE_RATES.into_iter().zip(want) {
+        for (hz, khz) in plx_os::devcaps::PCM_SAMPLE_RATES.into_iter().zip(want) {
             assert_eq!(pcm_rate_khz(hz), khz);
             let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2, source_rate: hz }));
             let v: serde_json::Value = serde_json::from_str(&p).unwrap();
@@ -4242,7 +4242,7 @@ mod pcm_info_tests {
         assert!(off.contains(r#""audio":"DTS""#) && !off.contains("pcmInfo"), "{off}");
 
         crate::route::begin_attempt_for_test(
-            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+            &mut ps, std::sync::Arc::new(plx_os::devcaps::Caps::assumed().with_app_lossy()),
         );
         let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
         assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
@@ -4265,9 +4265,9 @@ mod pcm_info_tests {
     /// (`forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
     #[test]
     fn a_forced_dts_with_no_row_is_declared_as_stereo_48k_pcm() {
-        let caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
-            app_lossy: plx_platform::devcaps::AppLossy::Measured,
-            ..plx_platform::devcaps::Caps::assumed()
+        let caps = std::sync::Arc::new(plx_os::devcaps::Caps {
+            app_lossy: plx_os::devcaps::AppLossy::Measured,
+            ..plx_os::devcaps::Caps::assumed()
         });
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::begin_attempt_for_test(&mut ps, caps);
@@ -4301,7 +4301,7 @@ mod pcm_info_tests {
             assert_eq!(audio_declaration(codec, off.is_some()).map(|d| d.0).filter(|n| *n == "PCM"), None, "{codec}");
         }
         crate::route::begin_attempt_for_test(
-            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+            &mut ps, std::sync::Arc::new(plx_os::devcaps::Caps::assumed().with_app_lossy()),
         );
         for codec in ["mp3", "vorbis"] {
             crate::route::set_stream_codecs(&mut ps, "h264", codec);
@@ -4324,7 +4324,7 @@ mod pcm_info_tests {
         crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
         assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "not in force");
         crate::route::begin_attempt_for_test(
-            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+            &mut ps, std::sync::Arc::new(plx_os::devcaps::Caps::assumed().with_app_lossy()),
         );
         crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
         let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
@@ -4348,7 +4348,7 @@ mod pcm_info_tests {
     fn an_app_decoded_lossy_track_loads_as_pcm_at_a_speed() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::begin_attempt_for_test(
-            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+            &mut ps, std::sync::Arc::new(plx_os::devcaps::Caps::assumed().with_app_lossy()),
         );
         for codec in ["mp3", "vorbis", "truehd"] {
             crate::route::set_stream_codecs(&mut ps, "h264", codec);
@@ -4390,8 +4390,8 @@ mod pcm_info_tests {
 mod sink_envelope_tests {
     use super::*;
 
-    fn caps(h264: (u32, u32, u32), hevc: (u32, u32, u32)) -> plx_platform::devcaps::Caps {
-        let mut c = plx_platform::devcaps::Caps::assumed();
+    fn caps(h264: (u32, u32, u32), hevc: (u32, u32, u32)) -> plx_os::devcaps::Caps {
+        let mut c = plx_os::devcaps::Caps::assumed();
         c.h264_row = h264;
         c.hevc_row = hevc;
         c
@@ -4441,11 +4441,11 @@ mod sink_envelope_tests {
     /// declare, or for a row with no rate, the flat [`SPEED_MAX_FPS`] ceiling stands.
     #[test]
     fn the_speed_offer_stops_at_the_measured_rows_frame_rate() {
-        let row30 = plx_platform::devcaps::Caps {
+        let row30 = plx_os::devcaps::Caps {
             h264_row: (3840, 2160, 30),
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         };
-        let offered = |fps: f64, video: Option<LoadVideo>, caps: &plx_platform::devcaps::Caps, measured: bool| {
+        let offered = |fps: f64, video: Option<LoadVideo>, caps: &plx_os::devcaps::Caps, measured: bool| {
             crate::player::speeds_within(fps, speed_fps_ceiling(video, caps, measured))
         };
         assert_eq!(
@@ -4469,15 +4469,15 @@ mod sink_envelope_tests {
             (
                 "a row with no rate",
                 Some(LoadVideo::H264),
-                &plx_platform::devcaps::Caps { h264_row: (3840, 2160, 0), ..plx_platform::devcaps::Caps::assumed() },
+                &plx_os::devcaps::Caps { h264_row: (3840, 2160, 0), ..plx_os::devcaps::Caps::assumed() },
                 true,
             ),
         ] {
             assert_eq!(speed_fps_ceiling(video, caps, measured), crate::player::SPEED_MAX_FPS, "{what}");
         }
-        let row120 = plx_platform::devcaps::Caps {
+        let row120 = plx_os::devcaps::Caps {
             h264_row: (3840, 2160, 120),
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         };
         assert_eq!(
             speed_fps_ceiling(Some(LoadVideo::H264), &row120, true),
@@ -4550,7 +4550,7 @@ mod sink_envelope_tests {
         assert_eq!(sink_envelope(LoadVideo::H265, (0, 0), 0.0, &c, true), ENVELOPE_FHD60);
         // the same rows, not measured: never a clamp
         assert_eq!(sink_envelope(LoadVideo::H265, (3840, 2160), 0.0, &c, false), ENVELOPE_UHD60);
-        assert_eq!(sink_envelope(LoadVideo::H265, (0, 0), 0.0, &plx_platform::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
+        assert_eq!(sink_envelope(LoadVideo::H265, (0, 0), 0.0, &plx_os::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
         // a table stating a lower frame rate clamps it; a higher one never raises it
         let slow = caps((3840, 2160, 30), (3840, 2160, 120));
         assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 0.0, &slow, true).fps, 30);
@@ -4633,7 +4633,7 @@ mod sink_envelope_tests {
             0.0,
             plx_data::metadata::Dovi::NONE,
             false,
-            plx_platform::devcaps::dv::DvCapability::Supported,
+            plx_os::devcaps::dv::DvCapability::Supported,
         ));
         crate::route::set_carried_audio_for_test(
             &mut ps,
@@ -4791,21 +4791,21 @@ mod sink_envelope_tests {
 
     #[test]
     fn load_video_refused_only_for_av1_and_vp9_without_their_rows() {
-        let assumed = plx_platform::devcaps::Caps::assumed();
+        let assumed = plx_os::devcaps::Caps::assumed();
         assert!(load_video_refused(LoadVideo::Av1, &assumed));
         assert!(load_video_refused(LoadVideo::Vp9, &assumed));
         assert!(!load_video_refused(LoadVideo::H264, &assumed));
         assert!(!load_video_refused(LoadVideo::H265, &assumed));
-        let with_row = plx_platform::devcaps::Caps {
+        let with_row = plx_os::devcaps::Caps {
             av1: true,
             vp9: true,
-            ..plx_platform::devcaps::Caps::assumed()
+            ..plx_os::devcaps::Caps::assumed()
         };
         for video in [LoadVideo::H264, LoadVideo::H265, LoadVideo::Av1, LoadVideo::Vp9] {
             assert!(!load_video_refused(video, &with_row), "{video:?}");
         }
         // one row never admits the other codec
-        let av1_only = plx_platform::devcaps::Caps { av1: true, ..plx_platform::devcaps::Caps::assumed() };
+        let av1_only = plx_os::devcaps::Caps { av1: true, ..plx_os::devcaps::Caps::assumed() };
         assert!(load_video_refused(LoadVideo::Vp9, &av1_only));
     }
 
@@ -5630,7 +5630,7 @@ mod pcm_sink_lead_pure_tests {
 #[cfg(all(test, feature = "hostsim"))]
 mod pcm_stack_wiring_tests {
     use super::*;
-    use plx_platform::devcaps::{audio_stack_on_this_thread_for_test, AudioStack};
+    use plx_os::devcaps::{audio_stack_on_this_thread_for_test, AudioStack};
 
     struct Cleanup;
     impl Drop for Cleanup {

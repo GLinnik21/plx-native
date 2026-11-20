@@ -27,13 +27,13 @@
 //!
 //! [`Mark`]: plx_data::browse::bands::Mark
 use plx_data::browse::bands::Mark;
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 use plx_ui::fmt;
 
 /// The label of a band, in the language the UI is in. Exhaustive on purpose: a new [`Mark`] must say
 /// what it is called here before it compiles.
 pub(super) fn label(mark: Mark) -> String {
-    let locale = plx_platform::i18n::current();
+    let locale = plx_os::i18n::current();
     match mark {
         Mark::Percent(n) => fmt::percent(i64::from(n)),
         Mark::BelowPercent(n) => format!("<{}", fmt::percent(i64::from(n))),
@@ -61,7 +61,7 @@ fn decade_end(decade: i32) -> String {
 /// A length in minutes as the number of hours the rail names, with the half hour as `½`: 150 is
 /// `2½`, 60 is `1`. A ladder step is a whole or a half hour; any other remainder is dropped.
 fn hours_text(minutes: u16) -> String {
-    let hours = plx_platform::i18n::current().number(i64::from(minutes / 60));
+    let hours = plx_os::i18n::current().number(i64::from(minutes / 60));
     if minutes % 60 >= 30 { format!("{hours}\u{bd}") } else { hours }
 }
 
@@ -114,7 +114,7 @@ mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_data::browse::bands::{plan, BandFamily};
     use plx_machine::machine::Measure;
-    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
 
     /// The widest day the calendar families plan from: the last of a year has `Today` and all twelve months,
     /// and the oldest year the model draws makes the longest run of years and decades.
@@ -161,7 +161,7 @@ mod tests {
         for language in SHIPPED {
             let _language = language_on_this_thread_for_test(language);
             let tag = language.tag();
-            let locale = plx_platform::i18n::current();
+            let locale = plx_os::i18n::current();
             // Today: the word under a poster, or its usual abbreviation where that word is too wide.
             let (today, under_posters) = (label(Mark::Today).to_lowercase(), msg::under_posters_value_today().to_lowercase());
             assert!(under_posters.starts_with(today.trim_end_matches('.')), "{tag}: {today:?} is not {under_posters:?} or an abbreviation of it");
@@ -267,7 +267,7 @@ mod tests {
         for language in SHIPPED {
             let _language = language_on_this_thread_for_test(language);
             let one_hour = label(Mark::Minutes(60));
-            let spelled = fmt::duration_minutes_in(plx_platform::i18n::current(), 60);
+            let spelled = fmt::duration_minutes_in(plx_os::i18n::current(), 60);
             assert!(spelled.starts_with(&one_hour), "{}: the rail's {one_hour:?} is not the start of the catalog's {spelled:?}", language.tag());
             assert_eq!(label(Mark::MinutesOrMore(180)), format!("{}+", label(Mark::Minutes(180))), "{}: the top band is the whole hours and a plus", language.tag());
             assert_eq!(label(Mark::BelowMinutes(60)), format!("<{one_hour}"), "{}", language.tag());

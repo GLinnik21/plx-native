@@ -62,7 +62,7 @@
 pub use super::lint_text::{metrics as text_metrics, Metric as TextMetric};
 
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{LocaleContext, Preference};
+use plx_os::i18n::{LocaleContext, Preference};
 use plx_ui::Rect;
 
 use super::compile::{

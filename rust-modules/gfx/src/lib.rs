@@ -7,7 +7,7 @@
 //! (`svg`, which calls into `src/svg.c`), and the GPU instruments: the async timer queries
 //! (`gpu_timer`), the Mali counter reader (`hwcnt`) and the per-draw-class overdraw ledger
 //! (`overdraw`, which lived in `ui` until the split). It is the `gfx` layer of
-//! `ci/module-layers.ini`: it uses `base` and `machine` (and may use `platform`, which nothing
+//! `ci/module-layers.ini`: it uses `base` and `machine` (and may use `os`, which nothing
 //! here names today).
 //!
 //! The crate declares the `extern "C"` blocks (GLES2, EGL, SDL2_ttf, nanosvg) and one `dynlib!`

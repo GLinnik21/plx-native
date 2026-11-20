@@ -43,7 +43,7 @@ fn flow12_default_producer_long_recording_passes_current_preflight() {
 
 #[test]
 fn adjacent_v11_install_boot_facts_are_strict_hashed_and_legacy_owned() {
-    use plx_platform::i18n::Preference;
+    use plx_os::i18n::Preference;
     let initial = Initial::synthetic_home(17, 32517, Some("root".into())).unwrap();
     let fp = super::super::recorder::state_fp();
     let value = initial.to_v6_value().unwrap();

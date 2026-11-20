@@ -6,7 +6,7 @@
 //! `/library/parts/{part}/indexes/sd/{ms}` — about 10 KB of 320×180 JPEG each, the nearest frame
 //! to `ms`. The whole BIF is tens of MB against a 32-bit heap, so it is never fetched: each still
 //! is ordinary keyed art through the poster source and the render cache (`plx_ui::tex`), exactly
-//! like a chapter card's thumbnail. `plx_platform::imgcache` keeps them off the disk tier.
+//! like a chapter card's thumbnail. `plx_os::imgcache` keeps them off the disk tier.
 //!
 //! **Absence is the ordinary case.** Many libraries have preview thumbnails off, and then every
 //! still is a 404. The first request of a playback that settles as a miss before any still has

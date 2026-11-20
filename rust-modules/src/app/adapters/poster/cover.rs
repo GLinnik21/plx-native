@@ -8,7 +8,7 @@
 //! It performs none itself.
 //!
 //! **Where the bytes live.** The transcoder's answer is persisted AS IS (no re-encode) under the
-//! cover's own baked identity ([`plx_platform::imgcache::classify_baked`]; the namespace carries
+//! cover's own baked identity ([`plx_os::imgcache::classify_baked`]; the namespace carries
 //! the language, because a localized title has a different `coverArt`), and NOT also under a
 //! URL-keyed transcode entry: it is written once. A warm disk hit decodes those bytes and reads
 //! nothing, from plex.tv or anywhere.

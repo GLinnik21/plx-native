@@ -108,11 +108,11 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(!audio_track_direct_plays(&ps, "dca", 6, 0), "Force admits DTS only with a table DTS row (assumed caps have none)");
     assert!(!audio_track_direct_plays(&ps, "truehd", 8, 0));
     assert!(!audio_track_direct_plays(&ps, "", 0, 0));
-    assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()));
+    assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_os::devcaps::Caps::assumed()));
     let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
-        .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
-    assert!(!video_feed_supported("hevc", blocked_dv, &plx_platform::devcaps::Caps::assumed()));
-    assert!(!video_feed_supported("av1", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()), "Force never feeds AV1 to a set whose table lists no AV1 decoder");
+        .presentation(false, plx_os::devcaps::dv::DvCapability::Unsupported, true);
+    assert!(!video_feed_supported("hevc", blocked_dv, &plx_os::devcaps::Caps::assumed()));
+    assert!(!video_feed_supported("av1", plx_data::metadata::DvPresentation::NotDv, &plx_os::devcaps::Caps::assumed()), "Force never feeds AV1 to a set whose table lists no AV1 decoder");
     assert!(hls_abr_control(&ps).is_none());
     assert!(auto_original_watch(&ps).is_none());
     assert!(fallback_auto_to_hls(&mut ps, 1000, 0).is_none());
@@ -212,9 +212,9 @@ fn a_forced_pick_of_an_app_decodable_track_is_accepted() {
     assert!(play_verdict(&ps).is_some());
     ps.play_verdict = None;
 
-    ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps {
-        app_lossy: plx_platform::devcaps::AppLossy::Measured,
-        ..plx_platform::devcaps::Caps::assumed()
+    ps.begin_attempt(std::sync::Arc::new(plx_os::devcaps::Caps {
+        app_lossy: plx_os::devcaps::AppLossy::Measured,
+        ..plx_os::devcaps::Caps::assumed()
     }));
     assert!(audio_track_direct_plays(&ps, "dca", 2, 48_000));
     assert!(!audio_decoded_in_app(&ps, "dca", 6, 48_000), "a surround track is not mixed down under Force");

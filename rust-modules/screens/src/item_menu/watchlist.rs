@@ -48,18 +48,18 @@ type Built = (ItemRow, Action, Row);
 
 fn add_row(hex: [u8; 12], show_label: bool) -> Built {
     let label = if show_label {
-        plx_platform::i18n::msg::watchlist_action_add_show()
+        plx_os::i18n::msg::watchlist_action_add_show()
     } else {
-        plx_platform::i18n::msg::watchlist_action_add()
+        plx_os::i18n::msg::watchlist_action_add()
     };
     (ItemRow::WatchlistAdd, Action::WatchlistAdd { hex }, Row::new(label).licon(Icon::Bookmark))
 }
 
 fn remove_row(guid: String, show_label: bool) -> Built {
     let label = if show_label {
-        plx_platform::i18n::msg::watchlist_action_remove_show()
+        plx_os::i18n::msg::watchlist_action_remove_show()
     } else {
-        plx_platform::i18n::msg::watchlist_action_remove()
+        plx_os::i18n::msg::watchlist_action_remove()
     };
     (ItemRow::WatchlistRemove, Action::WatchlistRemove(guid), Row::new(label).licon(Icon::Close).destructive(true))
 }

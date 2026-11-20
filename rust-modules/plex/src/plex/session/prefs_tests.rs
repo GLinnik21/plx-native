@@ -2,7 +2,7 @@
 //! a field added to one and forgotten in the other fails here instead of drifting.
 //!
 //! * **T-fields** — `Preferences`' serde field list equals `DESCRIPTORS`' keys.
-//! * **T-account** — `DESCRIPTORS`' account-bound keys equal platform's
+//! * **T-account** — `DESCRIPTORS`' account-bound keys equal the os layer's
 //!   `ACCOUNT_BOUND_PREFERENCES`, and `auto_sign_in` is never account-bound.
 //! * **T-parse** — each descriptor's declared parse policy is the one its field really has.
 //!
@@ -183,23 +183,23 @@ fn quality_is_stored_optional_and_read_as_original() {
     assert_eq!(*QualityPref::stored(&p), Some(PlaybackQuality::Original));
 }
 
-/// **T-account.** Platform names the preference keys sign-out clears; this crate declares which
-/// rows are account-bound. The two lists are held to each other both ways: every key platform
-/// clears has a row that says so, and no row says so that platform does not clear.
+/// **T-account.** The os layer names the preference keys sign-out clears; this crate declares which
+/// rows are account-bound. The two lists are held to each other both ways: every key the os layer
+/// clears has a row that says so, and no row says so that the os layer does not clear.
 #[test]
 fn t_account_the_bound_rows_are_the_platform_bound_keys() {
-    let platform: BTreeSet<&str> = plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
+    let os_bound: BTreeSet<&str> = plx_os::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
     let declared: BTreeSet<&str> = DESCRIPTORS.iter().filter(|d| d.account_bound).map(|d| d.key).collect();
-    assert_eq!(declared, platform, "account-bound rows and platform's ACCOUNT_BOUND_PREFERENCES drifted");
-    // Every key platform clears is a row at all (a bound key with no row would be unlisted here).
-    for key in &platform {
-        assert!(keys().contains(key), "{key}: platform clears it at sign-out but no row describes it");
+    assert_eq!(declared, os_bound, "account-bound rows and the os layer's ACCOUNT_BOUND_PREFERENCES drifted");
+    // Every key the os layer clears is a row at all (a bound key with no row would be unlisted here).
+    for key in &os_bound {
+        assert!(keys().contains(key), "{key}: the os layer clears it at sign-out but no row describes it");
     }
     // `auto_sign_in` is read by `boot_shows_picker` BEFORE any profile is seated, so it can never be
     // per-profile and never account-bound (sign-out keeps the television's switch).
     let auto = DESCRIPTORS.iter().find(|d| d.key == "auto_sign_in").expect("auto_sign_in has a row");
     assert_eq!(auto.scope, Scope::Install);
-    assert!(!auto.account_bound && !platform.contains("auto_sign_in"));
+    assert!(!auto.account_bound && !os_bound.contains("auto_sign_in"));
     for d in DESCRIPTORS {
         match d.scope {
             Scope::Install => assert!(!d.account_bound, "{}: an Install row is never account-bound", d.key),
@@ -270,7 +270,7 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
 /// **The taught hold hints** (`plx_ui::hold_hint`): an absent key is "not taught" and writes no
 /// key, each flag round-trips through both on-disk hosts, a damaged flag costs only itself, and the
 /// row is the television's (Install, never account-bound, so sign-out keeps it:
-/// `platform::storage::state::clear_tenure_keeps_the_taught_hold_hints`).
+/// `os::storage::state::clear_tenure_keeps_the_taught_hold_hints`).
 #[test]
 fn the_taught_hold_hints_default_absent_round_trip_and_are_install_wide() {
     let default_json = serde_json::to_value(Preferences::default()).unwrap();
@@ -299,7 +299,7 @@ fn the_taught_hold_hints_default_absent_round_trip_and_are_install_wide() {
 
     let row = DESCRIPTORS.iter().find(|d| d.key == "hold_hint_taught").expect("the row is in the table");
     assert_eq!((row.scope, row.account_bound, row.live, row.settings), (Scope::Install, false, false, None));
-    assert!(!plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.contains(&"hold_hint_taught"));
+    assert!(!plx_os::storage::state::ACCOUNT_BOUND_PREFERENCES.contains(&"hold_hint_taught"));
 }
 
 /// The `subtitle_offsets` row is a `Preferences` field under its own key, written only while

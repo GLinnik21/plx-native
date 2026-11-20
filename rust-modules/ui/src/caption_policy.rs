@@ -40,7 +40,7 @@
 //! [`caption_lines`] words the lines in the given locale, with the catalog's plurals.
 
 pub use plx_base::detail_parts::{DetailPart, DetailParts};
-use plx_platform::i18n::LocaleContext;
+use plx_os::i18n::LocaleContext;
 
 /// Band height with nothing to show.
 pub const BAND_NONE: f32 = 0.0;
@@ -209,7 +209,7 @@ pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &Loca
 /// score ("8.1"). `None` when the tile has no such fact. The Under posters picker words each row's
 /// sample through this, so a row and the line it ticks can never word a fact differently.
 pub fn part_value(part: DetailPart, facts: &CaptionFacts, locale: &LocaleContext) -> Option<String> {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match part {
         DetailPart::Year => facts.year.filter(|y| *y > 0).map(|y| y.to_string()),
         DetailPart::Length => facts.duration_min.filter(|m| *m > 0).map(|d| crate::fmt::duration_minutes_in(locale, i64::from(d))),
@@ -264,7 +264,7 @@ fn episode_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
 /// the show nor the season), an episode its address, a show in progress its unwatched new episodes,
 /// a started movie the time it has left. `None` for a tile with none of those, which the parts word.
 fn status_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     if f.season.is_some() {
         return identity_line(f, cx);
     }
@@ -302,7 +302,7 @@ fn status_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
 /// keeps the rule that a band the setting opens is never open over nothing. It is the last rung, so
 /// it is read only by a tile with no year, address, title or size at all (an owner call, kept).
 fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
         return Some(match f.child_count {
             Some(n) => crate::fmt::collection_count_in(cx, Some(sub), i64::from(n)),
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn lines_follow_the_policy_and_fall_back_to_identity_for_missing_facts() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
-        let l = plx_platform::i18n::current();
+        let l = plx_os::i18n::current();
         let p = CaptionPolicy::same(true, parts(&[P::Genre]));
         assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), Some("Crime".into())]);
         // no stream facts: the line is the item's identity (its year), never an open band over nothing
@@ -404,7 +404,7 @@ mod tests {
     /// tick falls to the identity line.
     #[test]
     fn the_line_joins_the_ticked_parts_in_the_fixed_order() {
-        let l = plx_platform::i18n::english();
+        let l = plx_os::i18n::english();
         let movie = CaptionFacts {
             year: Some(2024), duration_min: Some(112), genre: Some("Drama".into()), video_resolution: Some("4k".into()), hdr: true,
             content_rating: Some("PG-13".into()), audience_rating: Some(8.1), is_movie: true, ..Default::default()
@@ -424,7 +424,7 @@ mod tests {
     /// set that ticks one of those three parts has them.
     #[test]
     fn a_started_movie_and_a_show_in_progress_say_their_status_only_for_the_year_length_seasons_parts() {
-        let l = plx_platform::i18n::english();
+        let l = plx_os::i18n::english();
         let started = CaptionFacts { year: Some(2024), duration_min: Some(112), view_offset_min: Some(74), genre: Some("Drama".into()), ..Default::default() };
         let at = |ps: &[DetailPart]| caption_lines(&CaptionPolicy::same(false, parts(ps)), &started, l)[1].clone();
         assert_eq!(at(&[P::Year, P::Length]).as_deref(), Some("38m left"));
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn a_collection_says_its_size_under_any_non_empty_set_and_nothing_under_the_empty_one() {
-        let l = plx_platform::i18n::english();
+        let l = plx_os::i18n::english();
         let films = CaptionFacts { subtype: Some("movie".into()), child_count: Some(7), ..Default::default() };
         for ps in [&[P::Genre][..], &[P::Year, P::Length], &[P::Score]] {
             assert_eq!(caption_lines(&CaptionPolicy::same(false, parts(ps)), &films, l)[1].as_deref(), Some("7 films"));

@@ -5,11 +5,11 @@
 use super::test_support::*;
 use super::*;
 use plx_data::metadata::{Dovi, DvDecision};
-use plx_platform::devcaps::dv::DvCapability;
+use plx_os::devcaps::dv::DvCapability;
 
 #[test]
 fn p8_without_confirmed_dv_support_uses_base_layer() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176),
         h264_row: (0, 0, 0),
@@ -23,9 +23,9 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     for bl_compat in [1, 2, 4] {
         let dovi = Dovi {
@@ -36,8 +36,8 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
             ..Dovi::NONE
         };
         for capability in [
-            plx_platform::devcaps::dv::DvCapability::Unknown,
-            plx_platform::devcaps::dv::DvCapability::Unsupported,
+            plx_os::devcaps::dv::DvCapability::Unknown,
+            plx_os::devcaps::dv::DvCapability::Unsupported,
         ] {
             for signal in [false, true] {
                 let presentation = dovi.presentation(signal, capability, true);
@@ -54,7 +54,7 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
 
 #[test]
 fn p5_without_confirmed_dv_support_requires_video_encode() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176),
         h264_row: (0, 0, 0),
@@ -68,13 +68,13 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     for capability in [
-        plx_platform::devcaps::dv::DvCapability::Unknown,
-        plx_platform::devcaps::dv::DvCapability::Unsupported,
+        plx_os::devcaps::dv::DvCapability::Unknown,
+        plx_os::devcaps::dv::DvCapability::Unsupported,
     ] {
         for signal in [false, true] {
             let presentation = p5().presentation(signal, capability, true);
@@ -91,7 +91,7 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
 
 #[test]
 fn supported_dv_preserves_signal_and_layer_rules() {
-    use plx_platform::devcaps::dv::DvCapability::Supported;
+    use plx_os::devcaps::dv::DvCapability::Supported;
 
     assert!(p5()
         .presentation(false, Supported, true)
@@ -133,7 +133,7 @@ fn supported_dv_preserves_signal_and_layer_rules() {
 
 #[test]
 fn non_hevc_never_declares_dolby_vision() {
-    use plx_platform::devcaps::dv::DvCapability::Supported;
+    use plx_os::devcaps::dv::DvCapability::Supported;
 
     // HEVC and AV1 carry a declaration; an AVC Profile 9 and VP9 never do.
     for (vcodec, carries) in [("hevc", true), ("HEVC", true), ("av1", true), ("h264", false), ("vp9", false)] {
@@ -176,7 +176,7 @@ fn non_hevc_never_declares_dolby_vision() {
 /// since 2026-08-11 (fine). Every gate passes and the user gets a broken picture.
 #[test]
 fn a_profile_5_source_does_not_direct_play_undeclared() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176), // the dev TV's own bound — this must fail on SIZE grounds nowhere
         h264_row: (0, 0, 0),
@@ -190,9 +190,9 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
@@ -200,7 +200,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
             "hevc",
             3840,
             1602,
-            p5().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
             &caps
         ),
         "IPT-PQ has no HDR10 base layer"
@@ -211,7 +211,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         "hevc",
         3840,
         1602,
-        no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
         &caps
     ));
 }
@@ -224,7 +224,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
 /// decoder, only about our own silence.
 #[test]
 fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176),
         h264_row: (0, 0, 0),
@@ -238,11 +238,11 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
-    let dv = p5().presentation(DECLARED, plx_platform::devcaps::dv::DvCapability::Supported, true);
+    let dv = p5().presentation(DECLARED, plx_os::devcaps::dv::DvCapability::Supported, true);
     assert!(
         video_direct_plays("hevc", 3840, 1602, dv, &caps),
         "a declared P5 is displayable"
@@ -259,7 +259,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
     // ...and the size and codec halves of the gate are untouched by any of it
     // Holds because these caps carry no AV1 row (av1: false), not because of the Dolby gate.
     assert!(!video_direct_plays("av1", 3840, 1602, dv, &caps));
-    let small = plx_platform::devcaps::Caps {
+    let small = plx_os::devcaps::Caps {
         hevc_max: (1920, 1088),
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
@@ -278,8 +278,8 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
 /// wave the other kind straight through.
 #[test]
 fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
-    use plx_platform::devcaps::dv::DvCapability::{Supported, Unknown, Unsupported};
-    let caps = plx_platform::devcaps::Caps {
+    use plx_os::devcaps::dv::DvCapability::{Supported, Unknown, Unsupported};
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176),
         h264_row: (0, 0, 0),
@@ -293,9 +293,9 @@ fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     for signal in [SILENT, DECLARED] {
         let dv = p7().presentation(signal, Supported, true);
@@ -354,7 +354,7 @@ fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
 /// matrix above.
 #[test]
 fn profile_8_and_plain_files_are_unaffected() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176),
         h264_row: (0, 0, 0),
@@ -368,9 +368,9 @@ fn profile_8_and_plain_files_are_unaffected() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     for signal in [SILENT, DECLARED] {
         assert!(
@@ -378,7 +378,7 @@ fn profile_8_and_plain_files_are_unaffected() {
                 "hevc",
                 3840,
                 2160,
-                p8().presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+                p8().presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
                 &caps
             ),
             "HDR10-compatible base layer (signal={signal})"
@@ -387,24 +387,24 @@ fn profile_8_and_plain_files_are_unaffected() {
             "hevc",
             3840,
             2160,
-            no_dv().presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            no_dv().presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
             &caps
         ));
         assert!(video_direct_plays(
             "h264",
             1920,
             1080,
-            no_dv().presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            no_dv().presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
             &caps
         ));
         assert_eq!(
-            p8().presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true)
+            p8().presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true)
                 .refusal(),
             None
         );
         assert_eq!(
             no_dv()
-                .presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true)
+                .presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true)
                 .refusal(),
             None
         );
@@ -413,7 +413,7 @@ fn profile_8_and_plain_files_are_unaffected() {
     // node is a statement about the stream, not a mode the app is in.
     assert_eq!(
         no_dv()
-            .presentation(DECLARED, plx_platform::devcaps::dv::DvCapability::Supported, true)
+            .presentation(DECLARED, plx_os::devcaps::dv::DvCapability::Supported, true)
             .declared(),
         None
     );
@@ -424,7 +424,7 @@ fn profile_8_and_plain_files_are_unaffected() {
     // regress if the gate were ever rewritten as a bare `signal &&`.
     for signal in [SILENT, DECLARED] {
         assert_eq!(
-            p8().presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true)
+            p8().presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true)
                 .declared()
                 .map(|n| n.profile_id),
             Some(8),
@@ -432,7 +432,7 @@ fn profile_8_and_plain_files_are_unaffected() {
         );
     }
     assert_eq!(
-        p5().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true)
+        p5().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true)
             .declared(),
         None,
         "P5 stays behind the trigger"
@@ -485,20 +485,20 @@ fn an_unreported_dolby_vision_record_refuses_nothing() {
     // file that plays. It falls through to `NotDv` — plays as it always has, declares nothing.
     for signal in [SILENT, DECLARED] {
         assert_eq!(
-            Dovi::default().presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            Dovi::default().presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
             DvPresentation::NotDv
         );
         assert_eq!(
-            bare.presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            bare.presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
             DvPresentation::NotDv,
             "signal={signal}"
         );
         assert_eq!(
-            contradictory.presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            contradictory.presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
             DvPresentation::NotDv
         );
         assert_eq!(
-            el_only.presentation(signal, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            el_only.presentation(signal, plx_os::devcaps::dv::DvCapability::Supported, true),
             DvPresentation::Refuse("dual-layer")
         );
     }
@@ -510,7 +510,7 @@ fn an_unreported_dolby_vision_record_refuses_nothing() {
 /// a node when support is absent or unknown.
 #[test]
 fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (4096, 2176),
         h264_row: (0, 0, 0),
@@ -524,14 +524,14 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     for capability in [
-        plx_platform::devcaps::dv::DvCapability::Unknown,
-        plx_platform::devcaps::dv::DvCapability::Unsupported,
-        plx_platform::devcaps::dv::DvCapability::Supported,
+        plx_os::devcaps::dv::DvCapability::Unknown,
+        plx_os::devcaps::dv::DvCapability::Unsupported,
+        plx_os::devcaps::dv::DvCapability::Supported,
     ] {
         for compat in [0, 1, 2, 4, 6] {
             for signal in [false, true] {
@@ -550,10 +550,10 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
                     assert!(d.base_layer_unusable());
                 }
                 if let Some(node) = presentation.declared() {
-                    assert_eq!(capability, plx_platform::devcaps::dv::DvCapability::Supported);
+                    assert_eq!(capability, plx_os::devcaps::dv::DvCapability::Supported);
                     assert_eq!(node.profile_id, d.profile);
                 }
-                if plays && capability != plx_platform::devcaps::dv::DvCapability::Supported {
+                if plays && capability != plx_os::devcaps::dv::DvCapability::Supported {
                     assert_eq!(presentation, DvPresentation::NotDv);
                     assert!(presentation.declared().is_none());
                 }
@@ -573,7 +573,7 @@ fn base_layer_usability_by_profile() {
     assert!(Dovi { bl_compat: 0, ..p7() }.base_layer_unusable());
     assert!(!p8().base_layer_unusable());
     assert_eq!(
-        p5().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true)
+        p5().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true)
             .refusal(),
         Some("no cross-compatible base layer")
     );
@@ -609,12 +609,12 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     let part = "/library/parts/1/2/movie.mp4";
     assert_eq!(
         playback_preview_of(
-            &plx_platform::devcaps::caps(),
+            &plx_os::devcaps::caps(),
             part,
             "hevc",
             1920,
             1080,
-            p5().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
             &aac
         ),
         Some(Preview::Converts),
@@ -624,24 +624,24 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     // reading the new field and not something else that happens to differ
     assert_eq!(
         playback_preview_of(
-            &plx_platform::devcaps::caps(),
+            &plx_os::devcaps::caps(),
             part,
             "hevc",
             1920,
             1080,
-            no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
             &aac
         ),
         Some(Preview::DirectPlay)
     );
     assert_eq!(
         playback_preview_of(
-            &plx_platform::devcaps::caps(),
+            &plx_os::devcaps::caps(),
             part,
             "hevc",
             1920,
             1080,
-            p8().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p8().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
             &aac
         ),
         Some(Preview::DirectPlay)
@@ -650,12 +650,12 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     // route no longer performs — the preview reads the same predicate the gate does
     assert_eq!(
         playback_preview_of(
-            &plx_platform::devcaps::caps(),
+            &plx_os::devcaps::caps(),
             part,
             "hevc",
             1920,
             1080,
-            p5().presentation(DECLARED, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(DECLARED, plx_os::devcaps::dv::DvCapability::Supported, true),
             &aac
         ),
         Some(Preview::DirectPlay)
@@ -669,7 +669,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
 /// reviewer-class caps.
 #[test]
 fn a_source_beyond_the_device_bound_does_not_direct_play() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: true,
         hevc_max: (1920, 1088),
         h264_row: (0, 0, 0),
@@ -683,23 +683,23 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     // the codec agrees; the frame size must still refuse — on either codec
     assert!(!video_direct_plays(
         "h264",
         3840,
         2160,
-        no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
         &caps
     ));
     assert!(!video_direct_plays(
         "hevc",
         3840,
         2160,
-        no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
         &caps
     ));
     // one axis over is over (per-axis bound, not an area heuristic)
@@ -707,7 +707,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         "h264",
         4096,
         1080,
-        no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
         &caps
     ));
     // within the bound plays, exactly at it included (1088 IS the table's number)
@@ -715,7 +715,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         "h264",
         1920,
         1088,
-        no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
         &caps
     ));
 }
@@ -724,7 +724,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
 /// yesterday's behavior for it), while the codec half keeps gating regardless.
 #[test]
 fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
-    let caps = plx_platform::devcaps::Caps {
+    let caps = plx_os::devcaps::Caps {
         hevc: false,
         hevc_max: (1920, 1088),
         h264_row: (0, 0, 0),
@@ -738,15 +738,15 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
-        dv_first_picture: plx_platform::devcaps::DvFirstPicture::AnyIrap,
+        dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
     };
     assert!(video_direct_plays(
         "h264",
         0,
         0,
-        no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
         &caps
     ));
     assert!(
@@ -754,7 +754,7 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
             "hevc",
             1280,
             720,
-            no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
             &caps
         ),
         "no decoder row, no direct play"
@@ -764,7 +764,7 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
             "av1",
             1280,
             720,
-            no_dv().presentation(SILENT, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            no_dv().presentation(SILENT, plx_os::devcaps::dv::DvCapability::Supported, true),
             &caps
         ),
         "the pipeline cannot feed it at any size"
@@ -1008,7 +1008,7 @@ fn dv_withdraw_downgrades_the_stored_original_candidate_too() {
 
 #[test]
 fn dv_withdraw_first_picture_reads_the_attempt_caps() {
-    use plx_platform::devcaps::{apply_exclusions, Caps, DvFirstPicture, EXCLUSIONS};
+    use plx_os::devcaps::{apply_exclusions, Caps, DvFirstPicture, EXCLUSIONS};
     let mut ps = crate::route::PlaybackSession::IDLE;
     assert_eq!(crate::route::dv_first_picture(&ps), DvFirstPicture::AnyIrap, "no attempt: the assumed value");
     let mut c = Caps::assumed();

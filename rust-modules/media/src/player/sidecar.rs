@@ -71,8 +71,8 @@ enum Failure {
 impl Failure {
     fn message(self) -> &'static str {
         match self {
-            Failure::Fetch => plx_platform::i18n::msg::widgets_sidecar_fetch_failed(),
-            Failure::Empty => plx_platform::i18n::msg::widgets_sidecar_empty(),
+            Failure::Fetch => plx_os::i18n::msg::widgets_sidecar_fetch_failed(),
+            Failure::Empty => plx_os::i18n::msg::widgets_sidecar_empty(),
         }
     }
 }
@@ -1069,7 +1069,7 @@ mod tests {
         select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 9, "/library/streams/9".into(), "srt".into(),
             |_, _, _| Some(b"<html>not a subtitle</html>".to_vec()));
         finish_download();
-        let message = plx_platform::i18n::msg::widgets_sidecar_empty();
+        let message = plx_os::i18n::msg::widgets_sidecar_empty();
         assert_eq!(notice(), Some(message));
         assert!(notice_shown());
         assert!(ass_source(false).is_none(), "and no script");
@@ -1084,7 +1084,7 @@ mod tests {
         select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 10, "/library/streams/10".into(), "srt".into(),
             |_, _, _| None);
         finish_download();
-        assert_eq!(notice(), Some(plx_platform::i18n::msg::widgets_sidecar_fetch_failed()));
+        assert_eq!(notice(), Some(plx_os::i18n::msg::widgets_sidecar_fetch_failed()));
         deselect();
         assert_eq!(notice(), None, "off clears it");
         reset();

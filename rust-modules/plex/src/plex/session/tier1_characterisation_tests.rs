@@ -5,7 +5,7 @@
 //! * Item 5: sign-out on the DB8 path. Which stored keys survive `ClearTenure`.
 //! * Item 10: a queued account-data edit is dropped across a tenure change and across a
 //!   `client_id` / `account_token` change; an install write is refused while revoked.
-//! * Item 16: tier 1. A new build's extra preference keys, fed through the platform state codec
+//! * Item 16: tier 1. A new build's extra preference keys, fed through the os layer's state codec
 //!   and the OLD build's parse (`super::v0`), leave credentials and today's keys intact; and the
 //!   two structural traps (a new `PublicPayload` slot, a new top-level state field) are refused by
 //!   `decode`, which is why the plan forbids them. These tests do NOT assert that a new key
@@ -13,7 +13,7 @@
 use super::*;
 use super::test_support::{signed_in, STAMP};
 use super::v0;
-use plx_platform::storage::{client, state, wire::*};
+use plx_os::storage::{client, state, wire::*};
 
 // ---- a signed-in session with every preference at a non-default value -----------------------
 
@@ -44,7 +44,7 @@ fn rich() -> Session {
         "auto_sign_in": true, "trailer_autoplay": false,
         "last_hero_blur": [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
     })).unwrap();
-    session.language = plx_platform::i18n::Preference::Be;
+    session.language = plx_os::i18n::Preference::Be;
     session.prefs.playback_quality = Some(PlaybackQuality::P1080High);
     session.prefs.direct_play_mode = DirectPlayMode::Forced;
     session.prefs.subtitle_tone = SubtitleTone::Grey;
@@ -74,7 +74,7 @@ struct Db8 {
     record: Option<Value>,
     puts: usize,
 }
-impl plx_platform::storage::keymanager::Rpc for Db8 {
+impl plx_os::storage::keymanager::Rpc for Db8 {
     fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
         match uri {
             "luna://com.palm.db/get" => Ok(
@@ -94,8 +94,8 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
     }
 }
 
-fn helper() -> plx_platform::storage::backend::Backend<Db8> {
-    plx_platform::storage::backend::Backend::new(
+fn helper() -> plx_os::storage::backend::Backend<Db8> {
+    plx_os::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
 }
 
@@ -374,7 +374,7 @@ fn assert_credentials_intact(joined: &Session, original: &Session, case: &str) {
 }
 
 /// **Tier 1, DB8 path.** New-build extra keys in the public preferences (and a per-record
-/// `account` inside the offset records), well formed and malformed, through the platform codec
+/// `account` inside the offset records), well formed and malformed, through the os layer's codec
 /// (`encode` then `decode`, both validating), then the old build's preference parse and today's
 /// `join_canonical`: credentials intact, today's keys parse as before, extras land in opaque
 /// extensions and nowhere else.
@@ -503,7 +503,7 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
 
 /// **A0 item 16, the real shape of `profile_prefs`.** The cases above feed tier 1 shapes nothing
 /// writes. This is the shape this build writes (an array of records, each with the profile, the
-/// account stamp and the values it picked), through the platform codec and the PREVIOUS build's
+/// account stamp and the values it picked), through the os layer's codec and the PREVIOUS build's
 /// frozen parse: credentials and today's keys intact, the key opaque, and the previous build's own
 /// rewrite of it byte-identical; this build then reads back exactly what it wrote. It also proves the
 /// frozen top-level keys are still the previous build's to read: a profile's pick never rewrote them.
@@ -587,7 +587,7 @@ fn tier1_negative_control_a_new_public_slot_or_state_field_fails_decode() {
 
 /// **Item 16, the real-shape case for stamped offsets (SO).** A's cases above use guessed shapes;
 /// this one serializes a REAL new-build session, whose offset record carries the account stamp it
-/// wrote itself, and feeds it to the old build's parse and to the platform codec. The stamp is a
+/// wrote itself, and feeds it to the old build's parse and to the os layer's codec. The stamp is a
 /// per-record key the old build keeps opaquely (`extensions`); credentials and today's keys are
 /// intact on both stores.
 #[test]
@@ -600,7 +600,7 @@ fn tier1_real_shape_stamped_offsets_are_read_by_the_old_build_and_the_codec() {
         "the real record is stamped with its own account");
     assert!(public.preferences["subtitle_offsets"][0]["items"][0].get("account").is_none(), "the entries are not");
 
-    // The DB8 path: the platform codec, then the old build's parse and join.
+    // The DB8 path: the os layer's codec, then the old build's parse and join.
     let bytes = canonical_state(&public, public.preferences.clone()).encode().expect("encode validates");
     let decoded = state::CanonicalState::decode(&bytes, state::Flavor::Stable).expect("decode validates");
     assert_eq!(decoded.public.preferences, public.preferences, "the codec keeps the preferences byte for byte");

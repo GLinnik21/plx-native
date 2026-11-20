@@ -85,7 +85,7 @@ use plx_plex::plex::{Client, ClientKey, ClientKeys};
 
 use crate::app::bootstrap::HomeIo;
 
-/// The viewer's time zone for a bands read, as the platform layer reads it from the OS: this runner is
+/// The viewer's time zone for a bands read, as the os layer reads it from the OS: this runner is
 /// where the zone may be read (the data job takes it as two plain functions, `Zone`, and no machine
 /// reads it), and a calendar family's edges are converted with it.
 pub(crate) fn launch_watchlist_write(
@@ -152,7 +152,7 @@ fn launch_watchlist_stream_with(job: StoreJob, scripted: Option<std::sync::Arc<d
     if !spawn(worker) { refusal.refused(addr); }
 }
 fn os_zone() -> Zone {
-    Zone { local_midnight: plx_platform::i18n::local_midnight, local_date: plx_platform::i18n::local_calendar_date }
+    Zone { local_midnight: plx_os::i18n::local_midnight, local_date: plx_os::i18n::local_calendar_date }
 }
 
 /// Fill `keys` with the registry's answer for every active server slot, in place (a pump that runs

@@ -49,12 +49,12 @@ pub trait UriProbeSession {
 pub struct ProbeOpen<'a> {
     pub attempt: RouteStartAttempt,
     pub url: &'a str,
-    /// The URI bus ([`plx_platform::tv::uri::installed`]).
-    pub transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    /// The URI bus ([`plx_os::tv::uri::installed`]).
+    pub transport: &'static dyn plx_os::tv::uri::UriMedia,
     /// The display sink of the Feed start path this probe diverts from, fence included.
-    pub display: &'static dyn plx_platform::tv::sink::DisplaySink,
+    pub display: &'static dyn plx_os::tv::sink::DisplaySink,
     /// The process's ACB plane owner.
-    pub plane: &'static plx_platform::tv::plane::PlaneOwner,
+    pub plane: &'static plx_os::tv::plane::PlaneOwner,
     pub log: fn(&str),
     pub app_id: String,
     /// The route is segmented HLS (the probe's `Kind::Hls`), not a direct file.
@@ -114,7 +114,7 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
     ps.begin_attempt_view(attempt, super::attempt_view::Backend::Uri);
     let input = ProbeOpen {
         attempt, url,
-        transport: plx_platform::tv::uri::installed(),
+        transport: plx_os::tv::uri::installed(),
         display: pa.display_sink(),
         plane: super::plane(),
         log: super::log,

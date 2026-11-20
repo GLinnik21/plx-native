@@ -41,11 +41,11 @@ fn is_episode(meta: metadata::MetadataView<'_>) -> bool {
 /// only where the actual label TEXT is wanted.
 pub(crate) fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
     [
-        plx_platform::i18n::msg::widgets_info_from_beginning(),
+        plx_os::i18n::msg::widgets_info_from_beginning(),
         if is_episode(meta) {
-            plx_platform::i18n::msg::widgets_info_go_show()
+            plx_os::i18n::msg::widgets_info_go_show()
         } else {
-            plx_platform::i18n::msg::widgets_info_go_movie()
+            plx_os::i18n::msg::widgets_info_go_movie()
         },
     ]
 }
@@ -69,9 +69,9 @@ pub(crate) fn card_geometry() -> (Rect, f32) {
 pub(crate) fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let (card, pad) = card_geometry();
     let labels = [
-        plx_platform::i18n::msg::widgets_info_from_beginning_c(),
-        plx_platform::i18n::msg::widgets_info_go_show_c(),
-        plx_platform::i18n::msg::widgets_info_go_movie_c(),
+        plx_os::i18n::msg::widgets_info_from_beginning_c(),
+        plx_os::i18n::msg::widgets_info_go_show_c(),
+        plx_os::i18n::msg::widgets_info_go_movie_c(),
     ];
     let bw = labels.iter().map(|label| {
         plx_ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, None, measure)
@@ -214,9 +214,9 @@ pub(crate) fn info_chips(
                     chips.push(Chip::badge(tag, measure));
                 }
             }
-            "cc" if !c.subs.is_empty() => chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_cc().to_string(), measure)),
-            "sdh" if c.subs.iter().any(|s| s.sdh) => chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_sdh().to_string(), measure)),
-            "ad" if c.audio.iter().any(|s| s.ad) => chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_ad().to_string(), measure)),
+            "cc" if !c.subs.is_empty() => chips.push(Chip::badge(plx_os::i18n::msg::widgets_badge_cc().to_string(), measure)),
+            "sdh" if c.subs.iter().any(|s| s.sdh) => chips.push(Chip::badge(plx_os::i18n::msg::widgets_badge_sdh().to_string(), measure)),
+            "ad" if c.audio.iter().any(|s| s.ad) => chips.push(Chip::badge(plx_os::i18n::msg::widgets_badge_ad().to_string(), measure)),
             _ => {}
         }
     }
@@ -295,17 +295,17 @@ pub fn playback_now(
         return None;
     }
     if !transcoding {
-        return Some(plx_platform::i18n::msg::widgets_playback_direct_play().to_string());
+        return Some(plx_os::i18n::msg::widgets_playback_direct_play().to_string());
     }
     if remux {
-        return Some(plx_platform::i18n::msg::widgets_playback_direct_stream().to_string());
+        return Some(plx_os::i18n::msg::widgets_playback_direct_stream().to_string());
     }
     let name = video_codec_name(vcodec);
     // a re-encode whose output codec we somehow do not know still converted — say that much
     Some(if name.is_empty() {
-        plx_platform::i18n::msg::widgets_playback_converting().to_string()
+        plx_os::i18n::msg::widgets_playback_converting().to_string()
     } else {
-        plx_platform::i18n::msg::widgets_playback_converting_codec(&name)
+        plx_os::i18n::msg::widgets_playback_converting_codec(&name)
     })
 }
 

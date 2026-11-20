@@ -3000,7 +3000,7 @@ impl DetailScreen {
         let title = self.hero_title(d).unwrap_or_else(|| {
             // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
             plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
-            plx_platform::i18n::msg::browse_library_loading()
+            plx_os::i18n::msg::browse_library_loading()
         });
         let chrome = p.alpha(self.preview_chrome);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
@@ -3115,7 +3115,7 @@ impl DetailScreen {
                 parts.push(&ordinal);
             }
         } else {
-            parts.push(if d.is_show { plx_platform::i18n::msg::browse_kind_tv_show() } else { plx_platform::i18n::msg::browse_kind_movie() });
+            parts.push(if d.is_show { plx_os::i18n::msg::browse_kind_tv_show() } else { plx_os::i18n::msg::browse_kind_movie() });
             parts.extend(d.genres.iter().take(2).map(String::as_str));
         }
         if !d.rating.is_empty() {
@@ -3126,9 +3126,9 @@ impl DetailScreen {
         let resolution = played.as_ref().and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
         let range = played.as_ref().and_then(|f| plx_ui::fmt::dynamic_range(f.range()));
         let access = [
-            (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
-            (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
-            (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
+            (!d.subs.is_empty(), plx_os::i18n::msg::widgets_badge_cc()),
+            (d.subs.iter().any(|s| s.sdh), plx_os::i18n::msg::widgets_badge_sdh()),
+            (d.audio.iter().any(|s| s.ad), plx_os::i18n::msg::widgets_badge_ad()),
         ].into_iter().filter_map(|(present, label)| present.then_some(label));
         let chips: Vec<&str> = range.into_iter().chain(access).collect();
         let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);

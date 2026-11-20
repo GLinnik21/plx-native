@@ -5,7 +5,7 @@
 //!
 //! This was one 3600-line file; it is now a directory so that a layout can be swapped without
 //! touching the rules, and so that the draw path reads no player global (the localized labels it draws go through
-//! `plx_platform::i18n`, [`classic::tab_labels`] among them):
+//! `plx_os::i18n`, [`classic::tab_labels`] among them):
 //!
 //! | module | what it is |
 //! |---|---|
@@ -470,7 +470,7 @@ impl SubtitleBitmaps {
 /// the frozen golden).
 #[cfg(any(test, feature = "test-support"))]
 pub fn audit_geometry() -> geometry::HudGeometry {
-    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure);
+    let hud = loaded::load_classic("audit", plx_os::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure);
     geometry::geometry(&hud.compiled, 0, ControlSlot::Discs(Controls::NONE), false, false)
 }
 

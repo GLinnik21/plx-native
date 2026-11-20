@@ -252,7 +252,7 @@ pub struct Gate {
 /// confirmed initialized (a created handle and `playerType 0` alone do not prove it), player type
 /// 0 (what the measured sequence initialized), and, for the `connectDass` arm, the entry point.
 pub fn gate(dass: bool, mode: i32, boot_handle: bool, ptype: i32, dass_available: bool, initialized: bool) -> Gate {
-    let ready = mode == plx_platform::tv::sink::VP_ACB && boot_handle && initialized && ptype == 0
+    let ready = mode == plx_os::tv::sink::VP_ACB && boot_handle && initialized && ptype == 0
         && (!dass || dass_available);
     Gate { mode, boot_handle, ptype, dass_available, initialized, ready }
 }
@@ -459,12 +459,12 @@ mod tests {
 
     #[test]
     fn the_gate_needs_every_fact_and_the_entry_point_only_for_dass() {
-        let vp_acb = plx_platform::tv::sink::VP_ACB;
+        let vp_acb = plx_os::tv::sink::VP_ACB;
         for dass in [false, true] {
             assert!(!gate(dass, vp_acb, true, 0, true, false).ready, "a created handle is not an initialized one");
             assert!(!gate(dass, vp_acb, false, 0, true, true).ready);
             assert!(!gate(dass, vp_acb, true, 10, true, true).ready, "the measured sequence initialized player type 0");
-            assert!(!gate(dass, plx_platform::tv::sink::VP_EXPORTED, true, 0, true, true).ready);
+            assert!(!gate(dass, plx_os::tv::sink::VP_EXPORTED, true, 0, true, true).ready);
             assert!(gate(dass, vp_acb, true, 0, true, true).ready);
         }
         assert!(gate(false, vp_acb, true, 0, false, true).ready);

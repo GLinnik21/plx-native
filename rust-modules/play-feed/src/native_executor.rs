@@ -14,9 +14,9 @@ use crate::shared::PhysicalShared;
 use crate::shared::{HlsPlayCompletion, HlsPrimeKind, Stage, Transport};
 use crate::SendPtr;
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::VideoSink;
-use plx_platform::tv::sink::UnloadTicket;
-use plx_platform::devcaps::AudioStack;
+use plx_os::tv::sink::VideoSink;
+use plx_os::tv::sink::UnloadTicket;
+use plx_os::devcaps::AudioStack;
 use plx_net::stream::HttpStream;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
@@ -136,7 +136,7 @@ pub struct ReleaseHooks {
     pub raw_sink: fn() -> &'static dyn VideoSink,
     /// The process's plane owner: whether this device's plane is ACB, and the one that records
     /// (and never waits on) the release's `setState(UNLOADED)`.
-    pub plane: &'static plx_platform::tv::plane::PlaneOwner,
+    pub plane: &'static plx_os::tv::plane::PlaneOwner,
     pub on_release_step: fn(crate::native_release::ReleaseStep),
     pub on_exported_window_destroy: fn(),
     pub spawn_unload: fn(UnloadTicket) -> Option<std::thread::JoinHandle<()>>,
@@ -724,7 +724,7 @@ fn finish_unloaded_object(
 fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans, hooks: &ReleaseHooks) {
     unsafe { (hooks.raw_sink)().destroy_window(mt) };
     sp.mark("destroy_window");
-    if (hooks.raw_sink)().window_mode() == plx_platform::tv::sink::VP_EXPORTED {
+    if (hooks.raw_sink)().window_mode() == plx_os::tv::sink::VP_EXPORTED {
         (hooks.on_exported_window_destroy)();
     }
 }
@@ -1430,7 +1430,7 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
             (hooks.mute_for_preroll)(mt);
             // The mute is the feed's own record (the restore gives back what was saved, which is
             // always the pipeline default: the volume is never read back).
-            transport.note_preroll_muted(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
+            transport.note_preroll_muted(plx_os::tv::sink::PIPELINE_DEFAULT_VOLUME);
         }
         // Snapshot before the call so a callback delivered synchronously by Play counts, but
         // one queued during Flush/Segment does not establish the new clock by itself.
@@ -2004,8 +2004,8 @@ pub fn sink_envelope_now(facts: &crate::PayloadFacts, video: crate::LoadVideo, r
         video,
         facts.max_raster,
         crate::fed_fps(facts.fps, rate),
-        &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !facts.force_direct_play,
+        &plx_os::devcaps::caps(),
+        plx_os::devcaps::measured() && !facts.force_direct_play,
     )
 }
 
@@ -2038,7 +2038,7 @@ pub struct LoadAudio {
 /// decodes itself at 1x (`app_pcm`, the route's declared shape: DTS under the
 /// lossy gate, FLAC and the like), whatever its codec, and that name is what the lead plan is made
 /// from, so every Load that declares `"audio":"PCM"` is planned a lead. `lead_override_ms` is
-/// the dev trigger's text and `stack` the set's audio stack ([`plx_platform::devcaps::audio_stack`]).
+/// the dev trigger's text and `stack` the set's audio stack ([`plx_os::devcaps::audio_stack`]).
 pub fn load_audio(
     codec: &str, session_rate: i32, app_pcm: bool, lead_override_ms: Option<&str>,
     stack: AudioStack,
@@ -2108,7 +2108,7 @@ pub fn with_app_id(p: &str) -> String {
 /// variant here — via [`app_id_key`], so the anchor cannot drift from what `with_app_id` composed.
 /// A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
 pub fn with_window_id(mt: &MainThread, p: &str, hooks: &PrepareHooks) -> String {
-    if (hooks.sink)().window_mode() != plx_platform::tv::sink::VP_EXPORTED {
+    if (hooks.sink)().window_mode() != plx_os::tv::sink::VP_EXPORTED {
         return p.to_string();
     }
     let id = unsafe { (hooks.sink)().create_window(mt) };
@@ -2186,7 +2186,7 @@ pub fn prepare_native_open(
             shared.fail_demux_latch(hooks.load_refusal_latch);
             return Err(PrepareRefusal::Refused);
         };
-        if crate::load_video_refused(lv, &plx_platform::devcaps::caps()) {
+        if crate::load_video_refused(lv, &plx_os::devcaps::caps()) {
             plx_base::eventlog::log(&format!(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
@@ -2230,7 +2230,7 @@ pub fn prepare_native_open(
             // on an output the default was not filmed on.
             let lead_override = plx_base::devtrig::read("pcmavoffset");
             let Some(audio) = load_audio(
-                &codec, session_rate, pcm.is_some(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
+                &codec, session_rate, pcm.is_some(), lead_override.as_deref(), plx_os::devcaps::audio_stack(),
             ) else {
                 plx_base::eventlog::log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
                 shared.fail_demux_latch(hooks.load_refusal_latch);
@@ -2374,7 +2374,7 @@ mod native_lifecycle_host_seam_tests {
     /// observations the composition records (telemetry crumbs) are not the executor's, so they are
     /// no-ops here; `plx_media`'s tests keep the ones that read them.
     fn release_hooks() -> ReleaseHooks {
-        static PLANE: plx_platform::tv::plane::PlaneOwner = plx_platform::tv::plane::PlaneOwner::new();
+        static PLANE: plx_os::tv::plane::PlaneOwner = plx_os::tv::plane::PlaneOwner::new();
         fn no_step(_: ReleaseStep) {}
         fn no_window() {}
         fn no_unload(_: UnloadTicket) -> Option<std::thread::JoinHandle<()>> { None }
@@ -2416,7 +2416,7 @@ mod native_lifecycle_host_seam_tests {
         let first = FEED_SHARED.begin_native_session().expect("first native epoch");
         assert_eq!(unsafe { test_sink().load(c"{}".as_ptr(), first) }, 1);
         assert!(unsafe { test_sink().callback_intercepts(&mt) } > 0);
-        unsafe { test_sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
+        unsafe { test_sink().unload(&plx_os::tv::sink::UnloadTicket::issue(&mt)) };
         assert!(FEED_SHARED.native_unload_completed(first));
         assert_eq!(unsafe { test_sink().callback_gate_retire(&mt) }, 1);
         assert!(FEED_SHARED.retire_native_session(first));
@@ -2429,7 +2429,7 @@ mod native_lifecycle_host_seam_tests {
             .expect("unproven native epoch");
         assert_eq!(unsafe { test_sink().load(c"{}".as_ptr(), unproven) }, 1);
         crate::ffi_host::force_callback_intercepts_for_test(0);
-        unsafe { test_sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
+        unsafe { test_sink().unload(&plx_os::tv::sink::UnloadTicket::issue(&mt)) };
         assert_eq!(unsafe { test_sink().callback_gate_retire(&mt) }, 0);
         assert!(FEED_SHARED.retire_native_session(unproven));
         unsafe { test_sink().quarantine(&mt) };

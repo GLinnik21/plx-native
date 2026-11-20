@@ -15,7 +15,7 @@
 //! `rating`, `audienceRating`, `duration`, `addedAt`, `lastViewedAt`, `mediaHeight`, `random`) and the
 //! app's own `viewCount`: the server's titles are English Title Case whatever the language.
 
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 
 /// What an ordering runs along, which decides how its two ends are worded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,7 +130,7 @@ impl SortFact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference};
 
     /// **A fact has one name and one pair of direction words, in sentence case.** The Library's
     /// "Critic Rating" and the Watchlist's "Rating" were the same fact in two words.
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn every_key_a_server_titles_in_english_takes_the_tables_word_in_every_language() {
         use crate::browse::SortEntry;
-        use plx_platform::i18n::SHIPPED;
+        use plx_os::i18n::SHIPPED;
         // (key, the server's title, the table's English word)
         let keys = [("lastViewedAt", "Date Viewed", "Date viewed"), ("random", "Randomly", "Random"),
             ("viewCount", "Plays", "Plays"), ("duration", "Duration", "Duration"), ("mediaHeight", "Resolution", "Resolution")];

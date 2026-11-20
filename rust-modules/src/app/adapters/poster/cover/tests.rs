@@ -350,7 +350,7 @@ fn a_rebake_that_finds_no_cover_replaces_the_cover_with_the_marker() {
 #[test]
 fn the_cover_identity_carries_the_language_and_neither_a_server_nor_a_profile() {
     let key = |lang: &str, kind: &str| {
-        plx_platform::imgcache::classify_baked(&namespace(lang), kind, "5d776824999c4a001f9a1b2c", COVER_STAMP, 420, 236)
+        plx_os::imgcache::classify_baked(&namespace(lang), kind, "5d776824999c4a001f9a1b2c", COVER_STAMP, 420, 236)
     };
     assert!(key("en", COVER_KIND).is_some());
     assert_eq!(key("en", COVER_KIND), key("en", COVER_KIND));

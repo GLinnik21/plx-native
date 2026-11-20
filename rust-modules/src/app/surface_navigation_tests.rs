@@ -596,7 +596,7 @@ fn opening_the_player_hud_settings_asks_the_registry_in_the_stable_install_too()
     let _cleanup = Cleanup(dir.clone());
     let mut world = World::new("hud-gallery-opens");
     world.step(vec![]);
-    let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::current(), &world.bridge.retained().measure);
+    let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_os::i18n::current(), &world.bridge.retained().measure);
     *world.bridge.bridge().huds = crate::app::adapters::huds::HudDriver::started_in(dir, classic, "0.10.0");
     assert!(!world.bridge.huds().store().catalog().refresh_failed);
     open_settings_at(&mut world.d, SettingsPage::PlayerHud);

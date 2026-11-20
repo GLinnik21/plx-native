@@ -547,7 +547,7 @@ pub fn preview_recovered_domains() -> String {
     use crate::telemetry::classes::{
         AudioCodecClass as A, ChannelBucket as C, RecoveryRung as R, VideoCodecClass as V,
     };
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let domains: [(&str, String); 5] = [
         (msg::core_preview_domain_recovered_rung(), codes(&R::ALL, R::code)),
         (msg::core_preview_domain_recovered_stream(), "none / video / audio".to_owned()),
@@ -597,7 +597,7 @@ pub fn preview_domains() -> String {
     use crate::telemetry::classes::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
     use crate::telemetry::classes::{AttemptOrdinal, AttemptOrigin, PreviewRefusal};
     use FailureClass as F;
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
     let domains: [(&str, String); 28] = [
         // Every class reaches the handled report (`FailureKind::class`), so the row is the whole
@@ -1292,7 +1292,7 @@ mod tests {
     /// A code can be a substring of another (`not_direct` of `preview_not_direct`), so a test of a
     /// row's domain reads the row it means and never searches the whole legend.
     fn legend_row_values(label: &str) -> String {
-        let prefix = plx_platform::i18n::msg::core_preview_domain_line(label, "");
+        let prefix = plx_os::i18n::msg::core_preview_domain_line(label, "");
         let legend = preview_domains();
         let mut rows = legend.lines().filter_map(|line| line.strip_prefix(prefix.as_str()));
         let values = rows.next().unwrap_or_else(|| panic!("the legend has no row {label:?}"));
@@ -1308,7 +1308,7 @@ mod tests {
     #[test]
     fn consent_legend_lists_the_preview_refusal_domain_on_its_own_row() {
         use crate::telemetry::classes::PreviewRefusal;
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         let want: Vec<&str> = PreviewRefusal::ALL.iter().map(|r| r.code()).collect();
         assert_eq!(want, ["not_direct", "no_part", "adaptive"], "the domain is closed at three");
         let row = legend_row_values(msg::core_preview_domain_preview_refusal());
@@ -1321,7 +1321,7 @@ mod tests {
     /// were once missing).
     #[test]
     fn consent_legend_failure_kind_row_lists_every_failure_class() {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         let row = legend_row_values(msg::core_preview_domain_failure_kind());
         let want: Vec<&str> = FailureClass::ALL.iter().map(|k| k.code()).collect();
         assert_eq!(row.split(" / ").collect::<Vec<_>>(), want);
@@ -1649,7 +1649,7 @@ mod tests {
     /// legend names each field with its domain, and PRIVACY.md describes them.
     #[test]
     fn the_consent_sample_legend_and_privacy_list_every_attempt_field() {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
         for key in [
             "backend",

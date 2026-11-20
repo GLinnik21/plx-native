@@ -95,7 +95,7 @@ Every file:line is on origin/main adf73d81a.
 - **Replay.** `StoreId` is append-only (data/stores/mod.rs:469-486). `ARG_SHAPE`
   (registry.rs:1650) feeds `SCREEN_SHAPES_PIN` (:2232); a fixture recorded against another pin
   cannot load (:2121-2125). 3 committed fixtures.
-- **i18n.** `SHIPPED = [En, Es, Be, Fr]` (platform/i18n/mod.rs:22-23). Dates only as
+- **i18n.** `SHIPPED = [En, Es, Be, Fr]` (os/i18n/mod.rs:22-23). Dates only as
   `YMD::short()`. No collation/case-mapping/normalization crate in Cargo.lock.
 - **Text tracking.** gfx/src/text.rs has no letter-spacing.
 - **Icons.** Commit 40b4cd14 (branch claude/zen-tesla-pqhbu8): `bookmark`, `bookmark-fill`,
@@ -109,14 +109,14 @@ Every file:line is on origin/main adf73d81a.
 |---|---|---|
 | `plex::watchlist` (plex/src/plex/watchlist.rs) | plex | `impl AccountClient`: paged list, released list, `user_state(hex)`, `catalog_item(hex)`, add/remove PUT. Drift-tolerant DTOs; injectable `request` closure. Base URL `account::discover()` (moved from this file; `discover.rs`'s person routes share it): DISCOVER, or `/tmp/plxnative-discover` (else the `plxnative-plextv` loopback) behind the `loopback_http` guard as `plex_tv()`. Logs status + endpoint shape only. |
 | `Client::find_by_guids` (plex/library.rs) | plex | One `/library/all?type=T&guid=a,b,c` per server per kind (1 movie, 2 show), ≤40 guids/request; other guid kinds not matched. |
-| `watchlist` (data/src/watchlist.rs) | data — ADD to `[data] members` + docs/module-layers.md line. Names `plx_plex` (incl. `plex::servers` facts_gen/roster_gen/probe_result, `plex::session`), base, machine, platform. NOT net, NOT media. | Rows, released set, match table, `TileState`, intent ledger, client-side sort/filter, comparator. |
+| `watchlist` (data/src/watchlist.rs) | data — ADD to `[data] members` + docs/module-layers.md line. Names `plx_plex` (incl. `plex::servers` facts_gen/roster_gen/probe_result, `plex::session`), base, machine, os. NOT net, NOT media. | Rows, released set, match table, `TileState`, intent ledger, client-side sort/filter, comparator. |
 | `stores::watchlist` | data | `WatchlistStore`: main-thread state + `Arc<Adapter>` mailbox (viewstate ownership pattern). `StoreId::Watchlist` APPENDED. |
 | `catalog` (data/src/catalog.rs) + `stores::catalog` | data — ADD to members | Discover-only item page fetch/state. `StoreId::Catalog` appended. |
 | `screens::watchlist` | screens | The page. |
 | `screens::catalog` | screens | Lightweight page for a Discover-only item (§1.7). |
 | `appkit::hero_layout` | appkit | Hero geometry/meta-line helpers moved out of detail/hero.rs so Detail and catalog share them without breaking the sibling rule. |
 | `ui::icons`, `ui::cards::{landing,grid}`, `ui::popover`, gfx `fs_glass.frag`, gfx text | ui/gfx | DS PRs |
-| `platform::i18n` | platform | Month-name dates, strings |
+| `os::i18n` | os | Month-name dates, strings |
 | app (chrome.rs, bridge.rs, content.rs, effects.rs, input) | app | Strip vocabulary, routing, `AppArg::Watchlist`, tab pulse |
 
 Nothing names webOS. Screens never name a sibling screen or app.
@@ -495,7 +495,7 @@ Empty states: full-screen read-out (verdict y=372, no glyph, sentence case): emp
 "filter left nothing". DS rule change: verdict in PRIMARY text colour, body secondary,
 everywhere. App text never elides (ui/src/CLAUDE.md).
 Focus caption: TileLabel title + secondary line; unplayable → state sentence ("Coming 12
-Mar"). ICU4X dates numeric only today (`platform/src/i18n/mod.rs:151-163`); need month-name
+Mar"). ICU4X dates numeric only today (`os/src/i18n/mod.rs:151-163`); need month-name
 format for En/Es/Be (`SHIPPED`, `mod.rs:22`).
 
 **Tile states.** Unplayable tiles visible+focusable; OK → Detail, hold → menu. State marks
@@ -509,7 +509,7 @@ duotone, frosted tiles.
 not on list, filled when on. No label under a hero disc, at rest or focused (design-review S25's focused caption, "Add to Watchlist" / "On Watchlist", was removed by the owner on 2026-10-20). Without Play (coming soon / on no
 server / server offline): labelled pill in primary slot "Add to Watchlist" (outline) / "On
 Watchlist" (filled) + status line with icon; coming-soon also has a 36 px "Coming 12 March"
-line and a Trailer button. NO toast anywhere (not `platform/src/tv/toast.rs`); button state is
+line and a Trailer button. NO toast anywhere (not `os/src/tv/toast.rs`); button state is
 the only feedback.
 
 **Hold menus.** Episode menu rows today: Go to Episode, Go to Show, —, Mark as Watched, Play

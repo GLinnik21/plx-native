@@ -122,7 +122,7 @@ fn run_push(frames: &mut Frames, s: &mut RouteSurface) -> Vec<String> {
 fn a_pushed_settings_page_has_its_text_resident_before_it_is_first_shown() {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("settings-warm-first-open");
-    let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     plx_gfx::text::reset_prewarm_for_test();
     for page in [SettingsPage::Playback, SettingsPage::Language] {
         let strings = strings_of(page);
@@ -151,7 +151,7 @@ fn a_pushed_settings_page_has_its_text_resident_before_it_is_first_shown() {
 fn opening_the_same_page_again_rasterises_nothing_new() {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("settings-warm-second-open");
-    let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     plx_gfx::text::reset_prewarm_for_test();
     let strings = strings_of(SettingsPage::Playback);
     plx_gfx::text::reset_prewarm_for_test();

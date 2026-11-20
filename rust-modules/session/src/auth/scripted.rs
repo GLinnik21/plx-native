@@ -85,7 +85,7 @@ impl ReadoutCase {
     pub fn canned_login_failure(
         self,
     ) -> (std::borrow::Cow<'static, str>, plx_telemetry::telemetry::incident::IncidentContext) {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         use plx_telemetry::telemetry::incident::{
             DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger, IncidentContext,
             IncidentKind, LinkClass,

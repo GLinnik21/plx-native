@@ -263,7 +263,7 @@ pub fn begin_seek_discontinuity(feed: &mut FeedResources) -> bool {
 /// re-places once the demuxer publishes it. Record the place result for diagnostics: before this
 /// mirror, the panel falsely said "not placed" throughout a successful exported-window session.
 pub fn place_exported(mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
-    if (hooks.feed.sink)().window_mode() != plx_platform::tv::sink::VP_EXPORTED { return; }
+    if (hooks.feed.sink)().window_mode() != plx_os::tv::sink::VP_EXPORTED { return; }
     let (w, h) = FEED_SHARED.video_raster();
     let src = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
     let rv = unsafe { (hooks.feed.sink)().place_window(mt, src.0, src.1, 0, 0, 1920, 1080) };
@@ -682,7 +682,7 @@ pub fn note_missing_era_callback(feed: &mut FeedResources) {
     let Some(eng) = feed.engine() else { return; };
     if eng.preview_abandon { return; }
     use crate::era_callbacks::{line, Probe, Step};
-    let major = plx_platform::tv::device::info().major;
+    let major = plx_os::tv::device::info().major;
     let probe = Probe {
         ticks: FEED_SHARED.dg_pos_ticks.load(Relaxed),
         displayed: FEED_SHARED.dg_sink_displayed_cb.load(Relaxed),
@@ -832,7 +832,7 @@ pub fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
         // BINDING already happened via `option.windowId` in the Load payload, and this call is
         // pure geometry.
         place_exported(mt, eng, hooks);
-        if (hooks.feed.sink)().window_mode() == plx_platform::tv::sink::VP_EXPORTED {
+        if (hooks.feed.sink)().window_mode() == plx_os::tv::sink::VP_EXPORTED {
             // Playing -> Streaming directly: there is no bind sequence to sit in the middle of.
             // The transition is load-bearing beyond bookkeeping — `pushEOS` is gated on
             // `>= Streaming`, so without it the last frames never drain and Up Next never fires.
@@ -1404,7 +1404,7 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
         // firmware that never completes still gets its picture. A deferred tick leaves the stage
         // at Playing, exactly as a media id that has not arrived yet does.
         let granted = id.as_ref().is_some_and(|id| {
-            use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneHandle};
+            use plx_os::tv::plane::{BindPolicy, BindVerdict, PlaneHandle};
             matches!(hooks.release.plane.bind((hooks.feed.sink)(), mt, PlaneHandle::Feed, BindPolicy::Rebind,
                 &id.to_string_lossy()),
                 BindVerdict::Granted)

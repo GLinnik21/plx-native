@@ -54,7 +54,7 @@
 //! callback ([`Clock::tick`]), so a film whose audio outlasts its video ends here as on the
 //! television instead of hanging at the video tail. Cleared wherever the fed timeline restarts.
 //!
-//! It reports [`VP_EXPORTED`](plx_platform::tv::sink::VP_EXPORTED), the webOS 5+ path, because that
+//! It reports [`VP_EXPORTED`](plx_os::tv::sink::VP_EXPORTED), the webOS 5+ path, because that
 //! one binds video through an exported window id and never touches ACB — so the whole ACB stage
 //! sequence stays skipped rather than faked.
 //!
@@ -80,8 +80,8 @@
 //! sets, so no event can precede them.
 
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::{CompletionQueue, PlaneCompletion};
-use plx_platform::tv::sink::{DisplaySink, PlaneFinish, PlaneUnload, VideoSink};
+use plx_os::tv::plane::{CompletionQueue, PlaneCompletion};
+use plx_os::tv::sink::{DisplaySink, PlaneFinish, PlaneUnload, VideoSink};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
@@ -205,7 +205,7 @@ static TICKER_HUSHED: AtomicBool = AtomicBool::new(false);
 static FEED_REFUSED_LANE: AtomicI32 = AtomicI32::new(i32::MIN);
 /// The host pipeline's volume (`setVolume`); a fresh pipeline starts at `PIPELINE_DEFAULT_VOLUME`.
 #[cfg(any(test, feature = "test-support"))]
-static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
+static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_os::tv::sink::PIPELINE_DEFAULT_VOLUME);
 /// Every Play / Pause / `set_volume(n)` the sink saw, in order, as `"play"`, `"pause"`,
 /// `"volume:n"`: what a test reads to prove the paused preroll mutes BEFORE its Play and restores
 /// AFTER its re-pause. Cleared by [`reset_volume_probe_for_test`].
@@ -1274,9 +1274,9 @@ unsafe fn sf_quarantine() {
 /// rather than faked. Faking ACB would mean modelling a bind order this file cannot verify.
 unsafe fn vp_mode() -> c_int {
     if enabled() {
-        plx_platform::tv::sink::VP_EXPORTED
+        plx_os::tv::sink::VP_EXPORTED
     } else {
-        plx_platform::tv::sink::VP_NONE
+        plx_os::tv::sink::VP_NONE
     }
 }
 unsafe fn vp_create_window() -> *const c_char {
@@ -1467,7 +1467,7 @@ impl VideoSink for HostSink {
     ) -> c_char {
         sf_feed(p, size, pts, es_data)
     }
-    unsafe fn unload(&self, _: &plx_platform::tv::sink::UnloadTicket) {
+    unsafe fn unload(&self, _: &plx_os::tv::sink::UnloadTicket) {
         sf_unload()
     }
     unsafe fn callback_gate_retire(&self, _: &MainThread) -> c_int {

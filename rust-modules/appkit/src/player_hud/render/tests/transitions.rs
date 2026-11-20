@@ -21,7 +21,7 @@ const RISING: &str = include_str!("../../../hud_format/fixtures/rising-tabs/hud.
 const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference/hud.json");
 
 fn load(text: &str) -> Arc<Compiled> {
-    crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM)
+    crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_os::i18n::english(), &FM)
         .expect("the package loads")
         .compiled
 }
@@ -31,7 +31,7 @@ fn rising() -> Arc<Compiled> {
 }
 
 fn classic() -> Arc<Compiled> {
-    crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM).compiled
+    crate::player_hud::loaded::load_classic("0.0.0-test", plx_os::i18n::english(), &FM).compiled
 }
 
 /// `text` with `from` written as `to`, which must occur once.
@@ -141,7 +141,7 @@ fn motion(section: Section, appear: f32, page: f32) -> HudMotion {
 #[test]
 fn at_the_end_points_the_census_is_the_settled_states() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let store = store();
     for (name, compiled) in [("rising-tabs", rising()), ("classic", classic())] {
         let compact = state(&compiled, 0);
@@ -162,7 +162,7 @@ fn at_the_end_points_the_census_is_the_settled_states() {
 #[test]
 fn halfway_the_tabs_stand_half_way_and_the_title_block_is_half_seen() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     let (compact, info) = (state(&compiled, 0), state(&compiled, OPEN_INFO));
     let (c, m) = (band(compact, "tabs"), band(info, "tabs"));
@@ -200,7 +200,7 @@ fn halfway_the_tabs_stand_half_way_and_the_title_block_is_half_seen() {
 #[test]
 fn the_held_frame_is_the_compact_hud_whole_and_the_up_frame_has_none_of_it() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     let compact = state(&compiled, 0);
     let at_compact = draw_in(&compiled, &mut HudMotion::new(), &store, 0, NONE, true);
@@ -221,7 +221,7 @@ fn the_held_frame_is_the_compact_hud_whole_and_the_up_frame_has_none_of_it() {
 #[test]
 fn a_press_turning_the_motion_round_has_no_jump() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     let (compact, info) = (state(&compiled, 0), state(&compiled, OPEN_INFO));
     let (c, m) = (band(compact, "tabs").y, band(info, "tabs").y);
@@ -303,7 +303,7 @@ fn a_press_turning_the_motion_round_has_no_jump() {
 #[test]
 fn a_switch_moves_the_tabs_between_the_two_sections_places_with_the_title_block_gone() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     let (chapters, info) = (state(&compiled, OPEN_CHAPTERS), state(&compiled, OPEN_INFO));
     let (yc, yi) = (band(chapters, "tabs").y, band(info, "tabs").y);
@@ -332,7 +332,7 @@ fn a_switch_moves_the_tabs_between_the_two_sections_places_with_the_title_block_
 #[test]
 fn classic_in_motion_fades_its_title_bar_and_row_and_moves_nothing_else() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (classic(), store());
     let (compact, info) = (state(&compiled, 0), state(&compiled, OPEN_INFO));
     assert_eq!(band(compact, "tabs"), band(info, "tabs"), "classic's tabs stand at one place");
@@ -359,7 +359,7 @@ fn classic_in_motion_fades_its_title_bar_and_row_and_moves_nothing_else() {
 #[test]
 fn an_inline_package_fades_its_compact_only_band_and_keeps_the_lift() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let compiled = load(&edit(REFERENCE, r#"{ "id": "bar", "gap_before": "SM","#, r#"{ "id": "bar", "when": "!sections", "gap_before": "SM","#));
     let store = store();
     let (compact, info) = (state(&compiled, 0), state(&compiled, OPEN_INFO));
@@ -400,7 +400,7 @@ fn an_inline_package_fades_its_compact_only_band_and_keeps_the_lift() {
 #[test]
 fn an_inline_partial_band_fades_when_a_second_section_opens_and_closes() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let store = store();
     for when in [r#""!panel.info""#, r#"["sections", "!panel.info"]"#] {
         let compiled = load(&edit(REFERENCE, r#"{ "id": "bar", "gap_before": "SM","#,
@@ -434,7 +434,7 @@ fn an_inline_partial_band_fades_when_a_second_section_opens_and_closes() {
 #[test]
 fn the_scrim_follows_its_top_edge_only_and_a_fixed_one_stands_still() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     let (chapters, info) = (state(&compiled, OPEN_CHAPTERS), state(&compiled, OPEN_INFO));
     let (yc, yi) = (chapters.scrim.unwrap().y, info.scrim.unwrap().y);
@@ -467,7 +467,7 @@ fn runs_of(c: &Census, size: i32) -> Vec<(f32, f32)> {
 #[test]
 fn a_band_in_only_the_open_states_fades_on_the_page_and_one_in_only_some_on_that_sections_appear() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let line = |id: &str, when: &str, size: &str| {
         let text = |bind: &str, size: &str| format!(r#"{{ "text": {{ "bind": "{bind}", "size": "{size}", "ink": "TEXT_SECONDARY", "bold": false, "max_lines": 1, "w": "fill" }} }}"#);
         format!(
@@ -526,7 +526,7 @@ fn a_band_in_only_the_open_states_fades_on_the_page_and_one_in_only_some_on_that
 #[test]
 fn a_stand_in_cuts_to_the_discs_on_the_opening_frame_and_returns_at_once_on_the_closing_one() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     let offer = ControlSlot::UpNext(marker(MarkerKind::Credits, true));
 
@@ -556,7 +556,7 @@ fn a_stand_in_cuts_to_the_discs_on_the_opening_frame_and_returns_at_once_on_the_
 #[test]
 fn the_titles_marquee_is_released_once_the_fade_is_over_and_not_at_its_first_frame() {
     let _serial = plx_base::testlock::serial();
-    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _en = language_on_this_thread_for_test(plx_os::i18n::Preference::En);
     let (compiled, store) = (rising(), store());
     // a title that has been running for a while
     let prime = |row: &HudMotion| {

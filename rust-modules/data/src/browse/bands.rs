@@ -88,7 +88,7 @@ pub enum Basis {
 }
 
 /// The viewer's time zone as the two reads of the OS a calendar family needs, handed to a bands job
-/// by the application's runner as plain functions (`plx_platform::i18n::local_midnight` and
+/// by the application's runner as plain functions (`plx_os::i18n::local_midnight` and
 /// `local_calendar_date`): the model and the job body read no zone and no clock themselves, and a test
 /// passes a fake. A civil date to its first moment (asked once per [`Basis::Local`] edge, daylight
 /// saving being per date), and an instant to the civil date it falls on; `None` from either where the

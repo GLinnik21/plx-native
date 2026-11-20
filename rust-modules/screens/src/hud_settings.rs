@@ -215,7 +215,7 @@ pub struct HudPage {
 /// The crumb over the title: the page this one is pushed from, Video & playback (the Playback page's Player HUD row
 /// opens it), as `PickerKind::parent_title` names it for a picker on that page.
 fn parent_title() -> &'static str {
-    plx_platform::i18n::msg::settings_playback_title()
+    plx_os::i18n::msg::settings_playback_title()
 }
 
 /// The package row's name: the built-in is "Built-in" (the app's own word for itself, and the one string its row says),
@@ -223,17 +223,17 @@ fn parent_title() -> &'static str {
 fn name_of(entry: &Entry) -> String {
     match &entry.meta {
         Some(meta) => meta.name.clone(),
-        None => plx_platform::i18n::msg::settings_hud_builtin().to_owned(),
+        None => plx_os::i18n::msg::settings_hud_builtin().to_owned(),
     }
 }
 
 /// Why `unloadable` says this package cannot run, in the viewer's words.
 fn unloadable_text(why: Unloadable) -> &'static str {
     match why {
-        Unloadable::NewerFormat => plx_platform::i18n::msg::settings_hud_newer_format(),
-        Unloadable::OlderFormat => plx_platform::i18n::msg::settings_hud_older_format(),
-        Unloadable::Revoked => plx_platform::i18n::msg::settings_hud_revoked(),
-        Unloadable::AppRange => plx_platform::i18n::msg::settings_hud_app_range(),
+        Unloadable::NewerFormat => plx_os::i18n::msg::settings_hud_newer_format(),
+        Unloadable::OlderFormat => plx_os::i18n::msg::settings_hud_older_format(),
+        Unloadable::Revoked => plx_os::i18n::msg::settings_hud_revoked(),
+        Unloadable::AppRange => plx_os::i18n::msg::settings_hud_app_range(),
     }
 }
 
@@ -241,28 +241,28 @@ fn unloadable_text(why: Unloadable) -> &'static str {
 fn refusal_text(why: Refusal) -> &'static str {
     match why {
         Refusal::Unloadable(why) => unloadable_text(why),
-        Refusal::AlreadyInstalled | Refusal::NotNewer => plx_platform::i18n::msg::settings_hud_already(),
-        Refusal::Invalid => plx_platform::i18n::msg::settings_hud_not_a_hud(),
-        Refusal::TooLarge => plx_platform::i18n::msg::settings_hud_too_large(),
-        Refusal::BuiltinId | Refusal::Changed => plx_platform::i18n::msg::settings_hud_cant_install(),
+        Refusal::AlreadyInstalled | Refusal::NotNewer => plx_os::i18n::msg::settings_hud_already(),
+        Refusal::Invalid => plx_os::i18n::msg::settings_hud_not_a_hud(),
+        Refusal::TooLarge => plx_os::i18n::msg::settings_hud_too_large(),
+        Refusal::BuiltinId | Refusal::Changed => plx_os::i18n::msg::settings_hud_cant_install(),
     }
 }
 
 /// Why a fetch from an address brought nothing, in the viewer's words.
 fn fetch_text(why: FetchError) -> &'static str {
     match why {
-        FetchError::NotFound => plx_platform::i18n::msg::settings_hud_fetch_not_found(),
-        FetchError::TooLarge => plx_platform::i18n::msg::settings_hud_too_large(),
-        FetchError::Unreachable => plx_platform::i18n::msg::settings_hud_fetch_unreachable(),
-        FetchError::Certificate => plx_platform::i18n::msg::settings_hud_fetch_certificate(),
+        FetchError::NotFound => plx_os::i18n::msg::settings_hud_fetch_not_found(),
+        FetchError::TooLarge => plx_os::i18n::msg::settings_hud_too_large(),
+        FetchError::Unreachable => plx_os::i18n::msg::settings_hud_fetch_unreachable(),
+        FetchError::Certificate => plx_os::i18n::msg::settings_hud_fetch_certificate(),
     }
 }
 
 /// Why the typed address was refused: the accepted forms, or the one rule a plain `http://` address broke.
 fn address_text(why: AddressError) -> &'static str {
     match why {
-        AddressError::HttpNotPrivate => plx_platform::i18n::msg::settings_hud_address_lan(),
-        _ => plx_platform::i18n::msg::settings_hud_address_form(),
+        AddressError::HttpNotPrivate => plx_os::i18n::msg::settings_hud_address_lan(),
+        _ => plx_os::i18n::msg::settings_hud_address_form(),
     }
 }
 
@@ -293,14 +293,14 @@ fn why_of(entry: &Entry, list: &HudList) -> Option<Why> {
 fn why_value(why: Why, list: &HudList) -> String {
     match why {
         Why::Format(why) => unloadable_text(why).to_owned(),
-        Why::Language => plx_platform::i18n::msg::settings_hud_unfit_language(&list.language),
+        Why::Language => plx_os::i18n::msg::settings_hud_unfit_language(&list.language),
     }
 }
 
 /// What the line under the title says while the row of a HUD that cannot be used has focus: why, and what to do. A
 /// withdrawn HUD adds the catalog's own reason when it gave one.
 fn why_sentence(why: Why, list: &HudList, sha: Option<Sha>) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match why {
         Why::Format(Unloadable::Revoked) => {
             let said = msg::settings_hud_withdrawn_detail();
@@ -333,12 +333,12 @@ fn facts_of(entry: &Entry, list: &HudList) -> Vec<String> {
     let mut facts = Vec::new();
     match entry.trust {
         Trust::BuiltIn | Trust::Registry => {}
-        Trust::Unreviewed => facts.push(plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()),
+        Trust::Unreviewed => facts.push(plx_os::i18n::msg::settings_hud_unreviewed().to_owned()),
     }
     // The reason a package cannot be used outranks "installed until restart": the value column and a second fact do
     // not both fit a row in every language.
     if entry.until_restart && why_of(entry, list).is_none() {
-        facts.push(plx_platform::i18n::msg::settings_hud_until_restart().to_owned());
+        facts.push(plx_os::i18n::msg::settings_hud_until_restart().to_owned());
     }
     facts
 }
@@ -350,7 +350,7 @@ type Says = Vec<(HudId, String)>;
 /// one, and the drop files under their own header when there are any. Beside them, the sentence each row that has
 /// one of its own says while it has focus.
 fn hud_form(list: &HudList, draft: Option<&TextBuffer>, saving_end_time: bool) -> (Form<HudId, HudAction, SettingsPage>, Says) {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     let mut says = Says::new();
     let mut packs = FormSection::new("");
     let mut removals = FormSection::new("");
@@ -430,14 +430,14 @@ fn notice_text(list: &HudList, refused: Option<AddressError>) -> Option<String> 
     match &list.notice {
         Some(Notice::Refused { reason, .. }) => Some(refusal_text(*reason).to_owned()),
         Some(Notice::FetchFailed { reason }) => Some(fetch_text(*reason).to_owned()),
-        Some(Notice::NotWritten { .. }) => Some(plx_platform::i18n::msg::settings_hud_not_saved().to_owned()),
+        Some(Notice::NotWritten { .. }) => Some(plx_os::i18n::msg::settings_hud_not_saved().to_owned()),
         _ => None,
     }
 }
 
 /// What the line under the title says: the last notice, else what the page is.
 fn copy_of(list: &HudList, refused: Option<AddressError>) -> String {
-    notice_text(list, refused).unwrap_or_else(|| plx_platform::i18n::msg::settings_hud_copy().to_owned())
+    notice_text(list, refused).unwrap_or_else(|| plx_os::i18n::msg::settings_hud_copy().to_owned())
 }
 
 /// What a page builds from the listing.
@@ -478,8 +478,8 @@ impl HudPage {
                 ALERT_GROUP,
                 ALERT,
                 ALERT + 1,
-                plx_platform::i18n::msg::settings_cancel_c(),
-                plx_platform::i18n::msg::settings_hud_install_c(),
+                plx_os::i18n::msg::settings_cancel_c(),
+                plx_os::i18n::msg::settings_hud_install_c(),
             ),
         };
         page.rebuild(None);
@@ -509,7 +509,7 @@ impl HudPage {
     /// The page's rows and words from the listing alone.
     fn gallery_form(&self) -> Built {
         // placeholder-exempt: Selects copy only; Header::with_pending_copy counts and sentinel-paints its loading read-out.
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         let mut rows = FormSection::new("");
         let mut says = Says::new();
         // the page's STATE (a delisted or withdrawn package, a catalog that could not refresh) is the
@@ -596,7 +596,7 @@ impl HudPage {
                 };
                 for (i, (label, value)) in [(msg::settings_hud_author(), package.author.clone()),
                     (msg::settings_hud_version(), package.version.clone()), (msg::settings_hud_license(), package.license.clone()),
-                    (msg::settings_hud_download(), format!("{} B", plx_platform::i18n::current().number(package.bytes as i64)))].into_iter().enumerate() {
+                    (msg::settings_hud_download(), format!("{} B", plx_os::i18n::current().number(package.bytes as i64)))].into_iter().enumerate() {
                     rows = rows.item_keyed(HudId::Fact(i as u32), RowKey(i as u32), RowKind::Button, HudAction::Inert,
                         Row::new(label).value(&value));
                 }
@@ -682,7 +682,7 @@ impl HudPage {
     }
 
     fn scenes(&self) -> Vec<(&'static str, &plx_data::hudpacks::catalog::Preview)> {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         let Some(package) = self.package() else { return Vec::new() };
         let mut scenes = Vec::new();
         if let Some(art) = package.preview(&self.list.language_tag) { scenes.push((msg::settings_hud_compact(), art)); }
@@ -826,26 +826,26 @@ impl HudPage {
             return;
         }
         if offer.source == plx_data::hudpacks::Source::Registry {
-            if self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_gallery_install_question_c(),
-                vec![Cow::Borrowed(plx_platform::i18n::msg::settings_hud_gallery_install_body())], fx) {
+            if self.ask(Asking::Offer(offer.sha), plx_os::i18n::msg::settings_hud_gallery_install_question_c(),
+                vec![Cow::Borrowed(plx_os::i18n::msg::settings_hud_gallery_install_body())], fx) {
                 self.offered = Some(offer.sha);
             }
             return;
         }
         let mut facts = Vec::new();
         if let Some(from) = &offer.from {
-            facts.push(plx_platform::i18n::msg::settings_hud_offer_from(from.host()));
+            facts.push(plx_os::i18n::msg::settings_hud_offer_from(from.host()));
             if from.dev_source() {
-                facts.push(plx_platform::i18n::msg::settings_hud_offer_dev().to_owned());
+                facts.push(plx_os::i18n::msg::settings_hud_offer_dev().to_owned());
             }
         }
-        facts.push(plx_platform::i18n::msg::settings_hud_unreviewed().to_owned());
+        facts.push(plx_os::i18n::msg::settings_hud_unreviewed().to_owned());
         let paragraphs = vec![
             Cow::Owned(format!("{} {}", offer.meta.name, offer.meta.version)),
             Cow::Owned(join(&facts)),
-            Cow::Borrowed(plx_platform::i18n::msg::settings_hud_offer_body()),
+            Cow::Borrowed(plx_os::i18n::msg::settings_hud_offer_body()),
         ];
-        if self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_install_question_c(), paragraphs, fx) {
+        if self.ask(Asking::Offer(offer.sha), plx_os::i18n::msg::settings_hud_install_question_c(), paragraphs, fx) {
             self.offered = Some(offer.sha);
         }
     }
@@ -970,8 +970,8 @@ impl HudPage {
             Some(HudAction::Install(sha)) => {
                 self.ask(
                     Asking::Drop(sha),
-                    plx_platform::i18n::msg::settings_hud_install_question_c(),
-                    vec![Cow::Borrowed(plx_platform::i18n::msg::settings_hud_install_body())],
+                    plx_os::i18n::msg::settings_hud_install_question_c(),
+                    vec![Cow::Borrowed(plx_os::i18n::msg::settings_hud_install_body())],
                     fx,
                 );
             }

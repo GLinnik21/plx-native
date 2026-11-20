@@ -103,10 +103,10 @@ impl DolbyVisionMode {
     /// (`route::frozen_dv_decision`), to the presentation only: never to the probe itself and never
     /// to the capability a playing route's `DvDecision` stores, so Diagnostics and the `dv:` log
     /// lines still show what the television said.
-    pub fn gate(self, probed: plx_platform::devcaps::dv::DvCapability) -> plx_platform::devcaps::dv::DvCapability {
+    pub fn gate(self, probed: plx_os::devcaps::dv::DvCapability) -> plx_os::devcaps::dv::DvCapability {
         match self {
             DolbyVisionMode::Auto => probed,
-            DolbyVisionMode::Off => plx_platform::devcaps::dv::DvCapability::Unsupported,
+            DolbyVisionMode::Off => plx_os::devcaps::dv::DvCapability::Unsupported,
         }
     }
 }
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn dolby_vision_off_plans_as_an_unsupported_set_and_auto_trusts_the_probe() {
-        use plx_platform::devcaps::dv::DvCapability::{Supported, Unknown, Unsupported};
+        use plx_os::devcaps::dv::DvCapability::{Supported, Unknown, Unsupported};
         for probed in [Supported, Unknown, Unsupported] {
             assert_eq!(DolbyVisionMode::Auto.gate(probed), probed);
             assert_eq!(DolbyVisionMode::Off.gate(probed), Unsupported);

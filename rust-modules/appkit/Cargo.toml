@@ -28,17 +28,17 @@ default = []
 # Forwarded from the application crate, which is the only one that sets it. Nothing in this crate
 # has a `cfg` on it; it is declared so that `cargo test -p plx_appkit` (which dev-depends on this
 # crate with it) builds the layers below with the dev trigger surface, as the Makefile's suite does.
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_platform/devtriggers", "plx_gfx/devtriggers", "plx_ui/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers", "plx_media/devtriggers"]
+devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_os/devtriggers", "plx_gfx/devtriggers", "plx_ui/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers", "plx_media/devtriggers"]
 # The `cfg(test)` seams other crates' tests use (`player_hud::SkipIntervalGuard`, the `overscan_rects`
 # audits, the row/page read-backs of the menus, ...). Enabled from the dependents' `[dev-dependencies]`;
 # never in a shipped build. It enables the lower layers' own `test-support` because the seams call
 # into them.
-test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx/test-support", "plx_ui/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support", "plx_media/test-support"]
+test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_os/test-support", "plx_gfx/test-support", "plx_ui/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support", "plx_media/test-support"]
 
 [dependencies]
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
-plx_platform = { path = "../platform" }
+plx_os = { path = "../os" }
 plx_gfx = { path = "../gfx" }
 plx_ui = { path = "../ui" }
 plx_plex = { path = "../plex" }
@@ -54,7 +54,7 @@ zip = { version = "=9.2.2", default-features = false }
 plx_appkit = { path = ".", features = ["devtriggers"] }
 plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
-plx_platform = { path = "../platform", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
 plx_gfx = { path = "../gfx", features = ["test-support"] }
 plx_ui = { path = "../ui", features = ["test-support"] }
 plx_plex = { path = "../plex", features = ["test-support"] }

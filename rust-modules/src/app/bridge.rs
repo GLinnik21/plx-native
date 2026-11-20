@@ -32,7 +32,7 @@
 //!   dispatcher does not yet run a phase this early in the frame). `opaque_route` and
 //!   `clear_opaque_region` stopped being no-ops in phase 9 — the rig's hooks are real, but they
 //!   delegate to `app/run.rs::rig_opaque_route`/`rig_clear_opaque_region` rather than naming
-//!   `plx_platform::tv::window::` here, which is what keeps the OS-facing call text in one file (D4;
+//!   `plx_os::tv::window::` here, which is what keeps the OS-facing call text in one file (D4;
 //!   `ci/check-deps.sh`'s `frame` gate).
 
 use std::ffi::CStr;
@@ -620,7 +620,7 @@ pub(crate) struct BridgeRetained {
     huds_profile_seated: bool,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
-    trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
+    trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_os::playback_trace::Status>)>,
 
     /// Host IO chosen at boot: production trigger reader, or an explicit neutral/scripted reader.
     metadata_alt_host: fn(plx_data::metadata::AltStandInReq, Option<&str>) -> plx_data::metadata::AltStandInAnswer,
@@ -1040,7 +1040,7 @@ impl BridgeRetained {
             // Its value remains process-boot policy; LIVE failtest is sampled separately per frame.
             let _ = plx_media::player::preview::enabled();
             retained.screen_inputs.runtime_policy = super::bootstrap::RuntimePolicy::capture().inputs();
-            retained.screen_inputs.running_language = plx_platform::i18n::current().preference();
+            retained.screen_inputs.running_language = plx_os::i18n::current().preference();
         }
         runtime.bridge(&mut retained).capture_screen_inputs();
         (runtime, retained)
@@ -1392,7 +1392,7 @@ impl Bridge<'_> {
     pub(crate) fn huds_tick(&mut self, route_player: bool) -> Option<plx_appkit::player_hud::loaded::LoadedHud> {
         let env = super::adapters::huds::Env {
             measure: &self.retained.measure,
-            cx: plx_platform::i18n::current(),
+            cx: plx_os::i18n::current(),
             app_version: plx_plex::plex::identity::version(),
             // a player page is mounted, or a playback is live (starting included): no compile runs now
             player: route_player || self.retained.playback_live,
@@ -1418,7 +1418,7 @@ impl Bridge<'_> {
             HudCmd::CancelRegistry(sha) => self.huds.cancel_registry(sha),
             HudCmd::FetchRegistry(sha) => {
                 self.retained.huds_notice = None;
-                self.huds.fetch_registry(sha, plx_plex::plex::identity::version(), plx_platform::i18n::current().language().tag());
+                self.huds.fetch_registry(sha, plx_plex::plex::identity::version(), plx_os::i18n::current().language().tag());
             }
             HudCmd::Select(id) => self.huds.select(id),
             HudCmd::Remove(id) => {
@@ -1486,19 +1486,19 @@ impl Bridge<'_> {
         if self.retained.huds_pages.iter().all(|(_, sent, end)| *sent == stamp && *end == end_time) {
             return;
         }
-        let tag = plx_platform::i18n::current().language().tag();
+        let tag = plx_os::i18n::current().language().tag();
         let list = plx_screens::hud_settings::HudList {
             end_time,
             catalog: self.huds.store().catalog().clone(),
             catalog_date: self.huds.store().catalog().checked_at.and_then(|s| i64::try_from(s).ok())
-                .and_then(plx_platform::i18n::local_calendar_date)
-                .and_then(|[y,m,d]| plx_platform::i18n::current().date_medium(y, m as u8, d as u8)).unwrap_or_default(),
+                .and_then(plx_os::i18n::local_calendar_date)
+                .and_then(|[y,m,d]| plx_os::i18n::current().date_medium(y, m as u8, d as u8)).unwrap_or_default(),
             app_version: plx_plex::plex::identity::version().into(),
             language_tag: tag.into(),
             entries: self.huds.store().entries(),
             drops: self.huds.store().drops(),
             unfit: self.huds.unfit_shas(tag),
-            language: plx_platform::i18n::Preference::SHIPPED
+            language: plx_os::i18n::Preference::SHIPPED
                 .into_iter()
                 .find(|p| p.tag() == tag)
                 .map_or_else(|| tag.to_owned(), |p| p.native_name().to_owned()),
@@ -1657,7 +1657,7 @@ impl Bridge<'_> {
         let mut next = self.retained.screen_inputs.clone();
         let mut grant_session = self.retained.screen_grant_session.clone();
         // Install-wide, including a durable pick before the session cache publishes it. Never seat-fenced.
-        next.install_language = plx_platform::i18n::saved_preference();
+        next.install_language = plx_os::i18n::saved_preference();
         if self.retained.screen_cache_revision.map(|r| r.0) != Some(before.0) {
             let settled = session::peek_settled();
             next.settled = settled.is_some();
@@ -1697,7 +1697,7 @@ impl Bridge<'_> {
             next.servers = std::sync::Arc::new(self.retained.client_keys.iter().filter_map(|(sid, _)| self.retained.client_keys.facts(sid)
                 .map(|facts| (facts.machine_id.clone(), sid))).collect());
         }
-        next.resolution_offered = plx_platform::tv::device::ui_resolution_offered();
+        next.resolution_offered = plx_os::tv::device::ui_resolution_offered();
         if self.retained.screen_grant_key != Some(key) {
             let session = &grant_session;
             let mut grants = plx_screens::inputs::GrantInputs { offers: grant::offers(),
@@ -3374,7 +3374,7 @@ impl Rig<AppHost> for Bridge<'_> {
     /// `PresentEvent::VideoPlane`, and `tv::window::opaque_route` only sends a wayland request when
     /// the answer CHANGES — so the loop's own call beside it (`app/run.rs`, from the same bit) is
     /// a `static` read and a return, not a second claim. Delegates to `run::rig_opaque_route`
-    /// (D4) rather than naming `plx_platform::tv::window::opaque_route` here directly — see that function's
+    /// (D4) rather than naming `plx_os::tv::window::opaque_route` here directly — see that function's
     /// doc for why.
     fn opaque_route(&mut self, video_plane_bound: bool) {
         super::run::rig_opaque_route(video_plane_bound);
@@ -3398,9 +3398,9 @@ impl Rig<AppHost> for Bridge<'_> {
 }
 
 impl Bridge<'_> {
-    fn playback_trace_command(&mut self, from: MachineId, command: plx_platform::playback_trace::Command)
-        -> plx_platform::playback_trace::Status {
-        use plx_platform::playback_trace::{self as trace, Command, Status};
+    fn playback_trace_command(&mut self, from: MachineId, command: plx_os::playback_trace::Command)
+        -> plx_os::playback_trace::Status {
+        use plx_os::playback_trace::{self as trace, Command, Status};
         if self.retained.trace_save.is_some() { return Status::Saving; }
         if command != Command::Export { return trace::execute(command); }
         let generation = trace::prepare_export();
@@ -3418,14 +3418,14 @@ impl Bridge<'_> {
         }
     }
 
-    pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_platform::playback_trace::Status)> {
+    pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_os::playback_trace::Status)> {
         use std::sync::mpsc::TryRecvError;
         let (_, generation, ticket) = self.retained.trace_save.as_ref()?;
         let status = match ticket.try_recv() {
             Ok(status) => status,
             Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::fail_export(
-                *generation, plx_platform::playback_trace::SaveWorkerFailure::Disconnected),
+            Err(TryRecvError::Disconnected) => plx_os::playback_trace::fail_export(
+                *generation, plx_os::playback_trace::SaveWorkerFailure::Disconnected),
         };
         let (to, _, _) = self.retained.trace_save.take()?;
         Some((to, status))
@@ -3434,9 +3434,9 @@ impl Bridge<'_> {
     fn app_effect(&mut self, from: MachineId, fx: InlineAppFx, out: &mut Effects<'_, AppHost>) {
         // Replay status never consults the live recorder.
         if self.retained.home_io.is_some() && matches!(fx,
-            InlineAppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status)) {
+            InlineAppFx::PlaybackTrace(plx_os::playback_trace::Command::Status)) {
             out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(
-                plx_platform::playback_trace::Status::Off)))));
+                plx_os::playback_trace::Status::Off)))));
             return;
         }
         if let Some(io) = &mut self.retained.home_io {
@@ -5961,25 +5961,25 @@ mod screen_input_publication_tests {
     use super::*;
     #[test]
     fn adjacent_install_and_diagnostic_publications_move_without_cache_hints_and_controlled_stays_owned() {
-        use plx_platform::i18n::Preference;
+        use plx_os::i18n::Preference;
         let _serial = plx_base::testlock::serial();
         let _session = plx_plex::plex::session::TempSession::new("adjacent-install-diagnostic");
-        let previous = plx_platform::i18n::saved_preference();
+        let previous = plx_os::i18n::saved_preference();
         struct Restore(Preference);
-        impl Drop for Restore { fn drop(&mut self) { plx_platform::i18n::set_saved_preference(self.0); } }
+        impl Drop for Restore { fn drop(&mut self) { plx_os::i18n::set_saved_preference(self.0); } }
         let _restore = Restore(previous);
         let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
         let mut bridge = owner.bridge();
         let stored = bridge.retained.screen_inputs.session.clone();
         let running = bridge.retained.screen_inputs.running_language;
         let chosen = if previous == Preference::Be { Preference::Es } else { Preference::Be };
-        plx_platform::i18n::set_saved_preference(chosen);
+        plx_os::i18n::set_saved_preference(chosen);
         assert!(bridge.capture_screen_inputs());
         assert_eq!(bridge.retained.screen_inputs.install_language, chosen);
         assert_eq!(bridge.retained.screen_inputs.running_language, running);
         assert!(std::sync::Arc::ptr_eq(&stored, &bridge.retained.screen_inputs.session) );
         bridge.retained.live_screen_inputs = false;
-        plx_platform::i18n::set_saved_preference(previous);
+        plx_os::i18n::set_saved_preference(previous);
         assert!(!bridge.capture_screen_inputs());
         assert_eq!(bridge.retained.screen_inputs.install_language, chosen);
         plx_base::devtrig::with_private_triggers(|| {

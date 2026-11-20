@@ -4,7 +4,7 @@ use super::page::WatchTile;
 use plx_data::watchlist::model::{Kind, TileState};
 pub use plx_data::watchlist::order::SortKey;
 use plx_data::watchlist::order::{sorted_filtered, FilterSpec, Show, SortSpec};
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 use plx_ui::popover::Popover;
 use plx_ui::table::{Row, Section, TableView};
 use plx_ui::widgets::Ground;

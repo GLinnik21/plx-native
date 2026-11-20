@@ -754,8 +754,8 @@ fn probed_clear(presented: impl FnOnce() -> bool, clear: impl FnOnce()) {
 
 /// The frame's first framebuffer-0 command is where this driver parks the wait for a free back
 /// buffer, and on every route but the player it is the page's [`frame_clear`]. The dev frame
-/// probe (`/tmp/plxnative-framecb`) prices that wait, but its clock is `platform`'s and this
-/// crate does not depend on `platform`, so the application hands the two edges down once at boot:
+/// probe (`/tmp/plxnative-framecb`) prices that wait, but its clock is `os`'s and this
+/// crate does not depend on `os`, so the application hands the two edges down once at boot:
 /// `waiting` runs just before the clear, `acquired` just after it returns.
 pub fn install_clear_probe(waiting: fn(), acquired: fn()) {
     CLEAR_PROBE.with(|p| p.hooks.set(Some((waiting, acquired))));

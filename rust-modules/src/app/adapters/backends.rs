@@ -2,7 +2,7 @@
 //! composition root and to no backend. Media names neither backend's presence in policy, and the
 //! plane's boot is not a Feed step.
 //!
-//!   - [`acb_init`] boots the video plane owner (`plx_platform::tv::plane`) once per process, for
+//!   - [`acb_init`] boots the video plane owner (`plx_os::tv::plane`) once per process, for
 //!     EVERY backend set. It used to live in the Feed engine, so a URI-only build never created the
 //!     ACB handle, and a webOS 4.x television then stalled URI HLS for want of a bound plane. On an
 //!     ACB display it creates Feed's handle (player type 10) and no other: the URI engine's handle
@@ -22,14 +22,14 @@ use plx_media::player::adapter::PlayerAdapter;
 #[cfg(feature = "play-feed")]
 use plx_media::player::adapter::StartHooks;
 use plx_media::route::PlaybackSession;
-use plx_platform::tv::plane::{self, PlaneFacts, PlaneOwner};
+use plx_os::tv::plane::{self, PlaneFacts, PlaneOwner};
 #[cfg(feature = "play-feed")]
-use plx_platform::tv::plane::DEFAULT_PLAYER_TYPE;
+use plx_os::tv::plane::DEFAULT_PLAYER_TYPE;
 #[cfg(feature = "play-feed")]
-use plx_platform::tv::plane::PlaneHandle;
+use plx_os::tv::plane::PlaneHandle;
 #[cfg(feature = "play-uri")]
-use plx_platform::tv::plane::URI_PLAYER_TYPE;
-use plx_platform::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
+use plx_os::tv::plane::URI_PLAYER_TYPE;
+use plx_os::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
 #[cfg(feature = "play-feed")]
 use std::os::raw::c_int;
 #[cfg(feature = "play-feed")]
@@ -38,7 +38,7 @@ use plx_play_feed::{control::FeedBackend, feed_resources::{FeedResources, LoadRe
     pcm_lead::PcmLead, physical::FeedSet, sf_event::SfEventHooks, shared::{Stage, FEED_SHARED},
     sink_fence::SinkFence, SendPtr};
 #[cfg(feature = "play-feed")]
-use plx_platform::tv::sink::{RefusingSink, UnloadTicket, VideoSink};
+use plx_os::tv::sink::{RefusingSink, UnloadTicket, VideoSink};
 #[cfg(feature = "play-uri")]
 use plx_media::route::uri_preflight::{OriginalQualifier, ProductEvidence, ProductQualifier, ResolvePort};
 #[cfg(feature = "play-uri")]
@@ -215,7 +215,7 @@ macro_rules! native_hooks_over {
             feed: FeedHooks { sink: fenced, mirror_playstate, mute_for_preroll, feed_clock_us: $clock },
             release: ReleaseHooks {
                 raw_sink: $raw,
-                plane: plx_platform::tv::plane::installed(),
+                plane: plx_os::tv::plane::installed(),
                 on_release_step: plx_media::player::engine::release_step,
                 on_exported_window_destroy: plx_media::player::engine::exported_window_destroyed,
                 spawn_unload,
@@ -375,7 +375,7 @@ fn uri_product_binding(display: &dyn DisplaySink, firmware_major: u32, strata: &
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {
     let display = sink::display_installed();
-    let binding = uri_product_binding(display, plx_platform::tv::device::info().major,
+    let binding = uri_product_binding(display, plx_os::tv::device::info().major,
         plx_play_uri::backend::EXPORTED_STRATA);
     // The exported-window override (`dev::uri_exported`): a debug build armed with its trigger, on a
     // display in `VP_EXPORTED` mode, composes the exported window; otherwise the binding is returned
@@ -392,7 +392,7 @@ pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut Pla
     let (evidence, qualifier) = crate::dev::uri_product::compose(evidence, qualifier,
         crate::dev::uri_product::trigger());
     let port = ResolvePort::new(evidence, qualifier);
-    install_uri_product_with_ports(adapter, session, port, plx_platform::tv::uri::installed(), display)
+    install_uri_product_with_ports(adapter, session, port, plx_os::tv::uri::installed(), display)
 }
 
 /// One boot composition for both real and injected ports. The driver is configured with the binding
@@ -401,7 +401,7 @@ pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut Pla
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter,
     session: &mut PlaybackSession, port: ResolvePort,
-    transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    transport: &'static dyn plx_os::tv::uri::UriMedia,
     display: &'static dyn DisplaySink) -> bool {
     let evidence = port.evidence();
     let settings = UriDriverSettings {
@@ -430,7 +430,7 @@ pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter,
 /// can pass the same interfaces without a process-wide port.
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_backend_with_ports(adapter: &mut PlayerAdapter,
-    settings: UriDriverSettings, transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    settings: UriDriverSettings, transport: &'static dyn plx_os::tv::uri::UriMedia,
     display: &'static dyn DisplaySink) -> bool {
     // `UriBackend::new` asserts these; a refusal must come first.
     if settings.capabilities.packet_feed || settings.capabilities.audio_off
@@ -455,10 +455,10 @@ pub(crate) fn install_uri_backend_with_ports(adapter: &mut PlayerAdapter,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::plane::PlaneHandle;
+    use plx_os::tv::plane::PlaneHandle;
     use plx_base::task::MainThread;
-    use plx_platform::tv::plane::DEFAULT_PLAYER_TYPE;
-    use plx_platform::tv::sink::{NoSink, VP_ACB};
+    use plx_os::tv::plane::DEFAULT_PLAYER_TYPE;
+    use plx_os::tv::sink::{NoSink, VP_ACB};
     use std::os::raw::{c_char, c_int, c_long};
     use std::sync::Mutex;
 
@@ -581,7 +581,7 @@ mod tests {
     fn created_player_types() -> Vec<c_int> {
         let mut types = Vec::new();
         #[cfg(feature = "play-feed")]
-        types.push(plx_platform::tv::plane::DEFAULT_PLAYER_TYPE);
+        types.push(plx_os::tv::plane::DEFAULT_PLAYER_TYPE);
         types
     }
 
@@ -660,7 +660,7 @@ mod tests {
         }
         // The same display on a set whose mode is not the exported window: an admitted major binds nothing there.
         for major in [5, 6, 7, 9, 10] {
-            for mode in [VP_NONE, plx_platform::tv::sink::VP_ACB] {
+            for mode in [VP_NONE, plx_os::tv::sink::VP_ACB] {
                 let sink = BootSink::answering(mode, vec![7, 8]);
                 assert_ne!(uri_product_binding(&sink, major, EXPORTED_STRATA), exported, "major {major} mode {mode}");
             }
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(uri_product_binding(&sink, 10, &[11]), UriBinding::Unbound, "an unlisted major");
         assert_eq!(uri_product_binding(&sink, 0, &[11]), UriBinding::Unbound, "unknown firmware");
         // The same table on a display that is not in the exported-window mode.
-        for mode in [VP_NONE, plx_platform::tv::sink::VP_ACB] {
+        for mode in [VP_NONE, plx_os::tv::sink::VP_ACB] {
             let sink = BootSink::answering(mode, vec![7, 8]);
             assert_ne!(uri_product_binding(&sink, 11, &[11]), exported, "mode {mode}");
         }
@@ -703,7 +703,7 @@ mod tests {
         let eight = line(VP_EXPORTED, 8, plx_play_uri::backend::EXPORTED_STRATA);
         assert!(eight.contains("uri: product binding=Unbound mode=2 "), "{eight}");
         assert!(eight.contains(" major=8 evidence=none\n"), "{eight}");
-        let acb = line(plx_platform::tv::sink::VP_ACB, 4, &[]);
+        let acb = line(plx_os::tv::sink::VP_ACB, 4, &[]);
         assert!(acb.contains("uri: product binding=Acb mode=1 handle=deferred ptype=0 "), "{acb}");
         assert!(acb.contains(" major=4 evidence=none\n"), "{acb}");
     }
@@ -741,7 +741,7 @@ mod tests {
         use plx_playback_contract::BackendSet;
         let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
         let feed_only = BackendSet { uri: false, feed: adapter.composed_backends().feed };
-        let ports = (&plx_platform::tv::uri::NoUriMedia, &sink::NoSink);
+        let ports = (&plx_os::tv::uri::NoUriMedia, &sink::NoSink);
         // A driver that claims packet feed is refused, so the set does not gain Uri.
         assert!(!install_uri_backend_with_ports(&mut adapter, settings(true), ports.0, ports.1));
         assert_eq!(adapter.composed_backends(), feed_only);

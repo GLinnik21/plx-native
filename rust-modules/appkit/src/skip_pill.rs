@@ -52,16 +52,16 @@ impl Prompt {
     /// end): Skip intro / Skip credits, for the manual pill and the Automatic prompt alike.
     pub fn label(&self) -> &'static str {
         match self.kind {
-            MarkerKind::Intro => plx_platform::i18n::msg::widgets_skip_intro(),
-            MarkerKind::Credits => plx_platform::i18n::msg::widgets_skip_credits(),
+            MarkerKind::Intro => plx_os::i18n::msg::widgets_skip_intro(),
+            MarkerKind::Credits => plx_os::i18n::msg::widgets_skip_credits(),
         }
     }
     /// The Automatic prompt's unfilled button, which cancels the countdown: Watch intro / Watch credits.
     /// Item 0 of the row, to the left of the filled action ([`crate::up_next::BTN_CREDITS`]).
     pub fn watch_label(&self) -> &'static str {
         match self.kind {
-            MarkerKind::Intro => plx_platform::i18n::msg::widgets_watch_intro(),
-            MarkerKind::Credits => plx_platform::i18n::msg::widgets_next_credits(),
+            MarkerKind::Intro => plx_os::i18n::msg::widgets_watch_intro(),
+            MarkerKind::Credits => plx_os::i18n::msg::widgets_next_credits(),
         }
     }
 }
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn the_automatic_prompt_draws_watch_beside_the_filled_skip_and_the_manual_one_the_pill_alone() {
         let _serial = plx_base::testlock::serial();
-        let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _en = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let row = crate::player_hud::motion::HudMotion::new();
         let (watch, skip) = (Rect::new(900.0, 800.0, 200.0, 64.0), Rect::new(1116.0, 800.0, 232.0, 64.0));
         for (kind, filled, cancel) in [(MarkerKind::Intro, "Skip Intro", "Watch Intro"), (MarkerKind::Credits, "Skip Credits", "Watch Credits")] {

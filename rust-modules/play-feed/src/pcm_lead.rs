@@ -1,6 +1,6 @@
 //! PCM sink lead plan and measured stack/output table for physical buffer-feed Loads.
 //! The plan is pure; only `resolve_on_load_thread` reads the platform sound output.
-use plx_platform::devcaps::AudioStack;
+use plx_os::devcaps::AudioStack;
 
 /// How much later than the picture an app-decoded audio unit is stamped for the sink, in
 /// nanoseconds, on LG's audio stacks when the sound output is not one that was filmed: 400 ms. The
@@ -9,7 +9,7 @@ use plx_platform::devcaps::AudioStack;
 /// applies its DSP lip-sync stage to the hardware decoder and not to a mixer channel. That stage holds
 /// the decoder path back by an offset that a PCM Load never is; this lead gives it the same.
 ///
-/// **Where it applies** ([`plx_platform::devcaps::audio_stack`], fingerprinted by the sink plugin; the
+/// **Where it applies** ([`plx_os::devcaps::audio_stack`], fingerprinted by the sink plugin; the
 /// table is [`pcm_output_lead`]). Everything below is firmware read by hand and by decompile passes
 /// (OTA IDs and releases named), never pasted; ONLY the dev set was filmed.
 ///
@@ -217,7 +217,7 @@ pub fn resolve_on_load_thread(plan: PcmLead) -> Option<i64> {
     if !matches!(plan, PcmLead::FromOutput(_)) {
         return None;
     }
-    let resolved = plan.resolve(plx_platform::tv::sound::output);
+    let resolved = plan.resolve(plx_os::tv::sound::output);
     if let Some(line) = resolved.log_line() {
         plx_base::eventlog::log(&line);
     }

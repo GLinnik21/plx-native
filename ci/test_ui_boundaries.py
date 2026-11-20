@@ -185,11 +185,11 @@ class BoundaryTests(unittest.TestCase):
 
     def test_adjacent_root_install_and_profile_aliases_fail(self):
         for source in (
-            'impl RootPage { fn rebuild() { plx_platform::i18n::saved_preference(); } }',
+            'impl RootPage { fn rebuild() { plx_os::i18n::saved_preference(); } }',
             'impl RootPage { fn rebuild() { plx_media::route::under_posters(); } }',
             'use plx_media::route as playback; impl RootPage { fn rebuild() { playback::under_posters(); } }',
             'use plx_media::route::{under_posters as read}; impl RootPage { fn rebuild() { read(); } }',
-            'use plx_platform::i18n::saved_preference as pick; impl LanguagePage { fn new() { pick(); } }',
+            'use plx_os::i18n::saved_preference as pick; impl LanguagePage { fn new() { pick(); } }',
             'impl LanguagePage { fn pending() { i18n::current().preference(); } }',
         ):
             with self.subTest(source=source):

@@ -93,7 +93,7 @@ def problems(root):
     for rel in sorted(set(found) - set(entries)):
         where = ', '.join(f'line {n}' for n, _ in found[rel])
         out.append(f'{rel}: a hand-written list names several languages ({where}). Loop over '
-                   f'`plx_platform::i18n::SHIPPED` instead; only a pinned, reviewed translation table belongs in {ALLOW_REL}')
+                   f'`plx_os::i18n::SHIPPED` instead; only a pinned, reviewed translation table belongs in {ALLOW_REL}')
     for rel in sorted(set(entries) - set(found)):
         out.append(f'{ALLOW_REL}: stale entry {rel} (the file no longer lists languages): delete the line')
     for rel in sorted({e for e in entries if entries.count(e) > 1}):

@@ -271,7 +271,7 @@ mod tests {
     use plx_playback_contract::{Fidelity, SourceKind, TrackChoice, TrackKind, TrackSelection};
     use plx_media::route::uri_preflight::{ProductQualifier, ResolvePort, StandardDirectPlay};
     use plx_media::route::SourceSelection;
-    use plx_platform::tv::sink::VP_ACB;
+    use plx_os::tv::sink::VP_ACB;
 
     const GOOD: &str = "acb part=991001 pms=192.0.2.5:32499 \
         url=http://10.1.2.3:8080/pipe_hls_720p24_20m/index.m3u8";
