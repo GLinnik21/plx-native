@@ -1,7 +1,8 @@
 //! **An ordinary title through the REAL planner, for each composition a platform can supply**
 //! (platform plan W6c): a URI driver and no Feed, a source that driver declines, no driver at all,
-//! and both drivers. Every case drives `request_play` -> the resolve worker -> `pump_play` over a
-//! loopback PMS, with the session told what the adapter's installed drivers form
+//! and both drivers. Every case but (c)'s planner half drives `request_play` -> the resolve worker ->
+//! `pump_play` over a loopback PMS ((c) reads the plan's own decline fields from `build_stream`
+//! directly, and lands its refusal through `pump_play` in its second test), with the session told what the adapter's installed drivers form
 //! (`PlayerAdapter::composed_backends`) and the resolver a composition publishes, exactly as the
 //! app's `publish_composition` tells it. The URI driver is the contract's `FakeUriDriver`, which
 //! carries no display binding of any platform, and it certifies itself: the resolver's evidence is

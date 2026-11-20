@@ -623,9 +623,9 @@ pub(crate) enum HeroPreview {
 /// has nothing to open it on, so the request is refused HERE, once, through the preview machine's
 /// own fact for an item it cannot preview (`Fact::RefusedDirect`, the same one the build with no
 /// Feed compiled in says): the page's dwell gate (`preview::blocked`) then stops asking, and no
-/// resolve runs. Left to the planner, the refusal would come after the PlayQueue request as a
-/// standing verdict, which `player::state()` reads as an Error and `report::tick_preview` reports
-/// as a failed preview.
+/// resolve runs. Left to the planner, the refusal would land as a standing verdict
+/// (`NoQualifiedBackend`), which `player::state()` reads as an Error and `report::tick_preview`
+/// reports as a failed preview.
 ///
 /// A boot with only the URI driver is refused the same way, and the planner already refused it
 /// (`pms_uri_possible` excludes a preview, and no display places a preview rectangle:

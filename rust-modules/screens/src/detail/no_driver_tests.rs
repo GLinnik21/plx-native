@@ -284,6 +284,41 @@ fn a_restored_hero_spot_lands_on_a_control_the_row_still_stops_on() {
     }
 }
 
+/// A spot saved on a section the item no longer has (no related shelf here) falls back to the row's
+/// first stop, which is Play only when a driver can play.
+#[test]
+fn a_restore_whose_section_is_gone_falls_back_to_the_first_stop() {
+    let sid = ServerId::UNSET;
+    let measure = plx_ui::fixture::FixtureMeasure;
+    for (no_driver, first) in [(false, hero::ELEM_PLAY), (true, hero::ELEM_WATCHLIST)] {
+        let guard = install(resumable(sid));
+        let _driver = NoDriver::set(no_driver);
+        let mut screen = bare(&guard, sid, "movie");
+        screen.restore(&Spot { section: 3, col: 2, ..Default::default() }, test_store().view());
+        let got = Focusable::<TestHost>::reconcile(&screen, key(hero::ELEM_MARK_WATCHED), &cx(&measure, None));
+        assert_eq!(got.elem, first, "no_driver={no_driver}");
+        clear();
+    }
+}
+
+/// A restore retires once focus sits on the control it resolves to: with no driver that is the first
+/// control that can act, not the Play the spot named, so the page does not keep re-seating a focus
+/// that already landed.
+#[test]
+fn a_restore_retires_once_focus_is_on_the_control_the_row_stops_on() {
+    let sid = ServerId::UNSET;
+    for (no_driver, lands) in [(false, hero::ELEM_PLAY), (true, hero::ELEM_WATCHLIST)] {
+        let guard = install(resumable(sid));
+        let _driver = NoDriver::set(no_driver);
+        let mut screen = bare(&guard, sid, "movie");
+        screen.restore(&Spot { section: 0, col: 0, ..Default::default() }, test_store().view());
+        assert!(screen.restore_intent.is_some(), "premise: the restore is armed");
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(lands));
+        assert!(screen.restore_intent.is_none(), "no_driver={no_driver}: focus is on {lands}, the restore's target");
+        clear();
+    }
+}
+
 /// The pointer reaches only what owns a stop: hovering a disabled pill must not park focus on it.
 #[test]
 fn the_pointer_registers_no_stop_on_a_control_that_cannot_act() {

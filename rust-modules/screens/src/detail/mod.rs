@@ -3347,13 +3347,12 @@ impl DetailScreen {
         // Stop is a hit-testable rect, so registering Play's here would let a magic-remote click
         // land on a pill nobody can see and start the FEATURE from a screen showing only a
         // trailer. Skip the whole hero group rather than filtering by `valid()`/`focusable`, so
-        // hover and click both go away together.
-        let stops = self.stops(f.cx);
-        if !stops.full_trailer {
-            // A control that plays registers no stop while no driver is composed: hovering a
-            // disabled pill must not park focus on it, nor a click reach it.
+        // hover and click both go away together. A control that plays, with no driver composed, is
+        // not `valid()` either, so `place` below yields it no rect and it registers no stop:
+        // hovering a disabled pill never parks focus on it, nor does a click reach it.
+        if !self.stops(f.cx).full_trailer {
             let (controls, n) = hero::hero_ctls(set);
-            elems.extend(controls[..n].iter().filter(|c| hero::focusable(**c, stops)).map(|c| (c.elem(), Activate::Press)));
+            elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
         }
         if let Some(d) = self.detail(meta) {
             // Only the tabs on the axis register a stop, as the strip paints only those, so the
@@ -4367,10 +4366,13 @@ impl DetailScreen {
         );
     }
 
-    /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? The one
-    /// predicate every site that enumerates or resolves hero focus must agree on — `groups` (via
-    /// [`hero::visible_ctls`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
-    /// `record_stops` for what is pointer-reachable, and the input arm for who owns the keys.
+    /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? One of the TWO
+    /// facts that decide which hero controls own a focus stop ([`Self::stops`] pairs it with
+    /// `ScreenInputs::can_play`; [`hero::focusable`] reads both): every site that enumerates or
+    /// resolves hero focus reads them together, never this alone — `groups` (via
+    /// [`hero::stop_span`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
+    /// `record_stops` for what is pointer-reachable. This alone is the input arm's fact, for who
+    /// owns the keys.
     /// `draw_buttons` deliberately does NOT gate on this: it draws every hero control regardless
     /// and lets the eased `preview_chrome` alpha (set from this same predicate in `preview_tick`)
     /// fade the row, so a control losing focus does not also lose its paint on the same frame.
