@@ -10,7 +10,9 @@ use std::borrow::Cow;
 ///
 /// It is not a closed set. The tag is the only thing in the stored envelope that says which
 /// platform's store can open it, and a platform names its own in its own code ([`Backend::new`]);
-/// no shared code branches on one. A tag that no installed platform knows is REFUSED when the
+/// no shared code branches on one, but the legacy-migration decoder
+/// (`plex::session::persistence::decode_legacy_at_depth`), which accepts only `keymanager3` from
+/// the files earlier builds wrote. A tag that no installed platform knows is REFUSED when the
 /// envelope is opened (the platform's `open` answers `None`, the session layer reports the file
 /// locked) and is never read as another store's: the stored text is not ours to reinterpret.
 ///
