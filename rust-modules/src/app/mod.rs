@@ -51,6 +51,8 @@ use plx_ui::consts::{
 };
 // The window we ASK SDL for. `surface::probe` then reads back what we actually got.
 const SCR_W: c_int = plx_base::surface::LOGICAL_W as c_int;
+// Read only by the television's window request (`boot.rs`): the desktop's own sizing is `plx_shell_sdl`'s.
+#[cfg(any(not(feature = "hostsim"), test))]
 const SCR_H: c_int = plx_base::surface::LOGICAL_H as c_int;
 pub(crate) const COLS: c_int = 10;
 
