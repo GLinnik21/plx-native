@@ -9735,13 +9735,14 @@ mod tests {
     }
 
     /// **A shader declares one name per `uniform` / `varying` / `attribute` statement.** The Samsung
-    /// TV 10.0 emulator's GL translation (YaGL, under Mesa llvmpipe) mishandled
-    /// `vs_ambient.vert`'s `uniform vec4 u_atl, u_atr, u_abr, u_abl;`, the only multi-declarator in
-    /// `shaders/`: the pairs built on it failed to link ("all shaders must use same shading language
-    /// version") while the eleven others linked. Every other source already spelled one name per
-    /// statement, and a driver that reads either spelling sees the same program, so the sources keep
-    /// to the spelling every driver has read. It lists the directory, so a new shader is covered
-    /// by being added.
+    /// TV 10.0 emulator (YaGL over Mesa llvmpipe) rejects `VS_AMBIENT_DITHERED` at
+    /// `varying highp vec2 v_dither_nc;` ("syntax error, unexpected NEW_IDENTIFIER"), and
+    /// `gfx_compile` exits the process on a required shader's rejection. `vs_ambient.vert`'s
+    /// `uniform vec4 u_atl, u_atr, u_abr, u_abl;` was the only multi-declarator in `shaders/`, which
+    /// makes it the suspected cause; that it is the cause is not yet confirmed on the emulator.
+    /// Every other source already spelled one name per statement, and a driver that reads either
+    /// spelling sees the same program, so the sources keep to the spelling the other drivers have
+    /// read. It lists the directory, so a new shader is covered by being added.
     #[test]
     fn every_shader_keeps_one_name_per_declaration_in_a_uniform_varying_or_attribute_statement() {
         let mut found = Vec::new();
@@ -9752,8 +9753,9 @@ mod tests {
         }
         assert!(
             found.is_empty(),
-            "the TV 10.0 emulator's GL translation (YaGL) mishandles a multi-declarator, so a \
-             `uniform` / `varying` / `attribute` statement names one variable; split these:\n{}",
+            "a multi-declarator is the suspected cause of the TV 10.0 emulator (YaGL) rejecting \
+             `vs_ambient.vert`, so a `uniform` / `varying` / `attribute` statement names one \
+             variable; split these:\n{}",
             found.join("\n")
         );
     }
