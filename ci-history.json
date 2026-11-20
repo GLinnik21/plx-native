@@ -1,4 +1,4 @@
-{"updated":"2026-11-20T05:17:59Z",
+{"updated":"2026-11-20T05:25:26Z",
 "ci":[
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564709752,"at":"2026-08-22T09:21:07Z","sha":"aa578b180","title":"release: 0.4.0's note, rewritten for the 132 commits it predated","jobs":{"host checks (NOT a device gate)":90,"cross-build (armv7) + artifact assertions":86},"pr":null,"conclusion":"success","attempt":1},
@@ -5501,7 +5501,8 @@
 {"id":44677452215,"at":"2026-11-20T04:54:07Z","sha":"d783ecee5","title":"Record #1474 (e2088058d) as merged, keeping this tree","pr":1478,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":187,"Linux simulator build + launch":312,"Windows launcher syntax":23,"macOS simulator build + launch":190}},
 {"id":44677455943,"at":"2026-11-20T04:54:09Z","sha":"513d07a02","title":"Record #1474 (e2088058d) as merged, keeping this tree","pr":1479,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":379,"macOS simulator build + launch":305,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":229}},
 {"id":44660234826,"at":"2026-11-20T04:55:14Z","sha":"ea03cb17a","title":"Merge branch 'plxnative:main' into croatian-translation","pr":1476,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Windows launcher syntax":28,"Linux simulator build + launch":440,"macOS tests against bundled FFmpeg and ASS":167,"macOS simulator build + launch":117},"wall":9811},
-{"id":44679326778,"at":"2026-11-20T05:11:13Z","sha":"9ed56b066","title":"gfx: state the confirmed cause of the vs_ambient rejection","pr":1481,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":294,"macOS tests against bundled FFmpeg and ASS":244,"Windows launcher syntax":22,"Linux simulator build + launch":294}}
+{"id":44679326778,"at":"2026-11-20T05:11:13Z","sha":"9ed56b066","title":"gfx: state the confirmed cause of the vs_ambient rejection","pr":1481,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":294,"macOS tests against bundled FFmpeg and ASS":244,"Windows launcher syntax":22,"Linux simulator build + launch":294}},
+{"id":44680286842,"at":"2026-11-20T05:19:41Z","sha":"e0599089b","title":"Keep no credential on platforms that cannot store one: a memory-only store mode","pr":1477,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":196,"macOS tests against bundled FFmpeg and ASS":282,"Linux simulator build + launch":331}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
