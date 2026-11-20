@@ -99,7 +99,10 @@ that mixes async content with a live cursor:
   block that lands late). A restore is only what the reader chose: the engine remembers
   the page's own seats too, so the page keeps their provenance (`LibraryScreen::placed`). Home already has this shape (the hero seats when its action row
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
-  and Person and Detail keep no self-seat for a landing to strand.
+  and Person keeps no self-seat for a landing to strand. Detail keeps none while a playback driver
+  is composed (Play is its first seat and the landing does not move it); with none composed its
+  first seat, before the item lands, is the watched toggle, so `Enter` arms the default restore and
+  the landing re-seats the page by `DetailScreen::default_elem`.
 - **The grid absorbs an index landing, the page shifts its scroll.** The Library's grid is a
   `cards::Grid` in `ScrollMode::External`: when the focused element's index changes with no
   `FocusMoved` (an insert or reorder before it) the grid moves its pop with the element and

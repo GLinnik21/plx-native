@@ -177,8 +177,10 @@ impl HeroCtl {
     /// Does pressing this control WRITE to the household's account? The bookmark disc adds or
     /// removes the title on the plex.tv Watchlist, and the watched toggle in either face marks it
     /// watched or unwatched on the server. The rest play, navigate or open a menu or panel. A page
-    /// never opens on one of these ([`default_stop`]): a reflex OK on a page that has just appeared
-    /// must not change the record. Travel still reaches them.
+    /// never rests on one of these once its item is there ([`default_stop`]): a reflex OK on a page
+    /// that has just appeared must not change the record. Travel still reaches them. Before the
+    /// item lands, the one seat on a write control (the watched toggle of a page with no driver)
+    /// presses nothing (`activate_hero`) and the landing re-seats it (`DetailScreen::default_elem`).
     pub const fn writes_account(self) -> bool {
         matches!(self, HeroCtl::Watchlist | HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
     }
@@ -318,8 +320,9 @@ impl Stops {
 /// disabled discs): with no playback driver composed, the controls that start playback
 /// ([`HeroCtl::starts_playback`]) are drawn disabled and the focus travels only between the
 /// controls that can act. The shared button draws no focused face for a disabled control, so a stop
-/// on one would leave focus visibly nowhere. Where the page OPENS is a separate rule
-/// ([`default_stop`]): never on a control that writes to the account.
+/// on one would leave focus visibly nowhere. Where the page rests when nothing says where is a
+/// separate rule ([`default_stop`]): never on a control that writes to the account once its item
+/// is there.
 pub fn focusable(ctl: HeroCtl, stops: Stops) -> bool {
     if stops.full_trailer {
         return ctl == HeroCtl::Play;
@@ -354,8 +357,10 @@ pub fn visible_ctls(set: HeroSet, stops: Stops) -> ([HeroCtl; MAX_CTLS], usize) 
 }
 
 /// The row's first stop: Play with a playback driver composed (it is always first), the first
-/// control that can act without one. It is where a press UP into the row from a section below
-/// seats, and the last resort of [`DetailScreen::default_elem`](super::DetailScreen). The row always
+/// control that can act without one. A press UP into the row from a section below seats on
+/// [`default_stop`] and reaches for this one only when every stop writes (a movie with no driver:
+/// the bookmark and the watched toggle), so the write controls stay reachable by travel; it is
+/// also the last resort of [`DetailScreen::default_elem`](super::DetailScreen). The row always
 /// has a stop (the watched toggle is unconditional and plays nothing, and Play anchors
 /// full-trailer mode), so the answer needs no `Option`; were that ever false it is the array's
 /// own fill, Play.

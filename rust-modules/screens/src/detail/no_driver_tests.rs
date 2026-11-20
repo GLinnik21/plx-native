@@ -1,9 +1,11 @@
 //! A platform that composed no playback driver (W6c): the Detail controls that play are drawn
 //! disabled and own no focus stop, so focus travels between the controls that can act, and a press
-//! that reaches a disabled one anyway does nothing. The page never OPENS on a control that writes to
-//! the account (the bookmark, the watched toggle): its default is the first stop that does not, or,
-//! for a row of writes only, the first section below the row, and a restore that names a control
-//! the viewer was on keeps it. With a driver composed every one of these is exactly what it was.
+//! that reaches a disabled one anyway does nothing. A page whose item is there never opens on a
+//! control that writes to the account (the bookmark, the watched toggle): its default is the first
+//! stop that does not, or, for a row of writes only, the first section below the row, and a restore
+//! that names a control the viewer was on keeps it. A page seated before its item lands has only the
+//! watched toggle, which presses nothing until the item is there, and the landing re-seats it. With
+//! a driver composed every one of these is exactly what it was.
 //!
 //! The shared rule these pin is `focus.rs`'s "a disabled item owns no focus stop"
 //! (`next_enabled_index`; the player HUD's disabled discs): the shared button draws no focused face

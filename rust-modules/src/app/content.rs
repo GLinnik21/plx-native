@@ -611,8 +611,10 @@ pub(crate) struct HeroPreviewAsk<'a> {
 pub(crate) enum HeroPreview {
     /// The item has no extra to preview; the preview machine remembers it.
     NoExtra,
-    /// Nothing was started: the machine's own gates said no, or this boot composed no Feed, or the
-    /// admission was refused. The item is remembered, so the page's dwell gate does not ask again.
+    /// Nothing was started. A boot that composed no Feed is remembered (`Fact::RefusedDirect`), and
+    /// so is a standing refusal of the machine's own (`preview::blocked` answers from it), so the
+    /// page's dwell gate does not ask again; a busy machine and a refused admission remember
+    /// nothing, and the page asks again after its next dwell.
     Refused,
     /// The resolve is in flight and the asking page owns the preview.
     Started,
