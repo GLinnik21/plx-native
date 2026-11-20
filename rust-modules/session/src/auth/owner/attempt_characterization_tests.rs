@@ -838,7 +838,10 @@ fn a_memory_only_sign_in_reaches_home_through_the_real_session_layer_with_no_tok
     let scratch = layer::TempSession::new("memory-only-owner");
     let dir = scratch.path().parent().unwrap().to_path_buf();
     let data = MemoryOnlyData::new(&dir);
+    // The install id the owner helpers above expect, held by the layer as a boot would hold it.
+    assert!(layer::update(|cur| Some(layer::Session { client_id: "synthetic-client".into(), ..cur.clone() })));
     let booted = layer::load();
+    assert_eq!(booted.client_id, "synthetic-client");
     let mut owner = SessionMachine::from_init(SessionInit::captured(booted.clone()));
     assert_eq!(owner.common.disk_identity.client_id, booted.client_id);
 
@@ -886,9 +889,10 @@ fn a_memory_only_sign_in_reaches_home_through_the_real_session_layer_with_no_tok
     let fx = step(&mut owner, SessionEvent::Read(SessionReadReply {
         addr: Addr { to: MachineId::Session, req: RequestId(req) }, epoch,
         value: SessionReadValue::LoginClientId(id) }));
-    assert!(matches!(fx.as_slice(), [SessionFx::Work { input: SessionWork::Login { .. }, .. }]),
-        "{:?}", safe_effect_diagnostics(&fx));
+    assert!(fx.iter().any(|effect| matches!(effect, SessionFx::Work { input: SessionWork::Login { client_id }, .. }
+        if *client_id == booted.client_id)), "{:?}", safe_effect_diagnostics(&fx));
     let expected = owner.common.disk_identity.clone();
+    assert_eq!(expected.client_id, booted.client_id, "the owner's fence carries the id the layer kept");
     let again = layer::replace_after_reauthentication_guarded_with_outcome(
         |disk| expected.matches(disk),
         |disk| layer::Session { account_token: MEMORY_ACCOUNT.into(), ..disk.clone() },
