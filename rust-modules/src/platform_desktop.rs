@@ -25,7 +25,7 @@
 //! made one of them reachable would fail to link for want of libwayland, glib or luna-service2, on
 //! a Mac and on Linux alike. `simulators.yml` links the shapes the simulator ships in to guard that
 //! until the platform crates split (`docs/platform-ports.md`, W7).
-use crate::app::platform::{FrameProbe, Platform, Shell};
+use crate::app::platform::{Composition, FrameProbe, MediaBoot, Platform, Shell};
 use plx_os::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use plx_os::tv::toast::{Identity, Outcome, Sent};
 use plx_os::tv::{IdentityHooks, LegacyWebosMedia, SecureHooks, Services, SystemHooks};
@@ -124,8 +124,24 @@ impl FrameProbe for DesktopProbe {
     }
 }
 
+/// The desktop's media boot: nothing to initialize before the first adapter (the plane owner's
+/// default facts are the absent ones the host sink's `VP_EXPORTED`/`VP_NONE` boot would state), and
+/// the Feed over the host sink as its only driver. It composes no URI driver (that is the
+/// television's ACB driver), so it returns no resolver and the session is published the Feed alone.
+fn media_early_init(_mt: &plx_base::task::MainThread) {}
+
+fn media_compose(adapter: &mut plx_media::player::adapter::PlayerAdapter, _controlled: bool) -> Composition {
+    crate::app::adapters::backends::compose_feed(adapter);
+    Composition::NONE
+}
+
 /// The desktop platform: what [`run`] hands `app::run_application`.
-static PLATFORM: Platform = Platform::new(&SERVICES, &DesktopShell, &DesktopProbe);
+static PLATFORM: Platform = Platform::new(
+    &SERVICES,
+    &DesktopShell,
+    &DesktopProbe,
+    MediaBoot { early_init: media_early_init, compose: media_compose },
+);
 
 /// The desktop entry: boot the application on [`PLATFORM`] and return the status it ended with.
 /// Ending the process is the executable's (`src/bin/sim.rs`), which owns it, like the television's
@@ -141,13 +157,12 @@ pub fn run(pms_host: &CStr, pms_port: u16) -> c_int {
 mod tests {
     use super::*;
 
-    /// The app's plane boot resolves the display through `display_installed()` (this table's
-    /// `display_sink`), where media's old `acb_init` resolved it through `player::display()`. In
-    /// the simulator both must be the host sink, never `NoSink`: a boot that read `NoSink` would
-    /// report no plane to every backend and nothing in a simulator run would say so.
+    /// The Feed's sink and the display the plane reads (`display_installed()`, this table's
+    /// `display_sink`) are the one host sink in the simulator, never `NoSink`: a Feed that read
+    /// `NoSink` would report no plane and nothing in a simulator run would say so.
     #[cfg(feature = "play-feed")]
     #[test]
-    fn the_simulator_port_display_is_the_host_sink_the_acb_init_reads() {
+    fn the_simulator_port_display_is_the_host_sink() {
         let host = std::ptr::from_ref(&crate::app::adapters::hostsim::HOST_SINK).cast::<()>();
         let media = &SERVICES.legacy_webos_media;
         assert_eq!(std::ptr::from_ref(media.display_sink).cast::<()>(), host,

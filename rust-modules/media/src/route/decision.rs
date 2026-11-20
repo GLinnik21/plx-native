@@ -1342,8 +1342,20 @@ impl PlaybackSession {
         self.source_selection = Some(selection);
     }
 
-    pub fn install_uri_preflight_port(&mut self, port: super::uri_preflight::ResolvePort) {
-        self.uri_preflight_port = Some(port);
+    /// Publish the composition's resolver, or its absence: a boot whose URI install was refused (or
+    /// that composed no URI driver) passes `None`, and the planner then answers `UriDecline::NoPort`.
+    /// Takes `Some(port)` or a bare port, so the set of installed drivers and this resolver are
+    /// published by the one call the boot makes (`app::platform::publish_composition`).
+    pub fn install_uri_preflight_port(
+        &mut self,
+        port: impl Into<Option<super::uri_preflight::ResolvePort>>,
+    ) {
+        self.uri_preflight_port = port.into();
+    }
+
+    /// The resolver the composition published, `None` when it published none.
+    pub fn uri_preflight_port(&self) -> Option<&super::uri_preflight::ResolvePort> {
+        self.uri_preflight_port.as_ref()
     }
 
     /// The playback backends the composition supplies. Boot installs the set its drivers form

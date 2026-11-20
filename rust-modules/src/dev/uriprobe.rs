@@ -19,7 +19,7 @@ use plx_media::route::RouteStartAttempt;
 use plx_play_uri::uriprobe::{AbrBps, Firmware, Kind, Settle, Trigger, Variant};
 use plx_play_uri::uriprobe_drive::{DriverConfig, UriSession as CoreSession};
 
-/// Install the probe on the player adapter, once, at boot (`compose_backends`).
+/// Install the probe on the player adapter, once, at boot (`backends::compose_with`).
 pub(crate) fn install(adapter: &mut PlayerAdapter) {
     adapter.install_uri_probe(Box::new(Probe));
 }
