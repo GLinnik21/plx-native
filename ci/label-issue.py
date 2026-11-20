@@ -16,20 +16,23 @@ How a label is chosen:
   touching this file. The answer is untrusted text: anything that is not one of the candidate
   labels is dropped, at most one kind and MAX_AREAS areas survive. An issue that already carries a
   kind (the bug form files one as `bug`) is told so and never gets a second, different kind.
-* The workflow holds no API key. It signs in with Workload Identity Federation: GitHub's OIDC token
+* The workflow holds no Anthropic API key. It signs in with Workload Identity Federation: GitHub's OIDC token
   for the run is exchanged for a short-lived Anthropic access token (`federation_token`), by the
   federation rule named in the repository variables ANTHROPIC_FEDERATION_RULE_ID,
   ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_SERVICE_ACCOUNT_ID and (optional) ANTHROPIC_WORKSPACE_ID.
 * When Anthropic cannot answer (the sign-in or the request fails, e.g. the organization is out of
-  credit), the same request goes to OpenRouter's Anthropic-compatible Messages endpoint with the
-  secret OPENROUTER_API_KEY: the same Haiku (OPENROUTER_MODEL), and OpenRouter itself retries on
-  OPENROUTER_FALLBACKS (a non-Anthropic model) if that fails too. A run that fell back is green but
-  carries a `::warning::` naming why, so a broken federation rule still shows in Actions. With no
-  OPENROUTER_API_KEY the fallback is off and the run behaves as before.
+  credit), the workflow's second job re-runs this script with `--provider openrouter` on exactly
+  the issues that failed (written to $GITHUB_OUTPUT as `failed`): the same request through
+  OpenRouter's Anthropic-compatible Messages endpoint with the secret OPENROUTER_API_KEY, the same
+  Haiku (OPENROUTER_MODEL), and OpenRouter's own retry on OPENROUTER_FALLBACKS (a non-Anthropic
+  model). It is a separate job because the key lives in a GitHub Environment limited to the default
+  branch, and an environment changes the OIDC subject the Anthropic federation rule matches
+  (`...:ref:refs/heads/main`), so the Anthropic job can hold no environment. A run that fell back
+  shows the Anthropic job's `::error::` annotations but finishes green.
 * There is no keyword fallback. A guess from single words ("play", "ass", "skip") put wrong areas
   on most issues, and a silent fallback hid that the model had stopped answering for weeks. When
-  every model fails or answers nonsense, only `user-report` is added, the reason is printed, and
-  the run exits 1 so the failed job is visible in Actions.
+  the model fails or answers nonsense, only `user-report` is added, the reason is printed, and
+  the run exits 1 so the failed job is visible in Actions (after the fallback, when it also fails).
 
 Triage outcomes (`duplicate`, `invalid`, `wontfix`, `good first issue`, `help wanted`) are a
 maintainer's call and are never candidates. `question` is retired (questions go to Discussions >
@@ -37,7 +40,7 @@ Q&A) and is never a candidate either.
 
     ci/label-issue.py --issue 478            # label one issue (GITHUB_TOKEN, GITHUB_REPOSITORY,
                                              # ACTIONS_ID_TOKEN_REQUEST_*, ANTHROPIC_* federation ids,
-                                             # optional OPENROUTER_API_KEY)
+                                             # or --provider openrouter with OPENROUTER_API_KEY)
     ci/label-issue.py --unlabeled            # label every open issue that has no labels
     ci/label-issue.py --issue 478 --dry-run  # print the decision, change nothing
     ci/label-issue.py --selftest             # pure logic, no network; `make check` runs it
@@ -60,9 +63,10 @@ AUDIENCE = "https://api.anthropic.com"
 FEDERATION_VARS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID")
 # A label pick is a short classification over a few hundred tokens; the small model is plenty.
 MODEL = "claude-haiku-5-5"
-# The fallback, used only when Anthropic gives no usable answer: the same model through OpenRouter,
-# billed from OpenRouter credit, then (OpenRouter's own retry) a model from another vendor, so an
-# Anthropic outage is covered too. The Messages endpoint takes at most 3 fallbacks.
+# The fallback (`--provider openrouter`), run by the workflow only on issues Anthropic failed: the same
+# model through OpenRouter, billed from OpenRouter credit, then (OpenRouter's own retry, the
+# documented `fallbacks` field of its Messages endpoint, at most 3) a model from another vendor, so
+# an Anthropic outage is covered too: https://openrouter.ai/docs/guides/routing/model-fallbacks
 OPENROUTER_URL = "https://openrouter.ai/api/v1/messages"
 OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
 OPENROUTER_FALLBACKS = ("google/gemini-3.1-flash-lite",)
@@ -77,6 +81,13 @@ MAX_AREAS = 3
 USER_ASSOCIATIONS = {"NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR"}
 # Characters of the body sent to the model; the first screenful of an issue carries its topic.
 BODY_LIMIT = 4000
+# Why the last model call gave no answer, for the `::error::` annotation that reports the issue.
+LAST_FAILURE = {"reason": None}
+
+
+def fail(reason):
+    LAST_FAILURE["reason"] = reason
+    print(reason, file=sys.stderr)
 
 def candidates(repo_labels):
     """`{name: description}` the classifier may pick from: the repository's labels minus NEVER and RETIRED."""
@@ -199,11 +210,11 @@ def federation_token(env):
     federation ids in `env`; the workspace id is only needed when the rule covers several."""
     missing = [v for v in FEDERATION_VARS if not env.get(v)]
     if missing:
-        print(f"::error::missing {', '.join(missing)}: set them as repository variables", file=sys.stderr)
+        fail(f"missing {', '.join(missing)}: set them as repository variables")
         return None
     url, bearer = env.get("ACTIONS_ID_TOKEN_REQUEST_URL"), env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
     if not url or not bearer:
-        print("::error::no GitHub identity token: the job needs `permissions: id-token: write`", file=sys.stderr)
+        fail("no GitHub identity token: the job needs `permissions: id-token: write`")
         return None
     try:
         # A fresh identity token per exchange: Anthropic accepts each one once.
@@ -217,7 +228,7 @@ def federation_token(env):
         return request("POST", TOKEN_URL, None, body, {"content-type": "application/json"})["access_token"]
     except (urllib.error.URLError, KeyError, TypeError, ValueError, TimeoutError) as e:
         # A refused exchange is an opaque 401; the reason is on the Console's authentication history page.
-        print(f"::error::Anthropic sign-in failed ({e}); see Console > Workload identity > history", file=sys.stderr)
+        fail(f"Anthropic sign-in failed ({http_reason(e)}); see Console > Workload identity > history")
         return None
 
 
@@ -251,7 +262,7 @@ def messages_asker(name, url, model, get_token, extra=None):
                 print(f"{name}: answered by {answered}", file=sys.stderr)
             return "".join(b.get("text", "") for b in resp["content"] if b.get("type") == "text")
         except (urllib.error.URLError, KeyError, TypeError, ValueError, TimeoutError, AttributeError) as e:
-            print(f"{name} unavailable: {http_reason(e)}", file=sys.stderr)
+            fail(f"{name} unavailable: {http_reason(e)}")
             return None
     return ask
 
@@ -262,29 +273,13 @@ def model_asker(get_token):
 
 
 def openrouter_asker(key):
-    """The same request through OpenRouter's Messages endpoint, or None when there is no key."""
+    """The same request through OpenRouter's Messages endpoint, or None when there is no key
+    (reason recorded)."""
     if not key:
+        fail("no OPENROUTER_API_KEY: add it to the `issue-labels` environment")
         return None
     return messages_asker("OpenRouter", OPENROUTER_URL, OPENROUTER_MODEL, lambda: key,
                           {"fallbacks": [{"model": m} for m in OPENROUTER_FALLBACKS]})
-
-
-def with_fallback(primary, fallback):
-    """`ask` that tries `primary` and, when it gives no usable answer, `fallback` (if any).
-
-    A fallback that answered is announced as a `::warning::`: the run stays green, but the reason
-    Anthropic failed is not hidden."""
-    if fallback is None:
-        return primary
-
-    def ask(messages):
-        answer = primary(messages)
-        if answer is not None and parse_answer(answer) is not None:
-            return answer
-        print("::warning::Claude gave no usable answer; asking OpenRouter instead", file=sys.stderr)
-        second = fallback(messages)
-        return second if second is not None else answer
-    return ask
 
 
 def label_issue(repo, number, token, repo_labels, ask, dry_run, only_if_unlabeled):
@@ -304,14 +299,15 @@ def label_issue(repo, number, token, repo_labels, ask, dry_run, only_if_unlabele
         print(f"#{number} {issue.get('title', '')!r}: picks {', '.join(picks) or 'nothing'}; "
               f"would add {', '.join(add) or 'nothing'}")
         if not ok:
-            print(f"::error::#{number}: the model gave no usable answer")
+            print(f"::error::#{number}: the model gave no usable answer ({LAST_FAILURE['reason']})")
         return ok
     add, ok = decide(issue, repo_labels, ask)
     print(f"#{number} {issue.get('title', '')!r}: {', '.join(add) if add else 'nothing to add'}")
     if add:
         request("POST", f"{API}/repos/{repo}/issues/{number}/labels", token, {"labels": add})
     if not ok:
-        print(f"::error::#{number}: the model gave no usable answer, so no kind or area was added")
+        print(f"::error::#{number}: the model gave no usable answer ({LAST_FAILURE['reason']}), "
+              "so no kind or area was added")
     return ok
 
 
@@ -321,6 +317,8 @@ def main():
     ap.add_argument("--unlabeled", action="store_true", help="every open issue with no labels")
     ap.add_argument("--only-if-unlabeled", action="store_true", help="skip an issue that has any label")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--provider", choices=("anthropic", "openrouter"), default="anthropic",
+                    help="anthropic (federation sign-in) or openrouter (OPENROUTER_API_KEY), the fallback")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -338,12 +336,26 @@ def main():
             print("every open issue already has a label")
             return 0
         sys.exit("nothing to do: pass --issue N or --unlabeled")
-    fallback = openrouter_asker(os.environ.get("OPENROUTER_API_KEY"))
-    print(f"classifier: {MODEL}" + (f", fallback {OPENROUTER_MODEL} via OpenRouter" if fallback else ""))
-    ask = with_fallback(model_asker(lambda: federation_token(os.environ)), fallback)
-    results = [label_issue(repo, n, token, repo_labels, ask, args.dry_run, args.only_if_unlabeled or args.unlabeled)
-               for n in numbers]
-    return 0 if all(results) else 1
+    if args.provider == "openrouter":
+        print(f"classifier: {OPENROUTER_MODEL} via OpenRouter (fallback; Claude failed on these issues)")
+        ask = openrouter_asker(os.environ.get("OPENROUTER_API_KEY")) or (lambda m: None)
+    else:
+        print(f"classifier: {MODEL}")
+        ask = model_asker(lambda: federation_token(os.environ))
+    results = {n: label_issue(repo, n, token, repo_labels, ask, args.dry_run, args.only_if_unlabeled or args.unlabeled)
+               for n in numbers}
+    failed = [n for n, ok in results.items() if not ok]
+    report_failed(failed, os.environ.get("GITHUB_OUTPUT"))
+    if args.provider == "openrouter" and results and not failed:
+        print("::warning::Claude could not label these issues; OpenRouter did", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def report_failed(failed, output):
+    """Hand the issues the model failed on to the workflow's fallback job (`failed=N M ...`)."""
+    if output:
+        with open(output, "a", encoding="utf-8") as f:
+            f.write(f"failed={' '.join(map(str, failed))}\n")
 
 
 # --- selftest ------------------------------------------------------------------------------------
@@ -452,29 +464,18 @@ def selftest():
         def test_model_is_the_current_haiku(self):
             self.assertEqual(MODEL, "claude-haiku-5-5")
 
-        def test_fallback_answers_when_claude_does_not(self):
-            asked = []
-            ask = with_fallback(lambda m: None, lambda m: asked.append(1) or '{"labels": ["bug", "subtitles"]}')
-            self.assertEqual(decide(arabic, labels, ask), (["bug", "subtitles", "user-report"], True))
-            self.assertEqual(asked, [1])
-
-        def test_fallback_is_not_asked_when_claude_answers(self):
-            ask = with_fallback(lambda m: '{"labels": ["bug"]}', lambda m: self.fail("fallback asked"))
-            self.assertEqual(decide(arabic, labels, ask), (["bug", "user-report"], True))
-
-        def test_fallback_after_an_unusable_answer(self):
-            ask = with_fallback(lambda m: "I cannot help", lambda m: '{"labels": ["bug"]}')
-            self.assertEqual(decide(arabic, labels, ask), (["bug", "user-report"], True))
-
-        def test_both_down_still_fails(self):
-            self.assertEqual(decide(arabic, labels, with_fallback(lambda m: None, lambda m: None)),
-                             (["user-report"], False))
-
-        def test_no_openrouter_key_means_no_fallback(self):
+        def test_no_openrouter_key_means_no_asker(self):
             self.assertIsNone(openrouter_asker(None))
             self.assertIsNone(openrouter_asker(""))
-            primary = lambda m: None
-            self.assertIs(with_fallback(primary, None), primary)
+            self.assertIn("OPENROUTER_API_KEY", LAST_FAILURE["reason"])
+
+        def test_failed_issues_are_handed_to_the_fallback_job(self):
+            import tempfile
+            with tempfile.NamedTemporaryFile("r", suffix=".out") as out:
+                report_failed([478, 501], out.name)
+                report_failed([], out.name)
+                self.assertEqual(open(out.name).read(), "failed=478 501\nfailed=\n")
+            report_failed([1], None)  # outside Actions: nothing to write
 
         def test_openrouter_request(self):
             global request
