@@ -491,6 +491,21 @@ pub fn is_remote_bound(sym: c_uint, wcode: c_uint) -> bool {
     action_of(sym, wcode).is_some()
 }
 
+/// The raw `(sym, wcode)` pair a key arrived as. Kept beside the [`Action`] because three things
+/// still read it: a press with no action (an unsupported key flows on as exactly the pair it was),
+/// the lab trigger key (named by `lab.json`, not by an action), and the recorder's tape, whose
+/// format IS the pair. A platform with no SDL pair sends none, and the loop builds [`raw_pair`]
+/// for its action.
+///
+/// It lives here, beside [`raw_pair`] and [`action_of`] whose pair it names, so a platform crate
+/// reaches it without the application's private events module (`docs/platform-ports.md`, Target
+/// shape 8: `host::EventSink::key` takes one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawKey {
+    pub sym: c_uint,
+    pub wcode: c_uint,
+}
+
 /// **A key press by what it MEANS, with no SDL in it** — the vocabulary a platform that has no SDL
 /// key pair hands the loop (`HostEvent::Key`'s `action`), and the one the screens move onto when
 /// they stop reading `(sym, wcode)` themselves.

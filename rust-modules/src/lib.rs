@@ -19,6 +19,10 @@ mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or 
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
+/// The one narrow public face of the application for a platform crate: the types it builds and implements
+/// (`Platform`, `Shell`, `Surface`, `EventSink`, ...) and the entry `run`, as re-exports. Everything else of
+/// the application stays private (`docs/platform-ports.md`, Target shape 8).
+pub mod host;
 // The simulator's HUD tools (`--hud-lint`, `--hud-schema`, `--hud-export`): a library function the thin
 // `src/bin/sim.rs` calls before it reads a PMS host. `pub` because that binary is a separate crate; absent
 // from the television build, which has no use for a linter and no argv to read it from.

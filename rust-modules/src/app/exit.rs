@@ -54,7 +54,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Whether the application gave back every native resource it held before it returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Release {
+pub enum Release {
     /// The teardown ran to its end and released the window and the GL context.
     Complete,
     /// Something is still held: a native worker is inside firmware, or the boot refused before any
@@ -65,15 +65,15 @@ pub(crate) enum Release {
 
 /// What `run_application` returns to its entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Exit {
+pub struct Exit {
     /// The process exit status: `1` after a failed recording or a refused boot, else `0`.
-    pub(crate) code: c_int,
-    pub(crate) release: Release,
+    pub code: c_int,
+    pub release: Release,
 }
 
 impl Exit {
     /// An early-boot refusal. Nothing was torn down, so nothing is released.
-    pub(crate) const fn refused(code: c_int) -> Self {
+    pub const fn refused(code: c_int) -> Self {
         Self { code, release: Release::Retained }
     }
 
