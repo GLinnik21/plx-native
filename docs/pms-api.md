@@ -1745,7 +1745,7 @@ entry for that server has arrived for 10 s (`LIBRARY_QUIET_FRAMES`) or when 60 s
 (`LIBRARY_LONGEST_WAIT_FRAMES`) have passed since the oldest entry not yet spent, so a feed that never goes
 quiet still refreshes about once a minute; the next entry starts a new wait. The wait is counted in pumped frames and holds only library entries: a `stopped` session's
 refetch and invalidate, a feed gap's sweep and the read-backs above are not waited on, and the spacings
-downstream (5 s per quiet refetch, per section shelf, per re-match and per server's re-list) still apply.
+downstream (5 s per quiet refetch, per section shelf and per re-match) still apply.
 PMS sends the same `finished` frame for a refreshed item as for a new one, so the open grid
 is never listed again while it is visible: it is marked stale, as a read-back that moves a row's membership
 marks it, and re-queried keeping the reader's place when a page covers it (at once when no Library page is

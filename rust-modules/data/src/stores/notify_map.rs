@@ -34,9 +34,10 @@
 //! feed that never goes quiet still refreshes about once a minute. After that the next entry starts a
 //! new wait. The wait is one `Settling` value per server; it is where the three server-list owes wait,
 //! and nothing else waits there, so a `stopped` session's refetch and invalidate (above) are never
-//! held by it.
-//! A feed gap's sweep and the `playing`/`stopped` path are not waited on, and the spacings
-//! downstream (the quiet refetch's and the section shelves', `pms::QUIET_SPACING_S`) still apply.
+//! held by it. A feed gap's sweep and the `playing`/`stopped` path are not waited on, and the
+//! spacings downstream (the quiet refetch's and the section shelves', `pms::QUIET_SPACING_S`) still
+//! apply. Two waits of one server end at least [`LIBRARY_QUIET_FRAMES`] apart, so no spacing of its
+//! own is kept between its re-lists.
 //!
 //! **Library changes follow the Watchlist** (plan §1.11). A finished movie or show created or
 //! deleted on a server owes the Watchlist store one re-match of that server: a DELETE of the item a
@@ -53,10 +54,10 @@
 //!
 //! **Library changes also move the server's lists.** When the wait is over the server's Home source
 //! is refetched quietly once and its section shelves are invalidated once (coalesced, as a `stopped`'s
-//! are), and its library listings are told once (`BrowseCmd::ListingsChanged`, at most once per
-//! [`LIBRARY_SPACING_FRAMES`] per server). The open grid keeps its rows while a replacement wanted
-//! window is read, then swaps in place. A change during that read owes one more re-list. The
-//! server's other sections, and a section left while a re-list is outstanding, forget their pages.
+//! are), and its library listings are told once (`BrowseCmd::ListingsChanged`). The open grid keeps
+//! its rows while a replacement wanted window is read, then swaps in place. A change during that
+//! read owes one more re-list. The server's other sections, and a section left while a re-list is
+//! outstanding, forget their pages.
 //!
 //! **Owed work is spent only when [`Stores::reread_allowed`]** (not under the player, not while a
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.
@@ -145,8 +146,8 @@ struct Owed {
     reads: Vec<(Key, bool)>,
     refetch: Vec<ServerId>,
     invalidate: Vec<ServerId>,
-    /// Servers whose library listings are out of date (`BrowseCmd::ListingsChanged`): a server
-    /// whose library wait is over, held only for [`LIBRARY_SPACING_FRAMES`] after its last re-list.
+    /// Servers whose library listings are out of date (`BrowseCmd::ListingsChanged`): the servers
+    /// whose library wait has ended.
     listings: Vec<ServerId>,
 }
 
@@ -222,8 +223,6 @@ pub struct NotifyMap {
     library: Vec<((ServerId, WatchKind), LibraryOwed)>,
     /// The frame from which a `(server, kind)` may be re-matched again.
     library_next: Vec<((ServerId, WatchKind), u64)>,
-    /// The frame from which a server's library listings may be told of a change again.
-    listings_next: Vec<(ServerId, u64)>,
     /// Calls of [`Stores::notify_map`] so far: the clock the spacing is counted in.
     frame: u64,
 }
@@ -311,28 +310,6 @@ impl NotifyMap {
 
     fn library_due(&self, sid: ServerId, kind: WatchKind) -> bool {
         self.library_next.iter().find(|(k, _)| *k == (sid, kind)).is_none_or(|(_, at)| self.frame >= *at)
-    }
-
-    /// Take the owed work that may be spent now: all of it but the listings of a server still inside
-    /// its spacing, which stay owed (a change that arrives meanwhile coalesces into them).
-    fn take_due(&mut self) -> Owed {
-        let mut owed = std::mem::take(&mut self.owed);
-        let (frame, next) = (self.frame, &self.listings_next);
-        let (due, waiting): (Vec<_>, Vec<_>) = owed
-            .listings
-            .drain(..)
-            .partition(|sid| next.iter().find(|(s, _)| s == sid).is_none_or(|(_, at)| frame >= *at));
-        owed.listings = due;
-        self.owed.listings = waiting;
-        owed
-    }
-
-    fn listings_spent(&mut self, sid: ServerId) {
-        let next = self.frame + LIBRARY_SPACING_FRAMES;
-        match self.listings_next.iter_mut().find(|(s, _)| *s == sid) {
-            Some((_, at)) => *at = next,
-            None => self.listings_next.push((sid, next)),
-        }
     }
 
     fn library_spent(&mut self, sid: ServerId, kind: WatchKind) {
@@ -542,8 +519,8 @@ impl Stores {
         let queued = std::mem::take(&mut self.notify_map.library);
         let mut kept = Vec::new();
         for ((sid, kind), owe) in queued {
-            // A sweep asks after every title of the kind, which covers what the entries still to come
-            // would ask, so it is not held for the server's wait.
+            // A sweep asks after every title of the kind, so it covers every entry that has arrived; an
+            // entry still to come makes a new owe, which waits for its own quiet. It is not held.
             let waits = !owe.sweep && self.notify_map.library_settling(sid);
             if !self.watchlist.is_ready() || waits || !self.notify_map.library_due(sid, kind) {
                 kept.push(((sid, kind), owe));
@@ -596,8 +573,9 @@ impl Stores {
         }
         self.release_settled_library();
         self.spend_library_owed();
-        // What waits only for a spacing is not spent, and is not logged every frame it waits.
-        let owed = self.notify_map.take_due();
+        // What waits (for a feed to go quiet, for a spacing) is not spent, and is not logged every
+        // frame it waits.
+        let owed = std::mem::take(&mut self.notify_map.owed);
         if owed.is_empty() {
             return spent;
         }
@@ -625,7 +603,6 @@ impl Stores {
         for sid in owed.listings {
             let cmd = browse::BrowseCmd::ListingsChanged { sid, library_on_stack: shown.library };
             let _ = self.browse.borrow_mut().run(cmd, clients);
-            self.notify_map.listings_spent(sid);
             spent.relisted.push(sid);
         }
         for sid in owed.invalidate {
