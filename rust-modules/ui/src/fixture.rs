@@ -2582,24 +2582,45 @@ fn an_app_switch_suspends_every_body_and_the_loop_is_what_delivers_it() {
     assert_eq!(heard(&d, "resume"), 1, "every mounted body must hear `Resume`");
 
     // The second claim: the LOOP calls them. No host test can drive `app::run` — it needs a live
-    // SDL window — so this is pinned from its source, in the two arms that own the question.
+    // SDL window — so this is pinned from its source, in the two functions that own the question
+    // (the loop's reaction to a `HostEvent::Lifecycle` edge: `host_background`, then
+    // `host_foreground`, in that order).
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/app/run.rs"),
     )
     .expect("read run.rs");
     let bg = src
-        .find("et == 0x103 || et == 0x104")
+        .find("unsafe fn host_background(")
         .expect("the background arm");
     let fg = src
-        .find("et == 0x105 || et == 0x106")
+        .find("unsafe fn host_foreground(")
         .expect("the foreground arm");
+    let fg_end = fg + src[fg..].find("\n}\n").expect("the end of the foreground arm");
     assert!(
         src[bg..fg].contains("bridge::background(&mut app.pages);"),
         "the BACKGROUND arm must park the container tree, or Settings and Search answer an event \
          that never arrives",
     );
     assert!(
-        src[fg..].contains("bridge::foreground(&mut app.pages);"),
+        src[fg..fg_end].contains("bridge::foreground(&mut app.pages);"),
         "…and the FOREGROUND arm must un-park it, or the tree stays parked for the rest of the run",
     );
+
+    // …and the loop's one consumer sends BOTH edges of each pair to them. An arm narrowed to the
+    // DID edge would pass everything above: the WILL edge would reach `{}`, and webOS may send
+    // either edge of a pair first.
+    let host = src
+        .find("unsafe fn ingest_host_event(")
+        .expect("the loop's one HostEvent consumer");
+    let host_end = host + src[host..].find("\n}\n").expect("the end of the consumer");
+    let flat = src[host..host_end].split_whitespace().collect::<Vec<_>>().join(" ");
+    for (edges, call) in [
+        ("Lifecycle::WillBackground | Lifecycle::DidBackground", "host_background("),
+        ("Lifecycle::WillForeground | Lifecycle::DidForeground", "host_foreground("),
+    ] {
+        assert!(
+            flat.contains(&format!("{edges} => {{ {call}")) || flat.contains(&format!("{edges} => {call}")),
+            "the consumer must send both `{edges}` to `{call}`",
+        );
+    }
 }

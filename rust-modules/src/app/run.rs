@@ -1171,6 +1171,212 @@ fn window_step(stage: plx_telemetry::telemetry::window::Stage, playing: Option<b
     );
 }
 
+/// One event the host delivered, and the loop's whole reaction to it: the ONE function every
+/// [`HostEvent`] reaches. The SDL drain gets here by decoding SDL's events
+/// (`ingest_sdl_event_with_window`); a host that is not SDL hands its own through the same call, so
+/// a hosted stop is a [`HostEvent::Quit`] and takes the path an `SDL_QUIT` takes.
+///
+/// The window reacquisition is a platform operation, supplied separately so the recorded/live
+/// ingress boundary can be exercised without an SDL/GL context.
+unsafe fn ingest_host_event(app: &mut App, fr: &mut Frame, event: HostEvent,
+    restore_window: impl FnOnce(*mut c_void)) {
+    let playing = matches!(app.route(), AppArg::Player);
+    if let HostEvent::Lifecycle(edge) = event {
+        // The window gate, telemetry's crash steps and session, and the tape (below) are all
+        // SDL-coded: they read the event type this edge arrived as.
+        let code = edge.sdl_code();
+        app.window_activity.event(code);
+        plx_telemetry::telemetry::window::lifecycle(code, playing);
+        // Release health: the foreground edge begins a session (the background edge ends it in
+        // `host_background`, after the player's park; `telemetry::session`, consent-gated inside,
+        // a no-op while crash reports are off).
+        if edge == Lifecycle::DidForeground { plx_telemetry::telemetry::session::lifecycle(code); }
+    }
+    if controlled_replay(app) {
+        // The tape owns logical ingress; real SDL startup notifications must not be
+        // counted a second time. The real compositor still owns window safety.
+        // Only its DID foreground reacquires native handles. Recorded notifications
+        // below never reacquire them, revoke grants or resume a native player.
+        match event {
+            HostEvent::Lifecycle(Lifecycle::DidForeground) => restore_window(app.win),
+            HostEvent::Quit
+            | HostEvent::Lifecycle(Lifecycle::WillBackground | Lifecycle::DidBackground) => {
+                app.rec.refuse("live window exit interrupted controlled replay");
+                app.running = false;
+            }
+            HostEvent::Lifecycle(Lifecycle::WillForeground) => {}
+        }
+        return;
+    }
+    // Lifecycle changes remain page damage.
+    app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+    match event {
+        // Nothing is torn down here: the loop ends, then `shutdown` releases what is held.
+        HostEvent::Quit => app.running = false,
+        HostEvent::Lifecycle(edge) => {
+            app.rec.input(super::recorder::enc_lifecycle(edge.sdl_code()));
+            match edge {
+                Lifecycle::WillBackground | Lifecycle::DidBackground => {
+                    host_background(app, fr, edge, playing)
+                }
+                Lifecycle::WillForeground | Lifecycle::DidForeground => {
+                    host_foreground(app, edge, playing, restore_window)
+                }
+            }
+        }
+    }
+}
+
+/// WILL or DID enter background (`edge` says which): the OS took the screen.
+unsafe fn host_background(app: &mut App, fr: &mut Frame, edge: Lifecycle, playing: bool) {
+    // The visit ends here: nothing is measured in the background, and the app may never come
+    // back (the system kills it). The event is only QUEUED to the spool on disk (see
+    // `diag::event_for_impl`), so it is sent by the next flush, this process's or the next
+    // launch's. The second edge (`DID`) finds an empty visit and emits nothing; the return to
+    // the foreground starts a fresh visit of the same screen.
+    end_route_visit(app, false);
+    app.instr.set_suspended(true);
+    log(&format!(
+        "LIFECYCLE: background (playing={})",
+        matches!(app.route(), AppArg::Player) as i32
+    ));
+    // A freeze is only reported in the foreground (`watchdog::FREEZE_THRESHOLD_MS`): a parked
+    // app may idle or wait on the system for as long as the system keeps it there.
+    plx_base::task::watchdog::set_foreground(false);
+    // **The TELEVISION'S KEYBOARD goes with the panel, and it is not ours to keep.**
+    // The compositor tears its own IME down when it takes the screen away, and it
+    // tells the app nothing — so a field left `editing` comes back to the
+    // foreground drawing an editing layout and a blinking caret over a keyboard
+    // that is gone, and typing is dead in a way no press can recover:
+    // `textinput::start` early-returns while its own `STARTED` is set, so OK on the
+    // field would toggle our flag and raise nothing. This is the same DISMISSAL a
+    // navigation away from Search runs — there is no teardown table any more (D1
+    // deleted `nav::leave_of`); the container delivers `WillLeave`/`Unmount`/`Cover`
+    // to `SearchScreen`, which drops the keyboard on all three, and the event pushed
+    // just below is that same drop asked for directly. Deliberately NOT the commit
+    // path `leave_field` takes: the OS moving the screen is not the user saying
+    // "that is the search I meant", and a half-typed term must not be filed in
+    // their recent searches by an app switch. Unconditional because `EDITING` is
+    // this screen's alone and both calls under it are guarded, so it costs a
+    // predictable nothing on every other route. Search is unconditionally owned, so
+    // there is no legacy fallback left to dispatch to.
+    // Keep dismissal after earlier text/keys in this input batch. The dispatcher
+    // releases both system ownership and the native start latch at delivery.
+    app.inputs.push(plx_machine::machine::InputEvent {
+        at: plx_machine::machine::Tick { ms: fr.now, dt_us: 0 }, source: plx_machine::machine::Source::Sdl,
+        kind: plx_machine::machine::InputKind::SystemKeyboard(false),
+    });
+    // **The TREE hears it too** (spec §9, §12.1) — phase 9. `ScreenEvent::Suspend` down every
+    // mounted body at this frame's NAV COMMIT, and `Navigation.suspended` set. The vocabulary
+    // and the delivery have existed in `ui/containers` since the containers landed
+    // (`Navigation::suspend`, `Dispatcher::suspend`) and NOTHING CALLED THEM: the screens that
+    // handle the event — Settings, which forwards it down its own stack, and Search, which
+    // drops the television's keyboard — were answering an event that could not arrive.
+    //
+    // Outside the player guard below on purpose: this is the OS taking the screen from
+    // whatever is on it, not a fact about playback.
+    super::bridge::background(&mut app.pages);
+    app.ptr.sync_back_cursor(None, None);
+    // The notification feed is a live socket the OS will not keep: cancel it at the first edge
+    // that says the screen is going (idempotent on the second), reopened by DID foreground.
+    app.runtime.bridge(&mut app.bridge).notify_suspend();
+    // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
+    // SDL owns their lifetime; foreground must query its current window again.
+    release_borrowed_window(|| app.platform.shell.release_surface());
+    // A trailer preview is not parked: the OS taking the screen ends it, like any other way
+    // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
+    // left Abandoning, and a preview session is never parked for the foreground reload —
+    // that reload would bring the trailer back as ordinary playback.
+    super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
+    // A second background while the foreground restore waits on its flight (the resume's rebuild,
+    // an Original rollback): drop the flight — its landing is discarded and only the replacement
+    // it registered is stopped — and park the session back where the first suspend left it.
+    // The suspend below would otherwise be refused (`awaiting_load`) and the flight would run
+    // on, landing a Load on a backgrounded window.
+    if super::lifecycle::park_pending_foreground_flight(
+        &mut app.player.lifecycle,
+        &mut app.player.session,
+        &mut app.adapters.player,
+    ) {
+        app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+    }
+    // Playback owns its resolve and Engine before the queued Player page mounts. Page
+    // presence only governs the screen-local cleanup below, never resource suspension.
+    if !plx_media::route::preview_request(&app.player.session)
+        && (plx_media::route::play_pending()
+            || app.adapters.player.playback_needs_teardown(&app.player.session)
+            || plx_media::route::has_url(&app.player.session))
+        && !app.player.lifecycle.awaiting_load()
+    {
+        park_playback(app);
+        // The OS took the screen; whatever the pointer was doing, its button-up is never
+        // going to arrive here.
+        app.ptr.button_down = false;
+        // **The PAGE STACK is deliberately not touched**, which is the whole of what a park
+        // is: the OS is taking the screen away, not the user navigating, and the foreground
+        // edge (`host_foreground`) reloads straight back into the player. It USED to write
+        // `route = Route::Home` here — a statement about the loop's mirror, which
+        // `bridge::sync_page` turned into a `Root(Home)` that retired the player entry AND
+        // the page it was launched from, so the foreground minted a fresh player over a
+        // stack that was just Home. Nothing noticed, because the playback session and
+        // `App.play_from` both lived outside the tree; the player's origin is an `EntryId`
+        // now, so destroying entries destroys the way back. See
+        // `an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back`.
+    }
+    // The session ends only after the park above: a crash inside the buffer-feed suspend
+    // leaves it open, to be reported crashed or abnormal on the next boot.
+    plx_telemetry::telemetry::session::lifecycle(edge.sdl_code());
+    // The DID edge finished its work (the WILL edge is only the notice): a crash after this
+    // crumb is not inside the background arm.
+    if edge == Lifecycle::DidBackground {
+        window_step(plx_telemetry::telemetry::window::Stage::BackgroundDone, Some(playing));
+    }
+}
+
+/// WILL or DID enter foreground (`edge` says which): the OS gave the screen back.
+unsafe fn host_foreground(app: &mut App, edge: Lifecycle, playing: bool,
+    restore_window: impl FnOnce(*mut c_void)) {
+    app.instr.set_suspended(false);
+    log(&format!(
+        "LIFECYCLE: foreground (wasPlaying={})",
+        app.player.lifecycle.awaiting_load() as i32
+    ));
+    plx_base::task::watchdog::set_foreground(true);
+    // The other half of the park (§12.1): `ScreenEvent::Resume` down the tree and
+    // `Navigation.suspended` cleared. On BOTH edges, matching `host_background` — webOS sends
+    // `will` and `did` and the app is told nothing about which of the two it will get first;
+    // `Navigation::resume` is idempotent, so the pair is safe and a lost one is not.
+    super::bridge::foreground(&mut app.pages);
+    if edge == Lifecycle::DidForeground {
+        // Nothing proves the television is still on the network the person allowed
+        // unencrypted connections on: every plaintext grant ends here, and each server that
+        // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
+        // step) that re-proves eligibility before minting again (`plex::grant`).
+        plx_plex::plex::grant::network_changed();
+        // …and the same doubt applies to the notification feed's open sockets: drop them, let
+        // the feed connect again (a backoff is forgiven). This is no feed gap: `reread.resume()` below
+        // re-reads every page, so the reconnect owes no second resync.
+        app.runtime.bridge(&mut app.bridge).notify_network_changed();
+        app.runtime.bridge(&mut app.bridge).notify_resume();
+        // The television may have been away long enough for every page to be stale.
+        app.reread.resume();
+        // Reacquire only on DID foreground, before playback restoration and rendering.
+        restore_window(app.win);
+        app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+        // A decoder-release park is claimed by this edge like any other park.
+        app.decoder_parked = false;
+        let activation = did_foreground_with_link(app);
+        if matches!(activation, ForegroundActivation::Launched) {
+            finish_foreground_launch(app);
+        } else if app.player.lifecycle.claimable_clock().is_some() {
+            // The Load was refused: on a plaintext-granted server the grant `network_changed`
+            // just withdrew is re-proven a moment later, after this claim. Claim again then.
+            app.foreground_retry = Some((plx_plex::plex::grant::revision(), FOREGROUND_RETRIES));
+        }
+        window_step(plx_telemetry::telemetry::window::Stage::ForegroundDone, Some(playing));
+    }
+}
+
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
     let shell = app.platform.shell;
@@ -1179,30 +1385,25 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
 
 /// The window reacquisition is a platform operation, supplied separately so the
 /// recorded/live ingress boundary can be exercised without an SDL/GL context.
+///
+/// Quit and the four lifecycle edges are decoded into a [`HostEvent`] and consumed by
+/// [`ingest_host_event`]. What follows is the raw path: key, text, pointer and wheel events, read
+/// from the event's bytes here until their own steps move them behind the decoder.
 unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     restore_window: impl FnOnce(*mut c_void)) {
-    let et = rd_u32(&app.ev, 0);
-    app.window_activity.event(et);
-    let playing = matches!(app.route(), AppArg::Player);
-    plx_telemetry::telemetry::window::lifecycle(et, playing);
-    // Release health: the foreground edge begins a session (the background edge ends it further
-    // down, after the player's park), and a key or pointer event is the activity that keeps one
-    // open (`telemetry::session`; consent-gated inside, a no-op while crash reports are off).
-    if et == 0x106 { plx_telemetry::telemetry::session::lifecycle(et); }
-    if is_input_event(et) { plx_telemetry::telemetry::session::input(); }
-    if controlled_replay(app) {
-        // The tape owns logical ingress; real SDL startup notifications must not be
-        // counted a second time. The real compositor still owns window safety.
-        // Only its DID foreground reacquires native handles. Recorded notifications
-        // below never reacquire them, revoke grants or resume a native player.
-        if et == 0x106 { restore_window(app.win); }
-        if matches!(et, 0x103 | 0x104 | SDL_QUIT) {
-            app.rec.refuse("live window exit interrupted controlled replay");
-            app.running = false;
-        }
+    if let Some(event) = decode_host_event(&app.ev) {
+        ingest_host_event(app, fr, event, restore_window);
         return;
     }
-    // Attribute only the input repaint to its owner; lifecycle changes remain page damage.
+    let et = rd_u32(&app.ev, 0);
+    // A key or pointer event is the activity that keeps a release-health session open
+    // (`telemetry::session`; consent-gated inside, a no-op while crash reports are off).
+    if is_input_event(et) { plx_telemetry::telemetry::session::input(); }
+    if controlled_replay(app) {
+        // The tape owns logical ingress; real SDL events must not be counted a second time.
+        return;
+    }
+    // Attribute only the input repaint to its owner; other events remain page damage.
     if is_input_event(et) { app.note_input_damage(); }
     else { app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle); }
     if et == SDL_KEYDOWN
@@ -1237,157 +1438,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             clock::now()
         ));
     }
-    if (0x103..=0x106).contains(&et) {
-        app.rec.input(super::recorder::enc_lifecycle(et));
-    }
-    if et == SDL_QUIT {
-        app.running = false;
-    } else if et == 0x103 || et == 0x104 {
-        // WILL/DID ENTER BACKGROUND
-        // The visit ends here: nothing is measured in the background, and the app may never come
-        // back (the system kills it). The event is only QUEUED to the spool on disk (see
-        // `diag::event_for_impl`), so it is sent by the next flush, this process's or the next
-        // launch's. The second edge (`DID`) finds an empty visit and emits nothing; the return to
-        // the foreground starts a fresh visit of the same screen.
-        end_route_visit(app, false);
-        app.instr.set_suspended(true);
-        log(&format!(
-            "LIFECYCLE: background (playing={})",
-            matches!(app.route(), AppArg::Player) as i32
-        ));
-        // A freeze is only reported in the foreground (`watchdog::FREEZE_THRESHOLD_MS`): a parked
-        // app may idle or wait on the system for as long as the system keeps it there.
-        plx_base::task::watchdog::set_foreground(false);
-        // **The TELEVISION'S KEYBOARD goes with the panel, and it is not ours to keep.**
-        // The compositor tears its own IME down when it takes the screen away, and it
-        // tells the app nothing — so a field left `editing` comes back to the
-        // foreground drawing an editing layout and a blinking caret over a keyboard
-        // that is gone, and typing is dead in a way no press can recover:
-        // `textinput::start` early-returns while its own `STARTED` is set, so OK on the
-        // field would toggle our flag and raise nothing. This is the same DISMISSAL a
-        // navigation away from Search runs — there is no teardown table any more (D1
-        // deleted `nav::leave_of`); the container delivers `WillLeave`/`Unmount`/`Cover`
-        // to `SearchScreen`, which drops the keyboard on all three, and the event pushed
-        // just below is that same drop asked for directly. Deliberately NOT the commit
-        // path `leave_field` takes: the OS moving the screen is not the user saying
-        // "that is the search I meant", and a half-typed term must not be filed in
-        // their recent searches by an app switch. Unconditional because `EDITING` is
-        // this screen's alone and both calls under it are guarded, so it costs a
-        // predictable nothing on every other route. Search is unconditionally owned, so
-        // there is no legacy fallback left to dispatch to.
-        // Keep dismissal after earlier text/keys in this input batch. The dispatcher
-        // releases both system ownership and the native start latch at delivery.
-        app.inputs.push(plx_machine::machine::InputEvent {
-            at: plx_machine::machine::Tick { ms: fr.now, dt_us: 0 }, source: plx_machine::machine::Source::Sdl,
-            kind: plx_machine::machine::InputKind::SystemKeyboard(false),
-        });
-        // **The TREE hears it too** (spec §9, §12.1) — phase 9. `ScreenEvent::Suspend` down every
-        // mounted body at this frame's NAV COMMIT, and `Navigation.suspended` set. The vocabulary
-        // and the delivery have existed in `ui/containers` since the containers landed
-        // (`Navigation::suspend`, `Dispatcher::suspend`) and NOTHING CALLED THEM: the screens that
-        // handle the event — Settings, which forwards it down its own stack, and Search, which
-        // drops the television's keyboard — were answering an event that could not arrive.
-        //
-        // Outside the player guard below on purpose: this is the OS taking the screen from
-        // whatever is on it, not a fact about playback.
-        super::bridge::background(&mut app.pages);
-        app.ptr.sync_back_cursor(None, None);
-        // The notification feed is a live socket the OS will not keep: cancel it at the first edge
-        // that says the screen is going (idempotent on the second), reopened by DID foreground.
-        app.runtime.bridge(&mut app.bridge).notify_suspend();
-        // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
-        // SDL owns their lifetime; foreground must query its current window again.
-        release_borrowed_window(|| app.platform.shell.release_surface());
-        // A trailer preview is not parked: the OS taking the screen ends it, like any other way
-        // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
-        // left Abandoning, and a preview session is never parked for the foreground reload —
-        // that reload would bring the trailer back as ordinary playback.
-        super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
-        // A second background while the foreground restore waits on its flight (the resume's rebuild,
-        // an Original rollback): drop the flight — its landing is discarded and only the replacement
-        // it registered is stopped — and park the session back where the first suspend left it.
-        // The suspend below would otherwise be refused (`awaiting_load`) and the flight would run
-        // on, landing a Load on a backgrounded window.
-        if super::lifecycle::park_pending_foreground_flight(
-            &mut app.player.lifecycle,
-            &mut app.player.session,
-            &mut app.adapters.player,
-        ) {
-            app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
-        }
-        // Playback owns its resolve and Engine before the queued Player page mounts. Page
-        // presence only governs the screen-local cleanup below, never resource suspension.
-        if !plx_media::route::preview_request(&app.player.session)
-            && (plx_media::route::play_pending()
-                || app.adapters.player.playback_needs_teardown(&app.player.session)
-                || plx_media::route::has_url(&app.player.session))
-            && !app.player.lifecycle.awaiting_load()
-        {
-            park_playback(app);
-            // The OS took the screen; whatever the pointer was doing, its button-up is never
-            // going to arrive here.
-            app.ptr.button_down = false;
-            // **The PAGE STACK is deliberately not touched**, which is the whole of what a park
-            // is: the OS is taking the screen away, not the user navigating, and the foreground
-            // arm below reloads straight back into the player. It USED to write
-            // `route = Route::Home` here — a statement about the loop's mirror, which
-            // `bridge::sync_page` turned into a `Root(Home)` that retired the player entry AND
-            // the page it was launched from, so the foreground minted a fresh player over a
-            // stack that was just Home. Nothing noticed, because the playback session and
-            // `App.play_from` both lived outside the tree; the player's origin is an `EntryId`
-            // now, so destroying entries destroys the way back. See
-            // `an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back`.
-        }
-        // The session ends only after the park above: a crash inside the buffer-feed suspend
-        // leaves it open, to be reported crashed or abnormal on the next boot.
-        plx_telemetry::telemetry::session::lifecycle(et);
-        // The DID edge finished its work (the WILL edge is only the notice): a crash after this
-        // crumb is not inside the background arm.
-        if et == 0x104 {
-            window_step(plx_telemetry::telemetry::window::Stage::BackgroundDone, Some(playing));
-        }
-    } else if et == 0x105 || et == 0x106 {
-        // WILL/DID ENTER FOREGROUND
-        app.instr.set_suspended(false);
-        log(&format!(
-            "LIFECYCLE: foreground (wasPlaying={})",
-            app.player.lifecycle.awaiting_load() as i32
-        ));
-        plx_base::task::watchdog::set_foreground(true);
-        // The other half of the park (§12.1): `ScreenEvent::Resume` down the tree and
-        // `Navigation.suspended` cleared. On BOTH edges, matching the suspend above — webOS sends
-        // `will` and `did` and the app is told nothing about which of the two it will get first;
-        // `Navigation::resume` is idempotent, so the pair is safe and a lost one is not.
-        super::bridge::foreground(&mut app.pages);
-        if et == 0x106 {
-            // Nothing proves the television is still on the network the person allowed
-            // unencrypted connections on: every plaintext grant ends here, and each server that
-            // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
-            // step) that re-proves eligibility before minting again (`plex::grant`).
-            plx_plex::plex::grant::network_changed();
-            // …and the same doubt applies to the notification feed's open sockets: drop them, let
-            // the feed connect again (a backoff is forgiven). This is no feed gap: `reread.resume()` below
-            // re-reads every page, so the reconnect owes no second resync.
-            app.runtime.bridge(&mut app.bridge).notify_network_changed();
-            app.runtime.bridge(&mut app.bridge).notify_resume();
-            // The television may have been away long enough for every page to be stale.
-            app.reread.resume();
-            // Reacquire only on DID foreground, before playback restoration and rendering.
-            restore_window(app.win);
-            app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
-            // A decoder-release park is claimed by this edge like any other park.
-            app.decoder_parked = false;
-            let activation = did_foreground_with_link(app);
-            if matches!(activation, ForegroundActivation::Launched) {
-                finish_foreground_launch(app);
-            } else if app.player.lifecycle.claimable_clock().is_some() {
-                // The Load was refused: on a plaintext-granted server the grant `network_changed`
-                // just withdrew is re-proven a moment later, after this claim. Claim again then.
-                app.foreground_retry = Some((plx_plex::plex::grant::revision(), FOREGROUND_RETRIES));
-            }
-            window_step(plx_telemetry::telemetry::window::Stage::ForegroundDone, Some(playing));
-        }
-    } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
+    if et == SDL_KEYDOWN || et == SDL_KEYUP {
         let (state, wcode, sym) = decode_key(&app.ev);
         // The press's IDENTITY, resolved once from the two raw fields
         // (`ui::consts::classify`, which is where the spellings live and where they
@@ -4504,6 +4555,259 @@ pub(in crate::app) mod lifecycle_regression_tests {
             assert!(!app.window_activity.allow_present(true));
             assert_eq!(app.rec.failure(), Some("live window exit interrupted controlled replay"));
         }
+    }
+
+    // ---- W5a: Quit and the lifecycle edges as a `HostEvent` -------------------------------------
+    //
+    // The same event is delivered two ways: as the SDL event bytes the drain decodes (`event`, which
+    // is what every test above sends) and as the `HostEvent` a hosted stop or a future platform hands
+    // `ingest_host_event` directly. Each test runs both and compares what the loop left behind.
+
+    /// The SDL event type each `HostEvent` arrives as, spelled as literals so these tests do not
+    /// borrow the mapping they grade.
+    fn sdl_event_of(event: HostEvent) -> u32 {
+        match event {
+            HostEvent::Quit => 0x100,
+            HostEvent::Lifecycle(Lifecycle::WillBackground) => 0x103,
+            HostEvent::Lifecycle(Lifecycle::DidBackground) => 0x104,
+            HostEvent::Lifecycle(Lifecycle::WillForeground) => 0x105,
+            HostEvent::Lifecycle(Lifecycle::DidForeground) => 0x106,
+        }
+    }
+
+    /// Deliver `event` the SDL way (`hosted` false: its bytes through `ingest_sdl_event`) or the
+    /// host's (`hosted` true: the `HostEvent` itself through the one consumer).
+    fn deliver(app: &mut App, fr: &mut Frame, hosted: bool, event: HostEvent) {
+        if hosted {
+            unsafe { ingest_host_event(app, fr, event, |_| {}) };
+        } else {
+            self::event(app, fr, sdl_event_of(event));
+        }
+    }
+
+    const EDGES: [Lifecycle; 4] = [
+        Lifecycle::WillBackground,
+        Lifecycle::DidBackground,
+        Lifecycle::WillForeground,
+        Lifecycle::DidForeground,
+    ];
+
+    /// What a quit leaves behind, as far as this rig can see it: whether the loop goes on, the
+    /// `Exit` that `run_and_shutdown` builds from what the loop leaves (`failed` is a recording that
+    /// did not land or a controlled run that refused; the release is `shutdown`'s alone, and the rig
+    /// has no GL context or native worker to run it, so `Complete` is the clean verdict it would
+    /// return), and the state a park or a teardown would have changed.
+    fn after_quit(app: &mut App) -> (bool, Exit, String) {
+        let failed = app.rec.failure().is_some()
+            || app.runtime.bridge(&mut app.bridge).controlled_failure().is_some();
+        let exit = Exit::played(failed, release_of(plx_media::player::NativeExit::Clean));
+        let rest = format!(
+            "foreground={:?} awaiting_load={} suspended={} live={} present={} inputs={}",
+            std::mem::discriminant(&app.player.lifecycle.state()),
+            app.player.lifecycle.awaiting_load(),
+            app.pages.nav.suspended,
+            app.adapters.player.is_live(),
+            app.window_activity.allow_present(true),
+            app.inputs.len(),
+        );
+        (app.running, exit, rest)
+    }
+
+    /// **A hosted stop is the same `Quit` an `SDL_QUIT` is.** Both reach the one consumer, which
+    /// ends the loop and leaves every release to `shutdown`: nothing parks, nothing is torn down
+    /// here, and the `Exit` the entry returns is the clean one.
+    #[test]
+    fn a_host_quit_takes_the_path_an_sdl_quit_takes() {
+        let _serial = plx_base::testlock::serial();
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let mut app = app();
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            app.running = true;
+            deliver(&mut app, &mut fr, hosted, HostEvent::Quit);
+            seen.push(after_quit(&mut app));
+        }
+        assert!(!seen[0].0, "the loop ends");
+        assert_eq!(seen[0].1, Exit { code: 0, release: Release::Complete });
+        assert_eq!(seen[0], seen[1], "a host's Quit and an SDL_QUIT leave the same loop and the same Exit");
+    }
+
+    /// The same, while a film plays: the quit parks nothing (that is the lifecycle's, and a quit
+    /// is not one) and leaves the session for `shutdown` to end, whichever way it arrived.
+    #[test]
+    fn a_host_quit_during_playback_takes_the_path_an_sdl_quit_takes() {
+        let _serial = plx_base::testlock::serial();
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let Some(mut rig) = Rig::new() else {
+                eprintln!("SKIPPED a_host_quit_during_playback_takes_the_path_an_sdl_quit_takes: \
+                     lifecycle fixture worker thread could not be spawned");
+                return;
+            };
+            start_film(&mut rig);
+            assert!(super::super::bridge::player(&rig.app.pages).is_some() && rig.app.adapters.player.is_live(),
+                "premise: the film is playing");
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+            rig.app.running = true;
+            deliver(&mut rig.app, &mut fr, hosted, HostEvent::Quit);
+            assert!(rig.app.adapters.player.is_live(), "the quit tore nothing down: that is shutdown's");
+            assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "a quit parks nothing");
+            seen.push(after_quit(&mut rig.app));
+        }
+        assert!(!seen[0].0, "the loop ends");
+        assert_eq!(seen[0].1, Exit { code: 0, release: Release::Complete });
+        assert_eq!(seen[0], seen[1], "a host's Quit and an SDL_QUIT leave the same loop and the same Exit");
+    }
+
+    /// A quit interrupts a controlled replay the way a live background does: the tape refuses and the
+    /// loop ends, so the `Exit` it feeds is a failed one. Delivered either way.
+    #[test]
+    fn a_host_quit_interrupts_a_controlled_replay_as_an_sdl_quit_does() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use plx_ui::{dispatch::Tap, rec::{Header, Recording}};
+        use plx_machine::machine::Tick;
+        let _serial = plx_base::testlock::serial();
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let mut app = app();
+            let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+            let recording = Recording {
+                header: Header::new(state_fp(), &initial),
+                frames: vec![plx_ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                    st: Some(7), focus: Some(None), ..Default::default() }],
+                metrics: Default::default(), stopped_at: None,
+            };
+            app.boot_initial = Some(initial.clone());
+            app.rec = Recplay::controlled(
+                Preflight::Replay { initial: initial.clone(), recording, mode: ReplayMode::Targets },
+                &initial).unwrap();
+            Tap::focus(&mut app.rec, 0, None);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            app.running = true;
+            deliver(&mut app, &mut fr, hosted, HostEvent::Quit);
+            assert_eq!(app.rec.failure(), Some("live window exit interrupted controlled replay"));
+            seen.push(after_quit(&mut app));
+        }
+        assert!(!seen[0].0, "the loop ends");
+        assert_eq!(seen[0].1, Exit { code: 1, release: Release::Complete }, "the refused tape is a failed run");
+        assert_eq!(seen[0], seen[1]);
+    }
+
+    /// **A `Lifecycle` sequence parks and resumes as the SDL codes do.** A film is playing; WILL and
+    /// DID background park it and take the window, WILL and DID foreground give both back. Whatever
+    /// the loop leaves after each edge, and the crash steps it records, are the same either way.
+    #[test]
+    fn a_host_lifecycle_sequence_parks_and_resumes_as_the_sdl_codes_do() {
+        let _serial = plx_base::testlock::serial();
+        let _consent = CrashReports::granted();
+        let mut traces = Vec::new();
+        for hosted in [false, true] {
+            let Some(mut rig) = Rig::new() else {
+                eprintln!("SKIPPED a_host_lifecycle_sequence_parks_and_resumes_as_the_sdl_codes_do: \
+                     lifecycle fixture worker thread could not be spawned");
+                return;
+            };
+            start_film(&mut rig);
+            let _ = plx_telemetry::telemetry::window::take_recorded_for_test();
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+            let mut trace = Vec::new();
+            for edge in EDGES {
+                deliver(&mut rig.app, &mut fr, hosted, HostEvent::Lifecycle(edge));
+                trace.push((edge, after_quit(&mut rig.app).2));
+            }
+            let steps = plx_telemetry::telemetry::window::take_recorded_for_test();
+            traces.push((trace, steps));
+        }
+        let (trace, steps) = &traces[1];
+        let after = |edge: Lifecycle| &trace.iter().find(|(e, _)| *e == edge).unwrap().1;
+        assert!(after(Lifecycle::DidBackground).contains("awaiting_load=true")
+                && after(Lifecycle::DidBackground).contains("suspended=true")
+                && after(Lifecycle::DidBackground).contains("present=false"),
+            "the film is parked and the window taken: {}", after(Lifecycle::DidBackground));
+        assert!(after(Lifecycle::DidForeground).contains("suspended=false")
+                && after(Lifecycle::DidForeground).contains("present=true"),
+            "the tree resumes and the window is given back: {}", after(Lifecycle::DidForeground));
+        assert_eq!(steps.first(), Some(&"will_background"));
+        assert_eq!(steps.last(), Some(&"foreground_done"));
+        assert_eq!(traces[0], traces[1], "a host's Lifecycle edges and the SDL codes leave the same loop");
+    }
+
+    /// **Each WILL edge does its work on its own.** The sequence above sends all four edges, so a
+    /// dispatch that dropped a WILL edge (an arm narrowed to the DID edge it pairs with) would still
+    /// pass it: the DID edge repeats what WILL did. Here WILL background arrives ALONE and parks the
+    /// film and the tree (the base's `0x103` arm ran the whole background arm), and WILL foreground
+    /// arrives ALONE and gives the tree back but not the window or the film (the base's `0x105` arm
+    /// ran the foreground arm; only the DID edge restores). Either way of delivery leaves the same
+    /// loop.
+    #[test]
+    fn a_host_will_edge_does_its_arms_work_without_its_did_edge() {
+        let _serial = plx_base::testlock::serial();
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let Some(mut rig) = Rig::new() else {
+                eprintln!("SKIPPED a_host_will_edge_does_its_arms_work_without_its_did_edge: \
+                     lifecycle fixture worker thread could not be spawned");
+                return;
+            };
+            start_film(&mut rig);
+            let before = after_quit(&mut rig.app).2;
+            let inputs_before = rig.app.inputs.len();
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+            deliver(&mut rig.app, &mut fr, hosted, HostEvent::Lifecycle(Lifecycle::WillBackground));
+            let will_background = after_quit(&mut rig.app).2;
+            let keyboard_dismissals = rig.app.inputs.len() - inputs_before;
+            deliver(&mut rig.app, &mut fr, hosted, HostEvent::Lifecycle(Lifecycle::WillForeground));
+            let will_foreground = after_quit(&mut rig.app).2;
+            seen.push((before, will_background, keyboard_dismissals, will_foreground));
+        }
+        let (before, will_background, keyboard_dismissals, will_foreground) = &seen[1];
+        assert!(before.contains("awaiting_load=false") && before.contains("suspended=false"),
+            "premise: the film plays and the tree is live: {before}");
+        assert!(will_background.contains("awaiting_load=true")
+                && will_background.contains("suspended=true"),
+            "WILL background alone parks the film and suspends the tree: {will_background}");
+        assert_eq!(*keyboard_dismissals, 1, "WILL background alone dismisses the television's keyboard");
+        assert!(will_foreground.contains("suspended=false"),
+            "WILL foreground alone resumes the tree: {will_foreground}");
+        assert!(will_foreground.contains("awaiting_load=true") && will_foreground.contains("present=false"),
+            "...and only the DID edge restores the film and the window: {will_foreground}");
+        assert_eq!(seen[0], seen[1], "a host's WILL edges and the SDL codes leave the same loop");
+    }
+
+    /// **The tape is the same whichever way an edge arrives.** The four edges are recorded as the SDL
+    /// codes `enc_lifecycle` always wrote, in order, and a quit records nothing.
+    #[test]
+    fn a_host_lifecycle_edge_is_recorded_as_the_sdl_code_it_arrives_as() {
+        use super::super::{bootstrap::Initial, recorder::{Recplay, state_fp}};
+        use plx_ui::rec::{Header, MemSink, Recording};
+        let _serial = plx_base::testlock::serial();
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut tapes = Vec::new();
+        for hosted in [false, true] {
+            let mut app = app();
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            let sink = MemSink::default();
+            let segments = sink.segments.clone();
+            let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+            app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+            app.rec.tick(initial.clock_start, 0.0);
+            for edge in EDGES {
+                deliver(&mut app, &mut fr, hosted, HostEvent::Lifecycle(edge));
+            }
+            deliver(&mut app, &mut fr, hosted, HostEvent::Quit);
+            app.rec.end_frame(&|| 7);
+            std::mem::replace(&mut app.rec, Recplay::Off).finish(plx_machine::landgate::fixture_gate());
+            let recording = Recording::parse(&manifest,
+                &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+            tapes.push(recording.frames.iter().flat_map(|frame| frame.inputs.clone()).collect::<Vec<_>>());
+        }
+        let recorded: Vec<(String, u64)> = tapes[0].iter()
+            .map(|input| (input["kind"].as_str().unwrap().to_owned(), input["code"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(recorded, [("lifecycle".to_owned(), 0x103), ("lifecycle".to_owned(), 0x104),
+            ("lifecycle".to_owned(), 0x105), ("lifecycle".to_owned(), 0x106)],
+            "the four edges, as SDL codes, in order; the quit is not recorded");
+        assert_eq!(tapes[0], tapes[1], "the tape is byte-equal whichever way an edge arrives");
     }
 
     #[cfg(feature = "devtriggers")]
