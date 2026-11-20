@@ -972,6 +972,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_shell_sdl"
+version = "0.0.0"
+dependencies = [
+ "plx_base",
+]
+
+[[package]]
 name = "plx_telemetry"
 version = "0.0.0"
 dependencies = [
@@ -1019,6 +1026,7 @@ dependencies = [
  "plx_plex",
  "plx_screens",
  "plx_session",
+ "plx_shell_sdl",
  "plx_telemetry",
  "plx_ui",
  "serde",

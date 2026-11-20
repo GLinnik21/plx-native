@@ -439,7 +439,7 @@ pub fn terms(q: &str) -> Option<&str> {
 /// and `CString::new` refuses it at the far end, so the field's run and the empty statement both
 /// blank over a query the app still believes it is holding. Borrowed when there is nothing to
 /// remove, which is every keystroke: the television's panel cannot commit one
-/// (`textinput::decode_text_at` ends its string AT the NUL) and a remembered term is refused by
+/// (`plx_shell_sdl::text`'s `decode_text_at` ends its string AT the NUL) and a remembered term is refused by
 /// `recents::usable`, so the seed path is the only way one gets in — and that path now enters
 /// through the STORE rather than through a screen's mount.
 pub fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {

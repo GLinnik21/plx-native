@@ -7,7 +7,9 @@
 //! platform (`platform_desktop`), which never names this module, so a desktop build compiles the
 //! television's code and the linker drops it.
 use crate::app::adapters::backends;
-use crate::app::platform::{FrameProbe, MediaBoot, Platform, Shell};
+use crate::app::platform::{sdl_init, sdl_open, FrameProbe, InitHooks, MediaBoot, OpenAsk, Platform, Shell, Surface};
+use crate::app::Exit;
+use plx_base::task::MainThread;
 use std::os::raw::{c_char, c_int, c_void};
 
 #[cfg(all(not(test), feature = "play-feed"))]
@@ -53,10 +55,28 @@ static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
 
 /// The webOS shell: the SDL window's Wayland surface, the opaque-region hint, the LS2 bus pump and the
 /// Magic Remote's pointer. The bodies stay in `crate::system` (and `webos::bind_window`); this is the
-/// table over them.
+/// table over them. SDL itself, and the window it opens, are the shell crate's (`plx_shell_sdl`), which
+/// this platform brings up with LG's two boot hooks around `SDL_Init`.
 struct WebosShell;
 
 impl Shell for WebosShell {
+    fn init(&self, mt: &MainThread) -> Result<(), Exit> {
+        // SAFETY: both hooks are LG's SDL boot steps (`crate::system`), run on the SDL main thread `mt`
+        // proves, at the two points `plx_shell_sdl::init::init` calls them: the cursor hint before
+        // `SDL_Init`, which reads it, and the relaunch tap after, once LG's SDL has filled its slot.
+        unsafe {
+            sdl_init(
+                mt,
+                InitHooks {
+                    before: crate::system::webos3_cursor_sleep_hint,
+                    after: crate::system::tap_relaunch_payloads,
+                },
+            )
+        }
+    }
+    fn open(&self, mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+        sdl_open(mt, ask)
+    }
     fn bind_window(&self, win: *mut c_void) {
         plx_os::webos::bind_window(win);
     }
@@ -181,6 +201,41 @@ mod tests {
     fn the_webos_table_states_the_storage_helper_as_the_authority() {
         assert_eq!(SERVICES.storage.authority, Authority::Helper);
         assert_eq!(SERVICES.secure.mode, plx_os::tv::secure::StoreMode::Durable);
+    }
+
+    /// **The two LG hooks are the webOS shell's `init`, handed in the order SDL needs.** The shell crate
+    /// pins the order inside `plx_shell_sdl::init::init` (`before`, then `SDL_Init`, then `after`) and
+    /// cannot name the hooks; this pins that the webOS shell hands exactly them, the cursor hint as the
+    /// step BEFORE (SDL reads it in `SDL_Init`, so a hint set after does nothing) and the relaunch tap as
+    /// the step AFTER (LG's SDL fills the slot it wraps inside `SDL_Init`), once each, and that nothing
+    /// else in this file names them. Reads the source, like the tests below, because no host test can
+    /// run LG's SDL.
+    #[test]
+    fn the_webos_shell_binds_the_cursor_hint_before_and_the_relaunch_tap_after_sdl_init() {
+        // The needles are split with `concat!` so this test's own text, which `include_str!` reads too,
+        // can never be what they match.
+        let source = include_str!("port.rs");
+        let init = source
+            .split_once(concat!("impl Shell for ", "WebosShell {"))
+            .expect("the webOS shell")
+            .1
+            .split_once("    fn init(")
+            .expect("its init")
+            .1
+            .split_once("\n    }\n")
+            .expect("the end of its init")
+            .0;
+        let before = concat!("before: crate::system::", "webos3_cursor_sleep_hint,");
+        let after = concat!("after: crate::system::", "tap_relaunch_payloads,");
+        assert_eq!(init.matches(before).count(), 1, "the cursor hint is `init`'s `before`");
+        assert_eq!(init.matches(after).count(), 1, "the relaunch tap is `init`'s `after`");
+        assert!(init.find(before) < init.find(after), "`before` is stated first, as it runs first");
+        for hook in [
+            concat!("crate::system::", "webos3_cursor_sleep_hint"),
+            concat!("crate::system::", "tap_relaunch_payloads"),
+        ] {
+            assert_eq!(source.matches(hook).count(), 1, "{hook} is named by `WebosShell::init` and nowhere else");
+        }
     }
 
     /// Every `.rs` file under the application crate's `src`, as text.

@@ -7,10 +7,11 @@
 //!   accessors (identity, the secure store, Home and the toast, the legacy webOS media verbs).
 //!   `run_application` installs it into `tv` once, and nothing else in the app reads it.
 //! - `shell`: the window, the bus and the pointer's visibility, [`Shell`]. Its consumers are boot
-//!   (`app::boot` brings the window up with the platform it was handed), the loop (`app::run` drives
-//!   it every frame, through `App::platform`) and the bridge, which holds the shell for the
-//!   dispatcher's two opaque-region hooks and lends it to the pointer's own callers (`input`,
-//!   `playback`), which hide and show the Magic Remote's pointer through it.
+//!   (`app::boot` brings the window up with the platform it was handed: `init`, then `open`, which
+//!   returns the [`Surface`] the `App` owns from then on), the loop (`app::run` drives it every
+//!   frame, through `App::platform`, and presents and polls through the surface) and the bridge, which
+//!   holds the shell for the dispatcher's two opaque-region hooks and lends it to the pointer's own
+//!   callers (`input`, `playback`), which hide and show the Magic Remote's pointer through it.
 //! - `diag`: the six frame probes, [`FrameProbe`], read by the loop. The renderer's clear hook takes
 //!   plain functions, so the platform's entry installs it (`gfx::install_clear_probe`).
 //! - `media`: [`MediaBoot`], the platform's two boot-time playback steps. `early_init` runs once before
@@ -19,10 +20,11 @@
 //!   platform composed through [`publish_composition`], the one function that does, so the set of
 //!   installed drivers and the resolver the planner reads cannot disagree.
 //!
-//! `Shell`, `FrameProbe` and `Platform` are app-private on purpose: no type a platform's shell has
+//! `Shell`, `Surface`, `FrameProbe` and `Platform` are app-private on purpose: no type a platform's shell has
 //! to match leaves the application crate until the platform contract is settled. The webOS value is
 //! built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
 //! privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) to `app/run.rs`.
+use super::Exit;
 use plx_base::task::MainThread;
 use plx_media::player::adapter::PlayerAdapter;
 use plx_media::route::uri_preflight::ResolvePort;
@@ -30,11 +32,30 @@ use plx_media::route::PlaybackSession;
 use plx_os::tv::Services;
 use std::os::raw::c_void;
 
+/// What a platform's boot asks of SDL, as plain data: [`InitHooks`] (the two steps a platform runs
+/// around `SDL_Init`), and [`OpenAsk`] with its [`Placement`] (the window's title, place and size). The
+/// shell crate's own types, re-exported rather than copied: they hold no SDL type, and W7a, which
+/// publishes `Shell` and `Surface`, is where a platform-neutral spelling of them is decided.
+pub(crate) use plx_shell_sdl::{InitHooks, OpenAsk, Placement};
+
 /// The platform's window, bus and pointer, as the application drives them: the SDL window and its
 /// surface, the opaque-region hint, the platform bus pump, and the visibility of the Magic Remote's
 /// pointer. Every call runs on the loop thread, and every hook is required: a platform with nothing
 /// to do states a no-op, as the desktop and the test-only host platform do.
+///
+/// `init` and `open` are the two steps that bring the surface up, and they are two because the
+/// application reads the stored session between them (the window size is a setting): SDL and the GL
+/// request first, the session read, then the window. That is the order boot has always had, and
+/// `app::boot` pins it. A platform whose surface is not SDL's states its own pair; every SDL one is the
+/// shell crate's (`plx_shell_sdl`), reached through [`sdl_init`] and [`sdl_open`].
 pub(crate) trait Shell: Sync {
+    /// Bring the platform's windowing up and ask for the GL context, once, FIRST: before the stored
+    /// session is read and before [`open`](Shell::open). A refusal ends the boot with that `Exit`.
+    fn init(&self, mt: &MainThread) -> Result<(), Exit>;
+    /// Open the window and its GL context at `ask`, make the context current on this thread and
+    /// probe the drawable it gave. The [`Surface`] it returns is the application's for the rest of the
+    /// process. A refusal ends the boot with that `Exit`.
+    fn open(&self, mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit>;
     /// Hand the platform the SDL window, once, at boot: the window is created deep inside boot and
     /// the platform needs it a long way from there (`textinput::bind`'s shape and its reason).
     fn bind_window(&self, win: *mut c_void);
@@ -64,6 +85,82 @@ pub(crate) trait Shell: Sync {
     /// remote's OK arrives as a click at wherever the invisible pointer sits, which the loop reads as
     /// the OK key (`input::click_is_ok`). `false` where a click is always a real one.
     fn hide_is_cursor_swap(&self) -> bool;
+}
+
+/// The window the application presents to and reads events from, owned by `App` for the rest of the
+/// process. App-private and thread-affine (not `Sync`) like [`Shell`], and for the same reason: no
+/// type a platform has to match leaves the application crate until the platform contract is settled
+/// (`docs/platform-ports.md`, Target shapes 1 and 8, which W7a publishes as `host`).
+///
+/// `window` is the raw handle the [`Shell`]'s per-window calls still take (`bind_window`,
+/// `grab_surface`, and `textinput`'s focus read), so every call site the `frame` gate pins stays where
+/// it is; W7a folds those into this trait. `poll` is SDL-shaped bytes until the platform's own event
+/// sink replaces it. There is no destructor: the `App` is leaked at exit and a worker may still hold
+/// the handle, so the end is the explicit, decided [`quit`](Surface::quit).
+pub(crate) trait Surface {
+    /// The raw window handle, null for a surface that has none (the rig's).
+    fn window(&self) -> *mut c_void;
+    /// Present the frame. The compositor commit of the opaque-region request just made is this call's.
+    fn swap(&self);
+    /// 1 locks the frame rate to the panel's refresh, 0 uncaps it; the application computes which.
+    fn set_swap_interval(&self, interval: i32);
+    /// Take the next event off the platform's queue into `ev`; `false` when there is none.
+    fn poll(&self, ev: &mut [u8; 128]) -> bool;
+    /// End the platform's windowing for the process.
+    ///
+    /// # Safety
+    /// After the loop's last use of it, on the loop thread; nothing may touch the platform's
+    /// windowing afterwards. The caller decides WHEN (`run::quits_sdl`): a worker still inside
+    /// firmware means the display must not be torn down under it.
+    unsafe fn quit(&self);
+}
+
+/// SDL's window is a [`Surface`] by delegation: the one SDL implementation, for the television and a
+/// desktop alike. The trait is local, so the orphan rule has nothing to say.
+impl Surface for plx_shell_sdl::Window {
+    fn window(&self) -> *mut c_void {
+        self.raw()
+    }
+    fn swap(&self) {
+        plx_shell_sdl::Window::swap(self)
+    }
+    fn set_swap_interval(&self, interval: i32) {
+        plx_shell_sdl::Window::set_swap_interval(self, interval)
+    }
+    fn poll(&self, ev: &mut [u8; 128]) -> bool {
+        plx_shell_sdl::event::poll(ev)
+    }
+    unsafe fn quit(&self) {
+        plx_shell_sdl::init::quit()
+    }
+}
+
+/// [`Shell::init`] for an SDL platform: SDL up with the platform's two steps around `SDL_Init`, then the
+/// GL context request. `SDL_Init` refused ends the boot (`Exit::refused(1)`, the status it always had).
+///
+/// # Safety
+/// `hooks` must be sound to call on the SDL main thread (`mt` is the proof of the thread) at the two
+/// points `plx_shell_sdl::init::init` calls them.
+pub(crate) unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), Exit> {
+    plx_shell_sdl::init::init(mt, hooks).map_err(|_| Exit::refused(1))?;
+    plx_shell_sdl::init::request_gl(mt);
+    Ok(())
+}
+
+/// [`Shell::open`] for an SDL platform: the window and its GL context. Refused at the native size, the
+/// boot ends with `Exit::refused(1)`, the status it always had.
+pub(crate) fn sdl_open(mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+    plx_shell_sdl::Window::open(mt, ask)
+        .map(|window| Box::new(window) as Box<dyn Surface>)
+        .map_err(|_| Exit::refused(1))
+}
+
+/// A surface with no window, for the shells of a process that owns none: a host test, and the loop's
+/// rig. Its swap is `SDL_GL_SwapWindow(NULL)` and its poll is SDL's real process-global queue, which is
+/// what the rig's null handle and the tests that push events have always had. Test builds only.
+#[cfg(test)]
+pub(crate) fn detached_surface() -> Box<dyn Surface> {
+    Box::new(plx_shell_sdl::Window::DETACHED)
 }
 
 /// The dev frame probe (`/tmp/plxnative-framecb`): the platform's presentation-callback clock, read
@@ -169,6 +266,12 @@ struct HostShell;
 
 #[cfg(test)]
 impl Shell for HostShell {
+    fn init(&self, _mt: &MainThread) -> Result<(), Exit> {
+        Ok(())
+    }
+    fn open(&self, _mt: &MainThread, _ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+        Ok(detached_surface())
+    }
     fn bind_window(&self, _win: *mut c_void) {}
     fn grab_surface(&self, _win: *mut c_void) {}
     fn release_surface(&self) -> bool {
@@ -212,6 +315,12 @@ pub(crate) struct SwapShell {
 
 #[cfg(test)]
 impl Shell for SwapShell {
+    fn init(&self, _mt: &MainThread) -> Result<(), Exit> {
+        Ok(())
+    }
+    fn open(&self, _mt: &MainThread, _ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+        Ok(detached_surface())
+    }
     fn bind_window(&self, _win: *mut c_void) {}
     fn grab_surface(&self, _win: *mut c_void) {}
     fn release_surface(&self) -> bool {
@@ -287,6 +396,17 @@ mod tests {
             "the services are the host-test services (`tv`'s own tests pin each answer)"
         );
 
+        // SAFETY: a host test owns the one thread it runs the shell's bring-up on.
+        let mt = unsafe { MainThread::assume() };
+        assert_eq!(s.init(&mt), Ok(()), "there is no windowing to bring up");
+        let ask = OpenAsk {
+            title: c"PlxNative",
+            placement: Placement::Panel { size: (1920, 1080), fallback: None },
+            high_dpi: false,
+        };
+        let surface = s.open(&mt, &ask).expect("a process with no platform opens a windowless surface");
+        assert!(surface.window().is_null(), "and the surface it hands back has no window");
+
         let window = std::ptr::null_mut();
         s.bind_window(window);
         s.grab_surface(window);
@@ -307,8 +427,7 @@ mod tests {
         p.acquired();
         assert_eq!(p.fields(), "", "an unarmed probe has nothing to log");
 
-        // SAFETY: a host test owns the one thread it runs the media boot on.
-        let mt = unsafe { MainThread::assume() };
+        // The same thread, the same proof: the media boot runs on it too.
         (media.early_init)(&mt);
         let mut adapter = PlayerAdapter::new(mt);
         let composed = (media.compose)(&mut adapter, false);
@@ -348,5 +467,38 @@ mod tests {
         assert_eq!((other_counted.hides.load(Relaxed), other_counted.shows.load(Relaxed)), (0, 0),
             "another platform's counts are its own");
         assert!(!other.shell.release_surface(), "the rest of the shell answers as the host-test one does");
+    }
+
+    /// **The SDL calls the application still declares are the two that stay.** Everything SDL-shaped
+    /// that is the stock shell's (the window, the GL context, the queue, the text-input panel) is
+    /// `plx_shell_sdl`'s; what remains is `system.rs`'s `SDL_GetWindowWMInfo` handshake (the television's
+    /// SDL writes a larger `SDL_SysWMinfo` than the headers declare, so the buffer and the version query
+    /// are LG's and stay verbatim) and `clock.rs`'s `SDL_GetTicks`, the `ticks` gate's one door. A third
+    /// declaration here is a second SDL seam beside the shell crate's. Reads the sources, like
+    /// `port.rs`'s tests, because no host test can see a declaration.
+    #[test]
+    fn the_application_declares_no_sdl_function_but_the_two_that_stay() {
+        fn walk(dir: &std::path::Path, src: &std::path::Path, hits: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read a source directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    walk(&path, src, hits);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let rel = path.strip_prefix(src).expect("under src").to_string_lossy().replace('\\', "/");
+                    if rel == "system.rs" || rel == "app/clock.rs" {
+                        continue;
+                    }
+                    let text = std::fs::read_to_string(&path).expect("read a source file");
+                    // Split with `concat!`, so this file's own text is never what it matches.
+                    if text.contains(concat!("fn ", "SDL_")) {
+                        hits.push(rel);
+                    }
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        walk(&src, &src, &mut hits);
+        assert!(hits.is_empty(), "an SDL function is declared outside `system.rs` and `app/clock.rs`: {hits:?}");
     }
 }

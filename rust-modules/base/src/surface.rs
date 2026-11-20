@@ -466,7 +466,7 @@ pub fn probe(win: *mut c_void) {
         // not the canvas is either a webOS 1-3 owner's smaller Interface resolution (or the debug drawable trigger) or a firmware doing
         // something no set has been seen to do. On a desktop
         // it is the ordinary case — the window is an exact divisor of the canvas by design
-        // (`app::boot::plan_desktop_window`) — and asking a Mac user for their webOS version
+        // (`plx_shell_sdl::window::plan_desktop_window`) — and asking a Mac user for their webOS version
         // reads as a malfunction. Same measurement either way; only the sentence differs.
         let tail = if cfg!(feature = "hostsim") {
             "This is expected on a desktop: the window is a whole fraction of the canvas."

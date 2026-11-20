@@ -19,7 +19,6 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::Ordering::Relaxed;
 
 // ---- constants (SDL 2.0.4 + GLES2 + app) ----
-const SDL_INIT_VIDEO: u32 = 0x20;
 /// Appended to every heartbeat on a simulator build, and empty on a television.
 ///
 /// The heartbeat is the app's perf surface: `tests/run.py --fps` grades `loop=` and `fps=` from it,
@@ -33,61 +32,16 @@ const SIM_TAG: &str = if cfg!(feature = "hostsim") {
     ""
 };
 
-/// OPENGL | FULLSCREEN on the television, which owns the whole panel.
-///
-/// The desktop asks for OPENGL | ALLOW_HIGHDPI — no fullscreen grab (hostile on a laptop) and
-/// **not RESIZABLE**: `surface::probe` reads the drawable once, at boot, so a dragged edge would
-/// leave the viewport describing a window that no longer exists, and the interface would sit in a
-/// 1920x1080-shaped corner of the new one with every pointer hit landing somewhere else. The window
-/// opens at an exact divisor of the canvas instead — see `boot::plan_desktop_window`.
-///
-/// ALLOW_HIGHDPI is what makes that divisor land on a **1:1 surface** on the Mac people actually
-/// have: without it a Retina display gives a drawable equal to the window in POINTS, which the
-/// compositor then doubles, so the whole interface is an upscale of a half-size render. With it,
-/// `boot::fit_window_to_density` measures the pixels per point once the window exists and sizes
-/// it in points for the drawable it should give: 960x540 points for a 1920x1080 drawable on a 2x
-/// display, so `surface::scale() == 1.0`, the same 1:1 texel contract the television gets.
-const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") {
-    0x2 | 0x2000
-} else {
-    0x2 | 0x1
-};
-/// `SDL_WINDOW_INPUT_FOCUS`. Note it is NOT among the flags requested above — no window flag can
-/// ask for it; SDL sets it when the compositor gives this surface the keyboard. Read, never asked
-/// for, and read by exactly one thing: `crate::textinput`, whose panel it silently gates.
-pub(crate) const SDL_WINDOW_INPUT_FOCUS: u32 = 0x200;
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 const GL_RENDERER: c_uint = 0x1F01;
 const GL_VERSION: c_uint = 0x1F02;
-// SDL_GLattr enum
-const A_RED: c_int = 0;
-const A_GREEN: c_int = 1;
-const A_BLUE: c_int = 2;
-const A_ALPHA: c_int = 3;
-const A_BUFFER_SIZE: c_int = 4;
-const A_DEPTH: c_int = 6;
-const A_STENCIL: c_int = 7;
-const A_CTX_MAJOR: c_int = 17;
-const A_CTX_MINOR: c_int = 18;
-const A_CTX_PROFILE_MASK: c_int = 21;
-const CTX_PROFILE_ES: c_int = 0x0004;
-/// `SDL_GL_CONTEXT_PROFILE_CORE` — the simulator's only option on macOS. See the context request.
-const CTX_PROFILE_CORE: c_int = 0x0001;
-// event types
-const SDL_QUIT: u32 = 0x100;
-const SDL_KEYDOWN: u32 = 0x300;
-const SDL_KEYUP: u32 = 0x301;
-const SDL_MOUSEMOTION: u32 = 0x400;
-const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
-const SDL_MOUSEBUTTONUP: u32 = 0x402;
-const SDL_MOUSEWHEEL: u32 = 0x403;
-/// The IME's in-progress COMPOSITION. Not acted on — the search field shows what has been
-/// committed, so a preedit would put characters on screen the query does not contain — but LOGGED,
-/// because the panel's word prediction is a replace and this is where its delete half would arrive
-/// if it arrives at all. See the `"edit"` arm in the event ladder.
-const SDL_TEXTEDITING: u32 = 0x302;
-/// Text COMMITTED by the system keyboard — `crate::textinput`.
-pub(crate) const SDL_TEXTINPUT: u32 = 0x303;
+// SDL's event-type codes the ladder and the loop tests read, and the one window flag `textinput` reads,
+// are the stock-SDL shell's (`plx_shell_sdl`); they are re-exported here so every `use super::*` chain
+// below keeps resolving them by the names it always has.
+pub(crate) use plx_shell_sdl::event::{
+    SDL_KEYDOWN, SDL_KEYUP, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP, SDL_MOUSEMOTION, SDL_TEXTEDITING, SDL_TEXTINPUT,
+};
+pub(crate) use plx_shell_sdl::window::SDL_WINDOW_INPUT_FOCUS;
 // keysyms, the OK/BACK predicates and `classify` — the key VOCABULARY the ladder below dispatches
 // on — live in ui::consts (the single keycode home)
 use plx_ui::consts::{
@@ -98,20 +52,6 @@ use plx_ui::consts::{
 const SCR_W: c_int = plx_base::surface::LOGICAL_W as c_int;
 const SCR_H: c_int = plx_base::surface::LOGICAL_H as c_int;
 pub(crate) const COLS: c_int = 10;
-
-// Desktop-only window management. Apart for the mirror-image reason: a television owns the whole
-// panel and never asks how big a display is, so on that build these would be dead code — which
-// `[workspace.lints.rust] warnings = "deny"` makes a build failure, not a warning.
-#[cfg(feature = "hostsim")]
-extern "C" {
-    /// `SDL_GetDisplayUsableBounds` — the display minus the menu bar and the Dock, which is what
-    /// a window may actually occupy. The out parameter is an `SDL_Rect`: exactly four `c_int`.
-    fn SDL_GetDisplayUsableBounds(display: c_int, rect: *mut c_int) -> c_int;
-    /// `SDL_SetWindowSize` / `SDL_SetWindowPosition` — `app::boot::fit_window_to_density` re-sizes
-    /// and re-centres the window once the display's pixel density has been measured from it.
-    fn SDL_SetWindowSize(win: *mut c_void, w: c_int, h: c_int);
-    fn SDL_SetWindowPosition(win: *mut c_void, x: c_int, y: c_int);
-}
 
 // Phase 1a of the UI restructure split this file: everything above `run_application` moved into
 // the submodules below as a PURE move (`pub(crate)` widening only), glob-imported here so the
@@ -156,59 +96,6 @@ use self::input::*;
 use self::content::*;
 
 extern "C" {
-    fn SDL_SetMainReady();
-    fn SDL_SetHint(name: *const c_char, value: *const c_char) -> c_int;
-    fn SDL_Init(flags: u32) -> c_int;
-    fn SDL_GetCurrentVideoDriver() -> *const c_char;
-    fn SDL_GL_SetAttribute(attr: c_int, value: c_int) -> c_int;
-    fn SDL_CreateWindow(
-        title: *const c_char,
-        x: c_int,
-        y: c_int,
-        w: c_int,
-        h: c_int,
-        flags: u32,
-    ) -> *mut c_void;
-    fn SDL_DestroyWindow(win: *mut c_void);
-    fn SDL_GL_CreateContext(win: *mut c_void) -> *mut c_void;
-    fn SDL_GL_SetSwapInterval(interval: c_int) -> c_int;
-    fn SDL_Delay(ms: u32);
-    fn SDL_PollEvent(event: *mut c_void) -> c_int;
-    fn SDL_PushEvent(event: *const c_void) -> c_int;
-    fn SDL_GL_SwapWindow(win: *mut c_void);
-    fn SDL_Quit();
-    // The system on-screen keyboard. A PLAIN link, not `dynlib!`, and the rule in `dynlib.rs` is
-    // why: that module is for libraries whose SONAME moves, and this is stock public SDL2 API —
-    // `tools/fwcompat.py --lib libSDL2-2.0.so.0 --grep TextInput` finds the whole family exported
-    // by all 14 firmware inventories, so there is nothing here for a runtime bind to tolerate.
-    //
-    // `pub(crate)` on these five alone because `crate::textinput` owns this seam and is the only
-    // caller; the declarations stay here with the rest of SDL rather than being duplicated into a
-    // second `extern` block, where a signature could drift from this one unnoticed.
-    //
-    // The `allow(dead_code)` below is a consequence of that ownership: under `cfg(test)` the only
-    // caller swaps itself for `textinput::host_test_sdl`'s stubs, so these three lose their last
-    // use in the TEST build alone and warn there. The allow is narrower than it looks — a real
-    // orphan would be silent in every configuration, and these are live on device.
-    #[allow(dead_code)]
-    pub(crate) fn SDL_StartTextInput();
-    #[allow(dead_code)]
-    pub(crate) fn SDL_StopTextInput();
-    pub(crate) fn SDL_IsTextInputActive() -> c_int;
-    pub(crate) fn SDL_HasScreenKeyboardSupport() -> c_int;
-    /// LG's `WebOSIsScreenKeyboardShown`, the fourth of the four hooks its Wayland driver installs.
-    /// Exported by all 14 inventories, and **it does not answer the question its name asks** on this
-    /// firmware — `textinput`'s note has the measurement and what replaced it. Declared, unused, and
-    /// kept so the next person finds the finding before they find the symbol.
-    #[allow(dead_code)]
-    pub(crate) fn SDL_IsScreenKeyboardShown(w: *mut c_void) -> c_int;
-    pub(crate) fn SDL_GetWindowFlags(w: *mut c_void) -> u32;
-    /// Turn the DRIVER's own tracing on for one category. LG's `WebOSShowScreenKeyboard` /
-    /// `Hide` / `TextModelLeave` / `TextModelInputPanelState` all log through SDL at
-    /// `SDL_LOG_CATEGORY_INPUT`, which is silent at the default priority — so this is how the
-    /// keyboard's real lifecycle becomes readable without patching SDL.
-    #[allow(dead_code)] // test build only — see the note above `SDL_StartTextInput`
-    pub(crate) fn SDL_LogSetPriority(category: c_int, priority: c_int);
     fn glGetString(name: c_uint) -> *const c_char;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glClear(mask: c_uint);
@@ -346,10 +233,12 @@ pub(crate) struct App {
     /// The re-read of covered pages and of the visible one on resume, stepped once per loop
     /// iteration beside the view-state pumps (`app/reread.rs`).
     pub(crate) reread: reread::Reread,
+    /// The buffer [`platform::Surface::poll`] fills, one event at a time.
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
-    /// The SDL window (`SDL_CreateWindow`), for the swap.
-    win: *mut c_void,
+    /// The window and its GL context (`Shell::open`): the swap, the event poll, the raw handle the
+    /// shell's per-window calls take, and the process's SDL quit. Thread-affine, like the loop.
+    surface: Box<dyn platform::Surface>,
     /// WSLg accepts swap interval 1 on X11/GLX without pacing the compositor. This boot-scoped
     /// flag enables the host-only software frame budget while leaving native Linux and macOS on
     /// their driver swap behavior.
@@ -588,7 +477,7 @@ unsafe fn run_and_shutdown(app: &mut App) -> Exit {
     let failed = finish_recording(&mut app.rec, bridge.landgate())
         || bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
-    let release = run::shutdown(&mut app.player.session, &mut app.adapters.player);
+    let release = run::shutdown(&mut app.player.session, &mut app.adapters.player, &*app.surface);
     // The crash-channel guard is the one `Drop` that persists something (it closes the capture
     // backend and removes its database), so it runs here explicitly: nothing drops the `App`.
     drop(app.telemetry_guard.take());
@@ -678,7 +567,8 @@ pub(crate) fn run_application(platform: &'static platform::Platform, pms_host: *
 //   the origin an `EntryId` on the mounted player screen, so the same questions are asked of a
 //   real container, beside `playback::enter_player`/`exit_player` — including two the description
 //   could not reach: the spot the page comes back at, and an origin that is really gone.
-// * `key_layout_tests` — beside `events::decode_key`/`encode_key`, whose byte offsets it pins.
+// * `key_layout_tests` — beside `events`' `encode_key`, round-tripped through `plx_shell_sdl::event::decode_key`,
+//   whose byte offsets it pins.
 // * `route_tests` — split in two, each half beside its subject: the direct-screen server rule is
 //   `boot::resolve_direct_server`'s, and the profile chip's alphabet is `ScreenArg::chrome`'s, in
 //   `screens::registry`.

@@ -317,7 +317,7 @@ single hard-coded number ships garbage on one of the two platforms.
 
 `SDL_StartTextInput` looks for a window carrying `0x200` (`SDL_video.h` in the SDK sysroot's `usr/include/SDL2/`) before
 dispatching to the driver hook. Our window is created with
-`SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN` and nothing else — `app.rs`'s `SDL_WINDOW_FLAGS` is
+`SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN` and nothing else — `plx_shell_sdl`'s `SDL_WINDOW_FLAGS` (`shell-sdl/src/window.rs`) is
 `0x2 | 0x1` on the device — so it carries neither `SHOWN` nor a focus flag at creation. **If the flag
 is clear the panel never rises, silently and with no error return.** That is why the boot probe logs
 the flag rather than trusting it: a keyboard that does not appear and a keyboard that appeared and

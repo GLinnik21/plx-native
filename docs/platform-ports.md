@@ -180,7 +180,10 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   - the swap is at `app/run.rs:974` and the poll at `app/run.rs:1066-1069`.
 
   Source-text pins search for those calls: tests at `app/boot.rs:705-785` look for `"SDL_Init("` and
-  `"SDL_CreateWindow("`, and `app/run.rs:11467` looks for `"SDL_GL_SwapWindow(app.win);"`.
+  `"SDL_CreateWindow("`, and `app/run.rs:11467` looks for `"SDL_GL_SwapWindow(app.win);"`. W6 moved the extern block,
+  the window, the swap and the poll into `plx_shell_sdl` (`sys.rs`, `window.rs`, `event.rs`); the application crate declares
+  SDL functions in two files only now, `system.rs` (the `SDL_SysWMinfo` handshake and the GL attribute read) and
+  `app/clock.rs` (`SDL_GetTicks`), and its swap pin reads `app.surface.swap();`.
 - F15. SDL is also below `app`:
   - `base/src/surface.rs:38-39`;
   - `base/src/diag/heartbeat.rs:30-31`;
@@ -1599,6 +1602,15 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - Test: `make test-hostsim`; a build-bench table; `check-nodef`, the ARM cross-build and fw-compat-reviewer; a TV
   lease: boot log diff and the video plane still showing through (opaque region); frame claims only via
   `profile-tv`. Risk: the SysWMinfo overrun (`system.rs:4-5`); that code moves verbatim.
+- As landed: `Shell` gained `init` and `open`, and `open` returns the application-private `Surface` (`window`, `swap`,
+  `set_swap_interval`, `poll` and an unsafe `quit` that `run::shutdown` calls). The bring-up order is kept: `SDL_Init` and the
+  GL request come before the stored session is read, the window after it. The placement is a value, `OpenAsk { title,
+  placement, high_dpi }`, so the panel's size with its smaller fallback and the desktop fit (`Placement::Desktop`, `hostsim`
+  builds only) are the crate's; the webOS shell hands `init` two hooks, the cursor-sleep hint before `SDL_Init` and the
+  relaunch tap after it (`system::webos3_cursor_sleep_hint` and `system::tap_relaunch_payloads`, moved without their `hostsim`
+  gates), and the desktop shell none. Text-input state stays in `textinput.rs`; the crate owns the byte layouts and the SDL
+  calls. The pins moved with their code: the init order into the crate's `init`, the window order into its
+  `open_order_tests`, and the session-before-window order stays in `app/boot.rs`.
 
 ### W6b (N, accepted T). Platform-supplied composition, two phases
 - Goal: `app::Platform.media` (Target shape 6a). `acb_init` moves behind `early_init` at its present call site

@@ -975,7 +975,7 @@ unsafe fn present_and_swap(
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
             app.platform.diag.request();
-            SDL_GL_SwapWindow(app.win);
+            app.surface.swap();
         }
         app.window_activity.presented(fr.player);
         // dev diagnostic, OFF unless `/tmp/plxnative-eglage` was present at boot: re-ask EGL for
@@ -1036,7 +1036,7 @@ unsafe fn present_and_swap(
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
-        SDL_Delay(plx_machine::motion::report::IDLE_POLL_MS);
+        plx_shell_sdl::init::delay_ms(plx_machine::motion::report::IDLE_POLL_MS);
     }
 }
 
@@ -1068,7 +1068,7 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
 }
 
 unsafe fn drain_sdl(app: &mut App, fr: &mut Frame) {
-    while SDL_PollEvent(app.ev.as_mut_ptr() as *mut c_void) != 0 {
+    while app.surface.poll(&mut app.ev) {
         ingest_sdl_event(app, fr);
     }
 }
@@ -1207,7 +1207,7 @@ unsafe fn ingest_host_event(app: &mut App, fr: &mut Frame, event: HostEvent,
         // Only its DID foreground reacquires native handles. Recorded notifications
         // below never reacquire them, revoke grants or resume a native player.
         match event {
-            HostEvent::Lifecycle(Lifecycle::DidForeground) => restore_window(app.win),
+            HostEvent::Lifecycle(Lifecycle::DidForeground) => restore_window(app.surface.window()),
             HostEvent::Quit
             | HostEvent::Lifecycle(Lifecycle::WillBackground | Lifecycle::DidBackground) => {
                 app.rec.refuse("live window exit interrupted controlled replay");
@@ -1378,7 +1378,7 @@ unsafe fn host_foreground(app: &mut App, edge: Lifecycle, playing: bool,
         // The television may have been away long enough for every page to be stale.
         app.reread.resume();
         // Reacquire only on DID foreground, before playback restoration and rendering.
-        restore_window(app.win);
+        restore_window(app.surface.window());
         app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
         // A decoder-release park is claimed by this edge like any other park.
         app.decoder_parked = false;
@@ -3810,11 +3810,13 @@ pub(crate) fn quits_sdl(native_exit: plx_media::player::NativeExit) -> bool {
 
 /// Teardown after the loop: abandon the pending report, stop the active backend, wait for the stop
 /// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
-/// in firmware). Answers what it released: the caller (`app::run_and_shutdown`) returns it in the
-/// `Exit`, and the executable entry then ends the process with `_exit`.
+/// in firmware: `surface.quit()` is the platform's, and WHETHER it runs is this function's). Answers
+/// what it released: the caller (`app::run_and_shutdown`) returns it in the `Exit`, and the executable
+/// entry then ends the process with `_exit`.
 pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
+    surface: &dyn super::platform::Surface,
 ) -> Release {
     ps.finish_metric_request(plx_media::player::attempt_metrics::RequestOutcome::Cancelled);
     pa.sync_request_metrics(ps);
@@ -3839,7 +3841,7 @@ pub(crate) unsafe fn shutdown(
     // anywhere above leaves its state for the next boot to classify as crashed or abnormal.
     plx_telemetry::telemetry::session::shutdown();
     if quits_sdl(native_exit) {
-        SDL_Quit();
+        surface.quit();
     } else {
         log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
     }
@@ -4115,7 +4117,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
             reread: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
-            win: Default::default(),
+            surface: crate::app::platform::detached_surface(),
             #[cfg(target_os = "linux")]
             wslg_frame_pacing: false,
             t0: Default::default(),
@@ -5293,6 +5295,96 @@ pub(in crate::app) mod lifecycle_regression_tests {
         }
     }
 
+    // ---- W6: the loop's other calls on the platform's shell -------------------------------------
+    //
+    // Three call sites reach `Shell` from the loop outside the key and pointer arms the tests above
+    // count, and none of them had a test that would notice the call going missing: the idle pointer
+    // over the video (`playback_tick`), the hand-back of Back's hidden pointer on backgrounding
+    // (`host_background`), and a controlled pointer input's wake (`controlled_key_input`). Each is
+    // counted on a `SwapShell`, the platform's shell as the loop holds it.
+
+    /// **An idle pointer over the video is hidden through the platform's shell**, once, after more
+    /// than three seconds without motion on a mounted player: not at three seconds, not again on the
+    /// next frame, and not while a button is held.
+    #[test]
+    fn an_idle_pointer_over_the_video_is_hidden_through_the_platforms_shell_after_three_seconds() {
+        use std::sync::atomic::Ordering::Relaxed;
+        fn tick(app: &mut App, now: u32) {
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            fr.now = now;
+            unsafe { playback_tick(app, &mut fr) };
+        }
+        let _serial = plx_base::testlock::serial();
+        let (platform, shell) = crate::app::platform::SwapShell::platform();
+        clock::set_replay(100);
+        let mut app = app_on(platform);
+        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        frame(&mut app, 0);
+        assert!(matches!(app.route(), AppArg::Player), "premise: the player is mounted");
+        app.ptr.last_motion = 1_000;
+        tick(&mut app, 4_000);
+        assert_eq!((shell.hides.load(Relaxed), app.ptr.cur_hidden), (0, false), "three seconds is not more than three seconds");
+        app.ptr.button_down = true;
+        tick(&mut app, 4_001);
+        assert_eq!((shell.hides.load(Relaxed), app.ptr.cur_hidden), (0, false), "a held button keeps the pointer");
+        app.ptr.button_down = false;
+        tick(&mut app, 4_001);
+        assert_eq!((shell.hides.load(Relaxed), app.ptr.cur_hidden), (1, true), "more than three seconds idle hides it, through the shell");
+        tick(&mut app, 9_000);
+        assert_eq!(shell.hides.load(Relaxed), 1, "...once");
+    }
+
+    /// **Backgrounding hands back the pointer Back hid, through the platform's shell**: the OS took
+    /// the screen, so the cursor Back's hold made transparent is shown again (nothing else would
+    /// until a motion), whether the edge arrives as SDL's bytes or as the host's `Lifecycle`.
+    #[test]
+    fn backgrounding_hands_back_the_pointer_back_hid_through_the_platforms_shell() {
+        use plx_machine::machine::{InstanceId, MachineId};
+        use plx_screens::registry::BackCursorChange;
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        for hosted in [false, true] {
+            let (platform, shell) = crate::app::platform::SwapShell::platform();
+            let mut app = app_on(platform);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            let target = (MachineId::Instance(InstanceId(1)), 7);
+            app.ptr.sync_back_cursor(app.platform.shell, Some(target), Some((target, BackCursorChange::Hide)));
+            assert!(app.ptr.back_cursor_active() && app.ptr.cur_hidden, "premise: Back holds a hidden pointer");
+            assert_eq!((shell.hides.load(Relaxed), shell.shows.load(Relaxed)), (1, 0), "premise: it hid it through the shell");
+            deliver(&mut app, &mut fr, hosted, HostEvent::Lifecycle(Lifecycle::WillBackground));
+            assert!(!app.ptr.back_cursor_active() && !app.ptr.cur_hidden, "backgrounding ends Back's hold (hosted {hosted})");
+            assert_eq!(shell.shows.load(Relaxed), 1, "...and shows the pointer again, through the shell (hosted {hosted})");
+        }
+    }
+
+    /// **A controlled pointer input wakes a hidden pointer through the platform's shell**, as the
+    /// SDL pointer path does: a recorded or scripted pointer, click or drag is the viewer moving the
+    /// pointer, so the pointer the D-pad hid comes back, once (`controlled_key_input`).
+    #[test]
+    fn a_controlled_pointer_input_shows_a_hidden_pointer_through_the_platforms_shell() {
+        use plx_machine::machine::{InputEvent, InputKind, Source, Tick};
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        let kinds = [
+            InputKind::<u32>::Pointer { x: 400.0, y: 300.0, hit: None },
+            InputKind::Click { x: 400.0, y: 300.0, hit: None },
+            InputKind::Drag { x: 400.0, y: 300.0, hit: None },
+        ];
+        for kind in kinds {
+            let (platform, shell) = crate::app::platform::SwapShell::platform();
+            let mut app = app_on(platform);
+            app.ptr.cur_hidden = true;
+            let event = InputEvent { at: Tick { ms: 500, dt_us: 0 }, source: Source::Sdl, kind };
+            unsafe { controlled_key_input(&mut app, event) };
+            assert_eq!(shell.shows.load(Relaxed), 1, "the controlled pointer input shows the hidden pointer, through the shell");
+            assert!(!app.ptr.cur_hidden && app.ptr.last_motion == 500);
+            let again = InputEvent { at: Tick { ms: 516, dt_us: 0 }, source: Source::Sdl,
+                kind: InputKind::Pointer { x: 410.0, y: 300.0, hit: None } };
+            unsafe { controlled_key_input(&mut app, again) };
+            assert_eq!(shell.shows.load(Relaxed), 1, "...once");
+        }
+    }
+
     /// **The tape is the same whichever way a pointer event or a wheel tick arrives**, and it is
     /// today's: one `pointer`, `click` or `release` row per event at its authored position, and the
     /// wheel's `wheel` row (its count in `y`) at the debounce's pace, before the zero-tick return.
@@ -5383,8 +5475,8 @@ pub(in crate::app) mod lifecycle_regression_tests {
         let (mut app, mut fr) = settings_app();
         clock::set_replay(1_000);
         remote_synth_wheel(-2);
-        let polled = unsafe { SDL_PollEvent(app.ev.as_mut_ptr() as *mut c_void) };
-        assert_eq!(polled, 1, "SDL handed the pushed wheel event back");
+        let polled = plx_shell_sdl::event::poll(&mut app.ev);
+        assert!(polled, "SDL handed the pushed wheel event back");
         let precise = rd_f32(&app.ev, 32);
         assert!(rd_i32(&app.ev, 20) == -2 || precise == -2.0, "premise: the tick survived SDL's round trip in one field");
         unsafe { ingest_sdl_event(&mut app, &mut fr) };
@@ -5836,18 +5928,9 @@ pub(in crate::app) mod lifecycle_regression_tests {
         assert!(recording.frames.iter().all(|frame| frame.inputs.is_empty()), "a read-back is not recorded");
     }
 
-    /// Only SDL's event subsystem, for the tests that poll SDL (a by-id token drains it first): no
-    /// window, renderer, boot or device. Quits when dropped.
-    struct SdlEvents;
-    impl SdlEvents {
-        fn init() -> Self {
-            assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
-            Self
-        }
-    }
-    impl Drop for SdlEvents {
-        fn drop(&mut self) { unsafe { SDL_Quit(); } }
-    }
+    // Only SDL's event subsystem, for the tests that poll SDL (a by-id token drains it first): no
+    // window, renderer, boot or device. Quits when dropped (`plx_shell_sdl::testing`).
+    use plx_shell_sdl::testing::EventsOnly as SdlEvents;
 
     fn by_id_tags(inputs: &[plx_machine::machine::InputEvent<u32>]) -> Vec<String> {
         use plx_machine::machine::InputKind;
@@ -6086,12 +6169,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
     fn hang_probe_dispatch_preserves_key_order() {
         let _serial = plx_base::testlock::serial();
         // Only SDL's event subsystem: no window, renderer, boot or device.
-        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
-        struct Events;
-        impl Drop for Events {
-            fn drop(&mut self) { unsafe { SDL_Quit(); } }
-        }
-        let _events = Events;
+        let _events = plx_shell_sdl::testing::EventsOnly::init();
         for fifo in [true, false] {
             let mut app = app();
             super::super::bridge::show_page(&mut app.pages,
@@ -6208,12 +6286,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
         const ADDRESS: &str = "https://example.com/hud.plxhud";
         let _serial = plx_base::testlock::serial();
         // SDL's event subsystem only: no window, renderer, native playback or device.
-        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
-        struct Events;
-        impl Drop for Events {
-            fn drop(&mut self) { unsafe { SDL_Quit(); } }
-        }
-        let _events = Events;
+        let _events = plx_shell_sdl::testing::EventsOnly::init();
         // Three doors: the FIFO's token, the television's keyboard as the SDL bytes the drain decodes,
         // and the same commit as the `HostEvent::Text` a platform with no SDL hands the loop (W5b).
         for (fifo, hosted) in [(true, false), (false, false), (false, true)] {
@@ -6266,12 +6339,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
         }
         let _serial = plx_base::testlock::serial();
         // SDL's event subsystem only: no window, renderer, native playback or device.
-        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
-        struct Events;
-        impl Drop for Events {
-            fn drop(&mut self) { unsafe { SDL_Quit(); } }
-        }
-        let _events = Events;
+        let _events = plx_shell_sdl::testing::EventsOnly::init();
         let dir = HudDir::new("close-then-text");
         let (mut app, mut fr, mut now) = hud_address_field_up(&dir.0, dial);
 
@@ -6300,12 +6368,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
         use plx_machine::machine::{Edge, InputKind, Key};
         let _serial = plx_base::testlock::serial();
         // SDL's event subsystem only: no window, renderer, native playback or device.
-        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
-        struct Events;
-        impl Drop for Events {
-            fn drop(&mut self) { unsafe { SDL_Quit(); } }
-        }
-        let _events = Events;
+        let _events = plx_shell_sdl::testing::EventsOnly::init();
         let mut app = app();
         super::super::bridge::show_page(&mut app.pages, AppArg::Player);
         frame(&mut app, 0);
@@ -12762,7 +12825,8 @@ mod straighten_wiring_tests {
         let compositor = at("composite_plane_under();\n        }");
         let dump = at("crate::dev::framedump::after_draw(");
         let shot = at("crate::shot::maybe_capture(");
-        let swap = at("SDL_GL_SwapWindow(app.win);");
+        let swap = at("app.surface.swap();");
+        assert_eq!(src.matches("app.surface.swap();").count(), 1, "one swap closes the frame");
         assert!(begin < draw, "the ledger opens before the frame draws");
         assert!(draw < capture && capture < pass, "the capture stream reads before the pass");
         assert!(pass < compositor, "the simulator's compositor runs after the pass it models");

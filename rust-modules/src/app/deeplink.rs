@@ -13,7 +13,7 @@
 //!   where Resume would. Anything else is `open`.
 //! - Unknown keys are ignored. No `plex` object at all is an ordinary launch.
 //! - A launch while the app runs carries the link too, where LG's SDL lets the app read relaunch
-//!   payloads (`app::boot::tap_relaunch_payloads`, webOS 7.4 on); the page then replaces wherever
+//!   payloads (`system::tap_relaunch_payloads`, webOS 7.4 on); the page then replaces wherever
 //!   the app was. Elsewhere (webOS 4.x to 6.x) only a cold launch does, and a caller closes the app first
 //!   (`com.webos.applicationManager/closeByAppId`), then launches.
 //!

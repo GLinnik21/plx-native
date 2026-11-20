@@ -110,6 +110,7 @@ telemetry      plex  net                                                  + os m
 plex           net                                                        + os machine base
 net                                                                       + os base
 gfx                                                                       + os machine base
+shell_sdl                                                                 + os machine base
 play_feed      net  playback_contract  media_codecs                       + os base
 play_uri       playback_contract                                          + os base
 media_codecs   playback_contract                                          + base
@@ -197,6 +198,18 @@ relay list, descriptors and room snapshots, the clock sync and the room timeline
 vendored conformance vectors in `rust-modules/owp/fixtures/`. The WebSocket under it is `plx_net::ws`; the
 application does not name the crate yet. `ci/check-deps.sh` reads the whole crate for the same IO and clock
 gates as every other layer, and as machine code.
+
+`shell_sdl` is a twentieth layer, declared the same way. Its crate is `plx_shell_sdl` (`rust-modules/shell-sdl/`);
+its layer may use `base`, `machine` and `os` and the crate names `plx_base` alone. It is the SDL half of the shell that the
+television and the simulator share: `SDL_Init` and the GL request, the window (the panel's size and its smaller
+fallback, and under `hostsim` the desktop fit), the swap and its interval, the event poll and decode (LG's fork layout
+on the device, stock SDL2 under `hostsim`), the synthetic key, pointer, wheel and text events the dev tooling pushes back
+into the queue, and the text-input calls. The LG half does not move: the `SDL_SysWMinfo` buffer, the `wl_proxy_marshal`
+opaque region and the LS2 pump stay in `system.rs`, a member of `[platform webos]`, and a pin in the crate's `lib.rs` fails
+if the crate names the query that overruns it. The application reaches it through `app/platform.rs`, whose `Shell` opens a
+`Surface` over the crate's `Window`; `Shell`, `Surface` and `HostEvent` stay application-private until W7a.
+`ci/check-deps.sh` reads the whole crate for the same clock, statics and thread gates as every other layer, and not as one of the
+sans-IO areas: the shell is an IO crate by definition.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with
@@ -334,9 +347,9 @@ proves the references are gone and nothing more; L15b is open.
 | **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it and the webOS facts the gate cannot see; the simulator became its own platform in W4. See below. |
 | **L15c** the platform value and the three contracts — **done** | — | Wave R (the rename that gave this page `os` and `[platform webos]`) landed as #1474; W2 landed (`tv::Port` became `tv::Services`, with four groups of hooks; the shell and the frame probes moved to `app::Platform`), and so did the three contracts, W3a to W3c: who may persist credentials (#1477), what evidence admits a URI player (#1478), who ends the process (#1479). See "L15c to L15h" below. |
 | **L15d** neutral types and the simulator as its own platform (L15b item 2) — **W3d and W4 landed** | — | W3d landed (the opaque `Backend` tag, `sandbox` to `native_video`, identity publishes a platform name and version, `device::Info` keeps its webOS fields in `WebosDetail`, and `devcaps` reads its files through the platform), and so did W4: `platform_desktop` (`rust-modules/src/platform_desktop.rs`, a second fence section, `[platform desktop]`) is the simulator's and the macOS app's own platform value, which `src/bin/sim.rs` enters through; the `hostsim` terms of the television's fence are gone, so the television's code is compiled into every build and the linker drops it from a desktop executable (`simulators.yml` links the macapp feature set to guard that until W7), and the stand-ins in `webos` and `keymanager` are test seams, compiled for tests and `test-support` (`docs/platform-ports.md`, W4). The desktop platform is the second implementation. |
-| **L15e** events, the shell and composition — **W5a to W5c and W6b landed** | — | W5 (`HostEvent` with `Option<Action>`) landed in three PRs, lifecycle and quit (W5a, #1484), keys and text (W5b, #1487) and the pointer and wheel (W5c, #1492), and so did W6b (platform-supplied composition in two boot phases, #1489). W6 (`plx_shell_sdl`, a `[shell_sdl]` layer) and W6c (a URI-only and a two-driver composition play an ordinary title) are planned. |
-| **L15f** extract the platform crates — **planned** | — | W7: a narrow public `host` module in the application crate, `rust-modules/platform-webos` and `platform-desktop` as crates above `app`, and the gate learning "a platform is a crate above `app`". After L15d, before L15g and L15h. |
-| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **W8a started** | — | W8a has begun: the platform states where the account's records live (`tv::Services.storage`, #1488), and telemetry's consent store (#1490) and plex's session persistence (#1491) follow it instead of the `target_arch = "arm"` fence. Still planned: the rest of W8a, one PR per directory (`os`, `src`, `base`, `storage` and `play-feed`), sorting the `target_arch = "arm"` and `target_os = "linux"` sites into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays); then W8b, the library name lists, `paths` and the packaging, and W8c, the `feature = "hostsim"` lines left in the tree (none of them in the fence now; `git grep -h 'feature = "hostsim"' -- '*.rs' | wc -l` counts them). |
+| **L15e** events, the shell and composition — **W5a to W5c, W6 and W6b landed** | — | W5 (`HostEvent` with `Option<Action>`) landed in three PRs, lifecycle and quit (W5a, #1484), keys and text (W5b, #1487) and the pointer and wheel (W5c, #1492), and so did W6b (platform-supplied composition in two boot phases, #1489) and W6 (`plx_shell_sdl`, a `[shell_sdl]` layer: SDL's bring-up, the window, the swap, the event decode and the text-input calls moved out of the application behind its private `Shell` and `Surface`, and the LG half stays in `system.rs`). W6c (a URI-only and a two-driver composition play an ordinary title) is planned. |
+| **L15f** extract the platform crates — **planned** | — | W7: a narrow public `host` module in the application crate, `rust-modules/platform-webos` and `platform-desktop` as crates above `app`, and the gate learning "a platform is a crate above `app`". After L15d, before L15g and L15h (the storage-authority part of W8a, #1488, #1490 and #1491, landed ahead of W7; the rest of W8 still follows W7). |
+| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **W8a started** | — | W8a has begun: the platform states where the account's records live (`tv::Services.storage`, #1488), and telemetry's consent store (#1490) and plex's session persistence (#1491) follow it instead of the `target_arch = "arm"` fence. Still planned: the rest of W8a, one PR per directory (`os`, `src`, `base`, `storage` and `play-feed`; telemetry's nine `target_arch = "arm"` lines in `telemetry/src/telemetry/native.rs`, the Sentry Native crash capture, are not among them and no step owns them yet, the follow-up for Tizen ARM retail builds that #1490 names), sorting the `target_arch = "arm"` and `target_os = "linux"` sites into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays); then W8b, the library name lists, `paths` and the packaging, and W8c, the `feature = "hostsim"` lines left in the tree (none of them in the fence now; `git grep -h 'feature = "hostsim"' -- '*.rs' | wc -l` counts them). |
 | **L15h** the OS-neutral Feed sink (L15b item 1) — **planned** | — | W11: `plx_acb` (an `[acb]` layer) takes the ACB plane owner and the URI media verbs out of `os`, the Feed-side ACB results become neutral, and the bind sequence moves behind a neutral sink. Needs the television. |
 
 ### L15: the webOS port
@@ -492,7 +505,7 @@ section is `[platform X]`, and the plan calls its crates `plx_platform_webos`, `
 The order is L15c; then L15d and L15e, which overlap (W3d then W4 runs beside W5, and W6b, W6 and W6c wait for both);
 then L15f; then L15g and L15h. So the extraction (L15f, W7) follows item 2 (L15d, W4), and item 3 (L15g, W8) and
 item 1 (L15h, W11) come afterwards. The earlier order put the extraction after all of L15b, which would have made W7
-wait for the neutral sink: item 1 needs the television and gates nothing the other platforms need, and W8 follows W7.
+wait for the neutral sink: item 1 needs the television and gates nothing the other platforms need, and W8 follows W7 (but the storage-authority part of W8a, #1488, #1490 and #1491, landed ahead of it).
 The steps are L15b's three items and the moves that serve them: the contracts they rest on (L15c), the events and
 composition (L15e) and the extraction (L15f). The other workstreams are not steps of this table: W0 (the record of the
 plan, this amendment), W1 (the `PLATFORM` build axis), W9 (the Tizen platform, which adds `plx_platform_tizen` and a
