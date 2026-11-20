@@ -77,8 +77,8 @@ or other) and whether it asked anything.
 - the step results, green when they passed: `1 .so` (loaded, `plx_tizen_create` result), `2 libs`
   (which Ecore/EGL/GLES libraries opened), `3 window`, `4 EGL` (vendor, version), `5 GL` (vendor,
   renderer, version), `6 SDL/TTF` (the single `H5 RESULT`), `7 UTF-8` (a Latin + check mark + Cyrillic
-  sample that must read `PlxNative H5 ✓ Привет`), `8 gfx` (H7, two to four lines, never cut at a
-  character count: the verdict, the first shader error whole when a shader failed, the full list of
+  sample that must read `PlxNative H5 ✓ Привет`), `8 gfx` (H7, two to four lines, not cut at a
+  character count below 400 per line: the verdict, the first shader error whole when a shader failed, the full list of
   missing GL extensions, the shader-bisect line and the shader-link line; the real renderer's own rectangle and text are also
   drawn in the bottom-right corner of the screen), `9 net` (H8, two lines: the GET's verdict, then which libcurl opened and its
   version);
@@ -101,7 +101,7 @@ and `>>` there (and says so nowhere else: it is not a failure).
 | keys listed, colour changes | keys arrive; the codes to read off the photo |
 | the panel frozen after Home | expected: the render loop idles while the app is in the background |
 
-**Not verified (see also the last section).** The panel build has not run on any TV (the H5 probe before it passed on the TV 10.0 emulator, and the H7/H8 build ran once on the x86_64 emulator inside WSL, both as reported to us). Whether
+**Not verified (see also the last section).** The panel build has not run on any TV (the H5 probe before it passed on the TV 10.0 emulator, and the H7/H8 build ran three times on the x86_64 emulator inside WSL, as reported to us; this build has not run there). Whether
 the media and colour keys reach an ordinary app at all is open: some TVs may deliver them only after the app
 registers the key with the platform, which this build does not do, so a key missing from the photo
 means "does not arrive unregistered", which is itself the answer wanted. The
@@ -394,11 +394,12 @@ FAILED, plx_gfx not entered: 1 of 14 shader pairs do not compile+link (init woul
 first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER
 shaders 13/14 compile+link; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
 shader bisect (+ compiles, - fails): a0- a- b- c+ d- ... ; j bytes clean
-shader link: L1:both- L2+ L3:both- L4+ ...
+shader link: L1:vs- L2:link- L3:vs- L4:link- ...
 ```
 
-(The two samples are illustrative: the second is the shape of the first emulator run's failure, not a
-recorded panel.) Nothing on these lines is cut at a character count: the panel wraps at its width and
+(Both samples are illustrative, not a recorded panel: the first is the shape the failure had on the first
+emulator run, the last two are what a refusal would read like if the split did NOT help, with `a` failing
+like `a0`, `L1` failing in the vertex stage and `L2` at the link.) Nothing on these lines is cut at a character count except a runaway line over 400 characters (`STEP_LINE_MAX` in `panel.rs`, a guard that ends the line with `...`; the worst-case panel test fixture is long enough to hit it): the panel wraps at its width and
 the log splits any text longer than 1000 bytes into `(cont.) ` lines so that no UDP datagram is truncated
 (the log's `plog_full!`, `log.rs`); an earlier build cut the second line to "...syntax error,...; no G...".
 When the driver's info log has further lines the first-failure line ends `(+N more log lines in the UDP
@@ -755,7 +756,7 @@ screen colour (below) still answers questions 1 to 4.
 10. H8: the two `9 net` lines and the `H8 ...` log lines. A `curl error N` is `CURLcode` N (7 = could not
     connect: the server, the address or the firewall; 28 = timeout; 6 = name not resolved).
 
-## Unverified (the panel build has not run on a TV; the H5 probe before it passed on the TV 10.0 emulator, and the H7/H8 build ran once on the x86_64 emulator inside WSL, as reported to us)
+## Unverified (the panel build has not run on a TV; the H5 probe before it passed on the TV 10.0 emulator, and earlier H7/H8 builds ran three times on the x86_64 emulator inside WSL, as reported to us; this build has not)
 
 **What the first emulator run reported** (x86_64 emulator inside WSL, the build before the shader
 bisect; reported to us, not run by the author): H8 passed (libcurl loaded; `GET http://10.0.2.2:32499/identity`
@@ -768,7 +769,7 @@ declaration compiles in `VS_SRC_DITHERED` and `VS_IMG_DITHERED`; non-ASCII bytes
 ruled out by a look; the app stayed healthy (about 31 fps, `glGetError` 0).
 
 **What the second emulator run reported** (the build with the shader bisect, `e4ae272f1`): the bisect
-printed `a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+; j bytes clean` (see "The shader bisect": the source compiles
+printed `a- b- c+ d- e- f- g+ h- i- k- l+ m- n- o+; j bytes clean` (see "The shader bisect and the link variants": the source compiles
 only with `#version 100` first, without that `highp`, or without any precision qualifier; `a` fails like `m`);
 `glGetShaderSource` returned 8 bytes for every variant, so it is a stub on YaGL; the host tests passed
 (110 and 114, with the pinned static SDL confirmed by `ldd` and `nm`) and the x86 link was clean.
