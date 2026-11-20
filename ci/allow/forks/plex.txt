@@ -1,4 +1,4 @@
-# count: 33
+# count: 12
 # Test/production forks (docs/sans-io.md), area `plex`: one line per production-visible `#[cfg(..)]` / `cfg!(..)` whose predicate reads `test` or `feature = "test-support"`
 # (`not(test)`, `not(any(test, feature = "test-support"))`, ...) in every machine crate (data/, plex/, media/, session/, screens/, ui/, appkit/ and machine/), keyed `<path>::<item name>` (an attribute on an item), `<path>::<enclosing fn>` (a statement or an inline `cfg!`) or `<path>::<struct>` (a field).
 # Logic is one thing in production and tests deliver it events: there is no cfg(test) fork. Spec: ci/check-deps.sh `forks`.
@@ -8,31 +8,10 @@ rust-modules/plex/src/plex/identity.rs::version
 rust-modules/plex/src/plex/origin.rs::latched_flag!
 rust-modules/plex/src/plex/origin.rs::store_policy_forced
 rust-modules/plex/src/plex/servers.rs::register_captured_origin_with_connection
-rust-modules/plex/src/plex/session.rs::ACCOUNT_CLEAR_CLEANUP
 rust-modules/plex/src/plex/session.rs::auth_paths
 rust-modules/plex/src/plex/session.rs::clear_for_erase
-rust-modules/plex/src/plex/session.rs::clear_for_erase
-rust-modules/plex/src/plex/session.rs::clear_for_erase
-rust-modules/plex/src/plex/session.rs::install_account_clear_cleanup
 rust-modules/plex/src/plex/session.rs::publish
 rust-modules/plex/src/plex/session.rs::read_into_cache_locked
-rust-modules/plex/src/plex/session.rs::read_into_cache_locked
-rust-modules/plex/src/plex/session/install_preferences.rs::candidates
 rust-modules/plex/src/plex/session/install_preferences.rs::candidates
 rust-modules/plex/src/plex/session/persistence.rs::bootstrap
-rust-modules/plex/src/plex/session/persistence.rs::bootstrap
-rust-modules/plex/src/plex/session/persistence.rs::bootstrap
 rust-modules/plex/src/plex/session/persistence.rs::cleanup_after_confirmed_clear
-rust-modules/plex/src/plex/session/persistence.rs::cleanup_after_confirmed_clear
-rust-modules/plex/src/plex/session/persistence.rs::cleanup_temporaries
-rust-modules/plex/src/plex/session/persistence.rs::cleanup_temporaries
-rust-modules/plex/src/plex/session/persistence.rs::commit_cleared
-rust-modules/plex/src/plex/session/persistence.rs::commit_cleared
-rust-modules/plex/src/plex/session/persistence.rs::commit_data
-rust-modules/plex/src/plex/session/persistence.rs::commit_data
-rust-modules/plex/src/plex/session/persistence.rs::load
-rust-modules/plex/src/plex/session/persistence.rs::load
-rust-modules/plex/src/plex/session/persistence.rs::migrate_session
-rust-modules/plex/src/plex/session/persistence.rs::migrate_session
-rust-modules/plex/src/plex/session/persistence.rs::write_session
-rust-modules/plex/src/plex/session/persistence.rs::write_session

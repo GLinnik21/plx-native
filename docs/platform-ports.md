@@ -458,9 +458,11 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
     `load_login_client_id`, `:4336-4349`), reusing one process-local id when storage is unavailable.
     `install_preferences::Saved` is `deny_unknown_fields`, version 1 (`:28-38`): it cannot carry the id without a
     new version.
-  - The authority is chosen by `target_arch = "arm"`, not by a platform value (`session/persistence.rs:1400-1425`,
+  - The authority was chosen by `target_arch = "arm"`, not by a platform value (`session/persistence.rs:1400-1425`,
     `commit_data` `:288-308`); a Tizen ARM build would select the DB8 arm with no helper behind it (F12). The
-    `MemoryOnly` gate sits above that selection, and W8a re-keys it.
+    `MemoryOnly` gate sits above that selection. W8a re-keyed plex's 21 sites to `tv::authority::authority()`:
+    `persistence.rs`'s dispatchers take the authority and the helper's transport, so a host test drives the helper
+    arm with a fake one; telemetry's sites follow in its own PR.
 
 ### Evidence from the second reviews: F40-F46 (each citation checked in the tree)
 

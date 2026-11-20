@@ -627,6 +627,17 @@ a dead source is **absent** from Home and states itself in its own library secti
        struct, and a new field follows the omit rule.
   6. **The Settings row** (labels, i18n, picker) is a screens edit, and `Choice` gains a variant
      (T-settings).
+- **Which store holds the session is the platform's statement, `plx_os::tv::authority::authority()`**
+  (`Helper`: the LS2/DB8 storage helper, webOS; `Files`: the 0600 record files, the desktop, a host test and
+  any platform with no helper), never the build's CPU or OS. `session/persistence.rs` reads it once per
+  public call (`load`, `commit_data`, `commit_cleared`, `write_session`, `migrate_session`, `bootstrap`,
+  `cleanup_after_confirmed_clear`, `cleanup_temporaries`) and hands it to the `*_via(authority, helper, ..)`
+  form, so a test passes the authority it grades and, for `Helper`, a transport of its own (an in-memory
+  `Backend` or a closure); the real `NativeTransport` is named by the public forms only, because on a Linux
+  host it waits out a 12 s start deadline with no helper behind it. There is no process-global override. A
+  helper that cannot answer is a blocked read, never a reason to use files. `clear_for_erase`,
+  `read_into_cache_locked` and `install_preferences::keeps_language_file` read the same value; the
+  telemetry sweep after a durable clear runs only under `Helper`.
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
   grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
   `persistence::commit_session_with` measures the projected document (the os layer's own
@@ -688,7 +699,7 @@ a dead source is **absent** from Home and states itself in its own library secti
     copy** (`session/memory_only.rs`): reads, guarded edits, revocation and clear all resolve
     against it, and no credential is committed anywhere, canonical store, sealed or plaintext
     fallback or revocation marker. The gate sits in `read_live_locked`, `save_locked_with_authority`
-    and `clear_for_erase`, above every `TEST_FILE` and `target_arch` branch, so nothing behind them
+    and `clear_for_erase`, above every `TEST_FILE` and storage-authority branch, so nothing behind them
     is reachable. A write answers `PersistOutcome::Memory`, which classifies as
     `CompletionOutcome::Ephemeral`: signed in for this run, so the auth owner goes on to Home, but
     never a saved-login claim and never a warning. `drop_cache_locked` must not run in this mode

@@ -65,6 +65,7 @@ pub use prefs::{IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, InstantDpad
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, HudEndTimePref, UiResolutionPref, UnderPostersPref};
 use prefs::ProfileMemory;
+use plx_os::tv::authority::{authority as storage_authority, Authority};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
@@ -3225,8 +3226,9 @@ fn read_into_cache_locked(expected: Option<u64>) -> (std::sync::Arc<ReadState>, 
     let state = std::sync::Arc::new(CACHE_READ_FOR_TEST.with(|read| {
         read.get().unwrap_or(read_live_locked)()
     }));
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-    plx_base::eventlog::log("session: authority read reason=miss");
+    if storage_authority() == Authority::Helper {
+        plx_base::eventlog::log("session: authority read reason=miss");
+    }
     if !replace_cache(cached_arm(state.clone()), expected, false) { return (state, false); }
     if let ReadState::Ready { session, .. } = &*state { publish_identities(session); }
     (state, true)
@@ -4282,17 +4284,16 @@ fn auto_quality_ready() -> bool {
 }
 
 /// **The telemetry/consent legacy-file sweep that follows a durable canonical clear**
-/// ([`clear_for_erase`]'s ARM arm): `telemetry` owns the files and sits above `plex`, so the app
-/// installs its `cleanup_after_account_clear` as a hook ([`install_account_clear_cleanup`];
-/// `app::boot::install_plex_seams`). It answers whether every candidate was retired. Unset there is
-/// nothing registered to retire, which reads as retired, so the "could not be retired" branch is
-/// never taken without a sweep that failed. Compiled where the sweep is: ARM, not the simulator,
-/// not a test build.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+/// ([`clear_for_erase`] where the storage helper is canonical): `telemetry` owns the files and sits
+/// above `plex`, so the app installs its `cleanup_after_account_clear` as a hook
+/// ([`install_account_clear_cleanup`]; `app::boot::install_plex_seams`). It answers whether every
+/// candidate was retired. Unset there is nothing registered to retire, which reads as retired, so
+/// the "could not be retired" branch is never taken without a sweep that failed. The sweep runs
+/// only where the platform states [`Authority::Helper`]; elsewhere the files it retires are not
+/// deferred to a sign-out, so an installed hook is never asked.
 static ACCOUNT_CLEAR_CLEANUP: std::sync::OnceLock<fn() -> bool> = std::sync::OnceLock::new();
 
 /// Install the sweep [`ACCOUNT_CLEAR_CLEANUP`] runs. Once; later calls are ignored.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub fn install_account_clear_cleanup(sweep: fn() -> bool) {
     let _ = ACCOUNT_CLEAR_CLEANUP.set(sweep);
 }
@@ -5332,7 +5333,7 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
 /// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
 /// **And commits an explicit Cleared record to the canonical authority** — the legacy-file sweep
 /// below only ever touches pre-DB8 candidates; on a build where `persistence::load`/`write_session`
-/// actually read/write the canonical store (DB8 or its host/ARM equivalent), that store is a
+/// actually read/write the canonical store (DB8 or its host equivalent), that store is a
 /// SEPARATE copy of the account token and roster, and clearing only the legacy files would leave a
 /// clean-looking sign-out that the canonical authority still hands back on the next boot.
 ///
@@ -5368,7 +5369,7 @@ pub fn clear_for_erase(all_local: bool, retry: Option<Retained>) -> Erasure {
         return memory_only::clear_locked(all_local, retry);
     }
     let kept = retry.unwrap_or_else(|| Retained::of(&session_from_read(&read_live_locked())));
-    let native = cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))));
+    let native = storage_authority() == Authority::Helper;
     // File backends need a credential-free resource before the credential file disappears.
     let mut preference_failures = Vec::new();
     if !all_local && !native && !install_preferences::save(kept) {
@@ -5420,22 +5421,20 @@ pub fn clear_for_erase(all_local: bool, retry: Option<Retained>) -> Erasure {
             // `auth_paths()` above only ever covered `paths::session_candidates()` — the legacy
             // sign-in file and its pre-relocation predecessor. The recognized migration source set
             // is bigger (`paths::session_migration_candidates()`, plus the pre-DB8 canonical JSON
-            // wrapper on ARM), and a candidate this sweep never visits is a live account token left
+            // wrapper where the helper is canonical), and a candidate this sweep never visits is a live account token left
             // on a rooted, world-readable install prefix after a sign-out that otherwise looked
             // clean. `cleanup_after_confirmed_clear` re-reads the authority to confirm it really is
             // Cleared before retiring anything, so this can only ever remove residue, never data a
             // concurrent re-login just wrote.
-            #[allow(unused_mut)] // only mutated on the ARM cfg arm below
             let mut outcome = clear_cleanup_outcome(persistence::cleanup_after_confirmed_clear());
             // Telemetry/consent's own legacy files are a SEPARATE candidate set from the session
             // auth-token sweep above (`persistence::cleanup_after_confirmed_clear` never touches
             // them — see `paths::telemetry_candidates` vs `paths::session_migration_candidates`).
-            // On ARM, `telemetry::persistence::forget_at` defers their removal to exactly this
-            // moment, once this canonical commit is confirmed durable (Copilot review on PR #105,
-            // finding 7; ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear`,
-            // called here in that release).
-            #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-            if !ACCOUNT_CLEAR_CLEANUP.get().is_none_or(|sweep| sweep()) {
+            // Where the storage helper is canonical, `telemetry::persistence::forget_at` defers their
+            // removal to exactly this moment, once this canonical commit is confirmed durable
+            // (Copilot review on PR #105, finding 7; ported from `release/v0.6`'s
+            // `telemetry::cleanup_after_account_clear`, called here in that release).
+            if native && !ACCOUNT_CLEAR_CLEANUP.get().is_none_or(|sweep| sweep()) {
                 plx_base::eventlog::log(
                     "session: canonical clear is durable but a telemetry/consent legacy \
                      candidate could not be retired — it remains on disk and will be swept \

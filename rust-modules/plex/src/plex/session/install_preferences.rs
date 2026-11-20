@@ -1,11 +1,13 @@
 //! Credential-free install-wide choices (the UI language and the Interface resolution) retained by
-//! host stores and explicitly supported file fallbacks.
-//! Native DB8 remains authoritative whenever it answers; these files cannot authorize login.
+//! file stores and explicitly supported file fallbacks.
+//! The storage helper (DB8) remains authoritative whenever the platform states one
+//! ([`Authority::Helper`]) and it answers; these files cannot authorize login.
 //!
 //! On a [`StoreMode::MemoryOnly`] platform this file is also where the install's own client id
 //! lives (version 2): the one thing a launch must know before anyone signs in and that no credential
 //! store is there to keep. The id is an install label, not a secret, and cannot authorize a login.
 use super::*;
+use plx_os::tv::authority::{authority, Authority};
 use plx_os::tv::secure::{mode, StoreMode};
 use std::path::PathBuf;
 
@@ -59,6 +61,13 @@ impl Saved {
     }
 }
 
+/// Whether the install's own state root holds a `language.json`. webOS keeps these choices in DB8
+/// and never in this root; a memory-only platform has no DB8, so its root is where they live. A
+/// redirected test fixture names its own files instead.
+fn keeps_language_file(authority: Authority, mode: StoreMode, redirected: bool) -> bool {
+    (authority == Authority::Files || mode == StoreMode::MemoryOnly) && !redirected
+}
+
 fn candidates() -> Vec<PathBuf> {
     #[cfg(any(test, feature = "test-support"))]
     let redirected = TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some()
@@ -66,9 +75,7 @@ fn candidates() -> Vec<PathBuf> {
     #[cfg(not(any(test, feature = "test-support")))]
     let redirected = false;
     let mut paths = Vec::new();
-    // webOS keeps these choices in DB8 and never in this root; a memory-only platform has no DB8.
-    if (!cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))
-        || mode() == StoreMode::MemoryOnly) && !redirected {
+    if keeps_language_file(authority(), mode(), redirected) {
         paths.push(plx_base::paths::persistent_state_root().join("language.json"));
     }
     paths.extend(auth_paths().into_iter().map(|path| path.with_extension("language.json")));
@@ -130,4 +137,25 @@ pub(super) fn erase() -> Vec<String> {
         plx_os::storage::remove_file_or_prove_absent(&path)
             .err().map(|error| format!("{}: {error}", path.display()))
     }).collect()
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+
+    /// The install's own `language.json` is where a file platform keeps its choices and where a
+    /// memory-only platform keeps the only thing that outlives the process. A television whose
+    /// storage helper holds them has none, and a redirected fixture names its own files.
+    #[test]
+    fn the_language_file_is_kept_unless_the_helper_holds_the_choices() {
+        use Authority::{Files, Helper};
+        use StoreMode::{Durable, MemoryOnly};
+        assert!(keeps_language_file(Files, Durable, false), "the desktop and Tizen keep the file");
+        assert!(keeps_language_file(Files, MemoryOnly, false));
+        assert!(!keeps_language_file(Helper, Durable, false), "webOS keeps these choices in DB8, never in this root");
+        assert!(keeps_language_file(Helper, MemoryOnly, false), "a memory-only platform has no DB8 to hold them");
+        for (authority, mode) in [(Files, Durable), (Files, MemoryOnly), (Helper, MemoryOnly)] {
+            assert!(!keeps_language_file(authority, mode, true), "a redirected fixture never reaches the real root");
+        }
+    }
 }
