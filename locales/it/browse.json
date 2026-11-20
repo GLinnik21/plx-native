@@ -51,6 +51,7 @@
   "browse.detail.converts": "Conversione sul server",
   "browse.detail.direct_play": "Direct Play",
   "browse.detail.direct_stream": "Streaming diretto",
+  "browse.detail.no_playback": "Riproduzione non disponibile",
   "browse.detail.original_audio_converted": "Originale · audio convertito",
   "browse.detail.hardware_needs": "la conversione hardware richiede",
   "browse.detail.tonemap_needs": "il tone mapping richiede",

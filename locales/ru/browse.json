@@ -51,6 +51,7 @@
   "browse.detail.converts": "Преобразуется на сервере",
   "browse.detail.direct_play": "Прямое воспроизведение",
   "browse.detail.direct_stream": "Прямая передача",
+  "browse.detail.no_playback": "Воспроизведение недоступно",
   "browse.detail.original_audio_converted": "Видео без изменений · аудио преобразовано",
   "browse.detail.hardware_needs": "требования к аппаратному преобразованию",
   "browse.detail.tonemap_needs": "требования к тональному отображению",

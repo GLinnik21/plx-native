@@ -633,7 +633,7 @@ fn build_versions(rk: &str, versions: &[MediaVersion]) -> ItemForm {
     Form::new().section(plx_appkit::version_list::section(versions, ItemRow::Version, |v| Action::PlayVersion {
         rk: rk.to_string(),
         media: v.id,
-    }))
+    }, None))
 }
 
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run

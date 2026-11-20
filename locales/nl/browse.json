@@ -51,6 +51,7 @@
   "browse.detail.converts": "Wordt op server geconverteerd",
   "browse.detail.direct_play": "Direct Play",
   "browse.detail.direct_stream": "Direct Stream",
+  "browse.detail.no_playback": "Afspelen niet beschikbaar",
   "browse.detail.original_audio_converted": "Origineel · audio geconverteerd",
   "browse.detail.hardware_needs": "hardwareconversie vereist",
   "browse.detail.tonemap_needs": "tone-mapping vereist",

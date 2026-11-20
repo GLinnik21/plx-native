@@ -50,13 +50,17 @@ pub struct ScreenInputs {
     /// A host-local semantic revision, independent of server-roster changes.
     pub grant_generation: u64,
     pub resolution_offered: bool,
+    /// The playback backends the platform composed, as the session was told them at boot. A host
+    /// that never publishes the set (a cold or controlled one) keeps today's `FEED`, so nothing a
+    /// screen draws changes unless a live host says no driver is composed.
+    pub backends: plx_media::route::BackendSet,
 }
 impl Default for ScreenInputs {
     fn default() -> Self {
         Self { session: Arc::new(Session::default()), settled: false, visible_generation: 0, revision: 0,
             profile: Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() }),
             current_server: ServerId::UNSET, servers: Default::default(), grants: Arc::new(GrantInputs::default()),
-            grant_generation: 0, resolution_offered: false, runtime_policy: RuntimePolicy::default(), preferences: None,
+            grant_generation: 0, resolution_offered: false, backends: plx_media::route::BackendSet::FEED, runtime_policy: RuntimePolicy::default(), preferences: None,
             install_language: Default::default(), running_language: Default::default(), player_presentation: Default::default() }
     }
 }
@@ -81,6 +85,8 @@ impl ScreenInputs {
         plx_plex::plex::session::effective::<S>(&self.session.prefs, own)
 
     }
+    /// Whether any playback driver is composed: with none, the Play control has nothing to start.
+    pub fn can_play(&self) -> bool { self.backends.uri || self.backends.feed }
     pub fn settled_session(&self) -> Option<&Arc<Session>> { self.settled.then_some(&self.session) }
     pub fn same_facts(&self, other: &Self) -> bool {
         self.runtime_policy == other.runtime_policy
@@ -94,6 +100,7 @@ impl ScreenInputs {
             && self.current_server == other.current_server
             && self.servers == other.servers
             && self.resolution_offered == other.resolution_offered
+            && self.backends == other.backends
             && self.grant_generation == other.grant_generation
             && self.profile.generation == other.profile.generation
             && self.profile.stamp == other.profile.stamp
@@ -135,6 +142,7 @@ pub(crate) fn capture_fixture() -> ScreenInputs {
         current_server: plx_plex::plex::current_server(), servers: Arc::new(servers), grant_generation: grant::revision(),
         resolution_offered: plx_os::tv::device::ui_resolution_offered(), runtime_policy: RuntimePolicy::default(),
         install_language: plx_os::i18n::saved_preference(), running_language: plx_os::i18n::current().preference(), player_presentation: Default::default(),
+        backends: plx_media::route::BackendSet::FEED,
         preferences: crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.get()).map(|setting|
             session::ProfilePrefs { under_posters: Some(setting), ..Default::default() }) }
 }
@@ -147,6 +155,13 @@ pub(crate) fn caption_fixture() -> &'static ScreenInputs {
             under_posters: Some(crate::registry::captions::fixture_setting()), ..Default::default()
         }), ..Default::default()
     }))
+}
+
+/// The retained inputs of a live host whose platform composed no playback driver at all.
+#[cfg(test)]
+pub(crate) fn no_driver_fixture() -> &'static ScreenInputs {
+    static NONE: std::sync::OnceLock<ScreenInputs> = std::sync::OnceLock::new();
+    NONE.get_or_init(|| ScreenInputs { backends: plx_media::route::BackendSet::NONE, ..Default::default() })
 }
 
 /// Immutable publications for legacy fixture contexts that outlive their helper call.

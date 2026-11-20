@@ -207,6 +207,10 @@
     "value": "Direct Stream",
     "description": "browse detail direct_stream"
   },
+  "browse.detail.no_playback": {
+    "value": "Playback unavailable",
+    "description": "Detail-page play-mode clause beside the disabled Play pill when this device composes no playback driver at all."
+  },
   "browse.detail.original_audio_converted": {
     "value": "Original · audio converted",
     "description": "Detail-page playback label when the picture is copied untouched and only the audio of the track that will play is converted by the server."

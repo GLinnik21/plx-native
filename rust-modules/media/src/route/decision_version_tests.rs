@@ -1290,3 +1290,6 @@ fn the_published_resolver_is_readable_and_an_absence_clears_it() {
     ps.install_uri_preflight_port(Option::<ResolvePort>::None);
     assert!(ps.uri_preflight_port().is_none(), "an absence clears it");
 }
+
+#[path = "decision_composition_tests.rs"]
+mod composition_tests;

@@ -28,7 +28,7 @@ pub use crate::family::SettingsPage;
 pub use crate::family::InnerViews;
 pub use crate::inputs::{moved, GrantInputs, RuntimePolicy, ScreenInputs};
 #[cfg(test)]
-pub(crate) use crate::inputs::{capture_fixture, caption_fixture, empty_fixture, publication_fixture};
+pub(crate) use crate::inputs::{capture_fixture, caption_fixture, empty_fixture, no_driver_fixture, publication_fixture};
 /// The stored Under posters setting as the ui caption policy: the shared door a screen outside
 /// Settings (the Library's Collections page) reads it through, so none names `crate::settings`.
 pub use crate::settings::caption_policy_of;
@@ -2483,7 +2483,7 @@ where
             ),
             AppArg::VersionsPanel(arg) => {
                 let versions = versions_page(H::metadata(cx), arg).map_or(&[][..], crate::detail::hero_versions);
-                Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
+                Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions, H::screen_inputs(cx).can_play()))
             }
             AppArg::TracksPanel(arg) => Box::new(
                 crate::tracks_panel::TracksPanelScreen::new(entry, *arg),

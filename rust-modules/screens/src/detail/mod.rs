@@ -256,6 +256,20 @@ pub struct DetailScreen {
     /// for the same (sid, rk) that predates this promotion's own admission.
     refresh_gen: u32,
     restore_intent: Option<RestoreIntent>,
+    /// The page, not the viewer, placed the current focus: a fresh open with no playback driver
+    /// composed seats itself before its item has landed, on the watched toggle (the row's only stop
+    /// until then), which writes to the account the moment the item is there. While this holds,
+    /// every frame's `reconcile` answers the page's default ([`Self::default_elem`]), so that seat
+    /// follows the head wherever the landing puts it (the item, a later Also available landing) and
+    /// never waits on a restore to fire. It ends with the viewer's own act: a move a direction key
+    /// or the pointer makes, an OK on a landed page, or a hold that opens a menu (a hold that opens
+    /// nothing, a key that moves nothing and an OK before the item lands leave the seat the page's).
+    /// `LibraryScreen::provisional` follows the head the same way for the Library's first seat but
+    /// ends on ANY key-down, pointer or wheel, so its ending is not this one. Never set with a
+    /// driver composed, where Play is the default from the first frame and the page keeps no
+    /// self-seat. Not hashed, not in [`SHAPE`]: a `SHAPE` bump would invalidate every detail
+    /// fixture, and a fixture's page has a driver.
+    provisional: bool,
     /// This page has already sent its addressed `ClearItem` to the Metadata store. §3.4's
     /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
     /// in the teardown arm below, so without the latch one teardown would send two. The command is
@@ -575,6 +589,7 @@ impl DetailScreen {
             refresh: DetailRefreshPhase::None,
             refresh_gen: 0,
             restore_intent: None,
+            provisional: false,
             teardown_cleared: false,
             withdrawn: false,
             scroll: Spring::at(0.0),
@@ -1389,8 +1404,13 @@ impl DetailScreen {
         self.engine_key(related::elem(Self::related_nearest(d, position))?)
     }
 
-    fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
+    /// Where a restore puts focus. A restored hero spot keeps the control it names while the row
+    /// still stops on it (the viewer's own position, a write control included); a column that is no
+    /// longer a stop, and a section the item no longer has, take the page's default
+    /// ([`Self::default_elem`]). Full-trailer mode is not read here, it is `reconcile`'s own first check.
+    fn restore_focus<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, cx: &Cx<'_, H>) -> Option<u32> {
         if self.return_pending { return None; }
+        let meta = <H as crate::registry::MetadataLike>::metadata(cx);
         let intent = self.restore_intent.as_ref()?;
         let d = self.detail(meta)?;
         if season::restore_step(
@@ -1407,7 +1427,11 @@ impl DetailScreen {
             0 => {
                 let set = self.hero_set(meta);
                 let (_, n) = hero::hero_ctls(set);
-                hero::ctl_at(set, clamp(intent.spot.col, n)).map(hero::HeroCtl::elem)
+                let stops = hero::Stops { full_trailer: false, no_playback: self.stops(cx).no_playback };
+                match hero::stop_at(set, stops, clamp(intent.spot.col, n)) {
+                    Some(ctl) => Some(ctl.elem()),
+                    None => return Some(self.default_elem(cx)),
+                }
             }
             1 if !d.seasons.is_empty() => season::elem(d.cur_season.min(d.seasons.len() - 1)),
             2 if !d.episodes.is_empty() => {
@@ -1444,9 +1468,38 @@ impl DetailScreen {
                     about::CARD_ELEM
                 },
             ),
-            _ => Some(hero::ELEM_PLAY),
+            _ => return Some(self.default_elem(cx)),
         }?;
         self.engine_key(local)
+    }
+
+    /// **Where focus lands when nothing says where** (a page's first seat, a focus that lost its
+    /// place, a restore whose control is no longer a stop): the row's first stop that does not
+    /// write to the account ([`hero::default_stop`]: Play with a driver composed, else Go to Show,
+    /// More, the versions control or Also available). A row of writes only (a movie with no playback
+    /// driver: the bookmark and the watched toggle) has none, so the page opens on the first section
+    /// below the row, which that group's own `seat` picks, exactly as the engine would have seated
+    /// it from the group's head. A page whose item has not landed has no section below; its row
+    /// stops on the watched toggle alone, which presses nothing until the item is there
+    /// (`activate_hero`), and the toggle is the last resort ([`hero::first_stop`]). That seat is
+    /// the page's own ([`Self::provisional`]): `reconcile` answers this same rule every frame until
+    /// the viewer moves focus, so the landing, a later Also available landing and a restore that
+    /// waits or retires all leave the toggle without any one of them having to fire, and a reflex OK
+    /// on a page that has just appeared never writes to someone's account.
+    fn default_elem<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, cx: &Cx<'_, H>) -> u32 {
+        let stops = self.stops(cx);
+        let set = self.hero_set(<H as crate::registry::MetadataLike>::metadata(cx));
+        if let Some(ctl) = hero::default_stop(set, stops) {
+            return ctl.elem();
+        }
+        let mut groups = Vec::new();
+        Focusable::<H>::groups(self, cx, &mut groups);
+        // `sections` lists a section only while it has stops, so every group below the row has some
+        // today; `len > 0` is each group's own word that the engine can seat on it.
+        match groups.iter().find(|g| g.id != hero::HERO_GROUP && g.len > 0) {
+            Some(below) => Focusable::<H>::seat(self, below.id, plx_ui::focus::head_of(below.extent), cx).elem,
+            None => hero::first_stop(set, stops).elem(),
+        }
     }
 }
 
@@ -1462,9 +1515,14 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
             self.disc_unfurl.map(|s| s.pos),
             self.named_episode(meta),
         );
-        let (_, hero_n) = hero::visible_ctls(set, self.full_trailer());
+        let stops = self.stops(cx);
+        let (_, hero_n) = hero::visible_ctls(set, stops);
         let hero_y = self.hero_chain(measure, meta).btn_y;
-        let hero_last = hero::hero_btn_rect_at(set, hero_n.saturating_sub(1), hero_y, widths);
+        // The extent spans the row's stops, which are placed by DRAWN index: with no driver the
+        // head (Play) is not one, so neither its index nor its place is the extent's.
+        let (hero_first, hero_last) = hero::stop_span(set, stops).unwrap_or((0, 0));
+        let hero_first = hero::hero_btn_rect_at(set, hero_first, hero_y, widths);
+        let hero_last = hero::hero_btn_rect_at(set, hero_last, hero_y, widths);
         out.push(GroupSpec {
             id: hero::HERO_GROUP,
             kind: GroupKind::Row { wrap: false },
@@ -1477,9 +1535,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 EdgeRule::Stop,
             ],
             extent: Rect::new(
-                plx_ui::consts::MARGIN_X,
+                hero_first.x,
                 hero_y - self.scroll_target,
-                hero_last.x + hero_last.w - plx_ui::consts::MARGIN_X,
+                hero_last.x + hero_last.w - hero_first.x,
                 hero::CD,
             ),
             len: hero_n,
@@ -1626,12 +1684,13 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         let meta = H::metadata(cx);
         let located = self.locate(*key, meta)?;
-        self.valid(located, meta).then(|| located.group())
+        self.valid(located, meta, self.stops(cx)).then(|| located.group())
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let meta = H::metadata(cx);
-        let Some(located) = self.locate(key.elem, meta).filter(|l| self.valid(*l, meta)) else {
+        let stops = self.stops(cx);
+        let Some(located) = self.locate(key.elem, meta).filter(|l| self.valid(*l, meta, stops)) else {
             return Step::Edge;
         };
         let moved = match located {
@@ -1641,9 +1700,12 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                     return Step::Edge;
                 };
                 let (controls, n) = hero::hero_ctls(set);
+                // The neighbour is the next control that owns a stop, skipping a disabled one
+                // (`next_enabled_index`: the shared linear-group rule), never merely the next drawn.
+                let step = |forward| plx_ui::focus::next_enabled_index(i, n, forward, |j| hero::focusable(controls[j], stops));
                 match dir {
-                    Dir::Left if i > 0 => Some(controls[i - 1].elem()),
-                    Dir::Right if i + 1 < n => Some(controls[i + 1].elem()),
+                    Dir::Left => step(false).map(|j| controls[j].elem()),
+                    Dir::Right => step(true).map(|j| controls[j].elem()),
                     _ => None,
                 }
             }
@@ -1698,7 +1760,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let meta = H::metadata(cx);
         let measure = cx.measure;
-        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta, self.stops(cx)))?;
         let d = self.detail(meta);
         let vertical = if at == At::Drawn {
             self.scroll.pos
@@ -1821,7 +1883,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // return-pending focus land on a control the row no longer offers.
         if self.full_trailer() {
             if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
-                if !hero::focusable(ctl, true) {
+                if !hero::focusable(ctl, hero::Stops::trailer(true)) {
                     return FocusKey {
                         entry: want.entry,
                         elem: hero::HeroCtl::Play.elem(),
@@ -1837,6 +1899,14 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // that has already been moved. `pump_restore` ends the wait when the request fails.
         if self.return_pending && self.detail(meta).is_none() && hero::HeroCtl::of_elem(want.elem).is_some() {
             return want;
+        }
+        // A focus the page itself placed (`provisional`) is the page's default wherever the item
+        // stands: the landing, a later Also available landing and a restore that waits on a season
+        // or retires all move it by this one rule, so nothing below has to fire for focus to leave
+        // the watched toggle. Only the viewer's own act ends it (the `FocusMoved`, `PressHold` and
+        // `activate` arms), or a return (`Enter(Restored)`).
+        if self.provisional {
+            return FocusKey { entry: want.entry, elem: self.default_elem(cx) };
         }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
         // `self.refresh != None` is the page's OWN outstanding server obligation, and it belongs
@@ -1867,7 +1937,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 }
             }
         }
-        if let Some(elem) = self.restore_focus(meta) {
+        let stops = self.stops(cx);
+        if let Some(elem) = self.restore_focus(cx) {
             return FocusKey {
                 entry: want.entry,
                 elem,
@@ -1878,7 +1949,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // itself here just because the ITEM's facts still offer it. `hero::focusable` is the same
         // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
         if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
-            if hero::focusable(ctl, self.full_trailer()) {
+            if hero::focusable(ctl, stops) {
                 let set = self.hero_set(meta);
                 if hero::index_of(set, ctl).is_some() {
                     return want;
@@ -1894,7 +1965,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         }
         if self
             .locate(want.elem, meta)
-            .is_some_and(|located| self.valid(located, meta))
+            .is_some_and(|located| self.valid(located, meta, stops))
         {
             return want;
         }
@@ -1906,9 +1977,10 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         if let Some(elem) = self.shelf_recovery(want.elem, meta) {
             return FocusKey { entry: want.entry, elem };
         }
+        // Nothing else holds: the page's default, which is Play unless no driver is composed.
         FocusKey {
             entry: want.entry,
-            elem: hero::HeroCtl::Play.elem(),
+            elem: self.default_elem(cx),
         }
     }
 
@@ -1917,8 +1989,20 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         let meta = H::metadata(cx);
         let d = self.detail(meta);
         let from_i = from.index.unwrap_or(0) as usize;
+        let (set, stops) = (self.hero_set(meta), self.stops(cx));
+        // The row's stop a press UP into it seats on, and where a section's key that cannot be
+        // resolved falls back to: the default stop, else (a row of writes only) its first stop.
+        let first_stop = hero::default_stop(set, stops).unwrap_or_else(|| hero::first_stop(set, stops)).elem();
         let elem = if group == hero::HERO_GROUP {
-            hero::HeroCtl::Play.elem()
+            // The page's FIRST seat (nothing of this page focused yet: the container's
+            // `FirstInGroup`) is its default, which may sit below the row; a viewer already on the
+            // page who presses UP into the row chose it, so it seats on a stop of the row even when
+            // every stop writes (the write controls stay reachable by travel).
+            if cx.focus.current.is_some_and(|key| key.entry == self.entry) {
+                first_stop
+            } else {
+                return FocusKey { entry: self.entry, elem: self.default_elem(cx) };
+            }
         } else if group == season::SEASON_GROUP {
             // Land on the SELECTED season, not whichever tab happens to be geometrically nearest
             // `from`: `Placed` carries no source group, so this fires from every entry into the
@@ -1977,7 +2061,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
             entry: self.entry,
             elem: Self::locate_local(elem, self.tracks_available(meta))
                 .and_then(|located| self.key_of(located))
-                .unwrap_or(hero::ELEM_PLAY),
+                .unwrap_or(first_stop),
         }
     }
 
@@ -1993,7 +2077,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     /// a menu) has none.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let meta = H::metadata(cx);
-        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta, self.stops(cx)))?;
         let d = self.detail(meta);
         let named = |section: &'static str| A11yPath::new().name(section);
         // the text is the page's own words as the data layer published them: cloned, since the
@@ -2041,7 +2125,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
     fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
         let meta = H::metadata(cx);
         if g == hero::HERO_GROUP {
-            let (ctls, n) = hero::visible_ctls(self.hero_set(meta), self.full_trailer());
+            let (ctls, n) = hero::visible_ctls(self.hero_set(meta), self.stops(cx));
             out.extend(ctls[..n].iter().map(|ctl| ctl.elem()));
             return;
         }
@@ -2112,14 +2196,15 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
 }
 
 impl DetailScreen {
-    fn valid(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+    fn valid(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>, stops: hero::Stops) -> bool {
         let d = self.detail(meta);
         match located {
             // A control other than Play is never valid while full-trailer mode has narrowed the
-            // row to its anchor — `hero::focusable` is the same predicate `reconcile` and
+            // row to its anchor, and a control that plays is never valid while no driver is
+            // composed — `hero::focusable` is the same predicate `reconcile` and
             // `hero::visible_ctls` gate on.
             Located::Hero(c) => {
-                hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
+                hero::focusable(c, stops) && hero::index_of(self.hero_set(meta), c).is_some()
             }
             Located::Season(i) => d.is_some_and(|d| i < d.seasons.len()),
             Located::Episode(i, _) => d.is_some_and(|d| d.episodes.get(i).is_some()),
@@ -2240,6 +2325,14 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 // resumes from what the stop committed, not from the `viewOffset` the page
                 // opened with.
                 let fresh_open = matches!(kind, Enter::Fresh { .. });
+                // The page is seated before its item lands (the item is requested right here). With
+                // no playback driver that first seat is the watched toggle, the row's only stop
+                // until the item is there, and it must not stay there: it writes the moment the item
+                // lands. The seat is the page's, not the viewer's, until the viewer moves focus
+                // (`provisional`): `reconcile` answers the page's default every frame it holds,
+                // whatever the restore a navigation arrives with does or does not do. A return
+                // (`Restored`) is the viewer's own place and ends it.
+                self.provisional = fresh_open && !H::screen_inputs(cx).can_play();
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()
                     || refresh == DetailRefreshPhase::None
@@ -2291,6 +2384,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.return_pending = false;
                     self.restore_intent = None;
+                    // The viewer moved focus (a key that moved it, the pointer): it is theirs now,
+                    // and no landing takes it from them. A key that moves nothing never gets here.
+                    self.provisional = false;
                 }
                 // A hover moves focus, never the page: the pointer scrolls by the screen's edges
                 // (and a click by what it clicked, `Input`'s `Click` arm).
@@ -2343,6 +2439,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         )
                     });
                 if supported {
+                    self.provisional = false;
                     self.content(fx, ContentReq::ItemMenu);
                     fx.invalidate(Provenance::Input);
                     Handled::Yes
@@ -2523,7 +2620,11 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
             // The *Play Version* surface committed a row: this page plays that version as its
             // Play pill would.
             ScreenEvent::App(AppMsg::PlayVersion(media)) => {
-                self.play_hero(false, Some(*media), fx, H::metadata(cx));
+                // The panel's rows are disabled with no driver composed (`versions_panel`) and send
+                // nothing; a message that arrives anyway starts nothing.
+                if H::screen_inputs(cx).can_play() {
+                    self.play_hero(false, Some(*media), fx, H::metadata(cx));
+                }
                 Handled::Yes
             }
             // Dismissed: the page under this surface has just been entered again, and it decided
@@ -2635,8 +2736,9 @@ impl DetailScreen {
         }
     }
 
-    fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
-        self.restore_focus(meta).and_then(|elem| self.locate(elem, meta)) == Some(located)
+    fn restore_target_matches<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, located: Located, cx: &Cx<'_, H>) -> bool {
+        let meta = <H as crate::registry::MetadataLike>::metadata(cx);
+        self.restore_focus(cx).and_then(|elem| self.locate(elem, meta)) == Some(located)
     }
 }
 
@@ -3034,7 +3136,7 @@ impl DetailScreen {
             );
         }
         if let Some(d) = d {
-            hero::draw_facts(chrome, d, chain.facts_y, cx.measure);
+            hero::draw_facts(chrome, d, H::screen_inputs(cx).can_play(), chain.facts_y, cx.measure);
             hero::draw_people(chrome, d, chain.btn_y, measure);
         }
         // Full-trailer mode takes the action row with the rest of the page: the viewer asked for
@@ -3190,6 +3292,10 @@ impl DetailScreen {
         // fades every button through `chrome`'s `preview_chrome` alpha (`draw_hero`), and cutting
         // four of the five pills here a frame early defeats that fade before it can be seen.
         let (controls, n) = hero::hero_ctls(set);
+        // Drawing never narrows with full-trailer mode (the row fades with the chrome), but a
+        // control that plays is drawn disabled while no driver is composed: the same predicate that
+        // takes its focus stop away (`hero::focusable`), so the two cannot disagree.
+        let drawn = hero::Stops { full_trailer: false, no_playback: !H::screen_inputs(cx).can_play() };
         let row = hero::hero_row_rect(set, y, widths);
         let row = [row.x, row.y - self.scroll.pos, row.w, row.h];
         let picture = plx_media::player::preview::view().picture;
@@ -3221,6 +3327,9 @@ impl DetailScreen {
                     rect,
                 )
                 .icon(plx_ui::icons::Icon::Play)
+                // No playback driver composed: the shared button's own disabled look. The reason
+                // is the facts line's clause (`hero::draw_facts`).
+                .enabled(hero::focusable(ctl, drawn))
                 .focus_mix(fill)
                 .palette(palette)
                 .ground(ground)
@@ -3251,6 +3360,7 @@ impl DetailScreen {
                     let mut button = CircleButton::new(c"".as_ptr())
                         .icon(icon)
                         .frame(rect)
+                        .enabled(hero::focusable(ctl, drawn))
                         .focus_mix(fill)
                         .palette(palette)
                         .ground(ground)
@@ -3319,8 +3429,10 @@ impl DetailScreen {
         // Stop is a hit-testable rect, so registering Play's here would let a magic-remote click
         // land on a pill nobody can see and start the FEATURE from a screen showing only a
         // trailer. Skip the whole hero group rather than filtering by `valid()`/`focusable`, so
-        // hover and click both go away together.
-        if !self.full_trailer() {
+        // hover and click both go away together. A control that plays, with no driver composed, is
+        // not `valid()` either, so `place` below yields it no rect and it registers no stop:
+        // hovering a disabled pill never parks focus on it, nor does a click reach it.
+        if !self.stops(f.cx).full_trailer {
             let (controls, n) = hero::hero_ctls(set);
             elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
         }
@@ -4074,7 +4186,7 @@ impl DetailScreen {
             || watchlist_moving;
         if !meta.detail_loading()
             && !meta.season_loading()
-            && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, meta))
+            && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, cx))
         {
             self.restore_intent = None;
             self.return_pending = false;
@@ -4336,10 +4448,13 @@ impl DetailScreen {
         );
     }
 
-    /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? The one
-    /// predicate every site that enumerates or resolves hero focus must agree on — `groups` (via
-    /// [`hero::visible_ctls`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
-    /// `record_stops` for what is pointer-reachable, and the input arm for who owns the keys.
+    /// Is full-trailer mode (UP-promoted, trailer picture up) running right now? One of the TWO
+    /// facts that decide which hero controls own a focus stop ([`Self::stops`] pairs it with
+    /// `ScreenInputs::can_play`; [`hero::focusable`] reads both): every site that enumerates or
+    /// resolves hero focus reads them together, never this alone — `groups` (via
+    /// [`hero::stop_span`]) for the row's extent, `reconcile`/`valid` for what is FOCUSABLE,
+    /// `record_stops` for what is pointer-reachable. This alone is the input arm's fact, for who
+    /// owns the keys.
     /// `draw_buttons` deliberately does NOT gate on this: it draws every hero control regardless
     /// and lets the eased `preview_chrome` alpha (set from this same predicate in `preview_tick`)
     /// fade the row, so a control losing focus does not also lose its paint on the same frame.
@@ -4349,6 +4464,13 @@ impl DetailScreen {
     /// rather than depending on `preview_tick` having already cleared the flag this same frame.
     fn full_trailer(&self) -> bool {
         self.preview_promoted && plx_media::player::preview::view().picture
+    }
+
+    /// What decides which hero controls own a focus stop right now ([`hero::Stops`]): the mode
+    /// above and whether the platform composed any playback driver. Read from `cx` where the row is
+    /// enumerated, never kept on the page.
+    fn stops<H: ContentLike>(&self, cx: &Cx<'_, H>) -> hero::Stops {
+        hero::Stops { full_trailer: self.full_trailer(), no_playback: !H::screen_inputs(cx).can_play() }
     }
 
     /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
@@ -4520,6 +4642,12 @@ impl DetailScreen {
 
     fn activate<H: ContentLike + crate::registry::MetadataLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
+        // An OK on a landed page is the viewer's act on the focus it holds. One before the item is
+        // there presses nothing (`activate_hero`) and must not end the page's claim on the seat: the
+        // landing would then leave focus on a toggle the next OK writes with.
+        if self.detail(meta).is_some() {
+            self.provisional = false;
+        }
         let local = self.locate(elem, meta).and_then(Located::local_key).unwrap_or(elem);
         match self.locate(elem, meta) {
             Some(Located::Hero(ctl)) => self.activate_hero(ctl, cx, fx, meta),
@@ -4614,6 +4742,10 @@ impl DetailScreen {
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let measure = cx.measure;
+        // Play, Restart and Trailer start a playback; with no driver composed they are drawn
+        // disabled, own no focus stop (`hero::focusable`), and a press that reaches them anyway (a
+        // by-id press, a stale click) does nothing.
+        if ctl.starts_playback() && !H::screen_inputs(cx).can_play() { return; }
         match ctl {
             hero::HeroCtl::Play => {
                 self.play_hero(false, None, fx, meta);

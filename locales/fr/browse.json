@@ -51,6 +51,7 @@
   "browse.detail.converts": "Converti sur le serveur",
   "browse.detail.direct_play": "Lecture directe",
   "browse.detail.direct_stream": "Flux direct",
+  "browse.detail.no_playback": "Lecture indisponible",
   "browse.detail.original_audio_converted": "Original · audio converti",
   "browse.detail.hardware_needs": "conversion matérielle requise",
   "browse.detail.tonemap_needs": "mappage tonal requis",

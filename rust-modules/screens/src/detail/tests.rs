@@ -33,7 +33,14 @@ impl ScreenArg for TestArg {
 pub(super) struct TestHost;
 
 impl crate::registry::ScreenInputsLike for TestHost {
-    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        if NO_DRIVER.with(|flag| flag.get()) { crate::registry::no_driver_fixture() } else { crate::registry::caption_fixture() }
+    }
+}
+
+thread_local! {
+    /// TEST ONLY: the host publishes a platform that composed no playback driver.
+    static NO_DRIVER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl crate::registry::PlayerLike for TestHost {
@@ -173,6 +180,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
         restore_intent: None,
+        provisional: false,
         teardown_cleared: false,
         withdrawn: false,
         scroll: Spring::at(0.0),
@@ -3356,7 +3364,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     spot.section = 6;
     spot.col = 1;
     screen.restore(&spot, test_store().view());
-    let key = screen.restore_focus(test_store().view()).expect("extras column restores");
+    let key = screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)).expect("extras column restores");
     assert!(matches!(screen.locate(key, test_store().view()), Some(Located::Extras(1))));
 
     let movie = Detail {
@@ -4741,10 +4749,10 @@ fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
         seek: Default::default(),
     });
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view()), None, "episode 700's page has not landed");
+    assert_eq!(screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)), None, "episode 700's page has not landed");
     land_page(1000, 11);
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view()), episode_key(&screen, 700, episodes::Row::Still));
+    assert_eq!(screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)), episode_key(&screen, 700, episodes::Row::Still));
     clear();
 }
 
@@ -5174,7 +5182,7 @@ fn a_non_plex_guid_has_no_bookmark_disc() {
     let set = screen.hero_set(test_store().view());
     assert!(!set.watchlist);
     assert!(!hero::hero_ctls(set).0[..hero::hero_ctls(set).1].contains(&hero::HeroCtl::Watchlist));
-    assert!(!hero::visible_ctls(set, false).0[..hero::visible_ctls(set, false).1].contains(&hero::HeroCtl::Watchlist));
+    assert!(!hero::visible_ctls(set, hero::Stops::trailer(false)).0[..hero::visible_ctls(set, hero::Stops::trailer(false)).1].contains(&hero::HeroCtl::Watchlist));
     assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), None);
     let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
     assert!(item_menu_acts(&fx).is_empty());
@@ -6103,3 +6111,49 @@ pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
 
 #[path = "hero_shade_tests.rs"]
 mod hero_shade;
+
+#[path = "no_driver_tests.rs"]
+mod no_driver;
+
+/// W6c: a platform that composes no playback driver leaves Detail's Play pill inert (it owns no focus
+/// stop either: `no_driver`'s tests). The same press with a driver composed starts the play, so the
+/// guard is the only difference.
+#[test]
+fn the_hero_play_is_inert_when_no_playback_driver_is_composed() {
+    let sid = ServerId::UNSET;
+    for (no_driver, plays) in [(false, true), (true, false)] {
+        let _guard = install(Detail {
+            sid, rk: "movie".into(), kind: "movie".into(), part: "/library/parts/1/file.mkv".into(),
+            ..Default::default()
+        });
+        NO_DRIVER.with(|flag| flag.set(no_driver));
+        let mut screen = bare(&_guard, sid, "movie");
+        let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+        NO_DRIVER.with(|flag| flag.set(false));
+        assert_eq!(play_item(&effects).is_some(), plays, "no_driver={no_driver}");
+        clear();
+    }
+}
+
+/// W6c: the Play pill's label wears the shared button's disabled ink while no playback driver is
+/// composed, and its ordinary ink otherwise: `Button::enabled`, not a screen-local look.
+#[test]
+fn the_play_pill_reads_disabled_when_no_playback_driver_is_composed() {
+    let sid = ServerId::UNSET;
+    let play_label = plx_os::i18n::msg::browse_detail_play();
+    let mut inks = Vec::new();
+    for no_driver in [false, true] {
+        let _guard = install(Detail { sid, rk: "movie".into(), kind: "movie".into(), ..Default::default() });
+        NO_DRIVER.with(|flag| flag.set(no_driver));
+        let screen = bare(&_guard, sid, "movie");
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            screen.draw_buttons(plx_ui::Painter::recording(), &cx(&measure, None), 600.0, 1.0)
+        });
+        NO_DRIVER.with(|flag| flag.set(false));
+        inks.push(runs.iter().find(|r| r.text == play_label).map(|r| r.ink));
+        clear();
+    }
+    assert_eq!(inks[1], Some(plx_ui::theme::INK_DISABLED), "no driver: the disabled ink");
+    assert!(inks[0].is_some() && inks[0] != inks[1], "a driver composed: the ordinary ink");
+}

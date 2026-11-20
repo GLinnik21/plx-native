@@ -51,6 +51,7 @@
   "browse.detail.converts": "Konwersja na serwerze",
   "browse.detail.direct_play": "Direct Play",
   "browse.detail.direct_stream": "Direct Stream",
+  "browse.detail.no_playback": "Odtwarzanie niedostępne",
   "browse.detail.original_audio_converted": "Oryginalna · konwersja dźwięku",
   "browse.detail.hardware_needs": "wymagania konwersji sprzętowej",
   "browse.detail.tonemap_needs": "wymagania mapowania tonów",

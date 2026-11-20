@@ -594,6 +594,74 @@ fn halt_screen_preview(app: &mut ScreenCommandApp<'_, '_>) {
     halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
 
+/// The item a hero preview is asked for, and the part it would open ([`ContentReq::PreviewStart`]).
+#[cfg(feature = "play-feed")]
+pub(crate) struct HeroPreviewAsk<'a> {
+    pub(crate) sid: plx_plex::plex::ServerId,
+    pub(crate) rk: &'a str,
+    pub(crate) part: &'a str,
+    pub(crate) vcodec: &'a str,
+    pub(crate) acodec: &'a str,
+    pub(crate) title: &'a str,
+}
+
+/// How [`start_hero_preview`] ended.
+#[cfg(feature = "play-feed")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeroPreview {
+    /// The item has no extra to preview; the preview machine remembers it.
+    NoExtra,
+    /// Nothing was started. A boot that composed no Feed is remembered (`Fact::RefusedDirect`), and
+    /// so is a standing refusal of the machine's own (`preview::blocked` answers from it), so the
+    /// page's dwell gate does not ask again; a busy machine and a refused admission remember
+    /// nothing, and the page asks again after its next dwell.
+    Refused,
+    /// The resolve is in flight and the asking page owns the preview.
+    Started,
+}
+
+/// **`ContentReq::PreviewStart`, performed.** A hero preview is a Feed engine's: the resolve lands a
+/// direct-play plan the Feed opens muted. A boot that composed no Feed (`BackendSet::feed` false)
+/// has nothing to open it on, so the request is refused HERE, once, through the preview machine's
+/// own fact for an item it cannot preview (`Fact::RefusedDirect`, the same one the build with no
+/// Feed compiled in says): the page's dwell gate (`preview::blocked`) then stops asking, and no
+/// resolve runs. Left to the planner, the refusal would land as a standing verdict
+/// (`NoQualifiedBackend`), which `player::state()` reads as an Error and `report::tick_preview`
+/// reports as a failed preview.
+///
+/// A boot with only the URI driver is refused the same way, and the planner already refused it
+/// (`pms_uri_possible` excludes a preview, and no display places a preview rectangle:
+/// `DisplayEvidence::preview_rectangle` is false on every path). A display that did place one
+/// would be the reason to revisit this gate.
+#[cfg(feature = "play-feed")]
+pub(crate) fn start_hero_preview(
+    session: &mut plx_media::route::PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    ask: &HeroPreviewAsk<'_>,
+    now: u32,
+) -> HeroPreview {
+    use plx_media::player::preview;
+    if !session.backends().feed {
+        preview::note_refused_direct(ask.sid, ask.rk);
+        return HeroPreview::Refused;
+    }
+    if ask.part.is_empty() {
+        preview::note_no_extra(ask.sid, ask.rk);
+        return HeroPreview::NoExtra;
+    }
+    if !matches!(preview::request_start(ask.sid, ask.rk, now), preview::Start::Accepted) {
+        return HeroPreview::Refused;
+    }
+    if plx_media::route::request_preview(session, meta, super::playback::start_caps(),
+        ask.sid, ask.rk, ask.part, ask.vcodec, ask.acodec, ask.title)
+    {
+        HeroPreview::Started
+    } else {
+        preview::note_admission_refused();
+        HeroPreview::Refused
+    }
+}
+
 fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, request: ContentReq,
     ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
@@ -645,37 +713,22 @@ fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, reques
             ContentReq::PreviewStart { sid, rk, part, vcodec, acodec, title } => {
                 #[cfg(not(feature = "play-feed"))]
                 {
-                    let _ = (sid, rk, part, vcodec, acodec, title);
-                    // Hero previews have no URI qualification.
+                    let _ = (part, vcodec, acodec, title);
+                    // Hero previews have no URI qualification. The refusal is the item's, said
+                    // once through the preview machine's own fact (`Fact::RefusedDirect`), so the
+                    // page's dwell gate (`preview::blocked`) stops asking: left unsaid, the hero
+                    // would send this request again every `DWELL_S` for as long as it holds focus.
+                    plx_media::player::preview::note_refused_direct(sid, &rk);
                     return AppCommandOutcome::Refused;
                 }
                 #[cfg(feature = "play-feed")]
+                match start_hero_preview(&mut app.player.session, app.bridge.metadata_mut(),
+                    &HeroPreviewAsk { sid, rk: &rk, part: &part, vcodec: &vcodec, acodec: &acodec, title: &title },
+                    now)
                 {
-                if part.is_empty() {
-                    plx_media::player::preview::note_no_extra(sid, &rk);
-                    return AppCommandOutcome::Completed;
-                }
-                if !matches!(
-                    plx_media::player::preview::request_start(sid, &rk, now),
-                    plx_media::player::preview::Start::Accepted
-                ) { return AppCommandOutcome::Refused; }
-                let ok = plx_media::route::request_preview(
-                    &mut app.player.session,
-                    app.bridge.metadata_mut(),
-                    super::playback::start_caps(),
-                    sid,
-                    &rk,
-                    &part,
-                    &vcodec,
-                    &acodec,
-                    &title,
-                );
-                if ok {
-                    PREVIEW_HOST.with(|h| h.set(Some(instance)));
-                } else {
-                    plx_media::player::preview::note_admission_refused();
-                    return AppCommandOutcome::Refused;
-                }
+                    HeroPreview::NoExtra => return AppCommandOutcome::Completed,
+                    HeroPreview::Refused => return AppCommandOutcome::Refused,
+                    HeroPreview::Started => PREVIEW_HOST.with(|h| h.set(Some(instance))),
                 }
             }
             ContentReq::PreviewStop => halt_screen_preview(app),

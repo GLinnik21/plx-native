@@ -229,6 +229,8 @@ struct PickTap {
     last: Option<Asked>,
     /// `(what was asked, who asked, how it ended)`, in the order the runner finished them.
     commands: Vec<(Asked, MachineId, plx_machine::machine::AppCommandOutcome)>,
+    /// How many times a panel reported a picked version (`AppMsg::PlayVersion`) to its page.
+    play_version_reported: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +245,10 @@ enum Asked {
 
 impl plx_ui::dispatch::Tap<AppHost> for PickTap {
     fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
-        use plx_screens::registry::{AppFx, ContentArg, ContentReq, PlayIntent};
+        use plx_screens::registry::{AppFx, AppMsg, ContentArg, ContentReq, PlayIntent};
+        if let Fx::Deliver(_, plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(AppMsg::PlayVersion(_)))) = &stamped.fx {
+            self.play_version_reported += 1;
+        }
         if let Fx::App(app) = &stamped.fx {
             self.last = Some(match app {
                 AppFx::Content(ContentReq::Play { play, .. }) => Asked::Play(match play {
@@ -339,6 +344,48 @@ fn a_picked_version_plays_that_version_though_its_panel_is_still_closing() {
         "the page asked to play the SECOND version, once, and the runner executed it: {}", tap.account());
     assert!(w.d.nav.modals.surfaces.is_empty(), "the panel closed");
     assert!(matches!(w.d.top_arg(), Some(AppArg::Player)), "the pick entered the player");
+}
+
+/// **Play Version on a platform that composed no playback driver (W6c):** the panel's rows are the
+/// shared disabled rows, so the pick presses nothing: no play is asked, the player is not entered
+/// and the panel stays up (OK on a disabled row does nothing; BACK still closes it). The mount
+/// reads the platform's fact (`ScreenInputs::can_play`), which the previous test, on the default
+/// set, proves is not what stops it there.
+#[test]
+fn a_version_pick_asks_for_no_play_when_the_platform_composed_no_driver() {
+    let versions = plx_appkit::version_list::sample();
+    let pick = versions[1].id;
+    let mut w = World::detail_page("play-version-no-driver", plx_data::metadata::Detail {
+        sid: plx_plex::plex::ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        title: "Movie".into(),
+        part: "/library/parts/movie".into(),
+        versions,
+        ..Default::default()
+    });
+    w.bridge.bridge().retained.screen_inputs.backends = plx_media::route::BackendSet::NONE;
+    let host = page_instance(&w.d);
+    open_content_panel(
+        &mut w.d,
+        host,
+        Some((plx_plex::plex::ServerId::UNSET, "movie")),
+        plx_screens::registry::ContentPanel::Versions { anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits) },
+    );
+    w.frames(40);
+    assert_eq!(w.d.nav.modals.surfaces.len(), 1, "premise: the Play Version panel is up");
+    let mut tap = PickTap::default();
+    let mut t = w.frame;
+    let mut bridge = w.bridge.bridge();
+    pick_key(&mut w.d, &mut bridge, &mut t, Key::Down, &mut tap);
+    pick_key(&mut w.d, &mut bridge, &mut t, Key::Ok, &mut tap);
+    assert_eq!(tap.play_version_reported, 0, "a disabled row reports nothing to the page: {}", tap.account());
+    assert!(tap.ended(host, &Asked::Play(Some(pick))).is_empty(), "no play was asked: {}", tap.account());
+    assert!(tap.commands.iter().all(|(asked, ..)| !matches!(asked, Asked::Play(_))), "{}", tap.account());
+    assert!(!matches!(w.d.top_arg(), Some(AppArg::Player)), "the player was not entered");
+    assert_eq!(w.d.nav.modals.surfaces.len(), 1, "OK on a disabled row left the panel up: {}", tap.account());
+    pick_key(&mut w.d, &mut bridge, &mut t, Key::Back, &mut tap);
+    assert!(w.d.nav.modals.surfaces.is_empty(), "BACK closes the panel: {}", tap.account());
 }
 
 /// The two-copy *Also available* rig of `a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance`:
