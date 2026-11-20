@@ -1336,8 +1336,11 @@ mod tests {
     }
 }
 
-/// Legacy JSON/host-simulator persistence root. The canonical ARM adapter uses helper-owned DB8;
-/// this path exists for old-record migration and for host tests that must never touch the checkout.
+/// Legacy JSON/host-simulator persistence root. Where the platform states the storage helper as the
+/// canonical store (a webOS television, `plx_os::tv::authority`) the canonical record is
+/// helper-owned DB8; where it states plain files (the desktop simulator) the canonical record files
+/// are kept here. This path also exists for old-record migration and for host tests that must never
+/// touch the checkout.
 ///
 /// **Test builds never resolve this to the machine-wide runtime dir by accident.** A test that
 /// calls [`redirect_persistent_state_root_for_test`] gets the directory it asked for; a test that

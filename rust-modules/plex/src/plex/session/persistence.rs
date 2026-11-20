@@ -10,7 +10,9 @@
 //! call, in its public form, and hands it to a `*_via(authority, helper, ..)` form that takes the
 //! authority and the helper's transport as parameters, so a host test grades the helper arm with a
 //! fake transport and the files arm with a transport that fails the test if it is touched. The
-//! helper's real transport (`NativeTransport`) is only ever named by the public forms.
+//! helper's real transport (`NativeTransport`) is named by the dispatchers' public forms and by
+//! two helpers that have no `_via` seam: `reset_cleared_language()`, which `clear_for_erase` calls
+//! under `Helper` (device-only), and `helper_commit`, which has no caller in this crate.
 
 use plx_os::storage::{
     CommitReceipt, CommitStage, Record, RecordKey, RecordState, RecordStore, StoreError,
@@ -1171,11 +1173,6 @@ mod db8_policy_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// `bootstrap()` and `cleanup_after_confirmed_clear()` must search and sweep the pre-DB8
-    /// canonical JSON wrapper identically where the helper is canonical, so both funnel through
-    /// this one helper rather than each carrying its own `insert(0, path())`. It is pure path
-    /// arithmetic, so a host test proves the shared assembly directly for either authority. Under
-    /// `Files` the wrapper is the store itself, so it is no migration source.
     /// A television's helper keeps no app-owned rename temporaries, so there is nothing to sweep and
     /// the root is left as it is; a files platform sweeps the abandoned ones its own commits left.
     #[test]
@@ -1192,6 +1189,11 @@ mod db8_policy_tests {
         assert!(!abandoned.exists(), "the files arm removes the abandoned temporary");
     }
 
+    /// `bootstrap()` and `cleanup_after_confirmed_clear()` must search and sweep the pre-DB8
+    /// canonical JSON wrapper identically where the helper is canonical, so both funnel through
+    /// this one helper rather than each carrying its own `insert(0, path())`. It is pure path
+    /// arithmetic, so a host test proves the shared assembly directly for either authority. Under
+    /// `Files` the wrapper is the store itself, so it is no migration source.
     #[test]
     fn the_candidates_a_platform_searches_follow_its_authority() {
         // `path()` reads the process-global persistent state root, which every redirecting test in

@@ -633,8 +633,10 @@ a dead source is **absent** from Home and states itself in its own library secti
   public call (`load`, `commit_data`, `commit_cleared`, `write_session`, `migrate_session`, `bootstrap`,
   `cleanup_after_confirmed_clear`, `cleanup_temporaries`) and hands it to the `*_via(authority, helper, ..)`
   form, so a test passes the authority it grades and, for `Helper`, a transport of its own (an in-memory
-  `Backend` or a closure); the real `NativeTransport` is named by the public forms only, because on a Linux
-  host it waits out a 12 s start deadline with no helper behind it. There is no process-global override.
+  `Backend` or a closure); the real `NativeTransport` is named by those public forms and by two helpers
+  with no `_via` seam (`reset_cleared_language()`, which `clear_for_erase` calls under `Helper` and which is
+  device-only, and `helper_commit`, which has no caller here), because on a Linux host it waits out a 12 s
+  start deadline with no helper behind it. There is no process-global override.
   Under `Helper` the dispatchers never answer for a helper that cannot answer (a blocked read stays blocked,
   and a legacy file is neither imported nor retired on its word); the files a television does keep beside DB8
   are `session.rs`'s own: the marked fallback `save_legacy_fallback_locked` writes when a commit is not
