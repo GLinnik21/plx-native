@@ -203,8 +203,8 @@ gates as every other layer, and as machine code.
 its layer may use `base`, `machine` and `os` and the crate names `plx_base` alone. It is the SDL half of the shell that the
 television and the simulator share: `SDL_Init` and the GL request, the window (the panel's size and its smaller
 fallback, and under `hostsim` the desktop fit), the swap and its interval, the event poll and decode (LG's fork layout
-on the device, stock SDL2 under `hostsim`), the synthetic key, pointer, wheel and text events the dev tooling pushes back
-into the queue, and the text-input calls. The LG half does not move: the `SDL_SysWMinfo` buffer, the `wl_proxy_marshal`
+on the device, stock SDL2 under `hostsim`), the synthetic key, pointer, wheel and lifecycle events the remote FIFO, Lab Control, replay and the cursor-swap OK push back
+into the queue (a text event is built as bytes and handed to the decode, never pushed: pushing one crashes the Mac's SDL), and the text-input calls. The LG half does not move: the `SDL_SysWMinfo` buffer, the `wl_proxy_marshal`
 opaque region and the LS2 pump stay in `system.rs`, a member of `[platform webos]`, and a pin in the crate's `lib.rs` fails
 if the crate names the query that overruns it. The application reaches it through `app/platform.rs`, whose `Shell` opens a
 `Surface` over the crate's `Window`; `Shell`, `Surface` and `HostEvent` stay application-private until W7a.
@@ -459,8 +459,8 @@ still webOS's. Three things were left, and item 2 is done:
    host build of what is not one (the media seam's host sink, the GL context request, the window flags
    and the keyboard event decode), while the television's wayland and glib calls, like the rest of the
    television's arms, are compiled in every build and the linker drops them from a host executable.
-   The comment on the feature in `rust-modules/Cargo.toml` still lists those calls under what it
-   switches; the certificate pins that file, so W7 rewords it when it re-seals. The
+   The comment on the feature in `rust-modules/Cargo.toml` says the same since W6, which re-sealed the
+   certificate with it. The
    webOS-shaped types in `tv` needed neutral shapes then, and have them since W3d: `tv::secure::Backend`
    is an opaque tag that stays a string on the wire (the two webOS spellings are constants, and a tag no
    installed platform knows is refused on open), `tv::sandbox` is `tv::native_video` with a verdict that is

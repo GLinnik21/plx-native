@@ -7,8 +7,8 @@
 //! **A synthetic text event is never pushed**: see `text.rs`. `encode_event` builds the bytes and the
 //! application's `txt:` token hands them to the decode directly.
 //!
-//! The encoders are pure and separate from the pushes that consume them, precisely so a host test
-//! can run them: a `make check` test binary pushes nothing.
+//! The encoders are pure and separate from the pushes that consume them, so their tests need no
+//! queue; one test here does drive SDL's real queue (`EventsOnly`).
 use crate::event::{
     push, rd_u32, SDL_KEYDOWN, SDL_KEYUP, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP, SDL_MOUSEMOTION,
     SDL_MOUSEWHEEL, SYNTH_WINDOW,
@@ -22,8 +22,8 @@ use std::os::raw::c_uint;
 /// wrote LG's fork layout while the reading end had been taught stock SDL2's. Nothing in the
 /// compiler couples them, so `key_bytes_round_trip` (in `event.rs`) is what does.
 ///
-/// Pure, and separate from the `SDL_PushEvent` that consumes it, precisely so that test can run on
-/// the host — `make check` links no SDL.
+/// Pure, and separate from the `SDL_PushEvent` that consumes it, so that test needs no queue and
+/// runs on any host.
 pub fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
     let mut ev = [0u8; 128];
     ev[0..4].copy_from_slice(&if down { SDL_KEYDOWN } else { SDL_KEYUP }.to_ne_bytes());

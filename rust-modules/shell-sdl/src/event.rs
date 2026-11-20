@@ -271,7 +271,7 @@ pub fn decode_wheel_dy(ev: &[u8]) -> i32 {
 /// An SDL pointer event's position, converted from window pixels to the authored 1920x1080 canvas.
 ///
 /// THE one place event coordinates enter the UI, so the conversion cannot be forgotten at a new
-/// call site — there are nine, and patching them individually is how the tenth ends up wrong.
+/// call site: `pointer_event` is the only caller, and a second one would have to convert for itself.
 /// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is 1:1 unless
 /// a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one).
 #[inline]

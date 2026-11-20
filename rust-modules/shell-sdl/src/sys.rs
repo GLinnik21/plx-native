@@ -51,7 +51,7 @@ extern "C" {
 // The system on-screen keyboard (`text`). The text-input family is stock public SDL2 API.
 //
 // Under `cfg(test)` and the `test-support` feature the four calls a host test could reach are
-// swapped for `text::stubs`, so these declarations lose their last use there and warn; the
+// swapped for `text::host_test_sdl`, so these declarations lose their last use there and warn; the
 // `allow(dead_code)` is narrower than it looks: a real orphan would be silent in every
 // configuration, and these are live on device.
 extern "C" {

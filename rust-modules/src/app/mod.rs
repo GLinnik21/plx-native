@@ -1,6 +1,7 @@
-//! run_application — the Rust app core (was the body of src/main.c). Owns SDL init, the
-//! event loop, input decode, the per-frame tick, draw orchestration, app lifecycle,
-//! the buffer-feed pump orchestration, and the dev triggers. The C boot shim
+//! run_application — the Rust app core (was the body of src/main.c). Drives SDL's bring-up through the
+//! platform's `Shell` (the SDL work is `plx_shell_sdl`'s), the event loop, the `HostEvent` mapping,
+//! the per-frame tick, draw orchestration, app lifecycle, the buffer-feed pump orchestration, and
+//! the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
 //! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`
 //! and, when it returns its `Exit` (`exit.rs`), ends the process. The desktop executable

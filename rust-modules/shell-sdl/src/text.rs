@@ -178,7 +178,7 @@ pub fn encode_event(text: &str) -> [u8; 128] {
 ///
 /// Pure, and offset-parameterised rather than reading [`TEXT_OFF`] itself, so `make check` can
 /// grade BOTH platforms' layouts on a host that only ever builds one of them — the same reason
-/// `app::decode_key` and `app::encode_key` are pure and tested as a pair.
+/// `event::decode_key` and `inject::encode_key` are pure and tested as a pair.
 ///
 /// Every failure mode here is a byte string somebody else chose: the panel's own IME writes this
 /// field, and the app cannot afford a panic inside the SDL event loop (see `remote.rs`, where
@@ -272,7 +272,7 @@ mod tests {
     use super::*;
 
     /// A synthetic event in one platform's layout: type at +0, the text at `off`, NUL-terminated
-    /// if it fits. `[u8; 128]` because that is what `app.rs` polls into.
+    /// if it fits. `[u8; 128]` because that is what `event::poll` reads into.
     fn ev_with(off: usize, text: &[u8]) -> [u8; 128] {
         let mut ev = [0u8; 128];
         ev[0..4].copy_from_slice(&0x303u32.to_ne_bytes()); // SDL_TEXTINPUT

@@ -18,7 +18,7 @@
 //!
 //! ## One crate, both SDLs
 //!
-//! The television's SDL is a fork (LG's, 2.0.5-based) that lays its keyboard, text and wheel events
+//! The television's SDL is a fork (LG's fork of SDL2) that lays its keyboard, text and wheel events
 //! out differently from the stock SDL2 a desktop links. The choice is `cfg!(feature = "hostsim")`
 //! and never `#[cfg]`, so both arms of every layout compile in every build and the one nobody is
 //! building cannot rot; the `hostsim` feature is forwarded from the application crate, which is the

@@ -155,7 +155,7 @@ def write_icon(res: Path):
 
 
 def write_plist(contents: Path, ver: str):
-    """`NSHighResolutionCapable` is the half that makes `app.rs`'s ALLOW_HIGHDPI window real: with
+    """`NSHighResolutionCapable` is the half that makes `plx_shell_sdl`'s ALLOW_HIGHDPI window real: with
     it the 960x540-point window gets a 1920x1080 drawable, i.e. `surface::scale() == 1.0` — the
     same 1:1 texel contract the television renders under. Without it the OS hands back a
     half-resolution surface and doubles the whole interface."""

@@ -315,9 +315,9 @@ pub enum Key {
 /// After the directions the order is the ladder's own — pointer, OK, PAUSE, PLAY, STOP, BACK. The
 /// two alternate D-pad codes are resolved up here beside the plain ones rather than down where the
 /// scrub arm tests them, so a pair carrying one of those AND a transport code resolves as the
-/// direction rather than as the transport key. Both fields describe ONE press — `app.rs`'s
-/// `decode_key` reads them off a single event and its `remote_token_key` builds each synthetic
-/// pair from a single token — so a pair naming two DIFFERENT keys is not a shape either path is
+/// direction rather than as the transport key. Both fields describe ONE press — the shell's
+/// `plx_shell_sdl::event::decode_key` reads them off a single event and the application's `remote_token_key` builds each
+/// synthetic pair from a single token — so a pair naming two DIFFERENT keys is not a shape either path is
 /// built to carry; the order above settles it rather than leaving it to whichever test came first.
 pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
     match sym {
@@ -464,7 +464,7 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 ///    number buttons ([`pin_digit`], which owns that behaviour).
 ///
 /// **The `sym` field ONLY, and that is a deliberate divergence from [`pin_digit`], which also reads
-/// the range out of `wcode`.** `wcode` is a SCANCODE (`app.rs::decode_key`), and 48–57 there are
+/// the range out of `wcode`.** `wcode` is a SCANCODE (`plx_shell_sdl::event::decode_key`), and 48–57 there are
 /// not digits at all: they are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock. The digits'
 /// scancodes are 30–39 — which is exactly why 33/34 turned out to be `4` and `5` a few dozen lines
 /// up. Mirroring [`pin_digit`] would put the retired mis-reading straight back into the gate this

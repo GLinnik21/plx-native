@@ -279,7 +279,7 @@ plx_appkit = { path = "appkit" }
 plx_screens = { path = "screens" }
 # The shell_sdl layer (ci/module-layers.ini `[shell_sdl]`): the stock-SDL shell the application opens its
 # window through: SDL's init, the window and its GL context, the swap, the event queue, the stock
-# layouts of the key, pointer, wheel and text events, and the synthetic events pushed back onto the
+# key, pointer, wheel and text layouts of both SDLs, and the synthetic events pushed back onto the
 # queue. It names no application type and none of the webOS platform (`system`, `port`); the
 # application drives it through its own `Shell` and `Surface`. Its `hostsim` feature is forwarded
 # above; its build script links SDL2 into a host test binary only.

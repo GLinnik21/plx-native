@@ -163,7 +163,7 @@ git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-co
     rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c src/video_plane.c src/starfish.h \
     rust-modules/os/src/webos.rs rust-modules/os/src/webos/ls2/uri.rs Makefile \
     ci/expected-dt-needed.txt ci/expected-dt-needed-uri.txt
-grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/play-feed/src rust-modules/play-uri/src rust-modules/os/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
+grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/shell-sdl/src rust-modules/media/src rust-modules/play-feed/src rust-modules/play-uri/src rust-modules/os/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
 ### 1. Decide, out loud, whether you are grading an ELF or grading source
@@ -260,7 +260,7 @@ Reading the output:
   C++11 `std::string` ABI and are untested on a set apart from one 3.4.3 (webOS 1.x/2.x were never
   tried). They used to fail on two missing symbols, `SDL_webOSCursorVisibility` and
   `StarfishMediaAPIs::Feed`'s C++11 name, but since #578 both are `dlsym`'d at runtime
-  (`src/starfish.c`, `rust-modules/src/app/boot.rs`, and `rust-modules/src/system.rs`'s `cursor_door`), so the binary no longer imports them. Re-run
+  (`src/starfish.c`, and `rust-modules/src/system.rs`'s `webos3_cursor_sleep_hint` and `cursor_door`), so the binary no longer imports them. Re-run
   `tools/fwcompat.py` for what the old rows print now; they are still printed below the floor and
   do not set the exit status.
 * **Baseline as of 2026-08-23** (verified by running it): `15 DT_NEEDED, 319 undefined dynamic

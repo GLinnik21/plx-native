@@ -12,8 +12,8 @@
 //! `Wayland_CreateDevice` writes four real hooks into `SDL_VideoDevice`
 //! (`WebOSHasScreenKeyboardSupport`, `Show`, `Hide`, `IsShown`), `SDL_StartTextInput` dispatches to
 //! the second, and `WebOSShowScreenKeyboard` is a complete `text_model` IME client. Typed text
-//! comes back as an ordinary `SDL_TEXTINPUT` event, so `app.rs`'s existing `SDL_PollEvent` loop
-//! already sees it. moonlight-tv 1.5.8 shipped exactly this against the TV's own SDL.
+//! comes back as an ordinary `SDL_TEXTINPUT` event, so the existing `SDL_PollEvent` loop
+//! (`plx_shell_sdl::event`) already sees it. moonlight-tv 1.5.8 shipped exactly this against the TV's own SDL.
 //!
 //! Linking is the plain `extern "C"` case (declared in `plx_shell_sdl`'s `sys.rs`), not `dynlib!`: all 14
 //! firmware images in `tools/fwcompat.py`'s inventories export the whole `SDL_*TextInput*` family. That says nothing
@@ -60,7 +60,7 @@
 //! libSDL3**, and SDL3's text event carries a `char *text` POINTER where SDL2's carries an inline
 //! `char text[32]`; the compat layer dereferences it while converting the pushed event. Keys and
 //! pointer clicks survive the same trip only because every field they use is a scalar. So
-//! `app.rs`'s `txt:` token drives [`on_event`] directly, and what it proves stops one step short
+//! the application's `txt:` token drives [`on_event`] directly, and what it proves stops one step short
 //! of `SDL_PollEvent`'s own delivery.
 //!
 //! Two dead ends, so nobody spends a day on them again: the Luna route (only four
@@ -322,7 +322,7 @@ mod tests {
     static BUF: Mutex<()> = Mutex::new(());
 
     /// A synthetic event in one platform's layout: type at +0, the text at `off`, NUL-terminated
-    /// if it fits. `[u8; 128]` because that is what `app.rs` polls into.
+    /// if it fits. `[u8; 128]` because that is what `plx_shell_sdl::event::poll` reads into.
     fn ev_with(off: usize, text: &[u8]) -> [u8; 128] {
         let mut ev = [0u8; 128];
         ev[0..4].copy_from_slice(&0x303u32.to_ne_bytes()); // SDL_TEXTINPUT

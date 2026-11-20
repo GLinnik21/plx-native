@@ -7,7 +7,7 @@
 use std::os::raw::{c_int, c_uint, c_void};
 
 const SDL_GL_ALPHA_SIZE: c_int = 3; // SDL_GLattr: RED=0,GREEN=1,BLUE=2,ALPHA=3
-/// `SDL_GL_DEPTH_SIZE` / `SDL_GL_STENCIL_SIZE` — same enum, 6 and 7. `app.rs` asks for zero of
+/// `SDL_GL_DEPTH_SIZE` / `SDL_GL_STENCIL_SIZE` — same enum, 6 and 7. `plx_shell_sdl::init` asks for zero of
 /// both; these read back what the driver actually granted, which is the only thing that settles it.
 const SDL_GL_DEPTH_SIZE: c_int = 6;
 const SDL_GL_STENCIL_SIZE: c_int = 7;
@@ -142,7 +142,7 @@ pub(crate) fn sys_grab_wayland(winp: *mut c_void) {
         // television's ES2 context, the only one this runs on, both are legal.
         glGetIntegerv(GL_DEPTH_BITS, &mut dbits);
         glGetIntegerv(GL_STENCIL_BITS, &mut sbits);
-        // `depth=`/`stencil=` are here to be READ: `app.rs` asks for zero of each because nothing
+        // `depth=`/`stencil=` are here to be READ: `plx_shell_sdl::init` asks for zero of each because nothing
         // in this renderer uses them, and on a tiler a granted depth buffer is a per-frame
         // write-back of 1920x1080x2 bytes nobody consumes. A non-zero here means the driver
         // refused and the saving is not real.

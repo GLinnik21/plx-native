@@ -373,7 +373,7 @@
     },
     "lock_sha256": "800367e4065771c60d1fe5c722e209b2483247a620f382b2248e150bf00b3ad0",
     "manifests": {
-      "Cargo.toml": "29fddc70ec0a893de909e79eea1ea5afc615cf43ccdb1a194bc2cce0094a31e3",
+      "Cargo.toml": "88f7b3a976961d5ed784878f2d968330d64a7d034aad87f3fa71672bcf9a41ac",
       "appkit/Cargo.toml": "5cc1214cba7746fe0f2d4cfa5047b599e0d5124abe7bdaebe210381021b88c4a",
       "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
       "data/Cargo.toml": "74f79e6240f0965069ec34916ae276b3f7e5f4b944cf16a0846570a6b115afa0",
@@ -390,7 +390,7 @@
       "plex/Cargo.toml": "5cdb185265b7f7217cff08e54ef683a827735c9b3ae7c50161850f7064667b66",
       "screens/Cargo.toml": "cd42484a49fac394244ebc7b81f30f7e4f9a31cdf7bc1ace5c3fae21afd6d511",
       "session/Cargo.toml": "ecb49fc9f44177be6de36715ad70845b8929799cdbeb5ce9d6939be741704db0",
-      "shell-sdl/Cargo.toml": "357aebbf4a32c5b87154d6b91e3cc1ffb105154e974e536b92c61106b0460c14",
+      "shell-sdl/Cargo.toml": "9bccdb0abdb2ce9afdc030af9454117ed53884f9b50e1ee35a21bcfe6459e9a1",
       "storage/Cargo.toml": "4b8576b04a5877e95d084a49a16b30224c275ae29b4a192c40725ac819500150",
       "telemetry/Cargo.toml": "9e514e64ae4a35619294621f22534b5e5b109d9dd3b729b94ed20112f47197bf",
       "ui/Cargo.toml": "7375c6a73cb2558c7c0f62da7b0bd4beb2a5b78f5460ee35e93b1045c0e80eec"
