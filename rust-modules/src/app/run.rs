@@ -5000,16 +5000,19 @@ pub(in crate::app) mod lifecycle_regression_tests {
     // RIGHT: both doors carry one pair, whatever `raw_pair` says. These feed the pair a television
     // or the simulator really sends, written out here as LITERALS (never `raw_pair`, never an
     // `Action`), through the real decoder and loop, and grade what the real consumer did with it.
-    // Each case is a pair of tests, one per door, and each door is red under a different break of the
-    // mapping (`native_key_effect_*`, so `T=native_key_effect` runs them all):
-    //   * the NATIVE door's effect: a wrong `classify` / `page_dir` reading, which is what the
-    //     consumers read today;
-    //   * the HOSTED door's effect, which names the action and not the pair: a wrong `raw_pair`,
-    //     which `KeyPress::new`'s round trip refuses (the `.expect` panics) or which acts as another
-    //     key;
-    //   * the DECODED action (`events::key_event_tests`' table of native pairs): a wrong
-    //     `action_of`, which no production reader of the loop reads yet (the screens move onto it in
-    //     W5d), so only that literal table catches it.
+    // Each case is a pair of tests, one per door (`native_key_effect_*`, so `T=native_key_effect`
+    // runs them all), and which of them a break of the mapping turns red depends on where it is:
+    //   * the NATIVE door's effect reads the pair the consumers read today. A wrong `classify` /
+    //     `page_dir` reading turns it red, and, because `action_of` is built on them, the hosted door
+    //     and the decode table below with it. A wrong `raw_pair` or `action_of` leaves it GREEN.
+    //   * the HOSTED door names the action and not the pair, so it goes through `raw_pair` and
+    //     `KeyPress::new`'s round trip. A wrong `raw_pair` alone turns ONLY this door red, as the
+    //     constructor's refusal (the `.expect` panics). A wrong `raw_pair` and `action_of` that agree
+    //     with each other pass the round trip and turn it red as the effect of another key.
+    //   * the DECODED action (`events::key_event_tests`' table of native pairs) is what a wrong
+    //     `action_of` turns red, with `input.rs`'s decode literals and the hosted door's round
+    //     trip. No production reader of the loop reads the action before W5d (the screens move onto
+    //     it there), so no native effect test can see that one yet.
     // The hostsim build feeds the STOCK SDL byte layout; LG's fork layout is graded in the default-feature
     // run (`events::key_event_tests::the_key_layout_is_pinned_byte_for_byte`).
 

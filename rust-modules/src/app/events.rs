@@ -1188,8 +1188,10 @@ mod key_event_tests {
     /// reading cannot agree with itself: PLAY is not PAUSE, REWIND is not a plain LEFT, PAGE UP and
     /// CH+ are not PAGE DOWN and CH-, the number keys read from the sym alone, and a wcode-only
     /// number press is no action (the PIN pad reads it through `pin_digit` instead). No production
-    /// reader of the loop reads the action before W5d, so nothing but this table sees `action_of` go
-    /// wrong today; `native_key_effect_*` in `run.rs` grade what the consumers do with the pair.
+    /// reader of the loop reads the action before W5d, so a wrong `action_of` leaves every native
+    /// effect test green: this table, `input.rs`'s decode literals and the hosted door's round trip
+    /// (`KeyPress::new`) are what see it. `native_key_effect_*` in `run.rs` grade what the consumers
+    /// do with the pair.
     #[test]
     fn native_key_effect_the_native_pairs_decode_to_the_actions_they_mean() {
         let table: &[(u32, u32, Option<Action>)] = &[
