@@ -7,6 +7,9 @@ implies, what it must not change, and that its script is not named after the sta
 * `PLATFORM` defaults to `webos`, takes any of the three from the command line or the environment, and
   refuses anything else at parse time: an unknown name, an empty one, two words, a `%` (a `filter` of the
   value against the list would pass the last two).
+* The refusal comes before the Makefile's stamp reset, whatever the goal: a mistyped `PLATFORM` beside a
+  goal that builds must not delete the last build's binary. That is read from a seeded scratch tree, by
+  the files surviving (a refusal below the reset would still print the same error).
 * `sim`, `sim-*`, `macapp` and `macapp-zip` imply `desktop` when `PLATFORM` was not given and an explicit
   value wins. That depends on the GOALS, and `make -s print-platform sim-macos` would BUILD the simulator,
   so it is read from a dry run (`make -n`, which prints the recipe line `echo 'desktop'` instead of running
@@ -55,6 +58,7 @@ DESKTOP_GOALS = ("sim", "sim-macos", "sim-linux", "sim-wsl", "sim-run", "sim-mac
 WEBOS_GOALS = ("all", "ipk")
 STAMP = "pkg/.build-config"
 BINARY = "pkg/plxnative"
+SEEDED_STAMP = "seeded by test_platform_axis"
 
 
 def environment(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -125,13 +129,6 @@ class PlatformVariable(unittest.TestCase):
                 self.assertIn(f'unknown PLATFORM "{value}"', proc.stderr)
                 self.assertIn("one of: webos desktop tizen", proc.stderr)
 
-    def test_a_refused_value_is_refused_whatever_the_goal(self):
-        for goal in ("all", "sim-macos", "print-appid"):
-            with self.subTest(goal=goal):
-                proc = make("PLATFORM=bogus", goal, dry=True)
-                self.assertNotEqual(proc.returncode, 0)
-                self.assertIn('unknown PLATFORM "bogus"', proc.stderr)
-
     def test_the_rust_target_is_not_chosen_by_the_platform(self):
         """The compatibility axis (Rust target, sysroot, TFM, firmware floor, signing) is separate."""
         for platform in PLATFORMS:
@@ -174,6 +171,16 @@ class ScratchTree(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, (args, proc.stderr[-400:]))
         return proc.stdout.splitlines()
 
+    def seed(self) -> None:
+        """The tree the way a finished build leaves it: a stamp that is not the current configuration's (so
+        the parse-time reset would rewrite it) and a built binary (which the reset would delete)."""
+        (self.tree / STAMP).write_text(SEEDED_STAMP)
+        (self.tree / BINARY).write_text("a built binary\n")
+
+    def assert_untouched(self, what: str) -> None:
+        self.assertEqual((self.tree / STAMP).read_text(), SEEDED_STAMP, f"{what} rewrote the build stamp")
+        self.assertTrue((self.tree / BINARY).exists(), f"{what} deleted a built binary")
+
 
 class ImpliedPlatform(ScratchTree):
     def platform_of(self, *goals: str, env: dict[str, str] | None = None) -> str:
@@ -207,22 +214,17 @@ class ImpliedPlatform(ScratchTree):
     def test_asking_never_resets_a_built_tree_and_a_building_goal_does(self):
         """Seed a tree the way a finished build leaves it, then ask the two new questions: nothing moves. The
         control (a goal that builds, beside the same query) must reset the same files, or this proves nothing."""
-        def seed() -> None:
-            (self.tree / STAMP).write_text("seeded by test_platform_axis")
-            (self.tree / BINARY).write_text("a built binary\n")
-
         for goal in ("print-platform", "print-rust-target"):
             with self.subTest(goal=goal):
-                seed()
+                self.seed()
                 for args in ((goal,), (goal, "PLATFORM=desktop"), (goal, "PLATFORM=tizen")):
                     proc = make(*args, cwd=self.tree)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual((self.tree / STAMP).read_text(), "seeded by test_platform_axis")
-                self.assertTrue((self.tree / BINARY).exists(), f"make {goal} deleted a built binary")
-        seed()
+                self.assert_untouched(f"make {goal}")
+        self.seed()
         self.dry("print-platform", "all")
         self.assertFalse((self.tree / BINARY).exists(), "control: a building goal must reset the seeded tree")
-        self.assertNotEqual((self.tree / STAMP).read_text(), "seeded by test_platform_axis")
+        self.assertNotEqual((self.tree / STAMP).read_text(), SEEDED_STAMP)
 
     def test_the_queries_are_registered_as_queries(self):
         text = (ROOT / "Makefile").read_text().replace("\\\n", " ")
@@ -230,6 +232,22 @@ class ImpliedPlatform(ScratchTree):
             with self.subTest(goal=goal):
                 self.assertRegex(text, rf"(?m)^QUERY_GOALS\s*=[^\n]*\b{goal}\b")
                 self.assertRegex(text, rf"(?m)^{goal}:")
+
+
+class RefusedPlatform(ScratchTree):
+    def test_a_refused_value_is_refused_whatever_the_goal(self):
+        """The refusal is at parse time, above the stamp reset that deletes `pkg/plxnative` and the staged
+        libraries, so a mistyped value beside a goal that builds (`all`, `sim-macos`) leaves a built tree
+        alone. The error text alone cannot show that (a refusal moved below the reset prints the same line
+        after the reset ran), so the seeded stamp and binary must survive. The control in `ImpliedPlatform`
+        shows that a building goal does reset them."""
+        for goal in ("all", "sim-macos", "print-appid"):
+            with self.subTest(goal=goal):
+                self.seed()
+                proc = make("PLATFORM=bogus", goal, cwd=self.tree, dry=True)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn('unknown PLATFORM "bogus"', proc.stderr)
+                self.assert_untouched(f"make PLATFORM=bogus {goal}")
 
 
 def stdlib_names() -> frozenset[str]:
