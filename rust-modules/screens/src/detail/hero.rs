@@ -2233,7 +2233,7 @@ mod tests {
     /// W6c: a host that never says (the default inputs) is a platform with a driver.
     #[test]
     fn inputs_that_set_no_backends_mean_a_playable_platform() {
-        use crate::inputs::ScreenInputs;
+        use crate::registry::ScreenInputs;
         use plx_media::route::BackendSet;
         assert!(ScreenInputs::default().can_play());
         for (set, can) in [(BackendSet::FEED, true), (BackendSet::URI, true), (BackendSet::BOTH, true),

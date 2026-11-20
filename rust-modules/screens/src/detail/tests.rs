@@ -34,7 +34,7 @@ pub(super) struct TestHost;
 
 impl crate::registry::ScreenInputsLike for TestHost {
     fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
-        if NO_DRIVER.with(|flag| flag.get()) { crate::inputs::no_driver_fixture() } else { crate::registry::caption_fixture() }
+        if NO_DRIVER.with(|flag| flag.get()) { crate::registry::no_driver_fixture() } else { crate::registry::caption_fixture() }
     }
 }
 

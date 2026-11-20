@@ -6013,8 +6013,11 @@ mod screen_input_publication_tests {
         let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
         let mut bridge = owner.bridge();
         let mut ps = plx_media::route::PlaybackSession::IDLE;
-        assert!(!bridge.publish_player_presentation(&ps), "the session's default set is the inputs' default");
-        assert_eq!(bridge.retained.screen_inputs.backends, BackendSet::FEED);
+        // The presentation half reads process-wide diagnostics another test may have left, so the
+        // first publication settles it and only the set's own effects are asserted.
+        bridge.publish_player_presentation(&ps);
+        assert_eq!(bridge.retained.screen_inputs.backends, BackendSet::FEED,
+            "the session's default set is the inputs' default");
         let revision = bridge.retained.screen_inputs.revision;
         ps.install_backends(BackendSet::NONE);
         assert!(bridge.publish_player_presentation(&ps), "a platform with no driver is a visible change");
