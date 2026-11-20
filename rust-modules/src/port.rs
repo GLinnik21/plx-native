@@ -52,18 +52,34 @@ static PORT: plx_os::tv::Port = plx_os::tv::Port {
     uri_media: plx_os::webos::URI_MEDIA,
 };
 
-/// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`): install the port, hand
-/// over to `app::run_application`, then end the process with the status it returned.
+/// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`). The `-> c_int` is only
+/// the C signature: `plex_main` never returns, so neither does this.
+#[no_mangle]
+pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
+    plex_main(pms_host, pms_port)
+}
+
+/// The process entry: install the port, hand over to `app::run_application`, then end the process
+/// with the status it returned.
 ///
 /// The executable owns the process end: `exit_now` (`_exit`, never libc's `exit`, #1115) right after
 /// the app returns, in the order the app always ended in. A process that hosts the app never calls it.
-#[no_mangle]
-pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
+///
+/// It is typed `-> !` rather than left to diverge through its last expression. `src/main.c` does
+/// `return plex_run(..)`, so an entry that returned would fall into `__libc_start_main`, which calls
+/// libc `exit` directly (the interposer in `src/exit.c` cannot catch that), and `OPENSSL_cleanup`
+/// would then free libcrypto's locks under the live curl workers (#1115). The `const` below is the
+/// compile-time proof that replaced the ones `app::boot`'s `seam_order_tests` held for
+/// `run_application` and `run_and_shutdown` when those started to return an `Exit`: a later edit that
+/// lets this return does not compile.
+fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
     let _ = plx_os::tv::install(&PORT);
     #[cfg(target_os = "linux")]
     let _ = plx_os::storage::client::install_activator(plx_os::webos::activate_storage_helper);
     plx_base::process::exit_now(crate::app::run_application(pms_host, pms_port).code)
 }
+
+const _: fn(*const c_char, c_int) -> ! = plex_main;
 
 /// `src/main.c` hands over SAM's launch payload (`argv[1]`) before `plex_run`. Kept raw in
 /// `tv::launch`; `app::deeplink` reads it once the app has a session to act in.

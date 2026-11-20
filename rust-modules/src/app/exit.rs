@@ -2,14 +2,16 @@
 //!
 //! [`run_application`](super::run_application) RETURNS an [`Exit`]; it never ends the process.
 //! An early-boot refusal returns its code, and a played session returns after `run::shutdown` and
-//! the telemetry guard drop. Ending the process is the EXECUTABLE entry's: `port::plex_run` (the C
-//! shim and the simulator both enter through it) calls `plx_base::process::exit_now(exit.code)` right
-//! after, in the order the app always ended in, so a television behaves as before. A process that
-//! HOSTS the application never calls `exit_now` or `exit`: libc's `exit` runs OpenSSL's cleanup
-//! under the detached curl workers (#1115), and a host would be killed under its own runtime. No
-//! exit a hosted process can reach remains in the tree: the graphics boot returns a
-//! [`GfxFault`](plx_gfx::gfx::GfxFault) ([`Exit::from`]) where it used to call `exit_now(1)`, and
-//! `lifecycle_tests` below scans the production source for any `exit_now(` outside the entries.
+//! the telemetry guard drop. Ending the process is the EXECUTABLE entry's: `port::plex_main` (the C
+//! shim and the simulator both enter through `plex_run`, which only calls it) calls
+//! `plx_base::process::exit_now(exit.code)` right after, in the order the app always ended in, so a
+//! television behaves as before. A process that HOSTS the application never calls `exit_now` or
+//! `exit`: libc's `exit` runs OpenSSL's cleanup under the detached curl workers (#1115), and a host
+//! would be killed under its own runtime. No exit a hosted process can reach remains in the tree:
+//! the graphics boot returns a [`GfxFault`](plx_gfx::gfx::GfxFault) ([`Exit::from`]) where it used
+//! to call `exit_now(1)`, and `lifecycle_tests` below scans the production source for any
+//! `exit_now(` outside the entries. `plex_main` is typed `-> !`, a const beside it proves it, and
+//! the scan holds that the const is still there.
 //!
 //! # What is leaked, and why
 //!
@@ -477,7 +479,7 @@ mod lifecycle_tests {
     /// `plx_base::process::exit_now`; and that is the executable entries' to call, because a host
     /// is killed under its own runtime by one. `run_application` and the graphics boot RETURN
     /// (`Exit`, `GfxFault`), so the production `exit_now(` sites are the entries that own the
-    /// process end (`port::plex_run`, the simulator's `main`), the frame dump (`devtriggers`, off in
+    /// process end (`port::plex_main`, the simulator's `main`), the frame dump (`devtriggers`, off in
     /// a release build) and the helper itself. A new exit anywhere else fails here.
     #[test]
     fn lifecycle_no_production_exit_is_reachable_from_a_hosted_process() {
@@ -519,6 +521,18 @@ mod lifecycle_tests {
             let prod = production_prefix(&text);
             if path.ends_with("src/app/mod.rs") {
                 assert!(prod.contains("fn run_application"), "the scan must still reach run_application");
+            }
+            if f == root.join("src/port.rs") {
+                // The process entry ends the process itself and is typed `-> !`: `plex_run` returns
+                // into `__libc_start_main`'s libc `exit` if it ever returns (#1115). The const is the
+                // compile-time proof; this holds that it is still there and still the one that exits.
+                let main = prod.split_once("fn plex_main(").expect("port.rs must keep plex_main").1;
+                let main = main.split_once("\n}\n").expect("the end of plex_main").0;
+                assert!(main.contains(exit_now), "plex_main must end the process through exit_now");
+                assert!(
+                    prod.contains("const _: fn(*const c_char, c_int) -> ! = plex_main;"),
+                    "the const proving plex_main never returns is gone"
+                );
             }
             for (n, line) in prod.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or("");
