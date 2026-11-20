@@ -83,19 +83,35 @@ pub fn version() -> &'static str {
     }
 }
 
+/// The platform name this client reports until the platform states its own
+/// ([`plx_os::tv::device::publish_platform`]). It is webOS's, which is the only name every release
+/// so far has reported, so a build or a test that never publishes still sends exactly what it sent.
 pub const PLATFORM: &str = "webOS";
 
-/// The OS version — the REAL one, read off the set at boot ([`plx_os::tv::device`]), because the
-/// app runs on webOS 4 through 11 now and a literal is wrong on every set but one. This was
-/// `const … = "4.5"` while the app was packaged `>=4.0, <5.0`; the webosbrew reviewer flagged it
-/// reporting 4.5 from a 6.5.2 television (issue #22). PMS augments our named Generic profile
-/// from the X-Plex-Client-Profile-Extra we send, so the version is informational today — but it
-/// is also how a server-side profile could ever distinguish firmware generations, and a false
-/// one poisons that forever. The fallback when neither `os_info.json` nor `/usr/lib/os-release` names a release keeps the literal
+/// `X-Plex-Platform`: the name the platform published at boot, else [`PLATFORM`]. Read per request,
+/// like [`platform_version`], so a request built before the boot probe (a host test) still names a
+/// platform and one built after it names the real one.
+pub fn platform() -> &'static str {
+    plx_os::tv::device::platform().map_or(PLATFORM, |p| p.name)
+}
+
+/// `X-Plex-Platform-Version`: the version the platform published at boot ([`platform`]'s
+/// companion), else the OS version off the set ([`plx_os::tv::device`]).
+///
+/// The platform states it because the app runs on webOS 4 through 11 now and a literal is wrong on
+/// every set but one. This was `const … = "4.5"` while the app was packaged `>=4.0, <5.0`; the
+/// webosbrew reviewer flagged it reporting 4.5 from a 6.5.2 television (issue #22). PMS augments
+/// our named Generic profile from the X-Plex-Client-Profile-Extra we send, so the version is
+/// informational today — but it is also how a server-side profile could ever distinguish
+/// firmware generations, and a false one poisons that forever. The fallback when nothing was
+/// published and neither `os_info.json` nor `/usr/lib/os-release` names a release keeps the literal
 /// this replaces — the exact claim every release so far has made — rather than inventing an
 /// empty-string case no server has ever been shown. Safe by boot order: `tv::probe_device()` runs
 /// before any PMS request, so none can precede the read.
 pub fn platform_version() -> &'static str {
+    if let Some(published) = plx_os::tv::device::platform() {
+        return &published.version;
+    }
     let r = &plx_os::tv::device::info().release;
     if r.is_empty() {
         "4.5"
@@ -227,6 +243,16 @@ mod tests {
     #[test]
     fn unknown_firmware_falls_back_to_the_old_literal() {
         assert_eq!(super::platform_version(), "4.5");
+    }
+
+    /// Until a platform publishes its own name (`plx_os::tv::device::publish_platform`, which only the
+    /// webOS boot probe calls) the client says what every release so far has said, so a request
+    /// built before the probe, or in a host test, is unchanged.
+    #[test]
+    fn an_unpublished_platform_names_webos() {
+        assert!(plx_os::tv::device::platform().is_none(), "no host test publishes a platform");
+        assert_eq!(super::platform(), super::PLATFORM);
+        assert_eq!(super::platform(), "webOS");
     }
 
     #[test]

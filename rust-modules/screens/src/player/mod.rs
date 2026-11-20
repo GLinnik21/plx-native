@@ -1258,7 +1258,7 @@ impl PlayerScreen {
             A::TryAgain => Self::ask(fx, PlayerReq::RetryPlayback),
             A::ChangeQuality => Self::ask(fx, PlayerReq::OpenOverlay(overlay::OverlayKind::More { page: Some(plx_appkit::more_menu::MorePage::Quality) })),
             A::Repair => {
-                if ps.repair_status == plx_os::tv::sandbox::State::Idle && !self.repair_alert.visible() {
+                if ps.repair_status == plx_os::tv::native_video::State::Idle && !self.repair_alert.visible() {
                     self.repair_scroll = 0;
                     self.repair_alert.open_with_body(plx_os::i18n::msg::widgets_repair_question_c(), plx_os::i18n::msg::widgets_repair_body());
                     Self::repair_focus(fx, GROUP_REPAIR);
@@ -5980,7 +5980,7 @@ mod repair_confirmation_tests {
             std::fs::write(&path, "jail").unwrap();
             let mut ps = plx_media::route::PlaybackSession::IDLE;
             plx_media::route::reset_player_control_for_test(&ps);
-            let hardware_verdict = plx_os::tv::sandbox::blocks_native_video();
+            let hardware_verdict = plx_os::tv::native_video::blocked();
             plx_media::player::failure_fixture(&mut ps);
             let mut page = PlayerScreen::new(EntryId(1), plx_appkit::player_hud::loaded::classic_for_test());
             assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
@@ -5988,7 +5988,7 @@ mod repair_confirmation_tests {
             assert!(deliver(&mut page, &ps, Some(REPAIR_CANCEL), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 })).is_empty());
             assert!(page.repair_alert.is_open(), "Tick must not retire the jail fixture confirmation");
             assert!(ps.jail_load_blocked);
-            assert_eq!(plx_os::tv::sandbox::blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
+            assert_eq!(plx_os::tv::native_video::blocked(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
             ps.jail_load_blocked = false;
             deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
             assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
@@ -6042,7 +6042,7 @@ mod repair_confirmation_tests {
     /// `player` may not name `screens`. The attempt is the `Player` machine's, not the screen's.
     #[test]
     fn repair_survives_screen_and_session_recreation_and_rejects_stale_completions() {
-        use plx_os::tv::sandbox::{Failure, State};
+        use plx_os::tv::native_video::{Failure, State};
         let mut player = plx_media::player::machine::Player::new();
         let token = player.repair.begin(true).unwrap();
         assert!(!player.repair.complete(token + 1, Ok(())));
@@ -6058,7 +6058,7 @@ mod repair_confirmation_tests {
     #[test]
     fn accepted_attempt_hides_forward_action_after_screen_recreation() {
         let _g = plx_base::testlock::serial();
-        for state in [plx_os::tv::sandbox::State::Running, plx_os::tv::sandbox::State::Repaired, plx_os::tv::sandbox::State::Failed(plx_os::tv::sandbox::Failure::Timeout)] {
+        for state in [plx_os::tv::native_video::State::Running, plx_os::tv::native_video::State::Repaired, plx_os::tv::native_video::State::Failed(plx_os::tv::native_video::Failure::Timeout)] {
             let mut ps = blocked(); ps.repair_status = state;
             plx_media::route::reset_player_control_for_test(&ps);
             let row = super::overlay_tests::failure_fixture(&ps).actions().to_vec();

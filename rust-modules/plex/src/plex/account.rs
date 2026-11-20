@@ -440,7 +440,7 @@ impl AccountClient {
             "Accept: application/json".to_string(),
             format!("X-Plex-Product: {}", id::PRODUCT),
             format!("X-Plex-Version: {}", id::version()),
-            format!("X-Plex-Platform: {}", id::PLATFORM),
+            format!("X-Plex-Platform: {}", id::platform()),
             format!("X-Plex-Platform-Version: {}", id::platform_version()),
             format!("X-Plex-Device: {}", id::DEVICE),
             format!("X-Plex-Device-Name: {}", id::device_name()),

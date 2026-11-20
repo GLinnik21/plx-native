@@ -1,10 +1,14 @@
-//! Which television this is: the firmware ([`Info`]) and the set ([`Hardware`]). The webOS port
-//! reads them at boot and publishes them here; everything else reads them from here.
+//! Which television this is: the firmware ([`Info`]) and the set ([`Hardware`]), what the platform
+//! calls itself to a Plex server ([`Platform`]) and the files its capability probe reads
+//! ([`Files`]). The webOS port reads and publishes them at boot; everything else reads them from here.
 use std::sync::OnceLock;
 
 /// What the set said about itself. Owned strings rather than borrows into the file, because the
 /// file is read once and dropped; `OnceLock` because this is written exactly once, at boot, and
 /// read from the render thread every frame the diagnostics panel is up.
+///
+/// `release`, `build` and `major` are the OS-version facts every platform states. What only a webOS
+/// firmware file says is [`WebosDetail`], behind [`Info::webos`].
 #[derive(Debug, Default, Clone)]
 pub struct Info {
     /// e.g. "4.10.2" — empty when unknown
@@ -14,30 +18,38 @@ pub struct Info {
     /// when the release came from `/usr/lib/os-release`, which names no build). A
     /// patch within one release changes this and not `release`.
     pub build: String,
+    /// leading component of `release`, or 0 when unknown
+    pub major: u32,
+    /// What only a webOS firmware says about itself. All-empty on every other platform.
+    pub webos: WebosDetail,
+}
+
+/// The firmware facts that are webOS's alone: three keys of nyx's `os_info.json`. The webOS
+/// platform owns them: its probe is the only writer, no other platform has a value to put here, and
+/// a reader that prints one prints a webOS fact (the codename is also the key the firmware
+/// exclusions and the learned refusals are filed under). Empty when unknown, like [`Info`]'s own.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WebosDetail {
     /// e.g. "goldilocks2-grampians" — webosbrew buckets firmware by this
     pub codename: String,
     /// e.g. "4.1.0"
     pub api: String,
     /// e.g. "webOS TV"
     pub name: String,
-    /// leading component of `release`, or 0 when unknown
-    pub major: u32,
 }
 
 static INFO: OnceLock<Info> = OnceLock::new();
 static NO_INFO: Info = Info {
     release: String::new(),
     build: String::new(),
-    codename: String::new(),
-    api: String::new(),
-    name: String::new(),
     major: 0,
+    webos: WebosDetail { codename: String::new(), api: String::new(), name: String::new() },
 };
 
 /// What the set reported. All-empty with `major == 0` when neither `os_info.json` nor
 /// `/usr/lib/os-release` could be read — which is the honest answer and is what the panel prints.
-/// A release that only `/usr/lib/os-release` named leaves the codename, API version, name and
-/// build empty. A plain `get()` (never `get_or_init`), so a read
+/// A release that only `/usr/lib/os-release` named leaves the [`WebosDetail`] (codename, API
+/// version, name) and the build empty. A plain `get()` (never `get_or_init`), so a read
 /// that races ahead of the boot probe sees the empty answer for itself and leaves the cell open for
 /// [`publish_info`].
 pub fn info() -> &'static Info {
@@ -177,6 +189,56 @@ pub fn probe() -> Probe {
 /// The boot probe's account of its own reads. First write wins.
 pub fn publish_probe(probe: Probe) {
     let _ = PROBE.set(probe);
+}
+
+/// What the platform calls itself to a Plex server: the `X-Plex-Platform` and
+/// `X-Plex-Platform-Version` every request carries. The platform states them once at boot
+/// ([`publish_platform`]); `plex::identity` reports its own default until it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Platform {
+    /// e.g. "webOS"
+    pub name: &'static str,
+    /// The platform's version as a Plex server should read it, e.g. "6.5.2".
+    pub version: String,
+}
+
+static PLATFORM: OnceLock<Platform> = OnceLock::new();
+
+/// What the platform published, or `None` before it has (a read racing ahead of the boot probe, or
+/// a host test). A plain `get()` like [`info`], so an early read leaves the cell open for
+/// [`publish_platform`].
+pub fn platform() -> Option<&'static Platform> {
+    PLATFORM.get()
+}
+
+/// The boot probe's answer. First write wins, like the `OnceLock` it lands in.
+pub fn publish_platform(platform: Platform) {
+    let _ = PLATFORM.set(platform);
+}
+
+/// The files the capability probe (`devcaps::probe`) parses, read by the platform. The probe owns
+/// what a file means and where the model looks for it; the platform owns reading it, so the model
+/// performs no IO of its own. The platform states them as `Services.identity.device_files`.
+#[derive(Clone, Copy)]
+pub struct Files {
+    /// The text of the file at an absolute path, or why it could not be read: the error is logged
+    /// by the caller, verbatim.
+    pub read: fn(&str) -> std::io::Result<String>,
+    /// Whether a file or directory exists at an absolute path (a stat, never an open).
+    pub exists: fn(&str) -> bool,
+}
+
+impl Files {
+    /// A platform with no such files: every read fails as a missing file does, and nothing exists.
+    pub const NONE: Self = Self {
+        read: |_| Err(std::io::ErrorKind::NotFound.into()),
+        exists: |_| false,
+    };
+}
+
+/// The installed platform's [`Files`].
+pub fn files() -> Files {
+    super::services().identity.device_files
 }
 
 #[cfg(test)]

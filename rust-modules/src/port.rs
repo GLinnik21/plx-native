@@ -30,7 +30,8 @@ static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
     identity: plx_os::tv::IdentityHooks {
         probe_device: plx_os::webos::probe,
         start_capability_probe: plx_os::webos::caps::start_probe,
-        repair_sandbox: plx_os::webos::jail_repair::execute,
+        repair_native_video: Some(plx_os::webos::jail_repair::execute),
+        device_files: plx_os::webos::DEVICE_FILES,
         system_locale: plx_os::webos::system_locale,
         sound_output: plx_os::webos::sound_output,
     },

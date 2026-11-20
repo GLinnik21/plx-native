@@ -4,7 +4,7 @@
 //! explicit confirmation. That app-owned attempt survives every screen and session reset,
 //! including timeout: the remote shell may still run after LS2 gives up.
 
-use crate::tv::sandbox::Failure;
+use crate::tv::native_video::Failure;
 use serde_json::Value;
 use std::path::Path;
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]

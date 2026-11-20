@@ -40,7 +40,7 @@
 //! for service replies: [`caps`] uses `serde_json` and strict types because uncertainty there is a
 //! playback-safety decision. The capability query deliberately does not fill a missing webOS
 //! version; no public version key or anonymous permission for one is evidenced.
-use crate::tv::device::{Hardware, Info, NyxFile};
+use crate::tv::device::{Hardware, Info, NyxFile, Platform, WebosDetail};
 
 pub mod jail_repair;
 pub mod caps;
@@ -78,10 +78,12 @@ fn parse(s: &str) -> Info {
     Info {
         release,
         build,
-        codename: get("webos_release_codename"),
-        api: get("webos_api_version"),
-        name: get("webos_name"),
         major,
+        webos: WebosDetail {
+            codename: get("webos_release_codename"),
+            api: get("webos_api_version"),
+            name: get("webos_name"),
+        },
     }
 }
 
@@ -109,14 +111,42 @@ pub fn probe() {
     } else if info.major > 0 {
         plx_base::eventlog::log(&format!(
             "webos: {} release={} codename={} api={} major={}",
-            info.name, info.release, info.codename, info.api, info.major
+            info.webos.name, info.release, info.webos.codename, info.webos.api, info.major
         ));
     }
     crate::tv::device::publish_info(info);
+    // From what `publish_info` kept (the first write wins), so the platform's version and `info()`
+    // cannot name two releases.
+    crate::tv::device::publish_platform(plex_platform(&crate::tv::device::info().release));
     let device_info = probe_hw();
     crate::tv::device::publish_probe(crate::tv::device::Probe { os_info, device_info });
     probe_jail();
 }
+
+/// What webOS calls itself to a Plex server: `X-Plex-Platform`.
+const PLEX_PLATFORM: &str = "webOS";
+
+/// The `X-Plex-Platform-Version` for a firmware that names no release: the literal every release
+/// before the real version was read has reported, rather than an empty value no server has ever
+/// been shown.
+const PLEX_PLATFORM_VERSION_UNKNOWN: &str = "4.5";
+
+/// PURE: the platform webOS publishes to `tv::device` for a firmware `release`: the real release,
+/// or [`PLEX_PLATFORM_VERSION_UNKNOWN`] when the set did not name one. The values `plex::identity`
+/// reported before the platform published them, byte for byte.
+fn plex_platform(release: &str) -> Platform {
+    Platform {
+        name: PLEX_PLATFORM,
+        version: if release.is_empty() { PLEX_PLATFORM_VERSION_UNKNOWN.to_string() } else { release.to_string() },
+    }
+}
+
+/// The files `devcaps::probe` parses, read from the file system: webOS's own paths, named by the
+/// model. The simulator's host has none of them and so answers "unreadable", as it always did.
+pub const DEVICE_FILES: crate::tv::device::Files = crate::tv::device::Files {
+    read: |path| std::fs::read_to_string(path),
+    exists: |path| std::path::Path::new(path).exists(),
+};
 
 // ---- which SET this is, as opposed to which webOS ---------------------------------------------
 
@@ -147,9 +177,9 @@ fn os_info_from(text: Option<&str>) -> (Info, NyxFile) {
     };
     let info = parse(text);
     let answered = !info.release.is_empty()
-        || !info.codename.is_empty()
-        || !info.api.is_empty()
-        || !info.name.is_empty();
+        || !info.webos.codename.is_empty()
+        || !info.webos.api.is_empty()
+        || !info.webos.name.is_empty();
     (info, if answered { NyxFile::Ok } else { NyxFile::NoKeys })
 }
 
@@ -323,20 +353,31 @@ pub fn is_realtek_k5lp_family(machine_name: &str) -> bool {
 /// [`probe`] and [`probe_hw`] already follow for their own unreadable files.
 fn probe_jail() {
     let name = read_machine_name();
-    let result = if is_realtek_k5lp_family(&name) {
-        let readable = std::ffi::CString::new(RTKMEM_DEVICE)
+    let result = jail_verdict(&name, || {
+        std::ffi::CString::new(RTKMEM_DEVICE)
             .map(|path| unsafe { libc::access(path.as_ptr(), libc::R_OK) } == 0)
-            .unwrap_or(false);
-        if readable {
-            crate::tv::sandbox::Verdict::Ok
-        } else {
-            crate::tv::sandbox::Verdict::Missing
-        }
+            .unwrap_or(false)
+    });
+    crate::tv::native_video::publish(result);
+    plx_base::eventlog::log(&format!("devjail: soc={name} rtkmem={}", crate::tv::native_video::context()));
+}
+
+/// The reason webOS names for a blocked native video path, and so the word the `devjail:` line, the
+/// telemetry `rtkmem` context and `PRIVACY.md` carry for it.
+const RTKMEM_MISSING: &str = "missing";
+
+/// PURE: the native-video verdict for a machine name. A name outside the affected family is never
+/// probed (`rtkmem_readable` is not called); inside it, a readable `/dev/rtkmem` is `Available` and
+/// an unreadable one is `Blocked` with [`RTKMEM_MISSING`].
+fn jail_verdict(machine_name: &str, rtkmem_readable: impl FnOnce() -> bool) -> crate::tv::native_video::Verdict {
+    use crate::tv::native_video::Verdict;
+    if !is_realtek_k5lp_family(machine_name) {
+        Verdict::NotApplicable
+    } else if rtkmem_readable() {
+        Verdict::Available
     } else {
-        crate::tv::sandbox::Verdict::NotApplicable
-    };
-    crate::tv::sandbox::publish(result);
-    plx_base::eventlog::log(&format!("devjail: soc={name} rtkmem={}", crate::tv::sandbox::context()));
+        Verdict::Blocked(RTKMEM_MISSING)
+    }
 }
 
 // ---- the ROOT press: give the screen back, without ending the process -------------------------
@@ -1330,7 +1371,7 @@ mod tests {
         // No codename, API version or name is in the file, and none is invented. Nor is a build:
         // `core_os_release` ("6.5.3-47") carries a build id this file does not, and a build that
         // read "6.5.3" on this boot and "6.5.3-47" on a nyx boot would look like two builds.
-        assert!(i.codename.is_empty() && i.api.is_empty() && i.name.is_empty() && i.build.is_empty(), "{i:?}");
+        assert!(i.webos == WebosDetail::default() && i.build.is_empty(), "{i:?}");
         let i = os_release_info(OS_RELEASE_562).expect("5.6.2 firmware names its release");
         assert_eq!((i.release.as_str(), i.major), ("5.6.2", 5));
     }
@@ -1397,7 +1438,7 @@ mod tests {
     fn a_nyx_file_that_was_read_is_never_second_guessed() {
         let fw = firmware_from(Some(REAL), Some(OS_RELEASE_653));
         assert_eq!((fw.info.release.as_str(), fw.info.major), ("4.10.2", 4));
-        assert_eq!(fw.info.codename, "goldilocks2-grampians");
+        assert_eq!(fw.info.webos.codename, "goldilocks2-grampians");
         assert_eq!(fw.info.build, "4.10.2-31");
         assert_eq!(fw.os_info, NyxFile::Ok);
         assert!(!fw.from_os_release);
@@ -1411,7 +1452,7 @@ mod tests {
     fn an_unreadable_nyx_file_falls_back_to_os_release_and_is_still_reported_unreadable() {
         let fw = firmware_from(None, Some(OS_RELEASE_653));
         assert_eq!((fw.info.release.as_str(), fw.info.major), ("6.5.3", 6));
-        assert!(fw.info.codename.is_empty() && fw.info.api.is_empty() && fw.info.build.is_empty());
+        assert!(fw.info.webos == WebosDetail::default() && fw.info.build.is_empty());
         // The verdict on nyx's own file (the event log line and the crash report's `hardware.probe`
         // field) stays `unreadable`; it is not a statement about whether the release is known.
         assert_eq!(fw.os_info, NyxFile::Unreadable);
@@ -1437,8 +1478,9 @@ mod tests {
     fn parses_the_whole_record() {
         let i = parse(REAL);
         assert_eq!((i.release.as_str(), i.major), ("4.10.2", 4));
-        assert_eq!(i.codename, "goldilocks2-grampians");
-        assert_eq!(i.name, "webOS TV");
+        assert_eq!(i.webos.codename, "goldilocks2-grampians");
+        assert_eq!(i.webos.api, "4.1.0");
+        assert_eq!(i.webos.name, "webOS TV");
     }
 
     /// The unknown case must be EMPTY with major 0, never a plausible-looking default. A panel that
@@ -1447,7 +1489,7 @@ mod tests {
     fn an_unreadable_file_yields_no_version_rather_than_a_guess() {
         let i = parse("not json at all");
         assert_eq!(i.major, 0);
-        assert!(i.release.is_empty() && i.codename.is_empty());
+        assert!(i.release.is_empty() && i.webos.codename.is_empty());
     }
 
     /// A two-component release still yields its major — LG has shipped "6.0" as well as "4.10.2".
@@ -1472,5 +1514,28 @@ mod tests {
         assert!(!is_realtek_k5lp_family(""));
         assert!(!is_realtek_k5lp_family("prefix-k5lp"));
         assert!(!is_realtek_k5lp_family("K5LP"));
+    }
+
+    /// What webOS tells a Plex server: the name it always sent, the real release when the set named
+    /// one and the old literal when it did not.
+    #[test]
+    fn the_published_platform_is_the_webos_the_headers_always_named() {
+        assert_eq!(plex_platform("6.5.2"), Platform { name: "webOS", version: "6.5.2".into() });
+        assert_eq!(plex_platform(""), Platform { name: "webOS", version: "4.5".into() });
+    }
+
+    /// webOS's three answers on the neutral verdict, one per old one: a readable `/dev/rtkmem` on
+    /// the family is `Available` (was `Ok`), an unreadable one is `Blocked` with the word telemetry
+    /// has always carried (was `Missing`), and a set outside the family is not probed at all.
+    #[test]
+    fn the_jail_verdict_maps_each_old_answer_to_its_native_video_variant() {
+        use crate::tv::native_video::Verdict;
+        assert_eq!(jail_verdict("k5lp", || true), Verdict::Available);
+        assert_eq!(jail_verdict("k3lp.something", || false), Verdict::Blocked("missing"));
+        assert_eq!(
+            jail_verdict("o22", || panic!("a set outside the family is never probed")),
+            Verdict::NotApplicable
+        );
+        assert_eq!(jail_verdict("", || panic!("an unreadable machine name is never probed")), Verdict::NotApplicable);
     }
 }

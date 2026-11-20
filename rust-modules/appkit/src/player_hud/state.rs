@@ -587,9 +587,9 @@ fn failure_glyph(kind: plx_media::player::FailureKind) -> plx_ui::icons::Icon {
 impl FailureReadout {
     /// Pure projection of the app's complete failure snapshot, including the repair status.
     pub fn captured(mut e: plx_media::player::ErrorShape, actions: Vec<plx_media::player::FailureAction>,
-        support: String, repair_status: plx_os::tv::sandbox::State) -> Self {
+        support: String, repair_status: plx_os::tv::native_video::State) -> Self {
         if e.kind == plx_media::player::FailureKind::JailMissingRtkmem {
-            use plx_os::tv::sandbox::State;
+            use plx_os::tv::native_video::State;
             match repair_status {
                 State::Idle => {}
                 State::Running => {
@@ -726,8 +726,8 @@ pub fn failure_row_drawn(busy: Busy) -> bool {
 }
 
 /// Product copy is resolved here; the worker's technical error identity stays unchanged.
-fn repair_failure_message(reason: plx_os::tv::sandbox::Failure) -> &'static str {
-    use plx_os::tv::sandbox::Failure;
+fn repair_failure_message(reason: plx_os::tv::native_video::Failure) -> &'static str {
+    use plx_os::tv::native_video::Failure;
     match reason {
         Failure::StartFailed => plx_os::i18n::msg::widgets_repair_start_failed(),
         Failure::HbcUnavailable => plx_os::i18n::msg::widgets_repair_hbc_unavailable(),

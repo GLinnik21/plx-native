@@ -316,7 +316,7 @@ pub struct UsageContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_version: Option<String>,
     /// issue #74: the k5lp/k3lp `/dev/rtkmem` sandbox pre-flight — `ok` / `missing` / `n/a` — the
-    /// SAME closed enum [`plx_os::tv::sandbox::context`] reports, never a free-text probe result.
+    /// SAME closed enum [`plx_os::tv::native_video::context`] reports, never a free-text probe result.
     /// Present on every event so a chassis's crash-at-start rate is queryable by sandbox rather
     /// than only discoverable from a single reported issue.
     #[serde(default = "rtkmem_default")]
@@ -397,14 +397,14 @@ impl UsageContext {
         Self {
             app_version: dimension(crate::telemetry::app_version()),
             webos_release: dimension(&os.release),
-            webos_api: dimension(&os.api),
-            webos_codename: dimension(&os.codename),
+            webos_api: dimension(&os.webos.api),
+            webos_codename: dimension(&os.webos.codename),
             device_model: dimension(&hw.model),
             soc: dimension(&hw.board),
             hardware_revision: dimension(&hw.hw_revision),
             server_connection: connection.map(|(c, _)| c.to_string()),
             ip_version: connection.map(|(_, ip)| ip.to_string()),
-            rtkmem: plx_os::tv::sandbox::context().into(),
+            rtkmem: plx_os::tv::native_video::context().into(),
             install: plx_base::paths::install_kind().into(),
         }
     }
