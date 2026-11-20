@@ -2605,4 +2605,22 @@ fn an_app_switch_suspends_every_body_and_the_loop_is_what_delivers_it() {
         src[fg..fg_end].contains("bridge::foreground(&mut app.pages);"),
         "…and the FOREGROUND arm must un-park it, or the tree stays parked for the rest of the run",
     );
+
+    // …and the loop's one consumer sends BOTH edges of each pair to them. An arm narrowed to the
+    // DID edge would pass everything above: the WILL edge would reach `{}`, and webOS may send
+    // either edge of a pair first.
+    let host = src
+        .find("unsafe fn ingest_host_event(")
+        .expect("the loop's one HostEvent consumer");
+    let host_end = host + src[host..].find("\n}\n").expect("the end of the consumer");
+    let flat = src[host..host_end].split_whitespace().collect::<Vec<_>>().join(" ");
+    for (edges, call) in [
+        ("Lifecycle::WillBackground | Lifecycle::DidBackground", "host_background("),
+        ("Lifecycle::WillForeground | Lifecycle::DidForeground", "host_foreground("),
+    ] {
+        assert!(
+            flat.contains(&format!("{edges} => {{ {call}")) || flat.contains(&format!("{edges} => {call}")),
+            "the consumer must send both `{edges}` to `{call}`",
+        );
+    }
 }

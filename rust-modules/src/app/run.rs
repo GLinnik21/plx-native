@@ -4732,6 +4732,48 @@ pub(in crate::app) mod lifecycle_regression_tests {
         assert_eq!(traces[0], traces[1], "a host's Lifecycle edges and the SDL codes leave the same loop");
     }
 
+    /// **Each WILL edge does its work on its own.** The sequence above sends all four edges, so a
+    /// dispatch that dropped a WILL edge (an arm narrowed to the DID edge it pairs with) would still
+    /// pass it: the DID edge repeats what WILL did. Here WILL background arrives ALONE and parks the
+    /// film and the tree (the base's `0x103` arm ran the whole background arm), and WILL foreground
+    /// arrives ALONE and gives the tree back but not the window or the film (the base's `0x105` arm
+    /// ran the foreground arm; only the DID edge restores). Either way of delivery leaves the same
+    /// loop.
+    #[test]
+    fn a_host_will_edge_does_its_arms_work_without_its_did_edge() {
+        let _serial = plx_base::testlock::serial();
+        let mut seen = Vec::new();
+        for hosted in [false, true] {
+            let Some(mut rig) = Rig::new() else {
+                eprintln!("SKIPPED a_host_will_edge_does_its_arms_work_without_its_did_edge: \
+                     lifecycle fixture worker thread could not be spawned");
+                return;
+            };
+            start_film(&mut rig);
+            let before = after_quit(&mut rig.app).2;
+            let inputs_before = rig.app.inputs.len();
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+            deliver(&mut rig.app, &mut fr, hosted, HostEvent::Lifecycle(Lifecycle::WillBackground));
+            let will_background = after_quit(&mut rig.app).2;
+            let keyboard_dismissals = rig.app.inputs.len() - inputs_before;
+            deliver(&mut rig.app, &mut fr, hosted, HostEvent::Lifecycle(Lifecycle::WillForeground));
+            let will_foreground = after_quit(&mut rig.app).2;
+            seen.push((before, will_background, keyboard_dismissals, will_foreground));
+        }
+        let (before, will_background, keyboard_dismissals, will_foreground) = &seen[1];
+        assert!(before.contains("awaiting_load=false") && before.contains("suspended=false"),
+            "premise: the film plays and the tree is live: {before}");
+        assert!(will_background.contains("awaiting_load=true")
+                && will_background.contains("suspended=true"),
+            "WILL background alone parks the film and suspends the tree: {will_background}");
+        assert_eq!(*keyboard_dismissals, 1, "WILL background alone dismisses the television's keyboard");
+        assert!(will_foreground.contains("suspended=false"),
+            "WILL foreground alone resumes the tree: {will_foreground}");
+        assert!(will_foreground.contains("awaiting_load=true") && will_foreground.contains("present=false"),
+            "...and only the DID edge restores the film and the window: {will_foreground}");
+        assert_eq!(seen[0], seen[1], "a host's WILL edges and the SDL codes leave the same loop");
+    }
+
     /// **The tape is the same whichever way an edge arrives.** The four edges are recorded as the SDL
     /// codes `enc_lifecycle` always wrote, in order, and a quit records nothing.
     #[test]

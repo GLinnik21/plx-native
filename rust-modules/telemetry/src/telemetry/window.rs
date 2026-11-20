@@ -451,7 +451,7 @@ mod tests {
         }
     }
 
-    /// The run.rs background arm: both edges, the surface release, the teardown of a playing
+    /// `host_background` (`app/run.rs`): both edges, the surface release, the teardown of a playing
     /// engine, then the DID edge's `background_done`.
     fn background(playing: bool) {
         lifecycle(0x103, playing);
@@ -465,7 +465,7 @@ mod tests {
         step(Stage::BackgroundDone);
     }
 
-    /// The run.rs foreground arm: both edges, the window grab, the restoring Load's window create,
+    /// `host_foreground` (`app/run.rs`): both edges, the window grab, the restoring Load's window create,
     /// then the DID edge's `foreground_done`. `first_frame` comes later, from the first present.
     fn foreground(playing: bool) {
         lifecycle(0x105, playing);
