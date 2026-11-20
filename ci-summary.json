@@ -127,21 +127,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-20T09:56:33Z",
+ "generated": "2026-11-20T10:08:45Z",
  "metrics": [
   {
-   "change30_pct": -12.6,
-   "change7_pct": -12.5,
-   "d30": 483.5,
-   "delta30": -61.0,
-   "delta7": -60.5,
+   "change30_pct": -12.7,
+   "change7_pct": -12.8,
+   "d30": 482,
+   "delta30": -61,
+   "delta7": -62.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 158,
+   "n_now": 159,
    "n_prev": 146,
-   "now": 422.5,
+   "now": 421,
    "prev7": 483.0,
    "shown": true,
    "state": "flat",
@@ -151,10 +151,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 10.3,
+   "change30_pct": 10.6,
    "change7_pct": -11.2,
-   "d30": 369,
-   "delta30": 38,
+   "d30": 368.0,
+   "delta30": 39.0,
    "delta7": -51.5,
    "group": "ci",
    "id": "push_wait",
@@ -172,10 +172,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 18.7,
+   "change30_pct": 28.2,
    "change7_pct": -11.2,
-   "d30": 23.4,
-   "delta30": 4.4,
+   "d30": 21.7,
+   "delta30": 6.1,
    "delta7": -3.5,
    "group": "local",
    "id": "bench.app",
@@ -187,16 +187,16 @@
    "prev7": 31.3,
    "shown": true,
    "state": "flat",
-   "state30": "flat",
+   "state30": "worse",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
    "unit": "s"
   },
   {
-   "change30_pct": 26.7,
+   "change30_pct": 29.8,
    "change7_pct": -6.5,
-   "d30": 46.7,
-   "delta30": 12.5,
+   "d30": 45.6,
+   "delta30": 13.6,
    "delta7": -4.1,
    "group": "local",
    "id": "bench.screens",
@@ -214,10 +214,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.4,
+   "change30_pct": 44.1,
    "change7_pct": -6.4,
-   "d30": 55.5,
-   "delta30": 31.3,
+   "d30": 60.2,
+   "delta30": 26.6,
    "delta7": -6.0,
    "group": "local",
    "id": "bench.ui",
@@ -256,10 +256,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -0.5,
+   "change30_pct": 0.5,
    "change7_pct": -33.0,
-   "d30": 128.7,
-   "delta30": -0.7,
+   "d30": 127.3,
+   "delta30": 0.7,
    "delta7": -63.1,
    "group": "local",
    "id": "bench.tests",
@@ -277,10 +277,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 5.5,
+   "change30_pct": 19.8,
    "change7_pct": -5.7,
-   "d30": 1267.7,
-   "delta30": 69.9,
+   "d30": 1116.6,
+   "delta30": 221.0,
    "delta7": -81.2,
    "group": "local",
    "id": "bench.check",
@@ -310,10 +310,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 19.1,
+   "change30_pct": 18.9,
    "change7_pct": -8.1,
-   "d30": 2117.0,
-   "delta30": 404.0,
+   "d30": 2121,
+   "delta30": 400,
    "delta7": -223,
    "group": "ci",
    "id": "minutes",
@@ -373,10 +373,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.0,
+   "change30_pct": 42.7,
    "change7_pct": 8.4,
-   "d30": 244,
-   "delta30": 105,
+   "d30": 244.5,
+   "delta30": 104.5,
    "delta7": 27,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -394,10 +394,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -7.5,
+   "change30_pct": -7.1,
    "change7_pct": -25.4,
-   "d30": 359,
-   "delta30": -27.0,
+   "d30": 357.5,
+   "delta30": -25.5,
    "delta7": -113.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -417,7 +417,7 @@
   {
    "change30_pct": 52.0,
    "change7_pct": 5.6,
-   "d30": 173,
+   "d30": 173.0,
    "delta30": 90.0,
    "delta7": 14.0,
    "group": "ci",
@@ -436,10 +436,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 47.0,
+   "change30_pct": 46.5,
    "change7_pct": 7.3,
-   "d30": 165,
-   "delta30": 77.5,
+   "d30": 165.5,
+   "delta30": 77.0,
    "delta7": 16.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -457,10 +457,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -21.3,
+   "change30_pct": -21.7,
    "change7_pct": -45.0,
-   "d30": 296,
-   "delta30": -63.0,
+   "d30": 297.5,
+   "delta30": -64.5,
    "delta7": -191.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -480,8 +480,8 @@
   {
    "change30_pct": 44.7,
    "change7_pct": -3.1,
-   "d30": 150,
-   "delta30": 67,
+   "d30": 150.0,
+   "delta30": 67.0,
    "delta7": -7,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
@@ -499,10 +499,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.0,
+   "change30_pct": 28.6,
    "change7_pct": -29.3,
-   "d30": 164,
-   "delta30": 47.5,
+   "d30": 164.5,
+   "delta30": 47.0,
    "delta7": -87.5,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -522,8 +522,8 @@
   {
    "change30_pct": 8.9,
    "change7_pct": 3.0,
-   "d30": 191,
-   "delta30": 17,
+   "d30": 191.0,
+   "delta30": 17.0,
    "delta7": 6,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -541,10 +541,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 5.5,
+   "change30_pct": 19.7,
    "change7_pct": -5.7,
-   "d30": 1266.5,
-   "delta30": 69.5,
+   "d30": 1116.0,
+   "delta30": 220.0,
    "delta7": -81.0,
    "group": "local",
    "id": "bench.check.cargo",
@@ -563,10 +563,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 9.8,
+   "change30_pct": 11.4,
    "change7_pct": 8.3,
-   "d30": 987.0,
-   "delta30": 97.0,
+   "d30": 973.0,
+   "delta30": 111.0,
    "delta7": 83.0,
    "group": "local",
    "id": "bench.check.python",
@@ -629,8 +629,8 @@
   {
    "change30_pct": 11.1,
    "change7_pct": 5.3,
-   "d30": 18,
-   "delta30": 2,
+   "d30": 18.0,
+   "delta30": 2.0,
    "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
@@ -671,8 +671,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 307,
-   "delta30": -304.0,
+   "d30": 306.0,
+   "delta30": -303.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -692,7 +692,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 0.0,
-   "d30": 3,
+   "d30": 3.0,
    "delta30": 0.0,
    "delta7": 0.0,
    "group": "ci",
@@ -711,10 +711,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -10.3,
+   "change30_pct": -3.7,
    "change7_pct": -20.1,
    "d30": 0.7,
-   "delta30": -0.1,
+   "delta30": -0.0,
    "delta7": -0.2,
    "group": "local",
    "id": "bench.noop",
