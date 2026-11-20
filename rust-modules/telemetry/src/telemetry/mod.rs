@@ -234,15 +234,31 @@ pub fn forget() {
 }
 
 /// Called after the shared account tombstone (`plex::session::clear`'s canonical commit) is
-/// confirmed durable. On ARM, `persistence::forget_at` deliberately leaves telemetry/consent's own
-/// legacy files in place when a decision is cleared, relying on this sweep to run once the ONE
-/// atomic DB8 revocation for both domains — session and telemetry/consent — is confirmed rather
-/// than merely queued. Ported from `release/v0.6`'s `telemetry::cleanup_after_account_clear` /
-/// `persistence::cleanup_after_combined_clear`, which the 0.7 forward-port dropped along with
-/// their only caller (Copilot review on PR #105, finding 7).
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+/// confirmed durable. Where the platform's storage authority is the helper
+/// ([`plx_os::tv::authority::Authority::Helper`], a webOS television), `persistence::forget_at`
+/// deliberately leaves telemetry/consent's own legacy files in place when a decision is cleared,
+/// relying on this sweep to run once the ONE atomic DB8 revocation for both domains — session and
+/// telemetry/consent — is confirmed rather than merely queued. With files
+/// ([`plx_os::tv::authority::Authority::Files`]) `forget_at` already removed them inline, so there is
+/// nothing left to retire and this answers `true`. Ported from `release/v0.6`'s
+/// `telemetry::cleanup_after_account_clear` / `persistence::cleanup_after_combined_clear`, which the
+/// 0.7 forward-port dropped along with their only caller (Copilot review on PR #105, finding 7).
 pub fn cleanup_after_account_clear() -> bool {
-    persistence::cleanup_after_combined_clear(&candidates()) != persistence::CleanupResult::Failed
+    account_clear_sweep(plx_os::tv::authority::authority(), candidates)
+}
+
+/// [`cleanup_after_account_clear`] with the platform's authority handed in. `legacy` is called only
+/// by the helper arm, so the files arm reads no path.
+fn account_clear_sweep(
+    authority: plx_os::tv::authority::Authority,
+    legacy: impl FnOnce() -> Vec<std::path::PathBuf>,
+) -> bool {
+    match authority {
+        plx_os::tv::authority::Authority::Helper => {
+            persistence::cleanup_after_combined_clear(&legacy()) != persistence::CleanupResult::Failed
+        }
+        plx_os::tv::authority::Authority::Files => true,
+    }
 }
 
 // ---- the spool, and the one worker that drains it ---------------------------------------------
@@ -793,5 +809,29 @@ mod tests {
             serde_json::from_slice(br#"{"asked_version":1,"usage":true,"a_field_from_later":7}"#)
                 .expect("a file with more fields still parses");
         assert!(newer.usage);
+    }
+
+    /// The sweep after a durable account clear belongs to the helper authority alone: it retires
+    /// every legacy candidate there, and with files it answers `true` without reading a path, because
+    /// `forget_at` already removed them inline. The webOS answer and the one Tizen gets, side by side.
+    #[test]
+    fn the_account_clear_sweep_retires_legacy_files_only_where_the_helper_defers_it() {
+        use plx_os::tv::authority::Authority;
+        let dir = std::env::temp_dir().join(format!("plxnative-account-clear-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let candidate = dir.join("telemetry.json");
+        std::fs::write(&candidate, b"{}").unwrap();
+
+        assert!(
+            account_clear_sweep(Authority::Files, || panic!("the files authority reads no candidate")),
+            "files: nothing deferred, nothing to retire"
+        );
+        assert!(candidate.exists(), "files: the sweep touched nothing");
+
+        assert!(account_clear_sweep(Authority::Helper, || vec![candidate.clone()]));
+        assert!(!candidate.exists(), "helper: the deferred legacy candidate is retired");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3,17 +3,19 @@
 //! The record backend owns framing and filesystem durability. This adapter owns the consent JSON
 //! payload, revision choice, and the rule that a present canonical record is terminal: legacy
 //! files are consulted only when `consent.json` is genuinely absent.
+//!
+//! Where the canonical record lives is the platform's statement
+//! ([`plx_os::tv::authority::authority`]): the storage helper ([`Authority::Helper`], a webOS
+//! television) or files under the persistent state root ([`Authority::Files`]). [`load`],
+//! [`record_at`] and [`forget_at`] read it once per operation and hand it, with the helper's
+//! transport, to their `*_with` form, which is what a test calls to grade either store.
 
 use super::consent::Consent;
 use plx_os::storage::{Record, RecordKey, RecordState, RecordStore};
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 use plx_os::storage::StoreError;
+use plx_os::tv::authority::Authority;
 use std::path::{Path, PathBuf};
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 use plx_os::storage::{
     client::{self, Load as HelperLoad},
     state::{self, Generation, MigrationProgress},
@@ -21,7 +23,6 @@ use plx_os::storage::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // `Delegated` is produced only by the shipping webOS adapter.
 pub enum PersistResult {
     NotAttempted,
     /// Durability belongs to the immediately-following atomic Session `ClearTenure` operation.
@@ -108,17 +109,14 @@ pub fn forget() -> PersistOutcome {
     forget_at(&super::resource_candidates(), root())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn store() -> Result<impl RecordStore, StoreError> {
     plx_os::storage::open(root())
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn store_at(root: PathBuf) -> Result<impl RecordStore, StoreError> {
     plx_os::storage::open(root)
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn cleanup_canonical(store: &impl RecordStore) -> CleanupResult {
     if store.cleanup(RecordKey::Consent).is_ok() {
         CleanupResult::Complete
@@ -140,11 +138,10 @@ fn log_cleanup_failure(stage: &str, path: &Path, error: &std::io::Error) {
 }
 
 /// Sweep telemetry/consent's own legacy candidates once the shared account ClearTenure DB8
-/// mutation has been confirmed durable. [`forget_at`]'s ARM branch defers exactly this cleanup
-/// here rather than doing it inline, because the immediately-following session ClearTenure is the
-/// one atomic DB8 revocation for both domains and legacy sources must survive until THAT commit is
-/// confirmed, not merely queued.
-#[cfg(any(test, feature = "test-support", all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))]
+/// mutation has been confirmed durable. [`forget_at`]'s helper branch ([`Authority::Helper`]) defers
+/// exactly this cleanup here rather than doing it inline, because the immediately-following session
+/// ClearTenure is the one atomic DB8 revocation for both domains and legacy sources must survive
+/// until THAT commit is confirmed, not merely queued.
 pub fn cleanup_after_combined_clear(legacy: &[PathBuf]) -> CleanupResult {
     remove_legacy_sources(legacy.iter().cloned())
 }
@@ -181,11 +178,14 @@ fn remove_legacy_sources(paths: impl IntoIterator<Item = PathBuf>) -> CleanupRes
 /// Load canonical consent, falling back to trusted legacy candidates only when canonical is
 /// absent. A malformed, inaccessible, future, or otherwise present canonical record is terminal.
 pub fn load(legacy: &[PathBuf]) -> Consent {
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-    {
-        return load_helper(&mut client::NativeTransport, legacy);
+    load_with(plx_os::tv::authority::authority(), &mut client::NativeTransport, legacy)
+}
+
+/// [`load`] with the platform's authority and the helper's transport handed in.
+fn load_with(authority: Authority, transport: &mut dyn client::Transport, legacy: &[PathBuf]) -> Consent {
+    if authority == Authority::Helper {
+        return load_helper(transport, legacy);
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
     {
     #[cfg(not(any(test, feature = "test-support")))]
     if plx_base::paths::ensure_persistent_state_root().is_err() {
@@ -268,18 +268,10 @@ pub fn load(legacy: &[PathBuf]) -> Consent {
     }
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn helper_expected(snapshot: &client::Snapshot) -> Option<(&str, state::Expected)> {
     Some((&snapshot.db_rev, snapshot.state.expected()))
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 #[derive(Clone, Copy)]
 struct HelperCommit {
     result: PersistResult,
@@ -288,10 +280,6 @@ struct HelperCommit {
     conflict: bool,
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn helper_commit(
     transport: &mut dyn client::Transport,
     loaded: &HelperLoad,
@@ -359,10 +347,6 @@ fn helper_commit(
     }
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn legacy_consent(legacy: &[PathBuf]) -> Result<Option<(Consent, Vec<PathBuf>)>, ()> {
     let mut found: Option<(Consent, Vec<PathBuf>)> = None;
     for path in legacy {
@@ -387,10 +371,6 @@ fn legacy_consent(legacy: &[PathBuf]) -> Result<Option<(Consent, Vec<PathBuf>)>,
     Ok(found)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 enum PreviousCanonical {
     Missing,
     Data(Consent),
@@ -400,18 +380,10 @@ enum PreviousCanonical {
 
 /// Decode the complete `plxnative-record` wrapper used by the JSON canonical store that preceded
 /// DB8. A corrupt/future record is terminal and is never treated like an absent legacy source.
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn previous_canonical_consent() -> PreviousCanonical {
     previous_canonical_consent_at(root())
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn previous_canonical_consent_at(root: PathBuf) -> PreviousCanonical {
     match std::fs::symlink_metadata(&root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => PreviousCanonical::Missing,
@@ -440,10 +412,6 @@ fn previous_canonical_consent_at(root: PathBuf) -> PreviousCanonical {
     }
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn load_helper(transport: &mut dyn client::Transport, legacy: &[PathBuf]) -> Consent {
     let loaded = match client::load_with(transport) {
         Ok(loaded) => loaded,
@@ -615,7 +583,6 @@ fn read_legacy(path: &Path) -> LegacyRead {
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
 fn load_legacy_and_migrate(store: &impl RecordStore, legacy: &[PathBuf]) -> Consent {
     let mut found: Option<(Consent, Vec<(PathBuf, Vec<u8>)>)> = None;
     for path in legacy {
@@ -727,12 +694,21 @@ pub(super) fn record_at(
     legacy: &[PathBuf],
     canonical_root: PathBuf,
 ) -> PersistOutcome {
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-    {
+    record_with(plx_os::tv::authority::authority(), &mut client::NativeTransport, consent, legacy, canonical_root)
+}
+
+/// [`record_at`] with the platform's authority and the helper's transport handed in.
+fn record_with(
+    authority: Authority,
+    transport: &mut dyn client::Transport,
+    consent: &Consent,
+    legacy: &[PathBuf],
+    canonical_root: PathBuf,
+) -> PersistOutcome {
+    if authority == Authority::Helper {
         let _ = canonical_root;
-        return record_helper(&mut client::NativeTransport, consent, legacy);
+        return record_helper(transport, consent, legacy);
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
     {
     let store = match store_at(canonical_root) {
         Ok(store) => store,
@@ -827,10 +803,6 @@ pub(super) fn record_at(
     }
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))),
-    test
-))]
 fn record_helper(
     transport: &mut dyn client::Transport,
     consent: &Consent,
@@ -906,8 +878,13 @@ fn record_helper(
 
 /// Write a canonical cleared tombstone, then remove stale legacy copies best-effort.
 pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistOutcome {
-    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-    {
+    forget_with(plx_os::tv::authority::authority(), legacy, canonical_root)
+}
+
+/// [`forget_at`] with the platform's authority handed in. The helper arm touches nothing itself, so
+/// it takes no transport.
+fn forget_with(authority: Authority, legacy: &[PathBuf], canonical_root: PathBuf) -> PersistOutcome {
+    if authority == Authority::Helper {
         let _ = canonical_root;
         // Session's immediately-following ClearTenure is the one atomic DB8 revocation for both
         // domains. Consent has already been unpublished before this worker job runs. Legacy
@@ -920,7 +897,6 @@ pub(super) fn forget_at(legacy: &[PathBuf], canonical_root: PathBuf) -> PersistO
         publish(outcome);
         return outcome;
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support")))))]
     {
     let store = match store_at(canonical_root) {
         Ok(store) => store,
@@ -1038,12 +1014,13 @@ mod tests {
     /// Copilot review on PR #105, finding 7. `release/v0.6` swept telemetry/consent's own legacy
     /// files (`telemetry::cleanup_after_account_clear` / `persistence::cleanup_after_combined_clear`)
     /// once the shared account ClearTenure DB8 mutation was confirmed durable on ARM sign-out; the
-    /// 0.7 forward-port dropped both the function and its only caller entirely (`forget_at`'s ARM
+    /// 0.7 forward-port dropped both the function and its only caller entirely (`forget_at`'s helper
     /// branch still says it relies on this sweep, but nothing performed it — confirmed absent by
-    /// grep against this tree before this fix). ARM's `forget_at` is compiled out on host
-    /// (`not(all(target_os = "linux", target_arch = "arm", ...))`), so the real defect cannot be
-    /// observed red on this platform; this test pins the restored sweep function directly rather
-    /// than through the ARM-only call site. `cleanup_after_combined_clear` did not exist before
+    /// grep against this tree before this fix). That branch ran only where the build was a 32-bit ARM
+    /// Linux binary, so the real defect could not be observed red on a host; this test pins the
+    /// restored sweep function directly rather than through that call site (the dispatch itself is
+    /// graded by `upgrade_tests::the_platform_authority_picks_the_store_for_forget`).
+    /// `cleanup_after_combined_clear` did not exist before
     /// this fix, so the red here is simulated (a compile failure against the old tree), not an
     /// observed runtime failure.
     #[test]
@@ -1586,5 +1563,95 @@ mod upgrade_tests {
         let after = helper_load(&mut b, std::slice::from_ref(&source));
         assert!(!after.any() && !after.answered() && after.errors_id.is_none());
         assert!(!source.exists(), "a stale source is retired, never imported, after sign-out");
+    }
+
+    /// A transport that counts its calls and answers none: the files arm must never reach it.
+    fn silent(asked: &std::cell::Cell<usize>) -> impl FnMut(Request) -> Result<plx_os::storage::wire::Response, plx_os::storage::client::ClientError> + '_ {
+        move |_| {
+            asked.set(asked.get() + 1);
+            Err(plx_os::storage::client::ClientError::Unavailable)
+        }
+    }
+
+    /// The platform's [`Authority`], not the build's CPU and OS, picks where consent is read from:
+    /// `Files` migrates a legacy source into the state root's own file and never asks the helper;
+    /// `Helper` imports it into the helper and never creates the state root's consent file.
+    #[test]
+    fn the_platform_authority_picks_the_store_for_load() {
+        let _g = plx_base::testlock::serial();
+        {
+            let dir = Dir::new("authority-load-files");
+            let source = dir.legacy(GENERATED_DECLINE_065);
+            let asked = std::cell::Cell::new(0);
+            let mut transport = silent(&asked);
+            let loaded = load_with(Authority::Files, &mut transport, std::slice::from_ref(&source));
+            assert_eq!(asked.get(), 0, "the files arm never reaches the storage helper");
+            assert_preserved("files authority", &loaded, GENERATED_DECLINE_065);
+            assert!(dir.0.join("state/consent.json").exists(), "the files arm keeps its own record");
+            assert!(!source.exists(), "the legacy source is retired once the file is durable");
+        }
+        {
+            let dir = Dir::new("authority-load-helper");
+            let source = dir.legacy(GENERATED_DECLINE_065);
+            let mut b = backend(None);
+            let mut transport = |request: Request| Ok(b.dispatch(request));
+            let loaded = load_with(Authority::Helper, &mut transport, std::slice::from_ref(&source));
+            assert_preserved("helper authority", &loaded, GENERATED_DECLINE_065);
+            assert!(b.rpc.puts >= 1, "the helper arm commits the import to the helper");
+            assert!(!dir.0.join("state/consent.json").exists(), "the helper arm never creates the state root's consent file");
+            assert!(!source.exists(), "the legacy source is retired once the helper holds it");
+        }
+    }
+
+    /// The same split for a write: `Files` writes the state root's file and never asks the helper;
+    /// `Helper` commits to the helper, whatever root it was handed, and creates no consent file there.
+    #[test]
+    fn the_platform_authority_picks_the_store_for_record() {
+        let _g = plx_base::testlock::serial();
+        let consent = super::super::consent::apply(&Consent::default(), true, true, || Some("f".repeat(32)));
+        {
+            let dir = Dir::new("authority-record-files");
+            let asked = std::cell::Cell::new(0);
+            let mut transport = silent(&asked);
+            let outcome = record_with(Authority::Files, &mut transport, &consent, &[], dir.0.join("state"));
+            assert_eq!(outcome.write, PersistResult::Durable);
+            assert_eq!(asked.get(), 0, "the files arm never reaches the storage helper");
+            assert!(dir.0.join("state/consent.json").exists(), "the files arm keeps its own record");
+        }
+        {
+            let dir = Dir::new("authority-record-helper");
+            let elsewhere = dir.0.join("elsewhere");
+            let mut b = backend(Some(db8_066()));
+            let mut transport = |request: Request| Ok(b.dispatch(request));
+            let outcome = record_with(Authority::Helper, &mut transport, &consent, &[], elsewhere.clone());
+            assert_eq!(outcome.write, PersistResult::Durable);
+            assert!(b.rpc.puts >= 1, "the helper arm commits to the helper");
+            assert!(!dir.0.join("state/consent.json").exists() && !elsewhere.exists(), "no consent file under the state root");
+            assert_eq!(helper_load(&mut b, &[]), consent, "the helper holds the decision");
+        }
+    }
+
+    /// And for a sign-out: `Files` writes the cleared tombstone and retires the legacy source itself;
+    /// `Helper` delegates both to the session's ClearTenure and touches neither.
+    #[test]
+    fn the_platform_authority_picks_the_store_for_forget() {
+        let _g = plx_base::testlock::serial();
+        {
+            let dir = Dir::new("authority-forget-files");
+            let source = dir.legacy(GENERATED_DECLINE_065);
+            let outcome = forget_with(Authority::Files, std::slice::from_ref(&source), dir.0.join("state"));
+            assert_eq!(outcome.write, PersistResult::Durable);
+            assert!(!source.exists(), "the files arm retires the legacy source itself");
+            assert!(dir.0.join("state/consent.json").exists(), "the files arm writes its own tombstone");
+        }
+        {
+            let dir = Dir::new("authority-forget-helper");
+            let source = dir.legacy(GENERATED_DECLINE_065);
+            let outcome = forget_with(Authority::Helper, std::slice::from_ref(&source), dir.0.join("state"));
+            assert_eq!(outcome.write, PersistResult::Delegated);
+            assert_eq!(outcome.cleanup, CleanupResult::NotAttempted);
+            assert!(source.exists(), "the legacy source waits for the confirmed ClearTenure");
+            assert!(!dir.0.join("state/consent.json").exists(), "the helper arm never creates the state root's consent file");
+        }
     }
 }
