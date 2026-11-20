@@ -341,6 +341,43 @@ fn a_picked_version_plays_that_version_though_its_panel_is_still_closing() {
     assert!(matches!(w.d.top_arg(), Some(AppArg::Player)), "the pick entered the player");
 }
 
+/// **Play Version on a platform that composed no playback driver (W6c):** the panel's rows are the
+/// shared disabled rows, so the pick presses nothing: no play is asked and the player is not
+/// entered (the press still closes the panel, as a press on any of its rows does). The mount reads the platform's fact (`ScreenInputs::can_play`), which the
+/// previous test, on the default set, proves is not what stops it there.
+#[test]
+fn a_version_pick_asks_for_no_play_when_the_platform_composed_no_driver() {
+    let versions = plx_appkit::version_list::sample();
+    let pick = versions[1].id;
+    let mut w = World::detail_page("play-version-no-driver", plx_data::metadata::Detail {
+        sid: plx_plex::plex::ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        title: "Movie".into(),
+        part: "/library/parts/movie".into(),
+        versions,
+        ..Default::default()
+    });
+    w.bridge.bridge().retained.screen_inputs.backends = plx_media::route::BackendSet::NONE;
+    let host = page_instance(&w.d);
+    open_content_panel(
+        &mut w.d,
+        host,
+        Some((plx_plex::plex::ServerId::UNSET, "movie")),
+        plx_screens::registry::ContentPanel::Versions { anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits) },
+    );
+    w.frames(40);
+    assert_eq!(w.d.nav.modals.surfaces.len(), 1, "premise: the Play Version panel is up");
+    let mut tap = PickTap::default();
+    let mut t = w.frame;
+    let mut bridge = w.bridge.bridge();
+    pick_key(&mut w.d, &mut bridge, &mut t, Key::Down, &mut tap);
+    pick_key(&mut w.d, &mut bridge, &mut t, Key::Ok, &mut tap);
+    assert!(tap.ended(host, &Asked::Play(Some(pick))).is_empty(), "no play was asked: {}", tap.account());
+    assert!(tap.commands.iter().all(|(asked, ..)| !matches!(asked, Asked::Play(_))), "{}", tap.account());
+    assert!(!matches!(w.d.top_arg(), Some(AppArg::Player)), "the player was not entered");
+}
+
 /// The two-copy *Also available* rig of `a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance`:
 /// the page on `m1` of server `here`, the picker up over it, its cursor on the first copy.
 struct AltRig {
