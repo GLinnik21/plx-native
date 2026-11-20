@@ -1,6 +1,20 @@
 {
  "flaky": [
   {
+   "count": 1,
+   "first_seen": "2026-11-20T08:40:05Z",
+   "job": "host unit tests (default features)",
+   "last": {
+    "pr": 1483,
+    "run": 44703127807,
+    "sha": "6d6f1de6b"
+   },
+   "last_seen": "2026-11-20T08:40:05Z",
+   "new": true,
+   "status": "Active",
+   "test": "plxnative_modules::app::bridge::account_menu_route_tests::closing_the_account_menu_with_back_raises_no_page_damage"
+  },
+  {
    "count": 3,
    "first_seen": "2026-11-12T17:23:43Z",
    "job": "host unit tests (hostsim)",
@@ -113,21 +127,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-20T08:38:32Z",
+ "generated": "2026-11-20T08:46:08Z",
  "metrics": [
   {
-   "change30_pct": -13.2,
-   "change7_pct": -12.8,
+   "change30_pct": -12.9,
+   "change7_pct": -12.5,
    "d30": 485,
-   "delta30": -64,
-   "delta7": -62.0,
+   "delta30": -62.5,
+   "delta7": -60.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 155,
+   "n_now": 156,
    "n_prev": 146,
-   "now": 421,
+   "now": 422.5,
    "prev7": 483.0,
    "shown": true,
    "state": "flat",
