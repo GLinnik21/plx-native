@@ -323,6 +323,32 @@ fn a_digit_key_types_into_the_entry_and_backspace_removes_one() {
     // is not in 48..=57) — `press` handles it directly, exercised below through `Activate`.
 }
 
+/// **Each number key types its own digit, and a wcode-only press keeps typing it.** The pairs are
+/// the ones the keypad is sent as `InputKind::Key { sym, wcode }`, written out as literals: a
+/// printable key's ASCII sym with or without the television's scancode beside it (the number
+/// buttons are sym `'5'` with scancode 34: the sym is the digit and the scancode is not), and the
+/// pair with NO digit sym and a wcode in 48..=57, which `pin_digit` still reads (the keypad's
+/// reading, deliberately wider than `is_remote_bound`'s: `docs/remote-keys.md` section 9). Nothing
+/// else types: the neighbours of both ranges, an unbound key, and a press that names no key.
+#[test]
+fn native_key_effect_pin_digits_type_their_own_digit() {
+    for digit in 0u32..=9 {
+        let typed = |sym: u32, wcode: u32| {
+            let mut s = bare(Pad::opened(0));
+            step_ev(&mut s, &key_down(Key::Other, sym, wcode), None);
+            s.pad.entry
+        };
+        assert_eq!(typed(48 + digit, 0), digit.to_string(), "sym '{digit}'");
+        assert_eq!(typed(48 + digit, 30 + digit), digit.to_string(), "sym '{digit}' with its scancode beside it");
+        assert_eq!(typed(0, 48 + digit), digit.to_string(), "wcode {} alone", 48 + digit);
+    }
+    for (sym, wcode) in [(47, 0), (58, 0), (0, 47), (0, 58), (0, 0), (0, 504), (0x4000_0051, 0), (0, 450), (0, 72)] {
+        let mut s = bare(Pad::opened(0));
+        step_ev(&mut s, &key_down(Key::Other, sym, wcode), None);
+        assert_eq!(s.pad.entry, "", "({sym}, {wcode}) types nothing");
+    }
+}
+
 /// Backspace and typing-again both cancel a running wrong-PIN flash — `press`'s own first
 /// line, ported from `ui/profiles.rs`.
 #[test]

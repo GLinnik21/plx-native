@@ -1395,8 +1395,10 @@ unsafe fn host_foreground(app: &mut App, edge: Lifecycle, playing: bool,
 /// (an unsupported key) flows on as exactly the pair it was, the lab trigger is a pair `lab.json`
 /// names, and the tape records the pair. `press.pair()` is the raw pair an SDL event carried or, for
 /// a host that sent only an action, the pair `raw_pair` gives it, so a platform with no SDL key
-/// reaches the same arms a real remote does. What the press MEANS (`press.action()`) is read where
-/// the meaning is the question: the pointer-hide notification, which is no press at all.
+/// reaches the same arms a real remote does. Every arm reads the pair, the pointer-hide
+/// notification included (`classify` of the pair, as it always was): the press's own `action()` is
+/// the same answer by construction (`KeyPress::new` refuses a press whose action is not the pair's),
+/// and the pair is the one thing every platform's press has.
 unsafe fn ingest_key(app: &mut App, press: KeyPress) {
     let RawKey { sym, wcode } = press.pair();
     // The fork's packed state (low byte 1 is down, 0x100 an auto-repeat), re-derived from the edge
@@ -1410,7 +1412,7 @@ unsafe fn ingest_key(app: &mut App, press: KeyPress) {
     let key = classify(sym, wcode);
     // LG can report its own pointer hide as a key-shaped SDL event. It is
     // a notification, so it must not wake the HUD or spend Back's exit latch.
-    if press.action() == Some(plx_ui::consts::Action::PointerHidden) {
+    if key == Key::PointerHidden {
         app.ptr.edge.stop();
         return;
     }
@@ -4990,6 +4992,315 @@ pub(in crate::app) mod lifecycle_regression_tests {
             key(0, 72, true, false), key(0, 72, false, false),
         ], "one `key` row per edge, in `enc_key`'s shape");
         assert_eq!(tapes[0], tapes[1], "the tape is byte-equal whichever way a key arrives");
+    }
+
+    // ---- W5b guard: a NATIVE key reaches the real consumer's effect ------------------------------
+    //
+    // The tests above show that a hosted key and an SDL key agree. They cannot show that either is
+    // RIGHT: both doors carry one pair, whatever `raw_pair` says. These feed the pair a television
+    // or the simulator really sends, written out here as LITERALS (never `raw_pair`, never an
+    // `Action`), through the real decoder and loop, and grade what the real consumer did with it.
+    // Each case has up to three readings, and each is red under a different break of the mapping:
+    //   * the EFFECT of the native bytes: a wrong `classify` / `page_dir` reading, which is what the
+    //     consumers read today;
+    //   * the effect of the hosted, action-only press: a wrong `raw_pair`, which `KeyPress::new`
+    //     refuses (its round trip) or which acts as another key;
+    //   * the DECODED action: a wrong `action_of`, which no production reader of the loop reads yet
+    //     (the screens move onto it in W5d), so only this literal catches it.
+    // The hostsim build feeds the STOCK SDL byte layout; LG's fork layout is graded in the default-feature
+    // run (`events::key_event_tests::the_key_layout_is_pinned_byte_for_byte`).
+
+    /// One native key edge, as the SDL bytes this build's drain reads, through the real ingress.
+    fn native_edge(app: &mut App, fr: &mut Frame, sym: u32, wcode: u32, down: bool) {
+        clock::set_replay(100);
+        app.ev = encode_key(sym, wcode, down);
+        event(app, fr, if down { SDL_KEYDOWN } else { SDL_KEYUP });
+    }
+
+    /// The frame that delivers what the key edges left to the tree.
+    fn deliver_inputs(app: &mut App, ms: u32) {
+        let inputs = std::mem::take(&mut app.inputs);
+        super::super::bridge::app_frame(app, plx_machine::machine::Tick { ms, dt_us: 16_000 }, inputs);
+    }
+
+    /// The native key's press as `decode_host_event` reads it: `(action, pair)`.
+    fn decoded(sym: u32, wcode: u32) -> (Option<plx_ui::consts::Action>, RawKey) {
+        let Some(HostEvent::Key(press)) = decode_host_event(&encode_key(sym, wcode, true)) else {
+            panic!("({sym}, {wcode}) decodes to a key press");
+        };
+        (press.action(), press.pair())
+    }
+
+    /// The bare player page, mounted with no engine behind it, and the frame the loop would hold.
+    fn mounted_player() -> (App, Frame) {
+        let mut app = app();
+        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        frame(&mut app, 0);
+        let fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        (app, fr)
+    }
+
+    /// What the player page asked the performer for, less the HUD's own housekeeping.
+    fn asked_of_the_player(app: &mut App) -> Vec<plx_screens::registry::PlayerReq> {
+        app.runtime.bridge(&mut app.bridge).take_observed_player_commands().into_iter()
+            .filter(|req| !matches!(req, plx_screens::registry::PlayerReq::ExtendHud(_))).collect()
+    }
+
+    /// **Play is not Pause, and neither is a toggle.** The player reads the key through
+    /// `classify_input`, so each native transport key must reach it as the request it has always
+    /// made: PLAY (wcode 450) asks to play, PAUSE (wcode 72) asks to pause, PLAYPAUSE (261) asks for
+    /// the toggle, and their alternate spellings ask the same. The hosted, action-only press of each
+    /// action asks the same as the native key it stands for.
+    #[test]
+    fn native_key_effect_transport_play_is_not_pause() {
+        use plx_machine::machine::Edge;
+        use plx_screens::registry::PlayerReq;
+        use plx_ui::consts::Action;
+        let _serial = plx_base::testlock::serial();
+        let (pause, play, toggle) = (PlayerReq::Transport(Some(false)), PlayerReq::Transport(Some(true)), PlayerReq::Transport(None));
+        for (sym, wcode, action, want, what) in [
+            (0, 72, Action::Pause, &pause, "PAUSE"),
+            (0, 450, Action::Play, &play, "PLAY"),
+            (0, 261, Action::PlayPause, &toggle, "PLAYPAUSE"),
+            (415, 0, Action::Pause, &pause, "PAUSE, the alternate in the sym"),
+            (0, 415, Action::Pause, &pause, "PAUSE, the alternate in the wcode"),
+            (19, 0, Action::Play, &play, "PLAY, the first alternate in the sym"),
+            (0, 402, Action::Play, &play, "PLAY, the second alternate in the wcode"),
+        ] {
+            assert_eq!(decoded(sym, wcode), (Some(action), RawKey { sym, wcode }), "{what}: the decoded press");
+            let (mut app, mut fr) = mounted_player();
+            native_edge(&mut app, &mut fr, sym, wcode, true);
+            deliver_inputs(&mut app, 100);
+            native_edge(&mut app, &mut fr, sym, wcode, false);
+            deliver_inputs(&mut app, 116);
+            assert_eq!(asked_of_the_player(&mut app), [want.clone()], "{what}: native ({sym}, {wcode})");
+        }
+        // The hosted door, which names the action and not the pair: it asks what its native key asks.
+        for (action, want) in [(Action::Pause, &pause), (Action::Play, &play), (Action::PlayPause, &toggle)] {
+            let (mut app, mut fr) = mounted_player();
+            for (edge, ms) in [(Edge::Down, 100), (Edge::Up, 116)] {
+                clock::set_replay(100);
+                let press = KeyPress::new(Some(action), edge, None).expect("an action names a press");
+                unsafe { ingest_host_event(&mut app, &mut fr, HostEvent::Key(press), |_| {}) };
+                deliver_inputs(&mut app, ms);
+            }
+            assert_eq!(asked_of_the_player(&mut app), [want.clone()], "hosted {action:?}");
+        }
+    }
+
+    /// How a key is delivered to a guard test: as the native SDL bytes (the pair, as literals) or as
+    /// the hosted press that names only the action.
+    enum Door {
+        Native(u32, u32),
+        Hosted(plx_ui::consts::Action),
+    }
+
+    /// One edge of `door`'s key, through the real ingress.
+    fn door_edge(app: &mut App, fr: &mut Frame, door: &Door, down: bool) {
+        use plx_machine::machine::Edge;
+        match door {
+            Door::Native(sym, wcode) => native_edge(app, fr, *sym, *wcode, down),
+            Door::Hosted(action) => {
+                clock::set_replay(100);
+                let edge = if down { Edge::Down } else { Edge::Up };
+                let press = KeyPress::new(Some(*action), edge, None).expect("an action names a press");
+                unsafe { ingest_host_event(app, fr, HostEvent::Key(press), |_| {}) };
+            }
+        }
+    }
+
+    /// A tap of `door`'s key on a mounted player, then the frames the page needs to answer it.
+    fn tap_the_player(app: &mut App, fr: &mut Frame, door: &Door) {
+        for (down, ms) in [(true, 120), (false, 136)] {
+            door_edge(app, fr, door, down);
+            deliver_inputs(app, ms);
+        }
+        for ms in [152, 168, 184, 200] {
+            frame(app, ms);
+        }
+    }
+
+    /// A mounted player with the film at 60 s of 100 s and the transport up, the frame the loop would
+    /// hold, and the seek mailboxes the page's seeks write (restored when the last of these drops).
+    fn mounted_player_at_60s() -> (App, Frame, SeekGlobals) {
+        let (mut app, fr) = mounted_player();
+        let seek = SeekGlobals::set(&mut app, 60_000_000_000, 100_000_000_000);
+        super::publish_frame(&mut app.runtime.bridge(&mut app.bridge), &app.player.session, true,
+            app.adapters.player.backend_viewer_paused());
+        pin_headless_hud(&mut app, 100, None);
+        frame(&mut app, 100);
+        (app, fr, seek)
+    }
+
+    /// **REWIND seeks back, and a plain LEFT does not.** The player reads REWIND (wcode 452) as
+    /// `Left { alt: true }`, the transport's seek, and the D-pad's LEFT as `Left { alt: false }`, which
+    /// only moves a pending target: with the transport up at 60 s of 100 s a REWIND tap asks the
+    /// performer to seek to 50 s, and a plain LEFT asks nothing and leaves 50 s as the target for OK
+    /// to take. FAST-FORWARD (451) and RIGHT are the same pair the other way. The hosted press of
+    /// each action does what its native key does.
+    #[test]
+    fn native_key_effect_rewind_seeks_back_where_left_only_moves_a_target() {
+        use plx_screens::registry::PlayerReq;
+        use plx_ui::consts::Action;
+        let _serial = plx_base::testlock::serial();
+        const S: i64 = 1_000_000_000;
+        for (sym, wcode, action, asked, target, what) in [
+            (0, 452, Action::Rewind, vec![PlayerReq::CommitSeek(50 * S)], -1, "REWIND"),
+            (0, 451, Action::FastForward, vec![PlayerReq::CommitSeek(70 * S)], -1, "FAST-FORWARD"),
+            (0x4000_0050, 0, Action::Left, vec![], 50 * S, "LEFT"),
+            (0x4000_004f, 0, Action::Right, vec![], 70 * S, "RIGHT"),
+        ] {
+            assert_eq!(decoded(sym, wcode), (Some(action), RawKey { sym, wcode }), "{what}: the decoded press");
+            for door in [Door::Native(sym, wcode), Door::Hosted(action)] {
+                let (mut app, mut fr, _seek) = mounted_player_at_60s();
+                tap_the_player(&mut app, &mut fr, &door);
+                let page = super::super::bridge::player(&app.pages).expect("the player page is mounted");
+                let reached = page.scrub.ns;
+                assert_eq!(reached, target, "{what}: the pending target ({})", if matches!(door, Door::Native(..)) { "native" } else { "hosted" });
+                assert_eq!(asked_of_the_player(&mut app), asked, "{what}: what the player asked ({})",
+                    if matches!(door, Door::Native(..)) { "native" } else { "hosted" });
+            }
+        }
+    }
+
+    /// The Library grid's focused cell `(row, col)`, read off the page on top.
+    fn grid_cell(app: &App) -> Option<(usize, usize)> {
+        app.pages.nav.top_page()?.inst.as_ref()?.screen.as_any()?
+            .downcast_ref::<plx_screens::library::LibraryScreen>()?.grid_position(app.pages.focus())
+    }
+
+    /// **The pager pages the grid the way its key says.** PAGE DOWN (sym `0x4000_004e`) and the channel
+    /// rocker's CH- (wcode 301) move the focus two rows down the Library grid and PAGE UP (sym
+    /// `0x4000_004b`) and CH+ (300) two rows up, in the same column, on a grid of 120 items. The
+    /// walk goes down past where it started and back, so each key is graded by the cell it leaves:
+    /// rows 2, 4, 6 and then 4, 2, 0. The hosted press of each action pages the same way. This is the
+    /// real loop on the real Library, with the focus seated on the first cell by the page's own command.
+    #[test]
+    fn native_key_effect_paging_moves_the_grid_the_way_each_key_says() {
+        use plx_machine::machine::{Delivery, Fx, MachineId};
+        use plx_screens::registry::{AppMsg, LibraryCmd};
+        use plx_ui::consts::Action;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED native_key_effect_paging_moves_the_grid_the_way_each_key_says: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 120);
+        let focus_first = |rig: &mut Rig, t: &mut u32| {
+            let page = rig.app.pages.nav.top_page().unwrap();
+            let instance = rig.app.pages.nav.instance_of(page.id).unwrap();
+            rig.app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(
+                plx_ui::screen::ScreenEvent::App(AppMsg::Library(LibraryCmd::FocusGrid { row: 0, col: 0 })))));
+            for _ in 0..40 { step(&mut rig.app, t, vec![]); }
+            assert_eq!(grid_cell(&rig.app), Some((0, 0)), "premise: the first cell is focused");
+        };
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+        let (page_down, page_up) = ((0x4000_004e, 0), (0x4000_004b, 0));
+        focus_first(&mut rig, &mut t);
+        for (what, (sym, wcode), action, row) in [
+            ("PAGE DOWN", page_down, Action::PageDown, 2),
+            ("PAGE DOWN", page_down, Action::PageDown, 4),
+            ("CH-", (0, 301), Action::PageDown, 6),
+            ("PAGE UP", page_up, Action::PageUp, 4),
+            ("CH+", (0, 300), Action::PageUp, 2),
+            ("PAGE UP", page_up, Action::PageUp, 0),
+        ] {
+            assert_eq!(decoded(sym, wcode), (Some(action), RawKey { sym, wcode }), "{what}: the decoded press");
+            for down in [true, false] {
+                rig.app.ev = encode_key(sym, wcode, down);
+                event(&mut rig.app, &mut fr, if down { SDL_KEYDOWN } else { SDL_KEYUP });
+                step(&mut rig.app, &mut t, vec![]);
+            }
+            for _ in 0..30 { step(&mut rig.app, &mut t, vec![]); }
+            assert_eq!(grid_cell(&rig.app), Some((row, 0)), "{what}: native ({sym}, {wcode}) leaves row {row}");
+        }
+        focus_first(&mut rig, &mut t);
+        for (action, row) in [(Action::PageDown, 2), (Action::PageDown, 4), (Action::PageUp, 2), (Action::PageUp, 0)] {
+            for edge in [plx_machine::machine::Edge::Down, plx_machine::machine::Edge::Up] {
+                let press = KeyPress::new(Some(action), edge, None).expect("an action names a press");
+                unsafe { ingest_host_event(&mut rig.app, &mut fr, HostEvent::Key(press), |_| {}) };
+                step(&mut rig.app, &mut t, vec![]);
+            }
+            for _ in 0..30 { step(&mut rig.app, &mut t, vec![]); }
+            assert_eq!(grid_cell(&rig.app), Some((row, 0)), "hosted {action:?} leaves row {row}");
+        }
+    }
+
+    /// **A pointer hide is a notification, however it arrives, and an unbound key still flows on.**
+    /// LG's pointer auto-hide is the pair (sym 0, wcode `0x1e4`). As the SDL bytes, as the hosted
+    /// press that carries that pair and no stated action (a raw-only press: the action is the one
+    /// `action_of` reads out of it), or as the hosted action alone, it stops the pointer's glide and
+    /// does nothing else: no input reaches the tree and no physically-down key is booked. The
+    /// unbound colour button (wcode 504) is the control on every count: no action, the raw pair
+    /// kept, an input for the tree and its sym booked.
+    #[test]
+    fn native_key_effect_a_pointer_hide_is_a_notification_and_an_unbound_key_flows_on() {
+        use plx_machine::machine::Edge;
+        use plx_ui::consts::Action;
+        let _serial = plx_base::testlock::serial();
+        assert_eq!(decoded(0, 0x1e4), (Some(Action::PointerHidden), RawKey { sym: 0, wcode: 0x1e4 }));
+        assert_eq!(decoded(0, 504), (None, RawKey { sym: 0, wcode: 504 }), "the colour button has no action and keeps its pair");
+        let booted = || {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages, AppArg::Settings(plx_screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            app.ptr.edge.moved(900.0, 40.0, false);
+            app.down_sym = 77;
+            (app, fr)
+        };
+        for door in ["the SDL bytes", "a raw-only hosted press", "a hosted action alone"] {
+            for down in [true, false] {
+                let (mut app, mut fr) = booted();
+                clock::set_replay(100);
+                match door {
+                    "the SDL bytes" => native_edge(&mut app, &mut fr, 0, 0x1e4, down),
+                    "a raw-only hosted press" => {
+                        let press = KeyPress::new(None, if down { Edge::Down } else { Edge::Up },
+                            Some(RawKey { sym: 0, wcode: 0x1e4 })).expect("a raw pair names a press");
+                        unsafe { ingest_host_event(&mut app, &mut fr, HostEvent::Key(press), |_| {}) };
+                    }
+                    _ => {
+                        let press = KeyPress::new(Some(Action::PointerHidden), if down { Edge::Down } else { Edge::Up }, None)
+                            .expect("an action names a press");
+                        unsafe { ingest_host_event(&mut app, &mut fr, HostEvent::Key(press), |_| {}) };
+                    }
+                }
+                assert_eq!(app.ptr.edge.at(), None, "{door} (down={down}): the glide's pointer is gone");
+                assert!(app.inputs.is_empty(), "{door} (down={down}): no input reaches the tree");
+                assert_eq!(app.down_sym, 77, "{door} (down={down}): no physically-down key is booked");
+            }
+        }
+        let (mut app, mut fr) = booted();
+        native_edge(&mut app, &mut fr, 0, 504, true);
+        assert!(app.ptr.edge.at().is_some(), "an unbound key leaves the pointer alone");
+        assert_eq!(app.inputs.len(), 1, "an unbound key still flows on to the tree");
+        assert!(matches!(app.inputs[0].kind,
+            plx_machine::machine::InputKind::Key { key: plx_machine::machine::Key::Other, sym: 0, wcode: 504, edge: Edge::Down, .. }),
+            "…as the raw pair it was");
+        assert_eq!(app.down_sym, 0, "…and its sym is the physically-down key");
+    }
+
+    /// **An unbound native key leaves a dismissed transport dismissed, and a bound one raises it.** On
+    /// the mounted player (no engine) with the transport hidden by hand (the UP-hide's dismissal): the
+    /// colour button (wcode 504) is no key the app acted on, so it asks nothing and un-dismisses
+    /// nothing, and a D-pad DOWN, the positive control in the same rig, un-dismisses it.
+    #[test]
+    fn native_key_effect_an_unbound_key_does_not_wake_the_transport() {
+        let _serial = plx_base::testlock::serial();
+        let dismissed = |app: &App| super::super::bridge::player(&app.pages)
+            .expect("the player page is mounted").hud.dismissed;
+        for (sym, wcode, wakes, what) in [(0, 504, false, "the colour button"), (0x4000_0051, 0, true, "DOWN")] {
+            let (mut app, mut fr) = mounted_player();
+            super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted").hud.dismissed = true;
+            assert!(dismissed(&app), "premise: the transport was hidden by hand");
+            tap_the_player(&mut app, &mut fr, &Door::Native(sym, wcode));
+            assert_eq!(dismissed(&app), !wakes, "{what}: the transport is {}", if wakes { "raised" } else { "left down" });
+            assert!(asked_of_the_player(&mut app).is_empty(), "{what} asks the performer for nothing");
+        }
     }
 
     #[cfg(feature = "devtriggers")]

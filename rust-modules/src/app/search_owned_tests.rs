@@ -475,6 +475,50 @@ fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
     assert_eq!(rig.retained.keyboard_calls, [true, false]);
 }
 
+/// **The television keyboard's edit keys edit the field, as they always did.** The native pairs
+/// (written out as literals: Backspace is sym 8 with scancode 42, Clear is `SDLK_CLEAR` with scancode
+/// 156, and the simulator's desktop Backspace is sym 8 beside BACK's wcode 482) go through the real
+/// decoder, and the input the loop hands the tree for each reaches the real Search screen, whose
+/// store is what the viewer's query is. The simulator's Backspace decodes as `Back` and still
+/// deletes: the screen reads the raw `sym` for the edit before it reads the key.
+/// The narrowest rig that reaches Search's key arm is this Dispatcher tier: the loop's `app()` cannot
+/// raise Search's keyboard on a host (`textinput::available()` is false there).
+#[test]
+fn native_key_effect_search_edit_keys_edit_the_field() {
+    use plx_ui::consts::Action;
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("native-key-effect-search");
+    session.watching("synthetic-native-key-effect");
+    plx_plex::plex::reset_servers_for_test();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
+    frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
+    let text = |s: &str, at| InputEvent { at, source: Source::Script,
+        kind: InputKind::Text(plx_machine::machine::TextEdit::Commit(s.into())) };
+    let mut events = script_key(Key::Ok, tick(1));
+    events.push(text("abcd", tick(1)));
+    frame(&mut d, &mut rig, AppArg::Search, tick(1), events);
+    assert_eq!(rig.stores.search.query(), "abcd", "premise: the field is editing and holds the text");
+    for (n, (sym, wcode, action, query)) in [
+        (8, 42, Action::Backspace, "abc"),
+        (8, 482, Action::Back, "ab"), // the simulator's Backspace: BACK's wcode beside the edit key's sym
+        (0x4000_009c, 156, Action::ClearAll, ""),
+    ].into_iter().enumerate() {
+        let (press, down) = crate::app::events::native_key_input(sym, wcode, true, tick(2 + n as u32));
+        let (_, up) = crate::app::events::native_key_input(sym, wcode, false, tick(2 + n as u32));
+        assert_eq!(press.action(), Some(action), "({sym}, {wcode}) decodes to its action");
+        frame(&mut d, &mut rig, AppArg::Search, tick(2 + n as u32), vec![down, up]);
+        assert_eq!(rig.stores.search.query(), query, "native ({sym}, {wcode}) edits the field");
+        assert!(d.input.keyboard, "an edit key does not close the keyboard");
+    }
+    // An edit key with nothing to edit changes nothing and still keeps the field.
+    let (_, down) = crate::app::events::native_key_input(8, 42, true, tick(9));
+    frame(&mut d, &mut rig, AppArg::Search, tick(9), vec![down]);
+    assert_eq!(rig.stores.search.query(), "");
+    assert!(d.input.keyboard);
+}
+
 #[test]
 fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     let _serial = plx_base::testlock::serial();

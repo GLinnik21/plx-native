@@ -183,12 +183,16 @@ pub(crate) struct RawKey {
 /// One edge of one key, as a platform hands it to the loop: the canonical [`Action`] where the key
 /// has one, the [`Edge`], and the raw pair where the platform has one.
 ///
-/// **At least one of `action` and `raw` is set, and that is a type's guarantee, not a convention:**
-/// the fields are private to this module and [`KeyPress::new`] refuses a press that carries
-/// neither, so the loop never reads a key it cannot name. An SDL press always has a raw pair
-/// (`action` is what [`action_of`] makes of it, `None` for an unbound key); a host that knows only
-/// the meaning sends the action alone and [`KeyPress::pair`] expands it with [`raw_pair`], which is
-/// the pair a remote's press of that key would have been.
+/// **A press is self-consistent, and that is a type's guarantee, not a convention:** the fields are
+/// private to this module and [`KeyPress::new`] makes the action and the pair one key. It refuses a
+/// press that carries neither field, a stated action that is not what [`action_of`] makes of the raw
+/// pair beside it, and an action alone whose [`raw_pair`] does not read back as that action
+/// (`Digit(10)` names no key); a raw pair with no stated action has the action [`action_of`] reads
+/// out of it. So the loop never reads a key it cannot name, and the action and the pair can never
+/// disagree about which key was pressed. An SDL press always has a raw pair (its action is what
+/// [`action_of`] makes of it, `None` for an unbound key); a host that knows only the meaning sends
+/// the action alone and [`KeyPress::pair`] expands it with [`raw_pair`], which is the pair a
+/// remote's press of that key would have been.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KeyPress {
     action: Option<Action>,
@@ -197,9 +201,31 @@ pub(crate) struct KeyPress {
 }
 
 impl KeyPress {
-    /// A press of `action` and/or `raw`, or `None` when it names neither.
+    /// A press of `action` and/or `raw`, or `None` when they do not make one key:
+    /// * with a raw pair, the action is [`action_of`] of it (`None` for a pair no action names: an
+    ///   unsupported key still flows on as the pair it was), and an `action` that is stated and
+    ///   differs is refused;
+    /// * with no raw pair, `action` must be set and its [`raw_pair`] must read back as it, which
+    ///   refuses `Digit(10..=255)`, an action no pair spells.
     pub(crate) fn new(action: Option<Action>, edge: Edge, raw: Option<RawKey>) -> Option<KeyPress> {
-        (action.is_some() || raw.is_some()).then_some(KeyPress { action, edge, raw })
+        let action = match raw {
+            Some(RawKey { sym, wcode }) => {
+                let read = action_of(sym, wcode);
+                if action.is_some() && action != read {
+                    return None;
+                }
+                read
+            }
+            None => {
+                let named = action?;
+                let (sym, wcode) = raw_pair(named);
+                if action_of(sym, wcode) != Some(named) {
+                    return None;
+                }
+                Some(named)
+            }
+        };
+        Some(KeyPress { action, edge, raw })
     }
 
     /// The press an SDL key event is: the raw pair as `decode_key` reads it, its action, and the
@@ -217,6 +243,10 @@ impl KeyPress {
         KeyPress::new(action_of(sym, wcode), edge, Some(RawKey { sym, wcode }))
     }
 
+    /// What the press means. Read by the tests only for now: the loop's ladder reads [`pair`](Self::pair),
+    /// which every platform's press has, and the screens that move onto the action (W5d) make this
+    /// a production accessor then.
+    #[cfg(test)]
     pub(crate) fn action(&self) -> Option<Action> {
         self.action
     }
@@ -333,6 +363,21 @@ pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
         ev[16..20].copy_from_slice(&state.to_ne_bytes());
     }
     ev
+}
+
+/// **One native key edge as the loop hands it to the tree**, for the effect-level guards (W5b): the
+/// SDL bytes a television or the simulator delivers for the pair `(sym, wcode)` (the literals a
+/// test writes down, never an `Action`'s `raw_pair`), decoded by [`decode_host_event`], and the
+/// `InputEvent` that `run::ingest_key` pushes for that press (`bridge::key_input` of the press's
+/// pair and its packed state). A consumer fed this event answers what it answers a real key.
+#[cfg(test)]
+pub(crate) fn native_key_input(sym: c_uint, wcode: c_uint, down: bool, at: plx_machine::machine::Tick)
+    -> (KeyPress, plx_machine::machine::InputEvent<u32>) {
+    let Some(HostEvent::Key(press)) = decode_host_event(&encode_key(sym, wcode, down)) else {
+        panic!("SDL key bytes decode to a key press");
+    };
+    let RawKey { sym, wcode } = press.pair();
+    (press, super::bridge::key_input(sym, wcode, press.state(), at, plx_machine::machine::Source::Sdl))
 }
 
 #[inline]
@@ -1091,6 +1136,51 @@ mod key_event_tests {
                 .map(|edge| KeyPress::new(Some(Action::Ok), edge, None).unwrap().state()),
             [1, 0x101, 0]
         );
+    }
+
+    /// **A press is one key: its action and its pair cannot disagree.** An action alone must read
+    /// back from its own `raw_pair` (`Digit(10)`, which `raw_pair` spells as `(0, 0)`, does not and
+    /// is refused, whatever else rides beside it); a stated action must be what `action_of` reads
+    /// out of the pair it comes with (the pairs below are real keys, each beside another key's
+    /// action); and a pair with no stated action has the action `action_of` reads out of it,
+    /// `PointerHidden` for the LG remote's pointer-hide wcode included.
+    #[test]
+    fn a_press_is_one_key_and_its_action_and_pair_cannot_disagree() {
+        for n in [10u8, 11, 100, 255] {
+            assert!(KeyPress::new(Some(Action::Digit(n)), Edge::Down, None).is_none(), "Digit({n}) names no key");
+            assert!(KeyPress::new(Some(Action::Digit(n)), Edge::Down, Some(RawKey { sym: 0, wcode: 0 })).is_none(),
+                "Digit({n}) is no action of the unbound pair (0, 0)");
+        }
+        assert!(KeyPress::new(Some(Action::Digit(9)), Edge::Down, None).is_some(), "9 is a number key");
+        assert_eq!(Action::digit(10), None);
+        for (action, sym, wcode, why) in [
+            (Action::Play, 0, 72, "PAUSE's wcode"),
+            (Action::Pause, 0, 450, "PLAY's wcode"),
+            (Action::PageUp, 0x4000_004e, 0, "PAGE DOWN's sym"),
+            (Action::PageDown, 0x4000_004b, 0, "PAGE UP's sym"),
+            (Action::Left, 0, 452, "REWIND, which is not a plain LEFT"),
+            (Action::Rewind, 0x4000_0050, 0, "LEFT, which is not REWIND"),
+            (Action::Digit(4), b'5' as u32, 0, "the digit 5"),
+            (Action::Ok, 0, 504, "an unbound colour button"),
+            (Action::PointerHidden, 0, 504, "an unbound colour button"),
+        ] {
+            assert!(KeyPress::new(Some(action), Edge::Down, Some(RawKey { sym, wcode })).is_none(),
+                "{action:?} beside {why} is two keys");
+        }
+        // Agreeing, in either spelling, is accepted: the simulator's desktop Backspace carries BACK's wcode.
+        assert!(KeyPress::new(Some(Action::Back), Edge::Down, Some(RawKey { sym: 8, wcode: 482 })).is_some());
+        assert!(KeyPress::new(Some(Action::Play), Edge::Down, Some(RawKey { sym: 0, wcode: 450 })).is_some());
+        // A pair with no stated action has the action it reads as, so a raw-only press is the press an SDL event is.
+        for (sym, wcode, action) in [
+            (0, 0x1e4, Some(Action::PointerHidden)),
+            (0, 450, Some(Action::Play)),
+            (0x4000_004b, 0, Some(Action::PageUp)),
+            (0, 300, Some(Action::PageUp)),
+            (0, 504, None),
+        ] {
+            let press = KeyPress::new(None, Edge::Down, Some(RawKey { sym, wcode })).unwrap();
+            assert_eq!((press.action(), press.pair()), (action, RawKey { sym, wcode }), "({sym}, {wcode})");
+        }
     }
 
     /// **The pairs the FIFO's named tokens press are the ones they have always pressed**, written out

@@ -1358,6 +1358,64 @@ mod unsupported_key_tests {
         assert!(armed, "physical bookkeeping leaves cancellation to the input owner");
         assert!(!dismissed);
     }
+
+    /// The native pair as the loop reads it: decoded from the SDL bytes a television sends, then
+    /// handed to [`press`]. Returns the decoded action too.
+    fn native(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint)
+        -> (Option<plx_ui::consts::Action>, (bool, bool)) {
+        let (key, _) = crate::app::events::native_key_input(sym, wcode, true, plx_machine::machine::Tick::default());
+        let pair = key.pair();
+        assert_eq!((pair.sym, pair.wcode), (sym, wcode), "the decoder keeps the raw pair");
+        (key.action(), press(ps, pair.sym, pair.wcode))
+    }
+
+    /// **A native key that no action names wakes nothing and abandons nothing, and a bound one still
+    /// wakes the HUD.** Both halves through the decoder, each pair a literal, in one test so the bound
+    /// keys are the positive control for the unbound ones: the colour button (504), HOME (269),
+    /// and the wcode-only press in 48..=57. That last one is the keypad's: `pin_digit` reads the
+    /// wcode, `is_remote_bound` reads the sym only (`action_of`'s number-key arm), so a scancode that
+    /// is punctuation (`;` is 51) is no number key to this predicate and has no action.
+    #[test]
+    fn native_key_effect_an_unbound_press_wakes_nothing_and_a_bound_one_wakes_the_hud() {
+        use plx_ui::consts::Action;
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let _g = plx_base::testlock::serial();
+        let mut unbound: Vec<(c_uint, c_uint)> = vec![(0, 504), (0, 269), (0, 270), (b'a' as c_uint, 4), (0, 0)];
+        unbound.extend((48..=57).map(|wcode| (0, wcode)));
+        for (sym, wcode) in unbound {
+            let (action, (armed, dismissed)) = native(&ps, sym, wcode);
+            assert_eq!(action, None, "({sym}, {wcode}) names no action");
+            assert!(armed, "({sym}, {wcode}) must not cancel the armed click");
+            assert!(dismissed, "({sym}, {wcode}) must not un-dismiss the HUD");
+        }
+        for (sym, wcode, action) in [
+            (0x4000_0051, 0, Action::Down), (13, 0, Action::Ok), (27, 0, Action::Back),
+            (0, 450, Action::Play), (0, 72, Action::Pause), (0, 452, Action::Rewind),
+            (0x4000_004e, 0, Action::PageDown), (0, 300, Action::PageUp),
+            (8, 42, Action::Backspace), (53, 34, Action::Digit(5)),
+        ] {
+            let (decoded, (_, dismissed)) = native(&ps, sym, wcode);
+            assert_eq!(decoded, Some(action), "({sym}, {wcode}) decodes to its action");
+            assert!(!dismissed, "{action:?} is bound, so it un-dismisses the HUD");
+        }
+    }
+
+    /// **The lab trigger is not a key this build has.** `labcfg::is_trigger_key` is `false` at
+    /// compile time without `lab-diagnostics` (every build the suite runs: the hostsim and default
+    /// feature sets), so no test here can arm one; the type-check of `lab-diagnostics` is `make
+    /// check`'s third feature set and compiles no test. What this build does is pinned instead: no
+    /// native pair is a trigger, and `is_bound` is exactly "has an action" for all of them, so the
+    /// fifth source of `is_bound`'s doc contributes nothing and the lab arm of the loop's ladder
+    /// never takes a key.
+    #[cfg(not(feature = "lab-diagnostics"))]
+    #[test]
+    fn native_key_effect_no_lab_trigger_exists_without_lab_diagnostics() {
+        for (sym, wcode) in [(0, 504), (0, 450), (0, 72), (0x4000_0051, 0), (13, 0), (0, 300), (8, 42), (53, 34), (0, 55), (0, 0)] {
+            let (key, _) = crate::app::events::native_key_input(sym, wcode, true, plx_machine::machine::Tick::default());
+            assert!(!plx_os::labcfg::is_trigger_key(sym, wcode), "({sym}, {wcode}) is no trigger here");
+            assert_eq!(plx_ui::consts::is_bound(sym, wcode), key.action().is_some(), "({sym}, {wcode}) is bound iff it has an action");
+        }
+    }
 }
 
 /// What the root press does once `auth::cancel` has answered.
