@@ -462,7 +462,8 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
     `commit_data` `:288-308`); a Tizen ARM build would select the DB8 arm with no helper behind it (F12). The
     `MemoryOnly` gate sits above that selection. W8a re-keyed plex's 21 sites to `tv::authority::authority()`:
     `persistence.rs`'s dispatchers take the authority and the helper's transport, so a host test drives the helper
-    arm with a fake one; telemetry's sites follow in its own PR.
+    arm with a fake one. Telemetry's consent store was re-keyed first (#1490), and that PR installs the account-clear
+    sweep on every platform, so consent on a Tizen build takes the files arm, not DB8.
 
 ### Evidence from the second reviews: F40-F46 (each citation checked in the tree)
 
@@ -907,6 +908,11 @@ Ecore names to `remote_token_key` pairs".
     retains them: a raw-only event keeps its original pair and edge, and the loop treats `action: None` as the
     raw path it is today;
   - `Text(String)` and `Edit`; `Pointer { x, y, buttons, shown }` and `Wheel { dy }` (carried explicitly, F33);
+    - As landed (W5c, #1492): `Pointer { x: f32, y: f32, edge: PointerEdge }`, `PointerEdge` being `Move | Down |
+      Up` (the SDL event type alone, for any button), and `Wheel { dy: i32 }`. There is no `buttons`, because the
+      loop never read which button was pressed: whether one is held is its own state (`Pointer::button_down`). There
+      is no `shown`, because that is the pointer machine's own `cur_hidden`, not event data (LG's hide arrives as a
+      key, `Action::PointerHidden`, and a show is a motion). See `app/events.rs`.
   - `Lifecycle(WillBackground | DidBackground | WillForeground | DidForeground)` and `Quit`;
   - `LocaleChanged`, `LowMemory` and `Launch(String)`.
 - `Action` names what callers consume, not a physical key: `Up Down Left Right Ok Back Play Pause PlayPause Stop
@@ -970,7 +976,8 @@ Ecore names to `remote_token_key` pairs".
   (`update_guarded*`), revocation (`cache_revoked`) and clear (`clear_for_erase`): the `peek()` cache cell becomes
   the source of truth, `read_live_locked()` answers from it, and no durable credential read or write is
   reachable (the four writers, the canonical commit and `save_legacy_fallback_locked`'s plaintext arm). The gate
-  sits above the `target_arch = "arm"` selection (F39, F44). It adds no `cfg(test)` branch to `session.rs`
+  sits above the storage-authority selection (`tv::authority::authority()`, which replaced the `target_arch = "arm"`
+  fence in W8a; F39, F44). It adds no `cfg(test)` branch to `session.rs`
   (F44: a `forks` line) and extends the existing cache rather than adding a second static.
 - Outcome. A successful memory-only write reports a new ephemeral outcome (`LiveWrite` and `CompletionOutcome`
   gain `Ephemeral`; not `Durable`, not `Failed`). The auth owner treats it as signed in for this run: it

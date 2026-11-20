@@ -142,7 +142,10 @@ pub enum CommitStage {
 
 /// A persistence failure that is safe to print: it has no path and never contains a payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Helper-only variants are compiled out of host adapters and vice versa.
+// Nothing needs this allow today: with it deleted, no variant warns on the host or on
+// `armv7-unknown-linux-gnueabi`, because the enum is public and `lib.rs` allows `dead_code` on all of
+// `storage` as well. Whether to drop it is the `os` directory's W8a PR's call.
+#[allow(dead_code)]
 pub enum StoreError {
     Io { stage: CommitStage, errno: i32 },
     RootNotDirectory,
