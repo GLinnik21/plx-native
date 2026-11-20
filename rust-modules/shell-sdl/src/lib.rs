@@ -71,21 +71,36 @@ mod pins {
     /// struct on the stack is the "modular-split crash" and the over-allocated buffer with its
     /// version handshake lives in the application crate's `system.rs`, beside the rest of the LG
     /// half. Nothing in this crate may call it: not for the window, not for a size, not "just to
-    /// read the display".
+    /// read the display". The SDL version query that handshake is built on belongs to the same
+    /// half and is pinned with it.
     #[test]
     fn this_crate_never_calls_the_wayland_info_query() {
-        let needle = concat!("SDL_GetWindow", "WMInfo");
-        for (name, text) in SOURCES {
-            assert!(!text.contains(needle), "{name} names the television's over-writing query");
+        for needle in [concat!("SDL_GetWindow", "WMInfo"), concat!("SDL_Get", "Version")] {
+            for (name, text) in SOURCES {
+                assert!(!text.contains(needle), "{name} names {needle}, the television's over-writing query or its handshake");
+            }
         }
     }
 
-    /// The crate links SDL plainly (`sys.rs`), and it must not grow a Wayland or glib call of its
-    /// own: those are the television's half and are fenced to the webOS platform by
-    /// `ci/check-module-layers.py`, which cannot see an `extern` block.
+    /// The crate links SDL plainly (`sys.rs`), and it must not grow a Wayland, glib or LG-fork call
+    /// of its own: those are the television's half and are fenced to the webOS platform by
+    /// `ci/check-module-layers.py`, which cannot see an `extern` block. The needles are the
+    /// Wayland proxy, display and surface names, the Luna register and call families, glib's main
+    /// context, and the LG fork's own webOS-prefixed SDL entry points and helper-prefixed bridge
+    /// names; each is split so this file, which the scan reads too, does not name the thing it
+    /// forbids.
     #[test]
     fn this_crate_names_no_wayland_or_luna_symbol() {
-        for needle in [concat!("wl_", "proxy"), concat!("wl_", "display"), concat!("LS", "Register"), concat!("g_main_", "context")] {
+        for needle in [
+            concat!("wl_", "proxy"),
+            concat!("wl_", "display"),
+            concat!("wl_", "surface"),
+            concat!("LS", "Register"),
+            concat!("LS", "Call"),
+            concat!("g_main_", "context"),
+            concat!("SDL_", "webOS"),
+            concat!("HELPER", "_"),
+        ] {
             for (name, text) in SOURCES {
                 assert!(!text.contains(needle), "{name} names {needle}");
             }
