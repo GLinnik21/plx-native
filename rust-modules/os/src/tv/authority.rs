@@ -1,20 +1,26 @@
 //! Where the account's canonical state lives: the platform's storage helper, or plain files.
 //!
-//! The session record, the install's preferences and the consent record each have two homes. On a
-//! webOS television the LS2/DB8 storage helper owns them ([`Authority::Helper`]): the app never
-//! reads or writes a file of its own for them. Everywhere else the app keeps them in files under its
-//! persistent state root ([`Authority::Files`]): the desktop simulator, a host test, and a platform
-//! with no helper at all (Tizen). The layers that persist these records (`plex::session`,
-//! `telemetry`) choose their store from this value, once per operation, instead of from the build's
-//! CPU and OS, which is what picked it before: a 32-bit ARM Linux binary is not necessarily a
-//! television.
+//! The session record, the install's preferences and the consent record each have one canonical
+//! store, and the platform states which. On a webOS television it is the LS2/DB8 storage helper
+//! ([`Authority::Helper`]). Everywhere else it is the app's own record files under its persistent
+//! state root ([`Authority::Files`]): the desktop simulator, a host test, and a platform with no
+//! helper at all (Tizen).
 //!
-//! The platform states it once, as the `authority` of its [`StorageHooks`](super::StorageHooks), and
-//! [`authority`] reads it. A process that installed no platform (a host test) reads
+//! Under `Helper` the app's own files are not the store. They are the legacy migration inputs an
+//! older build left, and the marked fallback the session layer writes when a commit to the helper is
+//! not durable (a helper outage): while the helper cannot answer, that file is served as transient
+//! state, and it never replaces the helper's record.
+//!
+//! The platform states the value once, as the `authority` of its [`StorageHooks`](super::StorageHooks),
+//! and [`authority`] reads it. A process that installed no platform (a host test) reads
 //! [`StorageHooks::NONE`], which is `Files`, like every other group's host-test answer. A shipping
-//! process must install its services before anything persists: an uninstalled television would read
-//! `Files` and write a plaintext session file, which is why `run_application` installs them first
+//! process has to install its services before anything persists, because an uninstalled television
+//! would be told it has no helper; `run_application` installs them as its first statement
 //! (`port::tests` pins the order).
+//!
+//! The value exists so that the layers that persist these records can choose their canonical store
+//! from what the platform states, not from the build's CPU and OS (a 32-bit ARM Linux binary is not
+//! necessarily a television).
 //!
 //! This group is the home of the platform's other storage statements as well. The helper's wake-up
 //! (`storage::client::install_activator`, which `port::plex_main` installs for webOS today) belongs
@@ -23,10 +29,11 @@
 /// Where the account's canonical state lives.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Authority {
-    /// The platform's storage helper (webOS: the LS2/DB8 service). No file of the app's own holds
-    /// the record, and a helper that cannot answer is never papered over with one.
+    /// The platform's storage helper (webOS: the LS2/DB8 service) is the canonical store. The app's
+    /// own files are only the legacy migration inputs and the session layer's marked fallback, which
+    /// is written during a helper outage and is never the record.
     Helper,
-    /// Files under the app's persistent state root, written by the app itself.
+    /// The app's own record files under its persistent state root are the canonical store.
     #[default]
     Files,
 }

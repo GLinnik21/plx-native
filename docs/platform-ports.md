@@ -848,8 +848,10 @@ split by who reads it (critic M4):
      `devcaps` parses through, `Files::NONE` for a platform with none);
    - `secure { seal, open, remove, mode }` (Target shape 4; until W2 `mode` is W3a's own once-set value);
    - `system { go_home, poll_home, deliver_toast }`;
-   - `storage { authority }` (W8a): `Authority::Helper` (webOS: the LS2/DB8 storage helper owns the session, the
-     install's preferences and the consent record) or `Authority::Files` (desktop, Tizen, a host test), read through
+   - `storage { authority }` (W8a): `Authority::Helper` (webOS: the LS2/DB8 storage helper is the canonical store of
+     the session, the install's preferences and the consent record; the app's own files there are the legacy
+     migration inputs and the marked fallback of a helper outage) or `Authority::Files` (desktop, Tizen, a host
+     test: the app's own record files are the store), read through
      `tv::authority::authority()`. It replaces the `target_os = "linux"` + `target_arch = "arm"` fence the persistence
      layers chose their store by; the helper's wake-up (`storage::client::install_activator`) joins it after W7b;
    - `legacy_webos_media { sink, display_sink, uri_media }`: the Starfish, ACB and `com.webos.media` verbs (F31),

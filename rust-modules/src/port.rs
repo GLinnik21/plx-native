@@ -155,36 +155,69 @@ mod tests {
     use super::SERVICES;
     use plx_os::tv::authority::Authority;
 
-    /// The webOS table states the storage helper as the home of the session, the install's preferences
-    /// and the consent record. The persistence layers choose their store from this value, so a table
-    /// that stated anything else would move a television's account out of DB8.
+    /// The webOS table states the storage helper as the canonical home of the session, the install's
+    /// preferences and the consent record: on a television that is DB8, and a table that stated
+    /// `Files` would say the app's own files are.
     #[test]
     fn the_webos_table_states_the_storage_helper_as_the_authority() {
         assert_eq!(SERVICES.storage.authority, Authority::Helper);
         assert_eq!(SERVICES.secure.mode, plx_os::tv::secure::StoreMode::Durable);
     }
 
-    /// `run_application` installs the services before anything else runs. The authority is read by
-    /// whatever persists first, and an uninstalled television reads `Files` and would write a
-    /// plaintext session file, so the install has to come before `exit::entry` runs `enter_application`.
-    /// Reads the source, like `app::boot`'s `seam_order_tests`, because no host test can run the entry.
+    /// Every `.rs` file under the application crate's `src`, as text.
+    fn crate_sources() -> Vec<String> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read a source directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(std::fs::read_to_string(&path).expect("read a source file"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut out);
+        out
+    }
+
+    /// `run_application` installs the services as its first statement, before anything can read
+    /// them: a process that has installed none reads the host-test answers, which for the storage
+    /// group is `Files`, so a television that persisted ahead of its install would be told it has no
+    /// helper. One production install, and the only caller of `tv::install` is the `Platform` method
+    /// it goes through. Reads the source, like `app::boot`'s `seam_order_tests`, because no host test
+    /// can run the entry.
     #[test]
-    fn the_services_are_installed_before_the_application_enters() {
-        let source = include_str!("app/mod.rs");
-        let body = source
+    fn the_services_are_installed_first_and_only_there() {
+        let body = include_str!("app/mod.rs")
             .split_once("fn run_application(")
             .expect("run_application")
             .1
-            .split_once("\n}\n")
-            .expect("end of run_application")
-            .0;
-        let install = body.find("platform.install_services();").expect("run_application installs the services");
-        let enter = body.find("exit::entry(").expect("run_application enters through exit::entry");
-        assert!(install < enter, "install_services must run before exit::entry");
+            .split_once('{')
+            .expect("run_application's body")
+            .1;
+        let first = body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("//"))
+            .expect("a first statement");
+        let first = first.split_once("//").map_or(first, |(code, _)| code).trim();
         assert_eq!(
-            source.matches("install_services()").count(),
+            first,
+            concat!("platform.install_", "services();"),
+            "the install must be run_application's first statement"
+        );
+        let sources = crate_sources();
+        let count = |needle: &str| sources.iter().map(|text| text.matches(needle).count()).sum::<usize>();
+        assert_eq!(
+            count(concat!(".install_", "services()")),
             1,
             "one production install; a second would be refused by tv and could hide a missing first"
+        );
+        assert_eq!(
+            count(concat!("tv::", "install(")),
+            1,
+            "`tv::install` is called by `Platform::install_services` and nowhere else"
         );
     }
 }
