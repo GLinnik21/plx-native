@@ -163,14 +163,14 @@ mod tests {
         assert!(matches!(sound_output(), sound::Reply::NoPlatform));
 
         let sealed = secure::Sealed {
-            backend: secure::Backend::Keymanager3,
+            backend: secure::Backend::KEYMANAGER3,
             key: "k".into(),
             iv: "i".into(),
             data: "d".into(),
         };
         assert!(seal(b"secret").is_none());
         assert!(open(&sealed).is_none());
-        remove(&secure::Backend::PalmKeymanager, "k");
+        remove(&secure::Backend::PALM_KEYMANAGER, "k");
         assert_eq!(mode, secure::StoreMode::Durable, "no key manager is not a memory-only platform");
 
         go_home();

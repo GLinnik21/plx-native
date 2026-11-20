@@ -4,12 +4,40 @@
 //! Beside them, [`StoreMode`] says whether this platform keeps a credential across launches at
 //! all.
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
+/// Which key store sealed an envelope: an opaque tag, written to disk exactly as spelled.
+///
+/// It is not a closed set. The tag is the only thing in the stored envelope that says which
+/// platform's store can open it, and a platform names its own in its own code ([`Backend::new`]);
+/// no shared code branches on one. A tag that no installed platform knows is REFUSED when the
+/// envelope is opened (the platform's `open` answers `None`, the session layer reports the file
+/// locked) and is never read as another store's: the stored text is not ours to reinterpret.
+///
+/// Serde-transparent, so the wire form is the bare string: an envelope written before this type
+/// stopped being an enum reads back unchanged, and one written now reads in an older build.
+/// `the_sealed_envelope_keeps_its_wire_form_for_every_backend_tag` pins both directions.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Backend {
-    Keymanager3,
-    PalmKeymanager,
+#[serde(transparent)]
+pub struct Backend(Cow<'static, str>);
+
+impl Backend {
+    /// webOS's public `com.webos.service.keymanager3`: AES-GCM under a key the service holds.
+    pub const KEYMANAGER3: Backend = Backend::new("keymanager3");
+    /// webOS's archival `com.palm.keymanager`. Only ever READ from a file an interim build
+    /// wrote: nothing seals with it and nothing opens it (its AES-CFB does not authenticate).
+    pub const PALM_KEYMANAGER: Backend = Backend::new("palm_keymanager");
+
+    /// A tag a platform names for its own store. The spelling is a wire format: it is stored in
+    /// every sealed session, so it never changes once a build has written it.
+    pub const fn new(tag: &'static str) -> Self {
+        Self(Cow::Borrowed(tag))
+    }
+
+    /// The tag as stored.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -157,11 +185,11 @@ mod tests {
         };
         let cases = [
             (
-                Backend::Keymanager3,
+                Backend::KEYMANAGER3,
                 r#"{"backend":"keymanager3","key":"plxnative.session.v1","iv":"MDEyMzQ1Njc4OWFi","data":"Y2lwaGVydGV4dA=="}"#,
             ),
             (
-                Backend::PalmKeymanager,
+                Backend::PALM_KEYMANAGER,
                 r#"{"backend":"palm_keymanager","key":"plxnative.session.v1","iv":"MDEyMzQ1Njc4OWFi","data":"Y2lwaGVydGV4dA=="}"#,
             ),
         ];
@@ -179,10 +207,33 @@ mod tests {
     fn an_envelope_with_a_member_this_type_no_longer_has_still_reads() {
         let literal = r#"{"backend":"keymanager3","key":"plxnative.session.v1","iv":"MDEyMzQ1Njc4OWFi","data":"Y2lwaGVydGV4dA==","identity":"named"}"#;
         let read: Sealed = serde_json::from_str(literal).unwrap();
-        assert_eq!(read.backend, Backend::Keymanager3);
+        assert_eq!(read.backend, Backend::KEYMANAGER3);
         assert_eq!(read.key, "plxnative.session.v1");
         assert_eq!(read.iv, "MDEyMzQ1Njc4OWFi");
         assert_eq!(read.data, "Y2lwaGVydGV4dA==");
+    }
+
+    /// A tag nobody here has a name for is carried through as written, and no constant equals it:
+    /// it is the platform's `open` that refuses it, never this type that reads it as another store.
+    #[test]
+    fn a_tag_no_platform_knows_is_kept_verbatim_and_equals_no_known_tag() {
+        let literal = r#"{"backend":"host_file","key":"plxnative.session.v1","iv":"aXY=","data":"ZGF0YQ=="}"#;
+        let read: Sealed = serde_json::from_str(literal).unwrap();
+        assert_eq!(read.backend.as_str(), "host_file");
+        assert_ne!(read.backend, Backend::KEYMANAGER3);
+        assert_ne!(read.backend, Backend::PALM_KEYMANAGER);
+        assert_eq!(serde_json::to_string(&read).unwrap(), literal, "written back as it was read");
+        assert_eq!(read.backend, Backend::new("host_file"));
+    }
+
+    /// With no platform installed nothing opens an envelope, whatever its tag: a refusal is the
+    /// absence of an answer, not a reinterpretation.
+    #[test]
+    fn no_installed_platform_opens_any_tag() {
+        for backend in [Backend::KEYMANAGER3, Backend::PALM_KEYMANAGER, Backend::new("host_file")] {
+            let sealed = Sealed { backend, key: "k".into(), iv: "i".into(), data: "d".into() };
+            assert!(open(&sealed).is_none(), "{sealed:?}");
+        }
     }
 
     #[test]

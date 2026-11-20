@@ -52,11 +52,14 @@ pub fn open(sealed: &Sealed) -> Option<Vec<u8>> {
     if sealed.key != KEY_NAME {
         return None;
     }
-    match sealed.backend {
-        Backend::Keymanager3 => modern_crypt(sealed.data.as_bytes(), Some(&sealed.iv)),
-        // Kept only so an interim/pre-release envelope deserializes as locked instead of being
-        // mistaken for plaintext. AES-CFB does not authenticate the file, so never open it.
-        Backend::PalmKeymanager => None,
+    if sealed.backend == Backend::KEYMANAGER3 {
+        modern_crypt(sealed.data.as_bytes(), Some(&sealed.iv))
+    } else {
+        // `PALM_KEYMANAGER` is kept only so an interim/pre-release envelope deserializes as locked
+        // instead of being mistaken for plaintext: AES-CFB does not authenticate the file, so never
+        // open it. A tag this platform has no key manager for is refused the same way, and is never
+        // handed to keymanager3 on the strength of its key name alone.
+        None
     }
     .and_then(|s| b64::decode(&s.data))
 }
@@ -65,15 +68,20 @@ pub fn remove(backend: &Backend, key: &str) {
     if key != KEY_NAME {
         return;
     }
-    let _ = match backend {
-        Backend::Keymanager3 => call(
+    let _ = if *backend == Backend::KEYMANAGER3 {
+        call(
             "luna://com.webos.service.keymanager3/removeKey",
             &json!({"name": key}),
-        ),
-        Backend::PalmKeymanager => call(
+        )
+    } else if *backend == Backend::PALM_KEYMANAGER {
+        call(
             "luna://com.palm.keymanager/remove",
             &json!({"keyname": key}),
-        ),
+        )
+    } else {
+        // Not a store this platform has: no service is asked, and the backend cache below is left
+        // as it was (nothing was deleted).
+        return;
     };
     // `clear()` deletes the key and the file in one sign-out. A later sign-in in the same process
     // must run key creation again rather than trusting the now-stale backend cache.
@@ -166,7 +174,7 @@ fn modern_crypt(input: &[u8], iv: Option<&str>) -> Option<Sealed> {
         return None;
     }
     Some(Sealed {
-        backend: Backend::Keymanager3,
+        backend: Backend::KEYMANAGER3,
         key: KEY_NAME.to_string(),
         iv: generated_iv,
         data: finish.get("output")?.as_str()?.to_string(),
@@ -298,19 +306,43 @@ mod tests {
     fn removing_the_key_invalidates_the_backend_cache() {
         let _guard = plx_base::testlock::serial();
         SELECTED.store(MODERN, Ordering::Relaxed);
-        remove(&Backend::Keymanager3, super::KEY_NAME);
+        remove(&Backend::KEYMANAGER3, super::KEY_NAME);
         assert_eq!(SELECTED.load(Ordering::Relaxed), UNKNOWN);
     }
 
     #[test]
     fn unauthenticated_legacy_ciphertext_is_never_opened() {
         let sealed = Sealed {
-            backend: Backend::PalmKeymanager,
+            backend: Backend::PALM_KEYMANAGER,
             key: super::KEY_NAME.into(),
             iv: "legacy-iv".into(),
             data: b64::encode(b"attacker-controlled ciphertext"),
         };
         assert!(open(&sealed).is_none());
+    }
+
+    /// A tag this platform has no key manager for (another platform's, or one from the future) is
+    /// refused on open and ignored on remove, with the bus never asked: it must not be handed to
+    /// keymanager3 because its key name happens to match, and a sign-out must not delete the
+    /// keymanager3 key on the strength of a file some other store wrote.
+    #[test]
+    fn an_envelope_tagged_for_a_store_this_platform_lacks_is_refused_without_asking_a_service() {
+        let _guard = plx_base::testlock::serial();
+        reset_for_test();
+        RPC_FOR_TEST.with(|hook| hook.set(Some(|uri, _| panic!("a service was asked: {uri}"))));
+        let foreign = Backend::new("host_file");
+        let sealed = Sealed {
+            backend: foreign.clone(),
+            key: super::KEY_NAME.into(),
+            iv: "iv".into(),
+            data: b64::encode(b"sealed by another platform"),
+        };
+        assert!(open(&sealed).is_none());
+        SELECTED.store(MODERN, Ordering::Relaxed);
+        remove(&foreign, super::KEY_NAME);
+        assert_eq!(SELECTED.load(Ordering::Relaxed), MODERN, "nothing was removed, so the cache is not stale");
+        RPC_FOR_TEST.with(|hook| hook.set(None));
+        reset_for_test();
     }
 
     /// The protocol round trip, over a synthetic LS2 transport that returns what it was given: it
@@ -332,7 +364,7 @@ mod tests {
             Ok(response.to_string())
         })));
         let sealed = seal(b"secret").expect("the synthetic transport seals");
-        assert_eq!(sealed.backend, Backend::Keymanager3);
+        assert_eq!(sealed.backend, Backend::KEYMANAGER3);
         assert_eq!(sealed.key, super::KEY_NAME);
         assert_eq!(sealed.iv, "synthetic-iv");
         assert_eq!(open(&sealed).as_deref(), Some(&b"secret"[..]));
