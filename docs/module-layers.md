@@ -330,11 +330,11 @@ proves the references are gone and nothing more; L15b is open.
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
 | **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[platform webos]` reaches the television through the `tv` interfaces in `os` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `plx_os::webos::video_sink::StarfishSink` and `plx_play_feed::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
 | **L15b** the OS-neutral port — **open** | — | An OS-neutral video sink with the ACB bind sequence behind it, the simulator as its own port, and the webOS facts the gate cannot see. See below. |
-| **L15c** the platform value and the three contracts — **planned** | — | Wave R (the rename that gives this page `os` and `[platform webos]`), W2 (`tv::Port` becomes `tv::Services`; the shell and the frame probes move to `app::Platform`) and W3a to W3c: who may persist credentials, what evidence admits a URI player, who ends the process. See "L15c to L15h" below. |
-| **L15d** neutral types and the simulator as its own platform (L15b item 2) — **planned** | — | W3d (the opaque `Backend` tag, `sandbox` to `native_video`, identity publishes a platform name and version, `device::Info` loses its webOS fields) and W4 (a second fence section, `[platform desktop]`, with its own value; the `hostsim` arms leave `webos`, `keymanager`, `system` and `port`). The desktop platform is the second implementation. |
+| **L15c** the platform value and the three contracts — **planned** | — | Wave R (the rename that gave this page `os` and `[platform webos]`) landed as #1474; what is planned is W2 (`tv::Port` becomes `tv::Services`; the shell and the frame probes move to `app::Platform`) and W3a to W3c: who may persist credentials, what evidence admits a URI player, who ends the process. See "L15c to L15h" below. |
+| **L15d** neutral types and the simulator as its own platform (L15b item 2) — **planned** | — | W3d (the opaque `Backend` tag, `sandbox` to `native_video`, identity publishes a platform name and version, `device::Info` loses its webOS fields) and W4 (a second fence section, `[platform desktop]`, with its own value; the simulator's host arms leave `system` and `port`, and the other `hostsim` terms of the fence go: `docs/platform-ports.md`, W4). The desktop platform is the second implementation. |
 | **L15e** events, the shell and composition — **planned** | — | W5 (`HostEvent` with `Option<Action>`), W6b (platform-supplied composition in two boot phases), W6 (`plx_shell_sdl`, a `[shell_sdl]` layer) and W6c (a URI-only and a two-driver composition play an ordinary title). |
 | **L15f** extract the platform crates — **planned** | — | W7: a narrow public `host` module in the application crate, `rust-modules/platform-webos` and `platform-desktop` as crates above `app`, and the gate learning "a platform is a crate above `app`". After L15d, before L15g and L15h. |
-| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **planned** | — | W8: the `target_arch = "arm"` and `target_os = "linux"` sites sorted into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays), then the library name lists, `paths`, the packaging and the 363 `hostsim` arms outside the fence. |
+| **L15g** the webOS facts and the remaining `hostsim` (L15b item 3) — **planned** | — | W8: the `target_arch = "arm"` and `target_os = "linux"` sites sorted into "is webOS" (a platform value or runner) and "is 32-bit ARM" or "is Linux" (stays), then the library name lists, `paths`, the packaging and the 363 `hostsim` cfg lines outside the fence. |
 | **L15h** the OS-neutral Feed sink (L15b item 1) — **planned** | — | W11: `plx_acb` (an `[acb]` layer) takes the ACB plane owner and the URI media verbs out of `os`, the Feed-side ACB results become neutral, and the bind sequence moves behind a neutral sink. Needs the television. |
 
 ### L15: the webOS port
@@ -475,10 +475,12 @@ The order is L15c; then L15d and L15e, which overlap (W3d then W4 runs beside W5
 then L15f; then L15g and L15h. So the extraction (L15f, W7) follows item 2 (L15d, W4), and item 3 (L15g, W8) and
 item 1 (L15h, W11) come afterwards. The earlier order put the extraction after all of L15b, which would have made W7
 wait for the neutral sink: item 1 needs the television and gates nothing the other platforms need, and W8 follows W7.
-Some workstreams are not steps of this table because they change no layer rule: W0 (the record of the plan, this
-amendment), W1 (the `PLATFORM` build axis), W9 (the Tizen platform, which adds `plx_platform_tizen` to the
-arrangement L15f creates), and W10, W12 and W13 (its URI and Feed drivers and the desktop products), which add code
-to the `plx_platform_tizen` and `plx_platform_desktop` crates and change no layer rule.
+The steps are L15b's three items and the moves that serve them: the contracts they rest on (L15c), the events and
+composition (L15e) and the extraction (L15f). The other workstreams are not steps of this table: W0 (the record of the
+plan, this amendment), W1 (the `PLATFORM` build axis), W9 (the Tizen platform, which adds `plx_platform_tizen` and a
+`[platform tizen]` section to the arrangement L15f creates, as a user of the neutral port and not a step toward it),
+and W10, W12 and W13 (its URI and Feed drivers and the desktop products), which add code to the `plx_platform_tizen`
+and `plx_platform_desktop` crates.
 
 ### Then the split
 

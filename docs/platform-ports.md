@@ -140,7 +140,7 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   - `system.rs` 53, `webos.rs` 22, `webos/caps.rs` 8, `port.rs` 7;
   - `webos/toast.rs` 5, `webos/jail_repair.rs` 5, `keymanager.rs` 2, `webos/video_sink.rs` 0.
 
-  The other 363 are outside, so L15b item 2 alone does not retire `hostsim`.
+  The other 363 `hostsim` cfg lines are outside, so L15b item 2 alone does not retire `hostsim`.
 - F11. `hostsim` is forwarded to ten crates (`rust-modules/Cargo.toml:179`). Its comment relies on
   the app crate being "a leaf with no dependents, so feature unification can never enable it behind
   someone's back". `make check` DOES resolve the whole workspace at once:
@@ -502,9 +502,9 @@ Citations in this section quote the tree at e9924f0f9 with its old names (see "N
   - `install_preferences::candidates` (`:40`) and `clear_for_erase` (`session.rs:5341`) key on the ARM cfg, so
     Tizen ARM reads `native = true`; `load` accepts `version == 1` only (`:59`) and `Saved` is
     `deny_unknown_fields`. The ARM canonical write is cfg'd out of host tests (`session/persistence.rs:1400-1425`).
-  - `ci/check-deps.sh`: `plex/` is in `FORK_SCOPE`, `session.rs` in `MACHINES` (`:1399-1404`): a new
+  - `ci/check-deps.sh`: `plex/` is in `FORK_SCOPE`, `session.rs` in `MACHINES` (`:1406-1408`): a new
     `cfg(test)` branch there is a `forks` line, a new static a `statics` line. `platform/` is not in `FORK_SCOPE`,
-    and only `platform/src/tv/plane.rs` is in `MACHINES` (`:1402-1407`; the scan `find` at `:1439` lists it too). The
+    and only `platform/src/tv/plane.rs` is in `MACHINES` (`:1406-1408`; the scan `find` at `:1439` lists it too). The
     `globals` pattern (`:1429`) does not name `secure::mode`: UNVERIFIED whether it should.
 - F45. Facts that fix file ownership (the lanes' Files lines are these).
   - `src/app/run_uri_boot_tests.rs` is `include!`d at `src/app/run.rs:6953`: a test added there needs no line in
@@ -676,9 +676,9 @@ The Tizen hello-world (F28) exists to answer these, and the text cites them by n
 - H6: whether `Tizen.Multimedia.Player` shows a mock title beneath our window and survives a TV-menu round trip
   (T6, W10).
 - H7: whether the application's own renderer, `plx_gfx`, compiles its shader programs and draws on the set's GL
-  (README "H7" on `samsung/hello-tpk`; F40 says why a rejected required shader ends the process).
+  (README "H7" on `samsung/hello-tpk` at `e8da14ce6`; F40 says why a rejected required shader ends the process).
 - H8: whether the application's own libcurl binding (`plx_net` on the `dynlib!` loader) finds a libcurl on the set
-  and reaches a server on the tester's PC (README "H8"; F27).
+  and reaches a server on the tester's PC (README "H8" on `samsung/hello-tpk` at `e8da14ce6`; F27).
 
 Status: H3, H4 and H5 are answered yes, on the emulator only (E6, E8, E10); H1 and H2 are open and need a retail
 set (E9); H6 is not probed (E9, E11). H7 and H8 were probed by the build of E13: H8 yes, and H7 yes once
@@ -1181,9 +1181,10 @@ Ecore names to `remote_token_key` pairs".
 - `[platform webos]`: crate `plx_platform_webos` (`rust-modules/platform-webos`): `webos`, `keymanager`, the LG
   half of `system`, `webos::video_sink`, the storage activator, the value and `plex_run`; it produces the
   staticlib `main.c` links.
-- `[platform desktop]`: crate `plx_platform_desktop`: the desktop value, the 14 positive host arms of the fence that
-  name no `test` term (W4; the television gates and the 11 test seams stay where they are) and the sim bin.
-  `HostSink` stays in `play_feed`.
+- `[platform desktop]`: crate `plx_platform_desktop`: the desktop value, the 5 host arms of the fence that only the
+  simulator uses (W4: two stubs in `system.rs`, the two `SINK` arms and the table's test in `port.rs`; the other 97
+  lines are television gates, test seams or TV-side lines and stay) and the sim bin. `HostSink` stays in
+  `play_feed`.
 - `[platform tizen]`: crate `plx_platform_tizen` plus top-level `tizen/` (C# host, manifest, sysroot scripts).
 - The bottom layer is `[os]`, crate `plx_os` in `rust-modules/os`: Wave R (Decision 1, B; owner 2026-11-20: first
   and alone) renames it with its directory, its 12 manifests and its references (F36), keeping the inner `tv`
@@ -1289,6 +1290,7 @@ Gates (review C7; critic F9; owner, 2026-11-20):
   (`ci/readonly_generated.py:16` and `ci/readonly_dependencies.py:21`) in the same PR, each a reviewed change.
 
 ### Wave R (N, also T). Rename the bottom layer, first and alone (Decision 1, B; owner, 2026-11-20)
+- Status: landed on 2026-11-20 as #1474 (`e2088058d`); `origin/main` has the names this page's non-fact sections use.
 - Goal: `plx_platform` becomes `plx_os`, one PR, no behaviour change, before W0 and with no other PR merging
   meanwhile (critic F4: the "quiet window" the old W6d relied on does not exist).
   - Package, directory (`git mv rust-modules/platform rust-modules/os`), 12 manifests, `Cargo.lock`, the 3280 lines
@@ -1489,26 +1491,41 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 
 ### W4 (N). The simulator as its own platform (L15b item 2)
 - Goal: a second fence section, `[platform desktop]` (no gate code: Wave R already switched the keyword, F1), with
-  member `platform_desktop` (a module of the app crate until W7) and its own `Platform` value; the hostsim-only
-  arms move out of `webos`, `keymanager`, `system` and `port` into it; `sim.rs` names it (F7).
+  member `platform_desktop` (a module of the app crate until W7) and its own `Platform` value; the simulator's host
+  arms (5 of the fence's 102 `hostsim` lines, sorted by the rule below) move out of `system` and `port` into it; the
+  other `hostsim` terms of `webos`, `keymanager`, `system` and `port` go; `sim.rs` names it (F7).
 - Rule for the three configurations. The 102 fenced `hostsim` lines (F10) are cfg lines of both polarities, not 102
-  host arms. 77 carry a negated `hostsim` (`git grep -h 'feature = "hostsim"' -- <F10's files> | grep -c -e
-  'not(feature = "hostsim")' -e '!cfg!(feature = "hostsim")'`): they gate the TELEVISION arm, so they lose only the
-  `hostsim` term and stay in their files (`src/system.rs` included). 17 of them are exactly `all(not(feature =
-  "hostsim"), not(any(test, feature = "test-support")))` (`webos/toast.rs:26`) and keep their `not(any(test, ...))`
-  term: dropping it would turn a production gate into a test-only one. The other 25 name `hostsim` only positively.
-  The 11 that also name `test` or `test-support` are test seams (`keymanager.rs:198`, `port.rs:22`): they stay in
-  their files and lose only the `hostsim` term, so `any(feature = "hostsim", test, feature = "test-support")` becomes
-  `cfg(any(test, feature = "test-support"))`. The 14 that do not are the host arms and move. Under `cfg(test)`
-  without `hostsim` the webOS table stays as today (`SINK = NoSink`, `DISPLAY = SINK`).
+  host arms. Each was read and classified by what it gates (the same counts at `e9924f0f9` and on `main` after Wave R).
+  - 77 carry a negated `hostsim` (`git grep -h 'feature = "hostsim"' -- <F10's files> | grep -c -e 'not(feature =
+    "hostsim")' -e '!cfg!(feature = "hostsim")'`): they gate the TELEVISION arm, so they lose only the `hostsim` term
+    and stay in their files (`src/system.rs` included). 17 of them are exactly `all(not(feature = "hostsim"),
+    not(any(test, feature = "test-support")))` (`webos/toast.rs:26`) and keep their `not(any(test, ...))` term:
+    dropping it would turn a production gate into a test-only one.
+  - The other 25 name `hostsim` only positively. 5 move to `platform_desktop`: the host stubs `opaque_region_init`
+    and `opaque_route` (`system.rs:423,469`), `port.rs`'s two simulator `SINK` arms (`:11,14`), and the simulator
+    table's test (`port.rs:79`, `all(test, hostsim, play-feed)`: it names `app::adapters::hostsim::HOST_SINK`, which
+    exists only under `all(hostsim, play-feed)`, so dropping the term would break the plain test build).
+  - The other 20 stay:
+    - 10 are test seams and lose only the `hostsim` term: nine `any(feature = "hostsim", test, feature =
+      "test-support")` (`keymanager.rs:198`, `webos.rs` six times, `webos/jail_repair.rs:44`, `webos/toast.rs:55`),
+      which become `cfg(any(test, feature = "test-support"))`, and `port.rs:22`'s `any(hostsim, test)`, which
+      becomes `cfg(test)`.
+    - 6 are the frame-probe no-op stubs (`system.rs:761-772`, `any(feature = "hostsim", not(feature =
+      "devtriggers"))`). Every TV build without `devtriggers` compiles them, a RELEASE build included, and
+      `app/run.rs` reaches them through the port, so they are re-gated as `cfg(not(feature = "devtriggers"))`.
+    - 3 are `cfg_attr(feature = "hostsim", allow(dead_code))` on TV items (`webos/toast.rs:33,40`, `system.rs:22`)
+      and stay with their item, and 1 is the `let _ = winp;` statement inside a TV function (`system.rs:173`).
+  - Under `cfg(test)` without `hostsim` the webOS table stays as today (`SINK = NoSink`, `DISPLAY = SINK`).
 - Order: after W2 and W3d (stacked in its lane). Files: `src/port.rs`, `src/platform_desktop*`, `src/lib.rs`,
   `src/system.rs`, `os/src/webos*.rs`, `os/src/keymanager.rs`, `src/bin/sim.rs`, `ci/module-layers.ini`,
   `ci/check-deps.sh` (the `sink` rule's paths, F25), `ci/mkmacapp.py`, `ci/test_sim_backend.py`,
   `ci/test_test_crate.py`, `.github/workflows/ci.yml:379`.
 - Test: `make test-hostsim`; the fenced `hostsim` count (F10's grep) falls from 102 to 0 (77 television gates lose a
-  term, 11 seams are re-gated, 14 host arms move; the three numbers, each with the grep that gives it, in the PR);
-  the discovered-test diff; `make sim-macos` and `make macapp` booting to Home under ui-sim; replay fixtures unchanged; a build-bench table; fw-compat-reviewer (`system.rs`'s Wayland and SDL externs
-  are split). TV: none beyond the wave's. Risk: the 363 non-fence arms remain (W8); F11's mechanism lands in W7.
+  term, 10 seams do too, 6 stubs are re-gated on `devtriggers`, 4 lines stay with their TV items, 5 host arms move; the
+  five numbers, each with the grep that gives it, in the PR); the discovered-test diff; `make sim-macos` and
+  `make macapp` booting to Home under ui-sim; replay fixtures unchanged; a build-bench table; fw-compat-reviewer
+  (`system.rs`'s Wayland and SDL externs are split). TV: none beyond the wave's. Risk: the 363 non-fence `hostsim` cfg
+  lines remain (W8); F11's mechanism lands in W7.
 
 ### W5 (N, W5b also T). The event contract (one lane: W5a -> W5b -> W5c)
 - Goal: `HostEvent` with `Option<Action>` (Target shape 2), app-private, consumed by the loop. `drain_sdl`
@@ -1606,7 +1623,7 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - W8b, one row per fact: the library name lists (F27) become per-platform lists supplied through the
   platform (`dynlib!` stays shared); `paths`'s fallback install prefix becomes a platform value; the
   storage helper is packaged only by `PLATFORM=webos`; `main.c` and `starfish.c` are webOS-only.
-- W8c, the 363 non-fence `hostsim` arms, sorted per crate: a host difference becomes a platform value or
+- W8c, the 363 non-fence `hostsim` cfg lines, sorted per crate: a host difference becomes a platform value or
   runner; simulator tooling goes under a renamed `sim` feature; a test seam goes to `test-support`.
 - Verify: the F9/F12 grep count before and after; `ci/check-ledger-ratchet.py` at or below every family
   total (a host difference that needs IO becomes a runner, never a `forks/` line); fw-compat-reviewer on
@@ -1646,8 +1663,11 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
     receiver with no sequence gap (E5). It is labelled emulator only and gives no frame-rate or latency claim (E6).
     The emulator boots on the dev-token path against the mock PMS advertised as `10.0.2.2`; the sign-in against the
     mock plex.tv is a follow-up check, because that override stays loopback-only and is not widened (E12).
-  - Retail acceptance, not part of the MVP: a device run on the owner's Samsung set against `tests/mock_pms.py` and
-    the mock plex.tv, never a real account. It answers H1 and H2 (E9).
+  - Retail acceptance, not part of the MVP: a device run on the owner's Samsung set, never a real account, in the
+    shape of the MVP: the dev-token boot against `tests/mock_pms.py` running on a PC the set can reach. The sign-in
+    against the mock plex.tv is a follow-up here too: the `plex_tv()` override accepts only loopback and is not
+    widened (E12), and a retail set has no `sdb shell` (T8), so `sdb reverse` (the only route E12 names; emulator,
+    unchecked) is not assumed to reach it. It answers H1 and H2 (E9).
   - The LG TV lock covers neither.
 - Risk: store distribution may need Partner status for a native `.so` (report 2b). Sideloading does not. The MVP
   proves the emulator only: a retail set may still fail H1 or H2.
