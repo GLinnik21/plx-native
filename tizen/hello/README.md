@@ -371,8 +371,8 @@ shader bisect: all 14 variants compile; j bytes clean
 A refusal (a shader the driver rejects; `plx_gfx` is not entered):
 
 ```
-FAILED, plx_gfx not entered: shaders 13/14 compile+link
-first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER (+1 more log lines in the UDP log)
+FAILED, plx_gfx not entered: 1 of 14 shader pairs do not compile+link (init would exit)
+first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER
 shaders 13/14 compile+link; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
 shader bisect (+ compiles, - fails): a- b- c+ d- e- ... ; j bytes clean
 ```
@@ -381,8 +381,8 @@ shader bisect (+ compiles, - fails): a- b- c+ d- e- ... ; j bytes clean
 recorded panel.) Nothing on these lines is cut at a character count: the panel wraps at its width and
 the log splits any text longer than 1000 bytes into `(cont.) ` lines so that no UDP datagram is truncated
 (the log's `plog_full!`, `log.rs`); an earlier build cut the second line to "...syntax error,...; no G...".
-`+N more log lines` says the driver's info log had further lines (all of them are in the log, under
-`H7 gfx:   info log:`).
+When the driver's info log has further lines the first-failure line ends `(+N more log lines in the UDP
+log)` (all of them are in the log, under `H7 gfx:   info log:`).
 
 `no GL ext:` lists the extensions the renderer uses when present that this GL does not list: the
 ARM or EXT framebuffer fetch its straighten pass reads in place (without it the pass copies the frame

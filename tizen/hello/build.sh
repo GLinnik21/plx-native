@@ -152,9 +152,9 @@ if [ "$HOST_TEST" = 1 ]; then
     out="$(mktemp "${TMPDIR:-/tmp}/plx-host-test.XXXXXX")" || die "mktemp failed"
     # shellcheck disable=SC2086
     cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" "$@" >"$out" 2>&1 || rc=$?
-    # (The library's own log lines, mirrored to stderr as `plx: ...`, often say FAILED about a probe's expected
-    # failure; they are not test results.)
-    grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' "$out" | grep -v '^plx: ' || true
+    # (The library's own log lines, mirrored to stderr as `plx: ...` or `[plx +0.19s t0] ...`, often say FAILED
+    # about a probe's expected failure; they are not test results.)
+    grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' "$out" | grep -v -E '^(plx: |\[plx )' || true
     if [ "$rc" != 0 ]; then
       echo "--- cargo exited $rc; the last 40 lines of its output:" >&2
       tail -n 40 "$out" >&2
