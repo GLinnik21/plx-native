@@ -262,11 +262,13 @@ pub struct DetailScreen {
     /// every frame's `reconcile` answers the page's default ([`Self::default_elem`]), so that seat
     /// follows the head wherever the landing puts it (the item, a later Also available landing) and
     /// never waits on a restore to fire. It ends with the viewer's own act: a move a direction key
-    /// or the pointer makes, or an OK or a hold on a landed page (`LibraryScreen::provisional` keeps
-    /// the same rule for the Library's first seat). Never set with a driver composed, where Play is
-    /// the default from the first frame and the page keeps no self-seat. Not hashed, not in
-    /// [`SHAPE`]: a `SHAPE` bump would invalidate every detail fixture, and a fixture's page has a
-    /// driver.
+    /// or the pointer makes, an OK on a landed page, or a hold that opens a menu (a hold that opens
+    /// nothing, a key that moves nothing and an OK before the item lands leave the seat the page's).
+    /// `LibraryScreen::provisional` follows the head the same way for the Library's first seat but
+    /// ends on ANY key-down, pointer or wheel, so its ending is not this one. Never set with a
+    /// driver composed, where Play is the default from the first frame and the page keeps no
+    /// self-seat. Not hashed, not in [`SHAPE`]: a `SHAPE` bump would invalidate every detail
+    /// fixture, and a fixture's page has a driver.
     provisional: bool,
     /// This page has already sent its addressed `ClearItem` to the Metadata store. §3.4's
     /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
@@ -1901,8 +1903,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
         // A focus the page itself placed (`provisional`) is the page's default wherever the item
         // stands: the landing, a later Also available landing and a restore that waits on a season
         // or retires all move it by this one rule, so nothing below has to fire for focus to leave
-        // the watched toggle. Only the viewer's own move ends it (the `FocusMoved` and `activate`
-        // arms).
+        // the watched toggle. Only the viewer's own act ends it (the `FocusMoved`, `PressHold` and
+        // `activate` arms), or a return (`Enter(Restored)`).
         if self.provisional {
             return FocusKey { entry: want.entry, elem: self.default_elem(cx) };
         }
