@@ -349,37 +349,45 @@ mod uri_boot_tests {
         preview::reset_for_test();
         preview::restore_trailer_autoplay(true);
         let route = rig.app.route();
-        let served = rig.requests.lock().unwrap().len();
-        let ask = HeroPreviewAsk { sid: rig.sid, rk: "1", part: "/library/parts/1/file.mkv",
-            vcodec: "h264", acodec: "aac", title: "First" };
-        assert!(!preview::blocked(rig.sid, "1"), "premise: nothing is known about the item yet");
-        assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
-            &ask, 0), HeroPreview::Refused);
-        assert!(preview::blocked(rig.sid, "1"),
-            "the refusal is remembered, so the page's dwell gate stops asking: no retry loop");
-        assert_eq!(preview::request_start(rig.sid, "1", 1),
-            preview::Start::Cached(preview::Fact::RefusedDirect));
-        assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
-            &ask, 2_000), HeroPreview::Refused, "a dwell that asks anyway is refused the same way");
-        for _ in 0..5 {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
-            fr.now = t;
-            unsafe {
-                playback_tick(&mut rig.app, &mut fr);
-                update(&mut rig.app, &mut fr);
+        // No driver at all, and a boot with only the URI driver: neither has a Feed to open a
+        // preview on, and no display places a preview rectangle for the URI one.
+        for (rk, set) in [("1", plx_playback_contract::BackendSet::NONE),
+            ("2", plx_playback_contract::BackendSet::URI)]
+        {
+            rig.app.player.session.install_backends(set);
+            let served = rig.requests.lock().unwrap().len();
+            let ask = HeroPreviewAsk { sid: rig.sid, rk, part: "/library/parts/1/file.mkv",
+                vcodec: "h264", acodec: "aac", title: "First" };
+            assert!(!preview::blocked(rig.sid, rk), "{set:?}: nothing is known about the item yet");
+            assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
+                &ask, 0), HeroPreview::Refused, "{set:?}");
+            assert!(preview::blocked(rig.sid, rk),
+                "{set:?}: the refusal is remembered, so the page's dwell gate stops asking: no retry loop");
+            assert_eq!(preview::request_start(rig.sid, rk, 1),
+                preview::Start::Cached(preview::Fact::RefusedDirect), "{set:?}");
+            assert_eq!(start_hero_preview(&mut rig.app.player.session, rig.app.runtime.metadata_mut(),
+                &ask, 2_000), HeroPreview::Refused, "{set:?}: a dwell that asks anyway is refused the same way");
+            for _ in 0..5 {
+                let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
+                fr.now = t;
+                unsafe {
+                    playback_tick(&mut rig.app, &mut fr);
+                    update(&mut rig.app, &mut fr);
+                }
+                std::thread::sleep(Duration::from_millis(5));
             }
-            std::thread::sleep(Duration::from_millis(5));
+            assert_eq!(rig.requests.lock().unwrap().len(), served, "{set:?}: refused before any server work");
+            assert!(!preview::occupies(), "{set:?}: the machine stays Idle");
+            assert!(!plx_media::route::play_pending(), "{set:?}: no resolve was started");
+            assert!(!plx_media::route::play_refused(&rig.app.player.session),
+                "{set:?}: no standing verdict, so no Error read-out and no failure report");
+            assert!(!plx_media::route::is_preview(&rig.app.player.session), "{set:?}");
+            assert_ne!(plx_media::player::state(&rig.app.player.session),
+                plx_media::player::PlaybackState::Error,
+                "{set:?}: a refused hero trailer is not a playback error");
+            assert!(crate::app::bridge::player(&rig.app.pages).is_none(), "{set:?}: no player page");
+            assert!(rig.app.route() == route, "{set:?}: the route did not move");
         }
-        assert_eq!(rig.requests.lock().unwrap().len(), served, "refused before any server work");
-        assert!(!preview::occupies(), "the machine stays Idle");
-        assert!(!plx_media::route::play_pending(), "no resolve was started");
-        assert!(!plx_media::route::play_refused(&rig.app.player.session),
-            "no standing verdict, so no Error read-out and no failure report");
-        assert!(!plx_media::route::is_preview(&rig.app.player.session));
-        assert_ne!(plx_media::player::state(&rig.app.player.session),
-            plx_media::player::PlaybackState::Error, "a refused hero trailer is not a playback error");
-        assert!(crate::app::bridge::player(&rig.app.pages).is_none(), "no player page");
-        assert!(rig.app.route() == route, "the route did not move");
     }
 
     /// The control for the test above: the same request on a boot that composed a Feed starts the

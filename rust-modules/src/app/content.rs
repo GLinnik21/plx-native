@@ -626,6 +626,11 @@ pub(crate) enum HeroPreview {
 /// resolve runs. Left to the planner, the refusal would come after the PlayQueue request as a
 /// standing verdict, which `player::state()` reads as an Error and `report::tick_preview` reports
 /// as a failed preview.
+///
+/// A boot with only the URI driver is refused the same way, and the planner already refused it
+/// (`pms_uri_possible` excludes a preview, and no display places a preview rectangle:
+/// `DisplayEvidence::preview_rectangle` is false on every path). A display that did place one
+/// would be the reason to revisit this gate.
 #[cfg(feature = "play-feed")]
 pub(crate) fn start_hero_preview(
     session: &mut plx_media::route::PlaybackSession,
