@@ -1689,7 +1689,17 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   `ci/module-layers.ini`, `docs/module-layers.md`, `ci/build-budgets.json` (re-measure; no raise), and the bottom
   layer's `src/lib.rs` (drops `pub mod keymanager;` and `pub mod webos;`) with its `Cargo.toml`: both pinned, a
   reviewed certificate change (F25).
-- Test: `make test-hostsim` and `make test-host-interface` (the integration test, run by no target today; `ci/
+- As landed (W7a): the interface, not the move. `src/host.rs` is the one public module (re-exports and `run`), the
+  nine types of the owner's ruling are reachable through it only, and `rust-modules/tests/host_interface.rs` builds
+  a `static Platform` from fakes and boots it through `host::run` to the fake shell's refusal, with a source scan
+  that holds every mention of the application crate to `plxnative_modules::host`. The test has no `[[test]]`
+  entry (cargo discovers `tests/*.rs`), so no `Cargo.toml` and no `ci/proofs` certificate changed. `make
+  test-host-interface` is the incremental loop and `check-cargo-unit-hostsim` runs the same line, pinned in
+  `ci/test_ci_split.py` (`GATES`). `Surface::poll` and `Surface::deliver` coexist until W9 retires `poll`; the SDL
+  shells' `deliver` delivers nothing. `sdl_init` and `sdl_open` are not published: W7b decides what the two real
+  platform crates need of them. The W6 minors rode along (the reviewer note's inventory claim, and the SDL crate's
+  source-file pin reading only `*.rs` entries).
+- Test: `make test-hostsim` and `make test-host-interface` (the integration test; run by both since W7a; `ci/
   test_disk_preflight.py` and `ci/test_ci_split.py` pass with it); W7a changes the `Makefile`, so its PR carries a
   build-bench table as well as W7b's; `ARM_PROFILE=release` size within budget;
   every undefined symbol of the C objects (`main.c`, `crashtrace.c`, `sentry_context.c`, `starfish.c`,
