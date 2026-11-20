@@ -347,9 +347,10 @@ fn a_picked_version_plays_that_version_though_its_panel_is_still_closing() {
 }
 
 /// **Play Version on a platform that composed no playback driver (W6c):** the panel's rows are the
-/// shared disabled rows, so the pick presses nothing: no play is asked and the player is not
-/// entered (the press still closes the panel, as a press on any of its rows does). The mount reads the platform's fact (`ScreenInputs::can_play`), which the
-/// previous test, on the default set, proves is not what stops it there.
+/// shared disabled rows, so the pick presses nothing: no play is asked, the player is not entered
+/// and the panel stays up (OK on a disabled row does nothing; BACK still closes it). The mount
+/// reads the platform's fact (`ScreenInputs::can_play`), which the previous test, on the default
+/// set, proves is not what stops it there.
 #[test]
 fn a_version_pick_asks_for_no_play_when_the_platform_composed_no_driver() {
     let versions = plx_appkit::version_list::sample();
@@ -382,6 +383,9 @@ fn a_version_pick_asks_for_no_play_when_the_platform_composed_no_driver() {
     assert!(tap.ended(host, &Asked::Play(Some(pick))).is_empty(), "no play was asked: {}", tap.account());
     assert!(tap.commands.iter().all(|(asked, ..)| !matches!(asked, Asked::Play(_))), "{}", tap.account());
     assert!(!matches!(w.d.top_arg(), Some(AppArg::Player)), "the player was not entered");
+    assert_eq!(w.d.nav.modals.surfaces.len(), 1, "OK on a disabled row left the panel up: {}", tap.account());
+    pick_key(&mut w.d, &mut bridge, &mut t, Key::Back, &mut tap);
+    assert!(w.d.nav.modals.surfaces.is_empty(), "BACK closes the panel: {}", tap.account());
 }
 
 /// The two-copy *Also available* rig of `a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance`:

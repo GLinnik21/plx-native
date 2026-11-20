@@ -3363,7 +3363,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     spot.section = 6;
     spot.col = 1;
     screen.restore(&spot, test_store().view());
-    let key = screen.restore_focus(test_store().view(), false).expect("extras column restores");
+    let key = screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)).expect("extras column restores");
     assert!(matches!(screen.locate(key, test_store().view()), Some(Located::Extras(1))));
 
     let movie = Detail {
@@ -4748,10 +4748,10 @@ fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
         seek: Default::default(),
     });
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view(), false), None, "episode 700's page has not landed");
+    assert_eq!(screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)), None, "episode 700's page has not landed");
     land_page(1000, 11);
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view(), false), episode_key(&screen, 700, episodes::Row::Still));
+    assert_eq!(screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)), episode_key(&screen, 700, episodes::Row::Still));
     clear();
 }
 

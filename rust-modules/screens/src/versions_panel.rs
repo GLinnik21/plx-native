@@ -104,9 +104,15 @@ impl VersionsPanelScreen {
     }
 
     /// Close, and report row `elem`'s version to the page. Takes the elem, not the cursor: a click
-    /// names the stop it hit (`AltSourcesScreen::commit`).
+    /// names the stop it hit (`AltSourcesScreen::commit`). OK on a DISABLED row (no playback driver
+    /// composed) does nothing and the panel stays up, as on every disabled row (`ui/CLAUDE.md`: "OK
+    /// does nothing"); BACK still closes it.
     fn commit<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
-        let media = match self.form.index_of_key(RowKey(elem)).and_then(|i| self.form.activate(i)) {
+        let activation = self.form.index_of_key(RowKey(elem)).map(|i| self.form.activate(i));
+        if matches!(activation, Some(None)) {
+            return;
+        }
+        let media = match activation.flatten() {
             Some(plx_ui::form::Activation::Action(media)) => Some(media),
             _ => None,
         };
@@ -477,14 +483,28 @@ pub(crate) mod tests {
     }
 
     /// A platform that composed no playback driver opens the same list with every row disabled and the
-    /// one reason noted under them (`browse.detail.no_playback`, the Detail facts line's own word): OK closes the
-    /// panel like any menu's and reports no version, so nothing is asked of a driver that is not there.
+    /// one reason noted under them (`browse.detail.no_playback`, the Detail facts line's own word): OK
+    /// on a row does nothing, as on every disabled row (`ui/CLAUDE.md`), so the panel stays up and
+    /// nothing is asked of a driver that is not there, while BACK still closes it.
     #[test]
     fn with_no_playback_driver_every_row_is_disabled_and_reports_nothing() {
+        use plx_machine::machine::{InputEvent, Source, Tick};
         let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let why = plx_os::i18n::msg::browse_detail_no_playback();
         let anchor = [500.0f32, 600.0, 64.0, 64.0].map(f32::to_bits);
         let arg = VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor };
+        // What one event does to a panel: the effects it pushes.
+        let drive = |p: &mut VersionsPanelScreen, ev: ScreenEvent<HostFixture>| {
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut fx: Effects<'_, HostFixture> =
+                Effects::new(&mut out, MachineId::Instance(InstanceId(4)), &mut present);
+            Machine::<HostFixture>::step(p, &ev, &cx(), &mut fx);
+            out.into_iter().map(|e| e.fx).collect::<Vec<_>>()
+        };
+        let closes = |fx: &[Fx<HostFixture>]| fx.iter().any(|f| matches!(f, Fx::Nav(NavOp::Dismiss(EntryId(3)))));
+        let reports = |fx: &[Fx<HostFixture>]| fx.iter().any(|f| matches!(f,
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::PlayVersion(_))))));
         for (can_play, disabled) in [(true, false), (false, true)] {
             let mut p = VersionsPanelScreen::new(EntryId(3), arg.clone(), &plx_appkit::version_list::sample(), can_play);
             let rows: Vec<_> = p.form.table.sections.iter().flat_map(|s| s.rows.iter()).collect();
@@ -496,16 +516,20 @@ pub(crate) mod tests {
             }
             assert_eq!(notes.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
                 disabled.then_some(why).into_iter().collect::<Vec<_>>(), "can_play={can_play}: the one note says why");
-            let mut out = Vec::new();
-            let mut present = plx_machine::present::Present::new();
-            let mut fx: Effects<'_, HostFixture> =
-                Effects::new(&mut out, MachineId::Instance(InstanceId(4)), &mut present);
-            p.commit(1, &mut fx);
-            let fx: Vec<_> = out.into_iter().map(|e| e.fx).collect();
-            assert!(matches!(fx.first(), Some(Fx::Nav(NavOp::Dismiss(EntryId(3))))), "the panel closes");
-            let reported = fx.iter().any(|f| matches!(f,
-                Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::PlayVersion(_))))));
-            assert_eq!(reported, !disabled, "can_play={can_play}");
+            // OK, through the handler's own arm (`Activate`, what a click and the engine's OK deliver).
+            let ok = drive(&mut p, ScreenEvent::Activate(1));
+            assert_eq!((closes(&ok), reports(&ok)), (!disabled, !disabled),
+                "can_play={can_play}: OK on a row closes the panel and reports it only while the row is enabled");
+            if disabled {
+                assert!(ok.is_empty(), "OK on a disabled row does nothing at all, got {} effects", ok.len());
+            }
+            // BACK closes the panel whichever state it is in, and reports nothing.
+            let back = drive(&mut p, ScreenEvent::Input(InputEvent {
+                at: Tick::default(),
+                source: Source::Script,
+                kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            }));
+            assert!(closes(&back) && !reports(&back), "can_play={can_play}: BACK closes the panel and plays nothing");
         }
     }
 }

@@ -473,8 +473,10 @@ fn resolve_group(groups: &[GroupSpec], g: GroupId) -> Option<&GroupSpec> {
 }
 
 /// A source placement at a group's head (its top-left corner), for `Seat::First` and a fresh
-/// enter with no source.
-fn head_of(extent: Rect) -> Placed {
+/// enter with no source. Public for a screen whose own default seat sits in ANOTHER group than the
+/// one the container named (Detail's, below its action row): it asks that group's `seat` for the
+/// same placement the engine would have given it.
+pub fn head_of(extent: Rect) -> Placed {
     let r = Rect::new(extent.x, extent.y, 1.0, 1.0);
     Placed {
         rect: r,

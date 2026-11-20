@@ -174,6 +174,14 @@ impl HeroCtl {
     pub const fn starts_playback(self) -> bool {
         matches!(self, HeroCtl::Play | HeroCtl::Restart | HeroCtl::Trailer)
     }
+    /// Does pressing this control WRITE to the household's account? The bookmark disc adds or
+    /// removes the title on the plex.tv Watchlist, and the watched toggle in either face marks it
+    /// watched or unwatched on the server. The rest play, navigate or open a menu or panel. A page
+    /// never opens on one of these ([`default_stop`]): a reflex OK on a page that has just appeared
+    /// must not change the record. Travel still reaches them.
+    pub const fn writes_account(self) -> bool {
+        matches!(self, HeroCtl::Watchlist | HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
+    }
     /// **The control's accessibility word** (`detail.hero.<word>`): one static word per variant, never
     /// derived from the label, which changes with the item (Play wears "Resume" mid-title: both are
     /// `play`) and the language. The watched toggle's two faces are two words, for what pressing each does.
@@ -308,9 +316,10 @@ impl Stops {
 ///
 /// **A disabled control owns no focus stop** (`plx_ui::focus::next_enabled_index`; the player HUD's
 /// disabled discs): with no playback driver composed, the controls that start playback
-/// ([`HeroCtl::starts_playback`]) are drawn disabled and the focus travels, seats and falls back to
-/// the first control that can act. The shared button draws no focused face for a disabled control,
-/// so a stop on one would leave a page that opens with nothing visibly focused.
+/// ([`HeroCtl::starts_playback`]) are drawn disabled and the focus travels only between the
+/// controls that can act. The shared button draws no focused face for a disabled control, so a stop
+/// on one would leave focus visibly nowhere. Where the page OPENS is a separate rule
+/// ([`default_stop`]): never on a control that writes to the account.
 pub fn focusable(ctl: HeroCtl, stops: Stops) -> bool {
     if stops.full_trailer {
         return ctl == HeroCtl::Play;
@@ -344,14 +353,34 @@ pub fn visible_ctls(set: HeroSet, stops: Stops) -> ([HeroCtl; MAX_CTLS], usize) 
     (v, count)
 }
 
-/// The control the row's focus lands on when nothing says which: its first stop. Play with a
-/// playback driver composed (it is always first), the first control that can act without one. The
-/// one default the seat, the fallback and a restore all take, so none names Play itself. The row
-/// always has a stop (the watched toggle is unconditional and plays nothing, and Play anchors
+/// The row's first stop: Play with a playback driver composed (it is always first), the first
+/// control that can act without one. It is where a press UP into the row from a section below
+/// seats, and the last resort of [`DetailScreen::default_elem`](super::DetailScreen). The row always
+/// has a stop (the watched toggle is unconditional and plays nothing, and Play anchors
 /// full-trailer mode), so the answer needs no `Option`; were that ever false it is the array's
 /// own fill, Play.
 pub fn first_stop(set: HeroSet, stops: Stops) -> HeroCtl {
     visible_ctls(set, stops).0[0]
+}
+
+/// The row's stop the page opens on when nothing says which: its first stop that does not write to
+/// the account ([`HeroCtl::writes_account`]). That is Play with a playback driver composed, and
+/// without one Go to Show, More, the versions control or Also available, whichever the row has.
+/// `None` when every stop the row has writes (a movie with no driver: the bookmark and the watched
+/// toggle), which sends the page's default below the row (`DetailScreen::default_elem`).
+pub fn default_stop(set: HeroSet, stops: Stops) -> Option<HeroCtl> {
+    let (v, n) = visible_ctls(set, stops);
+    v[..n].iter().copied().find(|ctl| !ctl.writes_account())
+}
+
+/// The row's stop on drawn index `col` (a restored spot's column), or `None` when that column is
+/// past the row or names a control the row does not stop on right now (a platform that cannot play
+/// has no stop on Play). A restore that names a stop keeps it, whatever it does: it is where the
+/// viewer left their own focus. One that does not resolves by the default rule ([`default_stop`]),
+/// not onto the nearest stop, which would be a write as often as not.
+pub fn stop_at(set: HeroSet, stops: Stops, col: usize) -> Option<HeroCtl> {
+    let (v, n) = hero_ctls(set);
+    (col < n && focusable(v[col], stops)).then(|| v[col])
 }
 
 /// The drawn indices of the row's first and last stop, for the group's extent: the row's
@@ -364,20 +393,8 @@ pub fn stop_span(set: HeroSet, stops: Stops) -> Option<(usize, usize)> {
     Some((first, stops_at.last().unwrap_or(first)))
 }
 
-/// The row's stop nearest drawn index `col` (a restored spot's column, which a platform that
-/// cannot play may name a control it no longer stops on): `col` itself when that control is a
-/// stop, else the nearest, the later of two equally near so a disabled Play at the head resolves
-/// onto the control after it.
-pub fn stop_near(set: HeroSet, stops: Stops, col: usize) -> Option<HeroCtl> {
-    let (v, n) = hero_ctls(set);
-    (0..n)
-        .filter(|&i| focusable(v[i], stops))
-        .min_by_key(|&i| (i.abs_diff(col), std::cmp::Reverse(i)))
-        .map(|i| v[i])
-}
-
 /// The control at index `i` in `set`, or `None` for an index the set does not have. The pages
-/// resolve a column through [`stop_near`] (a column may name a control that is not a stop); this
+/// resolve a column through [`stop_at`] (a column may name a control that is not a stop); this
 /// is the plain inverse of [`index_of`] the tests pin the row's identities with.
 #[cfg(test)]
 pub fn ctl_at(set: HeroSet, i: usize) -> Option<HeroCtl> {

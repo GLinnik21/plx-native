@@ -1,7 +1,9 @@
 //! A platform that composed no playback driver (W6c): the Detail controls that play are drawn
-//! disabled and own no focus stop, so focus opens on, travels between and falls back to the controls
-//! that can act, and a press that reaches a disabled one anyway does nothing. With a driver composed
-//! every one of these is exactly what it was.
+//! disabled and own no focus stop, so focus travels between the controls that can act, and a press
+//! that reaches a disabled one anyway does nothing. The page never OPENS on a control that writes to
+//! the account (the bookmark, the watched toggle): its default is the first stop that does not, or,
+//! for a row of writes only, the first section below the row, and a restore that names a control
+//! the viewer was on keeps it. With a driver composed every one of these is exactly what it was.
 //!
 //! The shared rule these pin is `focus.rs`'s "a disabled item owns no focus stop"
 //! (`next_enabled_index`; the player HUD's disabled discs): the shared button draws no focused face
@@ -67,6 +69,14 @@ fn only_the_controls_that_play_lose_their_stop_and_the_row_is_never_empty() {
         hero::HeroCtl::GoToShow, hero::HeroCtl::Version, hero::HeroCtl::More] {
         assert!(!ctl.starts_playback(), "{ctl:?} opens, marks or navigates; it does not play");
     }
+    // The controls that WRITE to the account: the bookmark and the watched toggle in both faces.
+    for ctl in [hero::HeroCtl::Play, hero::HeroCtl::Restart, hero::HeroCtl::Trailer, hero::HeroCtl::Alt,
+        hero::HeroCtl::GoToShow, hero::HeroCtl::Version, hero::HeroCtl::More] {
+        assert!(!ctl.writes_account(), "{ctl:?} plays, navigates or opens a menu; it writes nothing");
+    }
+    for ctl in [hero::HeroCtl::Watchlist, hero::HeroCtl::MarkWatched, hero::HeroCtl::MarkUnwatched] {
+        assert!(ctl.writes_account(), "{ctl:?} changes the household's record");
+    }
     for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
         for bits in 0..64u32 {
             let set = hero::HeroSet {
@@ -83,13 +93,24 @@ fn only_the_controls_that_play_lose_their_stop_and_the_row_is_never_empty() {
                 assert_eq!(&visible[..n], &want[..], "{set:?} {stops:?}: a subset of the drawn row, in drawn order");
                 let (first, last) = hero::stop_span(set, stops).expect("a stop");
                 assert_eq!((all[first], all[last]), (visible[0], visible[n - 1]), "{set:?} {stops:?}");
-                // A column the row still stops on resolves to itself, any other to the nearest stop.
-                for col in 0..drawn {
-                    let near = hero::stop_near(set, stops, col).expect("a stop");
-                    assert!(hero::focusable(near, stops));
-                    if hero::focusable(all[col], stops) {
-                        assert_eq!(near, all[col], "{set:?} {stops:?}: column {col} is itself a stop");
-                    }
+                // A column the row stops on is that control, any other (a control the row does not
+                // stop on, or past the row) is none: a restore then takes the page's default.
+                for col in 0..drawn + 2 {
+                    let at = hero::stop_at(set, stops, col);
+                    assert_eq!(at, (col < drawn && hero::focusable(all[col], stops)).then(|| all[col]),
+                        "{set:?} {stops:?}: column {col}");
+                }
+                // The default stop is the first stop that does not write: Play with a driver, and
+                // without one the first of Go to Show, More, Version, Also available the row has,
+                // or none at all when every stop the row has writes.
+                let default = hero::default_stop(set, stops);
+                assert_eq!(default, visible[..n].iter().copied().find(|c| !c.writes_account()), "{set:?} {stops:?}");
+                assert!(default.map_or(true, |c| hero::focusable(c, stops) && !c.writes_account()), "{set:?} {stops:?}");
+                if !stops.no_playback {
+                    assert_eq!(default, Some(hero::HeroCtl::Play), "{set:?} {stops:?}: with a driver Play stays the default");
+                }
+                if stops.no_playback && !(set.go_show || set.more || set.version || set.alt) {
+                    assert_eq!(default, None, "{set:?}: a row of writes only has no default stop of its own");
                 }
             }
             // Full-trailer mode is Play alone, whatever the platform composed.
@@ -97,6 +118,7 @@ fn only_the_controls_that_play_lose_their_stop_and_the_row_is_never_empty() {
                 let stops = hero::Stops { full_trailer: true, no_playback };
                 assert_eq!(hero::visible_ctls(set, stops).1, 1);
                 assert_eq!(hero::first_stop(set, stops), hero::HeroCtl::Play);
+                assert_eq!(hero::default_stop(set, stops), Some(hero::HeroCtl::Play));
             }
         }
     }
@@ -136,39 +158,124 @@ fn the_hero_group_spans_the_controls_that_own_a_stop() {
     }
 }
 
+/// The engine key of the first card of the Extras shelf: `resumable`'s item has one (its trailer),
+/// so it is the first section below its row.
+fn first_extra(screen: &DetailScreen) -> u32 {
+    screen.engine_key(extras::elem(0).expect("an extras card")).expect("the card has a key")
+}
+
+/// The page opens on Play with a driver. With none its row is the bookmark and the watched toggle,
+/// both of which WRITE to the account, so a reflex OK on a page that has just appeared must not land
+/// on either: it opens on the first section below the row, seated by that group's own `seat`.
 #[test]
 fn focus_opens_on_the_first_control_that_can_act() {
     let sid = ServerId::UNSET;
-    for (no_driver, first) in [(false, hero::ELEM_PLAY), (true, hero::ELEM_WATCHLIST)] {
+    for no_driver in [false, true] {
         let guard = install(resumable(sid));
         let _driver = NoDriver::set(no_driver);
         let screen = bare(&guard, sid, "movie");
+        let first = if no_driver { first_extra(&screen) } else { hero::ELEM_PLAY };
         // A page minted fresh seats by the group's own policy...
         assert_eq!(enter(&screen, None), first, "no_driver={no_driver}");
         // ...and one restored onto Play (a remembered cursor, the old default) reconciles to the
-        // same control, not to a pill that draws no focus.
+        // same place, not to a pill that draws no focus.
         assert_eq!(enter(&screen, Some(key(hero::ELEM_PLAY))), first, "no_driver={no_driver}");
+        // Restart is a stop only while a driver can play: without one a focus left on it falls back
+        // to the same default.
+        assert_eq!(enter(&screen, Some(key(hero::ELEM_RESTART))), if no_driver { first } else { hero::ELEM_RESTART },
+            "no_driver={no_driver}");
+        // ...but a restore onto the very control the viewer left keeps it, a write control included:
+        // that is their own position.
+        if no_driver {
+            for own in [hero::ELEM_WATCHLIST, hero::ELEM_MARK_WATCHED] {
+                assert_eq!(enter(&screen, Some(key(own))), own, "no_driver={no_driver}: the viewer's own focus stays");
+            }
+        }
         clear();
     }
 }
 
-/// A page with no item yet offers Play and the watch disc: with no driver the watch disc is the
-/// first stop there.
+/// A movie with nothing below its row but the About card: the default is that card, not a write
+/// control and not nothing.
+#[test]
+fn a_movie_whose_only_stops_write_opens_on_the_first_section_below_the_row() {
+    let sid = ServerId::UNSET;
+    let guard = install(Detail {
+        sid, rk: "movie".into(), kind: "movie".into(), part: "/library/parts/1/file.mkv".into(),
+        guid: "plex://movie/5d776b1d96b655001f2a9c3e".into(), ..Default::default()
+    });
+    let screen = bare(&guard, sid, "movie");
+    let meta = test_store().view();
+    {
+        let _driver = NoDriver::set(true);
+        let set = screen.hero_set(meta);
+        let stops = hero::Stops { full_trailer: false, no_playback: true };
+        let (row, n) = hero::visible_ctls(set, stops);
+        assert_eq!(&row[..n], &[hero::HeroCtl::Watchlist, hero::HeroCtl::MarkWatched], "premise: every stop of the row writes");
+        assert_eq!(hero::default_stop(set, stops), None);
+        let landed = enter(&screen, None);
+        assert!(matches!(screen.locate(landed, meta), Some(Located::About(0))), "the first section below the row");
+        assert!(ctl_of(landed).is_none(), "and not a control of the row");
+    }
+    // With a driver nothing changes: Play.
+    let _driver = NoDriver::set(false);
+    assert_eq!(enter(&screen, None), hero::ELEM_PLAY);
+    clear();
+}
+
+/// A row that has a stop which neither plays nor writes opens on it (Go to Show, More, Play Version,
+/// Also available), ahead of the writes that sit before it in the row; UP into the row from below
+/// seats there as well.
+#[test]
+fn a_row_with_a_stop_that_does_not_write_opens_on_it() {
+    let sid = ServerId::UNSET;
+    let episode = Detail {
+        sid, rk: "ep".into(), kind: "episode".into(), part: "/library/parts/1/file.mkv".into(),
+        show_rk: "show".into(), season: 1, ..Default::default()
+    };
+    for (what, item, lands) in [
+        ("a movie with two versions", versioned("movie", 2), hero::ELEM_VERSION),
+        ("an episode", episode, hero::ELEM_GO_TO_SHOW),
+    ] {
+        let guard = install(item);
+        let _driver = NoDriver::set(true);
+        let screen = bare(&guard, sid, if what == "an episode" { "ep" } else { "leaf" });
+        let set = screen.hero_set(test_store().view());
+        let stops = hero::Stops { full_trailer: false, no_playback: true };
+        let (row, n) = hero::visible_ctls(set, stops);
+        assert!(row[..n].iter().any(|ctl| ctl.writes_account()), "{what}: premise: the row has a write control too");
+        assert_eq!(enter(&screen, None), lands, "{what}");
+        assert_eq!(enter(&screen, Some(key(hero::ELEM_PLAY))), lands, "{what}: a restore onto Play resolves the same way");
+        // UP into the row from the section below seats there as well.
+        let about = screen.engine_key(about::CARD_ELEM).expect("the About card has a key");
+        let mut engine = FocusEngine::new();
+        engine.set(OWNER, key(about), Some(about::ABOUT_GROUP), By::Restore);
+        assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Up), "UP into the row"), lands, "{what}");
+        clear();
+    }
+}
+
+/// A page with no item yet offers Play and the watch disc. With no driver the watch disc is the
+/// row's only stop and there is no section below to seat on, so the page opens on it: a control that
+/// writes, but one that presses nothing until the item is there (`activate_hero`).
 #[test]
 fn a_page_whose_item_has_not_landed_opens_on_the_watch_disc_with_no_driver() {
     let sid = ServerId::UNSET;
     for (no_driver, first) in [(false, hero::ELEM_PLAY), (true, hero::ELEM_MARK_WATCHED)] {
         let guard = install(Detail { sid, rk: "other".into(), ..Default::default() });
         let _driver = NoDriver::set(no_driver);
-        let screen = bare(&guard, sid, "movie");
+        let mut screen = bare(&guard, sid, "movie");
         assert!(screen.detail(test_store().view()).is_none(), "the page's own item is not loaded");
         assert_eq!(enter(&screen, None), first, "no_driver={no_driver}");
+        let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_MARK_WATCHED), Some(first));
+        assert!(!effects.iter().any(|e| matches!(e.fx, Fx::App(AppFx::Store(StoreId::ViewState, _)))),
+            "no_driver={no_driver}: OK on the watch disc before the item is there writes nothing");
         clear();
     }
 }
 
-/// The page opens on a control that draws a focused face. The shared button draws none while
-/// disabled (`widgets::Button::face_now`), which is why a disabled control owns no stop.
+/// Focus only ever lands on a control of the row that draws a focused face. The shared button draws
+/// none while disabled (`widgets::Button::face_now`), which is why a disabled control owns no stop.
 #[test]
 fn the_control_focus_lands_on_draws_a_focused_face_and_a_disabled_one_never_would() {
     let sid = ServerId::UNSET;
@@ -187,10 +294,14 @@ fn the_control_focus_lands_on_draws_a_focused_face_and_a_disabled_one_never_woul
         let mut screen = bare(&guard, sid, "movie");
         let set = screen.hero_set(test_store().view());
         let at_rest = drawn(&mut screen, None);
-        let landed = ctl_of(enter(&screen, None)).expect("a hero control");
-        let index = hero::index_of(set, landed).expect("in the row");
-        assert_ne!(drawn(&mut screen, Some(index)), at_rest,
-            "no_driver={no_driver}: the control the page opens on ({landed:?}) draws a focused face");
+        // Every control the row owns a stop on draws a focused face: a focus that travels onto one
+        // is never invisible. (With a driver the page opens on Play; without one it opens below the
+        // row, and the row's own stops are reached by travel.)
+        let (row, n) = hero::visible_ctls(set, hero::Stops { full_trailer: false, no_playback: no_driver });
+        for &stop in &row[..n] {
+            let index = hero::index_of(set, stop).expect("in the row");
+            assert_ne!(drawn(&mut screen, Some(index)), at_rest, "no_driver={no_driver}: {stop:?} draws a focused face");
+        }
         if no_driver {
             for ctl in [hero::HeroCtl::Play, hero::HeroCtl::Restart] {
                 let index = hero::index_of(set, ctl).expect("in the row");
@@ -240,8 +351,10 @@ fn focus_travels_between_the_controls_that_can_act_and_never_onto_one_that_canno
     }
 }
 
-/// Coming back UP into the row from the section below seats on the row's first stop, never on a
-/// disabled Play: the engine's `Seat::First` is `DetailScreen::seat`.
+/// Coming back UP into the row from the section below seats on a stop of the row, never on a
+/// disabled Play, and on the first one even when it writes (here every stop does): the viewer chose
+/// the row, and the write controls stay reachable by travel. The engine's `Seat::First` is
+/// `DetailScreen::seat`.
 #[test]
 fn up_into_the_row_seats_on_its_first_stop() {
     let sid = ServerId::UNSET;
@@ -262,55 +375,86 @@ fn up_into_the_row_seats_on_its_first_stop() {
     }
 }
 
-/// A restored spot names a column of the drawn row; a column that is no longer a stop resolves onto
-/// the nearest stop, the later of two equally near.
+/// A page that opened below its row (a movie with no driver) still reaches the row's write controls
+/// by travel: UP seats on the first, RIGHT reaches the next, and DOWN leaves the row again. The page's
+/// FIRST seat is the default below the row even when focus is still on another page's key, while an
+/// UP from a focus already on this page is the viewer's own choice of the row.
 #[test]
-fn a_restored_hero_spot_lands_on_a_control_the_row_still_stops_on() {
+fn the_write_controls_stay_reachable_by_travel_from_a_page_that_opened_below_them() {
     let sid = ServerId::UNSET;
     let measure = plx_ui::fixture::FixtureMeasure;
-    // columns: 0 Play, 1 Watchlist, 2 Restart, 3 Mark watched
+    let guard = install(resumable(sid));
+    let _driver = NoDriver::set(true);
+    let screen = bare(&guard, sid, "movie");
+    // The container's fresh enter, while the scope still reads the page that was left (another entry).
+    let mut elsewhere = cx(&measure, None);
+    elsewhere.focus.current = Some(FocusKey { entry: EntryId(9), elem: hero::ELEM_PLAY });
+    let mut engine = FocusEngine::new();
+    let landed = match engine.enter::<TestHost>(OWNER, &screen, FocusTarget::FirstInGroup(hero::HERO_GROUP), None, &elsewhere) {
+        Outcome::Moved { to, .. } => to.elem,
+        other => panic!("an entry moves focus onto something: {other:?}"),
+    };
+    assert_eq!(landed, first_extra(&screen), "another entry's focus is not this page's: it opens by default");
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Up), "UP into the row"), hero::ELEM_WATCHLIST);
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Right), "RIGHT along the row"), hero::ELEM_MARK_WATCHED);
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Down), "DOWN out of the row"), first_extra(&screen));
+    clear();
+}
+
+/// A restored spot names a column of the drawn row. A column the row still stops on keeps that
+/// control (the viewer's own position, a write control included); one that is no longer a stop
+/// (Play and Restart with no driver) resolves by the page's default rule, not onto the nearest stop,
+/// which would be a write: here, below the row.
+#[test]
+fn a_restored_hero_spot_keeps_the_control_it_names_and_otherwise_takes_the_default() {
+    let sid = ServerId::UNSET;
+    let measure = plx_ui::fixture::FixtureMeasure;
+    // columns: 0 Play, 1 Watchlist, 2 Restart, 3 Mark watched; `None` is the default below the row
     for (no_driver, col, lands) in [
-        (false, 0, hero::ELEM_PLAY), (false, 2, hero::ELEM_RESTART),
-        (true, 0, hero::ELEM_WATCHLIST), (true, 1, hero::ELEM_WATCHLIST), (true, 2, hero::ELEM_MARK_WATCHED),
-        (true, 3, hero::ELEM_MARK_WATCHED),
+        (false, 0, Some(hero::ELEM_PLAY)), (false, 2, Some(hero::ELEM_RESTART)),
+        (true, 0, None), (true, 1, Some(hero::ELEM_WATCHLIST)), (true, 2, None),
+        (true, 3, Some(hero::ELEM_MARK_WATCHED)),
     ] {
         let guard = install(resumable(sid));
         let _driver = NoDriver::set(no_driver);
         let mut screen = bare(&guard, sid, "movie");
         screen.restore(&Spot { section: 0, col, ..Default::default() }, test_store().view());
         let got = Focusable::<TestHost>::reconcile(&screen, key(hero::ELEM_PLAY), &cx(&measure, None));
-        assert_eq!(got.elem, lands, "no_driver={no_driver}: column {col}");
+        assert_eq!(got.elem, lands.unwrap_or_else(|| first_extra(&screen)), "no_driver={no_driver}: column {col}");
         clear();
     }
 }
 
-/// A spot saved on a section the item no longer has (no related shelf here) falls back to the row's
-/// first stop, which is Play only when a driver can play.
+/// A spot saved on a section the item no longer has (no related shelf here) falls back to the page's
+/// default: Play when a driver can play, else below the row.
 #[test]
-fn a_restore_whose_section_is_gone_falls_back_to_the_first_stop() {
+fn a_restore_whose_section_is_gone_falls_back_to_the_default() {
     let sid = ServerId::UNSET;
     let measure = plx_ui::fixture::FixtureMeasure;
-    for (no_driver, first) in [(false, hero::ELEM_PLAY), (true, hero::ELEM_WATCHLIST)] {
+    for no_driver in [false, true] {
         let guard = install(resumable(sid));
         let _driver = NoDriver::set(no_driver);
         let mut screen = bare(&guard, sid, "movie");
         screen.restore(&Spot { section: 3, col: 2, ..Default::default() }, test_store().view());
         let got = Focusable::<TestHost>::reconcile(&screen, key(hero::ELEM_MARK_WATCHED), &cx(&measure, None));
+        let first = if no_driver { first_extra(&screen) } else { hero::ELEM_PLAY };
         assert_eq!(got.elem, first, "no_driver={no_driver}");
         clear();
     }
 }
 
-/// A restore retires once focus sits on the control it resolves to: with no driver that is the first
-/// control that can act, not the Play the spot named, so the page does not keep re-seating a focus
-/// that already landed.
+/// A restore retires once focus sits on the place it resolves to: with no driver that is the default
+/// below the row, not the Play the spot named, so the page does not keep re-seating a focus that
+/// already landed.
 #[test]
-fn a_restore_retires_once_focus_is_on_the_control_the_row_stops_on() {
+fn a_restore_retires_once_focus_is_on_the_place_the_page_resolves_it_to() {
     let sid = ServerId::UNSET;
-    for (no_driver, lands) in [(false, hero::ELEM_PLAY), (true, hero::ELEM_WATCHLIST)] {
+    for no_driver in [false, true] {
         let guard = install(resumable(sid));
         let _driver = NoDriver::set(no_driver);
         let mut screen = bare(&guard, sid, "movie");
+        // `step` takes the page's own (local) elem and keys it itself.
+        let lands = if no_driver { extras::elem(0).expect("an extras card") } else { hero::ELEM_PLAY };
         screen.restore(&Spot { section: 0, col: 0, ..Default::default() }, test_store().view());
         assert!(screen.restore_intent.is_some(), "premise: the restore is armed");
         step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(lands));
