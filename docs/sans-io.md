@@ -293,7 +293,7 @@ opaque payloads. Foreign types remain opaque without reproducible source-backed 
 a familiar dependency name is not a certificate.
 
 `ci/readonly_generated.py` and `ci/proofs/platform-generated-enums.json` separately certify
-the actual platform language include: pinned package/module/include, complete production
+the actual os language include: pinned package/module/include, complete production
 build scripts, generator/templates, manifests/configuration and locked graph. The reviewed
 pipeline emits only unit enum variants in every configuration; strict catalogue/schema and
 ASCII variant validation permit new languages without a count/list pin. The same evidence

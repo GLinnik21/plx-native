@@ -544,7 +544,7 @@ mod seam_order_tests {
     #[test]
     fn no_production_code_calls_libc_exit_outside_the_shared_helper() {
         // The app process links every crate under rust-modules except `storage` (the separate
-        // `plxstorage` helper binary, no OpenSSL workers) and platform's `storage_service/` (that
+        // `plxstorage` helper binary, no OpenSSL workers) and the os layer's `storage_service/` (that
         // helper's body). `base/src/process.rs` is the helper itself.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();

@@ -341,7 +341,7 @@ def missing_roots(root: Path) -> list[str]:
 
 def source_paths(root: Path):
     src = root / 'rust-modules/src'
-    platform = root / LAYER_SRCS[0]
+    os_src = root / LAYER_SRCS[0]
     for base, folders in ((root / LAYER_SRCS[2], ('',)), (root / 'rust-modules/appkit/src', ('',)), (root / 'rust-modules/screens/src', ('',))):
         for folder in folders:
             for path in sorted((base / folder).rglob('*.rs')):
@@ -352,7 +352,7 @@ def source_paths(root: Path):
     for rel in ('player/ass.rs', 'player/mod.rs', 'player/shared.rs', 'player/sidecar.rs', 'route/decision.rs', 'route/decision_memory.rs', 'route/plan.rs', 'route/plan_memory.rs'):
         yield root / 'rust-modules/media/src' / rel
     for rel in ('webos.rs', 'tv/device.rs', 'devcaps/dv.rs'):
-        yield platform / rel
+        yield os_src / rel
     # `metadata.rs` and `person.rs` were listed under `rust-modules/src` until the data split.
     for rel in ('metadata.rs', 'person.rs'):
         yield root / 'rust-modules/data/src' / rel

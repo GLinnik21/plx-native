@@ -226,7 +226,7 @@ plx_base = { path = "base" }
 # The machine layer (ci/module-layers.ini `[machine]`): machines and effects, the present gate, the
 # idle wake, the landing schedule, motion. Features it has a `cfg` on are forwarded above.
 plx_machine = { path = "machine" }
-# The platform layer (ci/module-layers.ini `[os]`): webOS identity, the storage helper client,
+# The os layer (ci/module-layers.ini `[os]`): webOS identity, the storage helper client,
 # the key stores, the codec table, the artwork cache, the localization catalog, the Cloud Lab session
 # file. It owns the build script that generates the catalog and the install identities.
 plx_os = { path = "os" }
@@ -347,7 +347,7 @@ debug = "line-tables-only"
 plx_base = { path = "base", features = ["test-support"] }
 # Likewise the machine layer's fixtures (`landgate::fixture_gate`, `idle::reset_for_test`, ...).
 plx_machine = { path = "machine", features = ["test-support"] }
-# Likewise the platform layer's seams (`i18n`'s thread locale, `storage`'s fault injection and
+# Likewise the os layer's seams (`i18n`'s thread locale, `storage`'s fault injection and
 # in-process helper backend, `tv`'s sandbox/home/secure-store seams).
 plx_os = { path = "os", features = ["test-support"] }
 # Likewise the gfx layer's seams (`text`'s prewarm and capture hooks, `gfx::backdrop::commit`, ...).
