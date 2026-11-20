@@ -350,7 +350,7 @@ L15's 44 entries, 205 references of which 95 were in production code. The port's
 their layers, so none of this held up the split.
 
 L15 moved every one of those references behind an interface in `os`'s new `tv` module that
-the port fills at boot. `tv::Services` is a table of function pointers in four groups (`identity`, `secure`, `system` and `legacy_webos_media`), installed once by `app::run_application` (from the `Platform` its entry hands it) before anything
+the port fills at boot. `tv::Services` is a table of function pointers and stated values in five groups (`identity`, `secure`, `system`, `storage` and `legacy_webos_media`), installed once by `app::run_application` (from the `Platform` its entry hands it) before anything
 that reads it. With nothing installed (host unit
 tests, where nothing calls `plex_run`) `tv::Services::HOST_TEST` answers what the host arms answered before; a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
