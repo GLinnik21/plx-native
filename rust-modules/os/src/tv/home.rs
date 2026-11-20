@@ -66,13 +66,13 @@ pub fn home_requests() -> u32 {
 pub fn go_home() {
     #[cfg(any(test, feature = "test-support"))]
     HOME_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    (super::port().go_home)()
+    (super::services().system.go_home)()
 }
 
 /// The frame thread's half of a root press: the platform's fallback leg, when its off-thread leg
 /// asked for one.
 pub fn poll() {
-    (super::port().poll_home)()
+    (super::services().system.poll_home)()
 }
 
 #[cfg(test)]

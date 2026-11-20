@@ -51,7 +51,7 @@ pub fn toast(message: &str) -> Outcome {
 /// One attempt under the chosen [`Identity`], reply and grade both. Blocks.
 pub fn send(message: &str, identity: Identity) -> Sent {
     let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("LS2 toast") });
-    (super::port().deliver_toast)(message, identity)
+    (super::services().system.deliver_toast)(message, identity)
 }
 
 /// What an absent port answers: nothing was sent, and the log says so.

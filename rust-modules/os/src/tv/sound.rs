@@ -20,7 +20,7 @@ pub enum Reply { NoPlatform, Unavailable, Reply(String) }
 pub fn output() -> Option<String> {
     let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("LS2 sound output") });
     let started = std::time::Instant::now();
-    match (super::port().sound_output)() {
+    match (super::services().identity.sound_output)() {
         Reply::NoPlatform => None,
         Reply::Unavailable => {
             plx_base::eventlog::log(&format!("sound: output unavailable after {}ms", started.elapsed().as_millis()));

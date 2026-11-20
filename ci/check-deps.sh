@@ -129,8 +129,8 @@ SRC=rust-modules/src
 # of a gate. A rule scoped to a directory of $SRC (ui/, screens/, app/ ...) cannot reach a layer
 # below them and stays as it is, UNLESS the files it policed there were moved out: `machine` came
 # from ui/, so the rules that read `ui/` read $SRC_MACHINE too, and `ui` is $SRC_UI now (docs/module-layers.md, Split 6). `os` is the layer that held
-# `tv/` and `storage/`, and the rules that name a moved module by path (`crate::tv::window::`,
-# `crate::storage::`) now spell it `plx_os::`. `gfx` held `text.rs`, the one file the textmeasure
+# `tv/` and `storage/`, and the rules that name a moved module by path (`crate::storage::`)
+# now spell it `plx_os::`. `gfx` held `text.rs`, the one file the textmeasure
 # rule exempts, and the rule's pattern now accepts `plx_gfx::text::`. `net` held the loopback fixtures
 # the `threads` gate skips as test code; they are `cfg(any(test, feature = "test-support"))` now,
 # which it accepts.
@@ -1082,13 +1082,27 @@ want ladder && gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn 
 # resume_at/memory_at/open_settings_at/write_at, which are unrelated lookups.
 want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/app"
 
-# frame: the three privileged OS-primitive calls, ZERO-TOLERANCE outside `app/run.rs` (D4) — no
-# allowlist file, because there is exactly one legitimate home once D1 lands: `app/run.rs` is the
-# frame loop, and `app/bridge.rs`'s `Rig` impl delegates to `run::rig_opaque_route`/
-# `rig_clear_opaque_region` (a one-line pass-through) rather than naming `plx_os::tv::window::` itself,
+# frame: the three privileged OS-primitive calls — `pump_bus`, `opaque_route` and `clear_opaque_region`
+# on the platform's `Shell` (`app::platform`, passed to `run_application` by `port.rs`) — ZERO-TOLERANCE outside
+# `app/run.rs` (D4) — no allowlist file, because there is exactly one legitimate home once D1 lands:
+# `app/run.rs` is the frame loop, and `app/bridge.rs`'s `Rig` impl delegates to `run::rig_opaque_route`/
+# `rig_clear_opaque_region` (a one-line pass-through) rather than naming the `shell` itself,
 # which is what keeps this gate's text out of bridge.rs without splitting the `impl Rig<AppHost>
 # for Bridge` block (a trait's impl for a type is one syntactic unit; it carries two dozen other
-# methods beside these three). A self-test that spells two of the three call shapes as STRING
+# methods beside these three).
+#
+# The method names alone are NOT the pin: `Rig` has `opaque_route` and `clear_opaque_region` too, and
+# `Bridge`'s forwarding (`self.bridge.opaque_route(..)`) is not an OS call. So the pin is the RECEIVER:
+# a call on something named `shell` (`app.platform.shell.pump_bus()`, `p.shell.opaque_route(..)`), on the
+# trait by path (`Shell::pump_bus(..)`, `<dyn Shell>::pump_bus(..)`), or a continuation line (`.pump_bus(`
+# first on its line) whose PREVIOUS non-blank line ends in `shell`, which is how rustfmt breaks
+# `app.platform.shell.pump_bus()` apart. A continuation line after any other receiver is not a shell
+# call, so a wrapped `Rig` forward (`self.bridge\n    .opaque_route(true)`, the dispatcher's
+# `rig\n    .clear_opaque_region()`) passes. A shell held in a differently named local does not match: this
+# is a text gate on the loop's own call shape, and the no-op host-test shell is driven that way by its
+# pin test.
+#
+# A self-test that spells two of the three call shapes as STRING
 # LITERALS — it reads app/run.rs's own source text at runtime and compares against a copy of the
 # exact line it expects, which is data, not a call (`app/run.rs`'s own `video_plane_gate_tests`
 # today, `machine/src/idle.rs`'s before the machine layer left `ui/`) — must not trip this gate in any file
@@ -1096,12 +1110,19 @@ want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub
 # double-quote-depth tracking `tmppath` below uses), rather than exempting files by name: an
 # actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
 # used to live) are stripped the same way `grep_code` above does for every other rule.
-frame_pat='(crate|plx_os)::tv::window::(pump_bus|opaque_route|clear_opaque_region)\('
+# `[.]` and `[(]`, not `\.` and `\(`: `awk -v` would eat the backslashes.
+frame_recv='(^|[^A-Za-z0-9_])shell[[:space:]]*[.][[:space:]]*(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*[(]|Shell>?::(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*[(]'
+frame_cont='^[[:space:]]*[.][[:space:]]*(pump_bus|opaque_route|clear_opaque_region)[[:space:]]*[(]'
+frame_tail='(^|[^A-Za-z0-9_])shell[[:space:]]*$'
+# The files to look at: any line of either shape (the cheap `grep` pass); `awk` below decides which hit counts.
+frame_pat="$frame_recv|$frame_cont"
 if want frame; then
 frame_bad=0
 while IFS= read -r f; do
   [ "$f" = "$SRC/app/run.rs" ] && continue
-  hits=$(strip_strings_and_comments "$f" | grep -nE "$frame_pat" || true)
+  hits=$(strip_strings_and_comments "$f" | awk -v recv="$frame_recv" -v cont="$frame_cont" -v tail="$frame_tail" '
+    $0 ~ recv || ($0 ~ cont && prev ~ tail) { print NR ":" $0 }
+    $0 !~ /^[[:space:]]*$/ { prev = $0 }' || true)
   [ -z "$hits" ] && continue
   while IFS= read -r h; do
     ln="${h%%:*}"
@@ -1119,7 +1140,7 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 fi # frame
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
-# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which installs one)
+# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which names one)
 # and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
 # `app/adapters/backends.rs`, the boot composition that resolves the installed display once for the
 # ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
@@ -1158,7 +1179,7 @@ fi
 fi # route
 
 # fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
-# plex_main (port.rs: install, hand over, end the process) <= 10 — counted by brace
+# plex_main (port.rs: the clear hook, hand the platform over, end the process) <= 10 — counted by brace
 # depth from the `fn` line to its matching close, not by grep pattern.
 fn_body_lines() {
   # fn_body_lines <file> <fn-name-pattern> — prints the line count of the first matching fn's body

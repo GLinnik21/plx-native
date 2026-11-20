@@ -162,7 +162,7 @@ fn a_controlled_runs_browse_commands_emit_no_page_or_directory_read() {
     for replay in [false, true] {
         let (own, shared, client) = two_servers();
         let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, replay);
         let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
         let mut bridge = owner.bridge();
         seeded(&mut bridge, own, shared);

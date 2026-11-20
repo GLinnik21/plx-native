@@ -96,7 +96,7 @@ pub enum State {
 
 /// Called only by the PlayerAdapter worker after the owner accepts explicit confirmation.
 pub fn repair() -> Result<(), Failure> {
-    (super::port().repair_sandbox)()
+    (super::services().identity.repair_sandbox)()
 }
 
 #[cfg(test)]

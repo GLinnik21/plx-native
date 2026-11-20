@@ -11,7 +11,7 @@ mod sim_video;
 use plx_play_feed::ffi_host::{HostSink, Hooks};
 
 /// The simulator's video sink, built with the simulator's decoded picture. The port table holds
-/// it as `Port.sink`; a hostsim test binary of this crate reads it directly.
+/// it as `Services.legacy_webos_media.sink`; a hostsim test binary of this crate reads it directly.
 pub(crate) static HOST_SINK: HostSink = HostSink::new(Hooks::over(&sim_video::SimVideo));
 
 /// The render thread's half of the simulator's picture, once per bound-plane frame, after the

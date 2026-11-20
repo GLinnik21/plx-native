@@ -2117,12 +2117,12 @@ mod tests {
         let _serial=plx_base::testlock::serial();
         let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,None).unwrap();
         let mt=unsafe {plx_base::task::MainThread::assume()};
-        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0,&initial,&mt,true);
+        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0, crate::app::platform::Platform::HOST_TEST.shell, &initial,&mt,true);
         let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
         let mut bridge = harness.bridge();
         bridge.split().measure.width(c"no fonts loaded",28,false);
         assert!(bridge.take_measurements().is_err(),"construction-order violations must latch");
-        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0,&initial,&mt,true);
+        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0, crate::app::platform::Platform::HOST_TEST.shell, &initial,&mt,true);
         let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
         let mut bridge = harness.bridge();
         let table=[

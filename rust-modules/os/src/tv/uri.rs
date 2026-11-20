@@ -75,7 +75,7 @@ pub trait UriMedia: Sync {
     fn poll(&self, session: SessionId) -> Result<UriPoll, String>;
     fn close(&self, session: SessionId) -> Result<(), String>;
 }
-pub fn installed() -> &'static dyn UriMedia { super::port().uri_media }
+pub fn installed() -> &'static dyn UriMedia { super::services().legacy_webos_media.uri_media }
 
 pub struct ReplyQueue {
     session: SessionId,

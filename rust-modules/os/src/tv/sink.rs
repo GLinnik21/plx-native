@@ -200,10 +200,10 @@ pub trait VideoSink: DisplaySink {
 /// The installed sink: the only way out of `tv` for the Starfish verbs, and only `player/` may
 /// call it (`ci/check-deps.sh`, rule `sink`).
 #[cfg_attr(all(any(test, feature = "test-support"), feature = "hostsim"), allow(dead_code))]
-pub fn installed() -> &'static dyn VideoSink { super::port().sink }
+pub fn installed() -> &'static dyn VideoSink { super::services().legacy_webos_media.sink }
 
 /// Resolve the shared display interface in composition/IO code, then inject it into a driver.
-pub fn display_installed() -> &'static dyn DisplaySink { super::port().display_sink }
+pub fn display_installed() -> &'static dyn DisplaySink { super::services().legacy_webos_media.display_sink }
 
 /// Refused native verbs, shared by `NoSink` and `RefusingSink`. Memoized queries
 /// remain each sink's own.

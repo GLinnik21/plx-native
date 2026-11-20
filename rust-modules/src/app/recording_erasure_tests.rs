@@ -164,7 +164,7 @@ fn replay_cannot_authorize_erasure_of_a_recording_target() {
     temp.assert_only_target();
     let before = std::fs::read(temp.path()).unwrap();
     let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, true);
     let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     let mut bridge = harness.bridge();
     let mut pages = Dispatcher::<AppHost>::new();

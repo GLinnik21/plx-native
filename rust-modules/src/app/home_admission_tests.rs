@@ -39,7 +39,7 @@ fn recording_home() -> (crate::app::runtime_owners::Harness, ServerId, &'static 
     let client = plx_plex::plex::client_for(sid).expect("registered");
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, false);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, crate::app::platform::Platform::HOST_TEST.shell, &initial, &mt, false);
     (crate::app::runtime_owners::Harness::from_parts(runtime, retained), sid, client)
 }
 
