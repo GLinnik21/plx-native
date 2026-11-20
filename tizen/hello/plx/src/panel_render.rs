@@ -25,11 +25,22 @@ pub const PANEL_W: i32 = 1872;
 pub const PANEL_H: i32 = 1048;
 /// Body text size. SDL_ttf's point size is the pixel em at 72 dpi.
 pub const FONT_PX: i32 = 28;
-/// Inner padding of the plate and the space between two sections, in pixels.
+/// Distance between two lines of one wrapped section, in pixels. The font's own is 34 px at [`FONT_PX`] (Inter's
+/// 1.21 em); 31 px (1.11 em) leaves the glyphs untouched, with their ascenders and descenders still clear of
+/// the next row, and returns about 3 px for every wrapped row: with the margins ([`PAD`], `GAP`) that is what
+/// keeps the panel that step 8's four-line result and the shader bisect line make fit the plate.
 #[cfg(plx_sdl)]
-const PAD: i32 = 16;
+const LINE_PITCH: i32 = 31;
+/// Inner padding of the plate and the space between two sections, in pixels. (Were 16 and 4 until step 8's
+/// result grew to four lines, with the first shader error and the bisect summary: the vertical room is the
+/// panel's scarce resource and the text size is fixed at [`FONT_PX`], so the margins gave way, not the text.)
+const PAD: i32 = 12;
 #[cfg(plx_sdl)]
-const GAP: i32 = 4;
+const GAP: i32 = 2;
+/// The lowest pixel row (exclusive) text may reach: the plate's height less the bottom padding. THIS is the
+/// bound a panel must fit under, not [`PANEL_H`]: a section ending below it touches the plate's edge and
+/// counts as overflowed ([`Rendered::overflowed`]), though it is still inside the image.
+pub const CONTENT_LIMIT: i32 = PANEL_H - PAD;
 /// The dark plate (also what the host test checks the corner against).
 #[cfg(plx_sdl)]
 pub const PLATE_RGB: [u8; 3] = [20, 20, 26];
@@ -72,11 +83,14 @@ pub fn displayable(has: impl Fn(char) -> bool, text: &str, replaced: &mut Vec<ch
 pub struct Rendered {
     /// Opaque RGBA, `PANEL_W x PANEL_H`.
     pub image: Label,
-    /// Some section did not fit: its tail was clipped by the plate's edge.
+    /// Some section ended below [`CONTENT_LIMIT`] (the plate's height less its bottom padding): its tail is
+    /// clipped by the plate's edge or touches it.
     pub overflowed: bool,
     /// Characters the font lacked and `displayable` replaced.
     pub replaced: Vec<char>,
-    /// Pixel row below the last section (how full the plate is).
+    /// The pixel row just below the last section's text, WITHOUT the gap that follows a section: the number
+    /// to compare with [`CONTENT_LIMIT`] (how full the plate is). It used to include that trailing gap, which
+    /// made a panel that overflowed by 4 px read as "1040 of 1048" against the plate's height.
     pub used_height: i32,
 }
 
@@ -105,7 +119,10 @@ mod imp {
 
     impl Renderer {
         pub fn open(font_path: &str) -> Result<Renderer, String> {
-            Font::open(font_path, FONT_PX).map(|font| Renderer { font })
+            Font::open(font_path, FONT_PX).map(|mut font| {
+                font.set_line_skip(LINE_PITCH);
+                Renderer { font }
+            })
         }
 
         /// The font the package carries: `<res dir>/appfont.ttf`.
@@ -129,19 +146,21 @@ mod imp {
             plate.fill(PLATE_RGB[0], PLATE_RGB[1], PLATE_RGB[2], 255)?;
             let wrap = (PANEL_W - 2 * PAD) as u32;
             let (mut y, mut overflowed, mut replaced) = (PAD, false, Vec::new());
+            let mut bottom = PAD;
             for s in sections.iter().filter(|s| !s.text.trim().is_empty()) {
                 let text = displayable(|c| self.font.has_glyph(c), &s.text, &mut replaced);
                 let mut surf = self.font.render_blended_wrapped(&text, color(s.tone), wrap)?;
                 surf.set_blend(sdl::BLENDMODE_BLEND)?;
-                if y + surf.height() > PANEL_H - PAD {
+                bottom = y + surf.height();
+                if bottom > CONTENT_LIMIT {
                     overflowed = true;
                 }
                 // SDL clips a blit at the destination's edge, so an overflowing tail is cut, not a fault.
                 surf.blit_onto(&mut plate, PAD, y)?;
-                y += surf.height() + GAP;
+                y = bottom + GAP;
             }
             let rgba = plate.to_rgba_opaque()?;
-            Ok(Rendered { image: Label { rgba, width: PANEL_W, height: PANEL_H }, overflowed, replaced, used_height: y })
+            Ok(Rendered { image: Label { rgba, width: PANEL_W, height: PANEL_H }, overflowed, replaced, used_height: bottom })
         }
     }
 }
@@ -228,11 +247,11 @@ impl Drawer {
             Ok((r, raster_ms)) => {
                 self.renders += 1;
                 plog!(
-                    "panel: render #{} (content v{version}) {} sections, rasterised in {raster_ms:.1} ms, uploaded; plate {}/{} px used{}",
+                    "panel: render #{} (content v{version}) {} sections, rasterised in {raster_ms:.1} ms, uploaded; text reaches row {} of {} usable{}",
                     self.renders,
                     sections.len(),
                     r.used_height,
-                    PANEL_H,
+                    CONTENT_LIMIT,
                     if r.overflowed { " (OVERFLOW: the last section is clipped)" } else { "" }
                 );
                 let new: Vec<char> = r.replaced.iter().copied().filter(|c| !self.reported.contains(c)).collect();
@@ -284,16 +303,51 @@ mod tests {
         out
     }
 
-    /// Steps 8 and 9 as the probes really word them (`Report::lines`, `NetReport::lines`), two lines each.
-    /// `typical`: an emulator that lists neither GL extension and a mock that answers; otherwise the
-    /// longest failure each can write (a cut compile error, a long curl version string and host name).
-    fn add_probe_steps(p: &Panel, typical: bool) {
-        use crate::gfx_probe::Report;
+    /// Which step-8 result a fixture carries.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Gfx {
+        /// A device where everything works and the GL lists neither wanted extension: the bisect says every
+        /// variant compiles (one short line).
+        Ok,
+        /// What the NEXT emulator run is expected to show: the one pair that failed on the first run, the
+        /// driver's first line whole, both extensions missing, and a bisect with failing rungs.
+        Emulator,
+        /// The longest refusal the probe can write from realistic strings: a first error that wraps onto a
+        /// second row, more log lines behind it, every rung failing, and the driver's copy of the source
+        /// differing on all of them (the longest bisect line).
+        Worst,
+    }
+
+    /// A bisect result where exactly the variants named in `pass` compiled.
+    fn bisect(pass: &str, copy_differs: bool) -> crate::shader_bisect::BisectReport {
+        use crate::gfx_probe::{Readback, Trial};
+        use crate::shader_bisect::{BisectReport, Inspection, Outcome};
+        let outcomes = "abcdefghiklmno"
+            .chars()
+            .map(|id| Outcome {
+                id,
+                trial: Trial {
+                    compiled: pass.contains(id),
+                    readback: copy_differs.then(|| Readback { returned: 6139, same: false, first_diff: Some(6139) }),
+                    ..Trial::default()
+                },
+            })
+            .collect();
+        BisectReport { outcomes, bytes: Inspection::default() }
+    }
+
+    /// Steps 8 and 9 as the probes really word them (`Report::lines`, `NetReport::lines`). `net_typical`: a
+    /// mock that answers; otherwise the longest failure step 9 can write (a long curl version string and
+    /// host name).
+    fn add_probe_steps(p: &Panel, gfx: Gfx, net_typical: bool) {
+        use crate::gfx_probe::{Report, ShaderCheck, ShaderFailure, Where};
         use crate::net_probe::{CurlFacts, GetResult, MockHost, NetReport};
         let ext = vec!["ARM|EXT_shader_framebuffer_fetch".to_string(), "EXT_disjoint_timer_query".to_string()];
-        let gfx = if typical {
-            Report {
-                shaders: Some((14, 14, None)),
+        let refusal = "1 of 14 shader pairs do not compile+link (init would exit)".to_string();
+        let gfx = match gfx {
+            Gfx::Ok => Report {
+                shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
+                bisect: Some(bisect("abcdefghiklmno", false)),
                 stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
                 err_init: Some(0),
                 err_frame: Some(0),
@@ -303,19 +357,44 @@ mod tests {
                 missing_ext: ext,
                 font_redirected: true,
                 ..Report::default()
-            }
-        } else {
-            Report {
-                refusal: Some("3 of 14 shader pairs do not compile+link (init would exit); first: init_gl base rect: fragment: 0:12: 'gl_LastFragColorARM' : undeclared identifier".into()),
-                shaders: Some((11, 14, Some("init_gl base rect: fragment: 0:12: 'gl_LastFragColorARM' : undeclared identifier".into()))),
+            },
+            Gfx::Emulator => Report {
+                refusal: Some(refusal),
+                shaders: Some(ShaderCheck {
+                    passed: 13,
+                    total: 14,
+                    first_failure: Some(ShaderFailure {
+                        pair: "init_gl ambient",
+                        at: Where::Vertex,
+                        first_line: "0:37(9): error: syntax error, unexpected NEW_IDENTIFIER".into(),
+                        more_lines: 0,
+                    }),
+                }),
+                bisect: Some(bisect("cglo", false)),
                 missing_ext: ext,
                 ..Report::default()
-            }
+            },
+            Gfx::Worst => Report {
+                refusal: Some("3 of 14 shader pairs do not compile+link (init would exit)".into()),
+                shaders: Some(ShaderCheck {
+                    passed: 11,
+                    total: 14,
+                    first_failure: Some(ShaderFailure {
+                        pair: "init_gl ambient plain",
+                        at: Where::Fragment,
+                        first_line: "0:37(9): error: syntax error, unexpected NEW_IDENTIFIER, expecting ',' or ';' or '=' or '[' or '{' or 'in' or 'out' or 'uniform' or 'varying'".into(),
+                        more_lines: 2,
+                    }),
+                }),
+                bisect: Some(bisect("", true)),
+                missing_ext: ext,
+                ..Report::default()
+            },
         };
         let (ok, l) = gfx.lines();
         p.step_lines(Step::Gfx, ok, &l);
         let version = "libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 nghttp2/1.59.0".to_string();
-        let net = if typical {
+        let net = if net_typical {
             NetReport {
                 curl: CurlFacts { loaded: Ok("libcurl.so.4"), init_ok: true, version: Some("libcurl/7.53.1 OpenSSL/1.0.2k zlib/1.2.8 libidn/1.33".into()) },
                 mock: MockHost::Set("10.0.2.2:32499".into()),
@@ -355,10 +434,10 @@ mod tests {
         p.step(Step::Gl, true, "vendor \"ARM\" renderer \"Mali-T860\" version \"OpenGL ES 3.2\"");
         p.step(Step::Sdl, true, "H5 static SDL2 + SDL2_ttf: OK");
         p.step(Step::Sample, true, crate::panel::SAMPLE_TEXT);
-        add_probe_steps(&p, true);
+        add_probe_steps(&p, Gfx::Ok, true);
         p.lifecycle(0.4, "focus IN");
         p.lifecycle(12.3, "pause");
-        p.lifecycle(15.1, "resume");
+        p.lifecycle(15.1, "resume, paused 2.8s");
         // A sweep of the remote: every press is a DOWN and an UP.
         for (n, c) in [
             ("Up", 111u32), ("Down", 116), ("Left", 113), ("Right", 114), ("Return", 36), ("XF86Back", 166), ("XF86AudioPlay", 207),
@@ -392,7 +471,24 @@ mod tests {
         p.step(Step::Egl, true, "EGL 1.4 vendor \"ARM\" version \"1.4 Midgard-r28p0-06rel0-git(6d4e2f5)\"; ES2 context and window surface created");
         p.step(Step::Gl, true, "vendor \"ARM\" renderer \"Mali-T860\" version \"OpenGL ES 3.2 v1.r28p0-06rel0.f1d3e2b5a7c9d4e6f8a0b1c2d3e4f5a6\"");
         p.step(Step::Sdl, false, "SDL2 2.32.10, SDL2_ttf 2.24.0: FAILED at gl: drawing the panel raised glError 0x0502 after the first present");
-        add_probe_steps(&p, false);
+        add_probe_steps(&p, Gfx::Emulator, false);
+        p
+    }
+
+    /// Ordinary device facts and the longest step-8 refusal the probe can write (`Gfx::Worst`): a first error
+    /// wrapping onto a second row and a bisect line wrapping onto a second row. It is the worst case of the
+    /// result itself, not of the device facts.
+    fn worst_gfx_panel() -> Panel {
+        let p = typical_panel();
+        add_probe_steps(&p, Gfx::Worst, true);
+        p
+    }
+
+    /// The panel the next emulator run is expected to show: ordinary device facts, step 8 refused with the
+    /// first shader error and the bisect, step 9 answering.
+    fn emulator_panel() -> Panel {
+        let p = typical_panel();
+        add_probe_steps(&p, Gfx::Emulator, true);
         p
     }
 
@@ -409,6 +505,16 @@ mod tests {
         p.step(Step::Gl, true, &long('G'));
         p.step(Step::Sdl, false, &long('S'));
         p
+    }
+
+    /// How full the plate is, against the bound that decides (`CONTENT_LIMIT`, the plate less its bottom pad),
+    /// not the plate's height: the first Windows run's "1040 of 1048 px" read as a fit and was an overflow.
+    fn fit(r: &Rendered) -> String {
+        format!(
+            "text reaches row {} of {CONTENT_LIMIT} usable ({} px of headroom; the plate is {PANEL_H} px tall with a {PAD} px bottom pad)",
+            r.used_height,
+            CONTENT_LIMIT - r.used_height
+        )
     }
 
     fn dump(rendered: &Rendered, name: &str) {
@@ -443,13 +549,29 @@ mod tests {
             assert_eq!(img.rgba.len(), (PANEL_W * PANEL_H * 4) as usize);
             assert_eq!(&img.rgba[..4], &[PLATE_RGB[0], PLATE_RGB[1], PLATE_RGB[2], 255], "plate corner, R G B A");
             assert!(img.rgba.chunks_exact(4).all(|p| p[3] == 255), "every pixel opaque");
-            assert!(!rendered.overflowed, "the typical panel must fit: {} of {} px", rendered.used_height, PANEL_H);
-            eprintln!("typical panel uses {} of {} px; replaced glyphs {:?}", rendered.used_height, PANEL_H, rendered.replaced);
+            assert!(!rendered.overflowed, "the typical panel must fit: {}", fit(&rendered));
+            eprintln!("typical panel: {}; replaced glyphs {:?}", fit(&rendered), rendered.replaced);
             // Text is drawn: bands of ink exist and run down the plate in section order.
             let bands = ink_rows(img);
             assert!(bands.len() >= sections.len(), "{} ink bands for {} sections", bands.len(), sections.len());
             assert!(bands[0].0 < PAD as usize + 40, "the header is at the top: {:?}", bands[0]);
             assert!(bands.last().unwrap().1 < (PANEL_H - PAD / 2) as usize, "nothing touches the bottom edge");
+        });
+    }
+
+    /// The panel's vertical budget depends on the row pitch really being `LINE_PITCH`: a SDL_ttf that ignored
+    /// `TTF_SetFontLineSkip` would put the 3 px per row back and overflow the long panel on the TV, where no
+    /// test runs. The glyphs must also stay the size the brief asks for.
+    #[test]
+    fn wrapped_rows_are_line_pitch_apart_and_the_glyphs_are_still_28px() {
+        with_renderer(|r| {
+            let one = |text: &str| r.render(&[Section { tone: Tone::Fact, text: text.to_string() }]).unwrap().used_height - PAD;
+            let (a, ab, abc) = (one("HEH"), one("HEH\nHEH"), one("HEH\nHEH\nHEH"));
+            eprintln!("rows: 1 = {a} px, 2 = {ab} px, 3 = {abc} px; LINE_PITCH {LINE_PITCH}");
+            assert_eq!(ab - a, LINE_PITCH, "the second row sits one line pitch below the first");
+            assert_eq!(abc - ab, LINE_PITCH);
+            assert!(LINE_PITCH >= FONT_PX, "rows must not overlap");
+            assert!(LINE_PITCH * 10 >= FONT_PX * 11, "a pitch under 1.1 em would crowd the descenders: {LINE_PITCH} px at {FONT_PX} px");
         });
     }
 
@@ -474,8 +596,53 @@ mod tests {
             let (_, sections) = long_panel().snapshot();
             let rendered = r.render(&sections).expect("render");
             dump(&rendered, "long");
-            eprintln!("long panel uses {} of {} px", rendered.used_height, PANEL_H);
-            assert!(!rendered.overflowed, "the long panel must fit: {} of {} px", rendered.used_height, PANEL_H);
+            eprintln!("long panel: {}", fit(&rendered));
+            assert!(!rendered.overflowed, "the long panel must fit: {}", fit(&rendered));
+        });
+    }
+
+    /// The panel the next emulator run shows (step 8 refused, with the first shader error and the bisect
+    /// summary): it is the one the owner photographs, so it must fit whole.
+    #[test]
+    fn the_expected_emulator_panel_fits_with_the_shader_error_and_the_bisect_line() {
+        with_renderer(|r| {
+            let (_, sections) = emulator_panel().snapshot();
+            let rendered = r.render(&sections).expect("render");
+            dump(&rendered, "emulator");
+            eprintln!("emulator panel: {}", fit(&rendered));
+            assert!(!rendered.overflowed, "the emulator panel must fit: {}", fit(&rendered));
+            let text: String = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+            assert!(text.contains("first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER"), "{text}");
+            assert!(text.contains("no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query"), "{text}");
+            assert!(text.contains("shader bisect (+ compiles, - fails): a- b- c+"), "{text}");
+        });
+    }
+
+    /// The longest step-8 result still fits the plate on ordinary device facts, with every word of it in the
+    /// section's text: nothing of the first error or the bisect line is cut (the owner's photo of the first
+    /// emulator run had both cut).
+    #[test]
+    fn the_longest_step_8_result_wraps_onto_second_rows_fits_and_keeps_all_of_its_text() {
+        with_renderer(|r| {
+            let (_, sections) = worst_gfx_panel().snapshot();
+            let rendered = r.render(&sections).expect("render");
+            dump(&rendered, "worst-gfx");
+            eprintln!("worst step-8 panel: {}", fit(&rendered));
+            assert!(!rendered.overflowed, "the longest step-8 result must fit: {}", fit(&rendered));
+            // Step 8's section is a single image whose height is its rows; render it alone to count them.
+            let step8 = sections.iter().find(|s| s.text.starts_with("8 gfx")).expect("step 8");
+            let rows = |text: &str| -> i32 {
+                let one = Section { tone: step8.tone, text: text.to_string() };
+                r.render(&[one]).unwrap().used_height - PAD
+            };
+            let first_row = rows("A");
+            let step8_rows = 1 + (rows(&step8.text) - first_row) / LINE_PITCH;
+            eprintln!("step 8 is {step8_rows} rows (first {first_row} px, then {LINE_PITCH} px each)");
+            assert!(step8_rows >= 6, "the first error and the bisect line each wrapped onto a second row: {step8_rows} rows");
+            // Everything in the model is in the section's text (nothing cut by the model's caps).
+            assert!(step8.text.contains("'uniform' or 'varying' (+2 more log lines in the UDP log)"), "{}", step8.text);
+            assert!(step8.text.contains("the driver's copy of the source differs for a b c d e f g h i k l m n o"), "{}", step8.text);
+            assert!(!step8.text.contains("..."), "{}", step8.text);
         });
     }
 
@@ -485,7 +652,7 @@ mod tests {
             let (_, sections) = worst_panel().snapshot();
             let rendered = r.render(&sections).expect("render");
             dump(&rendered, "worst");
-            eprintln!("absurd panel uses {} of {} px, overflowed={}", rendered.used_height, PANEL_H, rendered.overflowed);
+            eprintln!("absurd panel: {}, overflowed={}", fit(&rendered), rendered.overflowed);
             // It may overflow (300 wide capitals per field are not a real device); it must not fault, the
             // image keeps its size and stays opaque, and the clip is reported.
             assert_eq!((rendered.image.width, rendered.image.height), (PANEL_W, PANEL_H));

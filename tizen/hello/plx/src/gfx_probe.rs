@@ -5,9 +5,11 @@
 //! it initialises `plx_gfx` as `rust-modules/src/app/boot.rs` does (`init_gl`, `text::init_text`,
 //! `init_image`, `init_blur`), then draws a filled rounded rect and a line of text through `plx_gfx`'s
 //! own rect and text paths in the screen's bottom-right corner, every frame, over the diagnostics panel.
-//! The panel's `8 gfx` line is the result: the init result, how many shader pairs compiled and linked,
-//! `glGetError` after init, after the frame and after the swap, and any GL extension the renderer wants
-//! that this GL does not list.
+//! The panel's `8 gfx` lines are the result: the init result, how many shader pairs compiled and linked
+//! (and, for the first that did not, the driver's first error line in full), `glGetError` after init,
+//! after the frame and after the swap, every GL extension the renderer wants that this GL does not list
+//! (in full, wrapped, never cut at a column count), and [`crate::shader_bisect`]'s one-line summary of
+//! which variants of the failing vertex source compile. The UDP log carries all of it whole.
 //!
 //! **Three things this has to get around, none of them in `rust-modules/`:**
 //!
@@ -32,13 +34,12 @@
 //! what only the TV (or the emulator) can say.
 
 use crate::dl::symtable;
-use crate::log::plog;
+use crate::log::{plog, plog_full};
 use crate::panel::{self, Step};
-use std::ffi::{c_char, c_void};
+use crate::shader_bisect::{self, BisectReport};
+use std::ffi::{c_char, c_void, CString};
 #[cfg(feature = "gfx")]
 use std::ffi::c_int;
-#[cfg(all(feature = "gfx", target_os = "linux"))]
-use std::ffi::CString;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 // --- GL constants (Khronos headers) -----------------------------------------------------------------
@@ -49,6 +50,8 @@ const GL_VERTEX_SHADER: u32 = 0x8B31;
 const GL_FRAGMENT_SHADER: u32 = 0x8B30;
 const GL_COMPILE_STATUS: u32 = 0x8B81;
 const GL_LINK_STATUS: u32 = 0x8B82;
+/// Length of a shader's source as the driver kept it, NUL included.
+const GL_SHADER_SOURCE_LENGTH: u32 = 0x8B88;
 const GL_ARRAY_BUFFER: u32 = 0x8892;
 #[cfg_attr(not(feature = "gfx"), allow(dead_code))]
 const GL_ARRAY_BUFFER_BINDING: u32 = 0x8894;
@@ -64,10 +67,11 @@ const GL_ONE: u32 = 1;
 /// The render-loop frame (frames presented so far) at which the probe starts. The panel's own first frame
 /// and the H5 result come first.
 pub const START_FRAME: u64 = 2;
-/// Longest panel line the probe writes. The panel's own cap for one value is 110 characters
-/// (`panel::clean`); the label before it (`8 gfx: `) is outside that. 108 leaves the `...` mark of a cut
-/// inside the cap, and `panel_render`'s fit test checks the two lines still fit the plate.
-const LINE_MAX: usize = 108;
+/// What `plx_gfx` hands GL ahead of every shader source on an ES context (`gfx.rs` `glsl_preamble`): the
+/// empty string, as its OWN source string (`glShaderSource(s, 2, [preamble, source], NULL)`). The probe
+/// compiles the same way, so a driver that treats a two-string call differently from a one-string one is
+/// tested as the renderer will use it.
+pub const ES_PREAMBLE: &str = "";
 
 symtable! {
     /// The core GLES2 entry points the probe itself calls, loaded from the opened libGLESv2. These are
@@ -102,7 +106,10 @@ symtable! {
             vertex_attrib_pointer: unsafe extern "C" fn(u32, i32, u32, u8, i32, *const c_void) = "glVertexAttribPointer",
             viewport: unsafe extern "C" fn(i32, i32, i32, i32) = "glViewport",
         }
-        optional {}
+        optional {
+            // Read back after a compile, to see whether the driver kept the whole text it was given.
+            get_shader_source: unsafe extern "C" fn(u32, i32, *mut i32, *mut c_char) = "glGetShaderSource",
+        }
     }
 }
 
@@ -230,19 +237,85 @@ pub const PAIRS: &[Pair] = &[
 /// Compile and link, as `gfx::try_compile` / `link_shaders` do, but returning the driver's complaint
 /// instead of exiting.
 pub trait ShaderGl {
-    /// Compile one NUL-terminated GLSL source. `Err` is the driver's info log (or why there is none).
-    fn compile(&mut self, fragment: bool, src: &'static str) -> Result<u32, String>;
+    /// Compile one GLSL source the way `plx_gfx` does (an empty preamble string, then the source). A
+    /// trailing NUL is ignored. `Err` is the driver's WHOLE info log (or why there is none).
+    fn compile(&mut self, fragment: bool, src: &str) -> Result<u32, String>;
     /// Attach both, bind `a_pos` to attribute 0 (what `link_shaders` does) and link.
     fn link(&mut self, vs: u32, fs: u32) -> Result<u32, String>;
     /// Delete the shaders and, when there is one, the program.
     fn delete(&mut self, vs: u32, fs: u32, program: Option<u32>);
+    /// Compile `parts` (one `glShaderSource` string each) for the bisect and delete the shader again: never
+    /// linked, never kept. Reports the driver's whole answer and what it kept of the text.
+    fn trial(&mut self, fragment: bool, parts: &[&str]) -> Trial;
+}
+
+/// What `glGetShaderSource` gave back for a shader, against the text it was handed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Readback {
+    /// The length `glGetShaderSource` wrote, NUL not counted.
+    pub returned: i32,
+    /// The text came back byte for byte as it was passed.
+    pub same: bool,
+    /// The first byte at which it differs (or where the shorter of the two ends).
+    pub first_diff: Option<usize>,
+}
+
+/// One bisect compile, see [`ShaderGl::trial`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Trial {
+    pub compiled: bool,
+    /// The driver's whole info log, trailing blanks trimmed; empty when it said nothing.
+    pub log: String,
+    /// Bytes handed to `glShaderSource`, all strings, NULs not counted.
+    pub passed_len: usize,
+    /// `GL_SHADER_SOURCE_LENGTH` (NUL counted), when the shader got far enough to ask.
+    pub source_length: Option<i32>,
+    /// `glGetShaderSource`'s answer, when that entry is bound.
+    pub readback: Option<Readback>,
+}
+
+/// Where a pair failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Where {
+    Vertex,
+    Fragment,
+    Link,
+}
+
+impl Where {
+    pub fn name(self) -> &'static str {
+        match self {
+            Where::Vertex => "vertex",
+            Where::Fragment => "fragment",
+            Where::Link => "link",
+        }
+    }
+}
+
+/// Why a pair did not make a program: the stage and the driver's whole info log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairFailure {
+    pub at: Where,
+    pub log: String,
+}
+
+impl PairFailure {
+    /// The log's first line, whole: the panel's evidence.
+    pub fn first_line(&self) -> String {
+        first_line(&self.log)
+    }
+
+    /// How many more non-empty lines the log has after the first.
+    pub fn more_lines(&self) -> usize {
+        self.log.lines().filter(|l| !l.trim().is_empty()).count().saturating_sub(1)
+    }
 }
 
 /// The outcome of one pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PairResult {
     pub name: &'static str,
-    pub outcome: Result<(), String>,
+    pub outcome: Result<(), PairFailure>,
 }
 
 /// Compile and link every pair, deleting what it made. Never exits, never panics on a driver answer.
@@ -251,12 +324,12 @@ pub fn preflight(gl: &mut dyn ShaderGl, pairs: &[Pair]) -> Vec<PairResult> {
         .iter()
         .map(|p| {
             let outcome = (|| {
-                let vs = gl.compile(false, p.vs).map_err(|e| format!("vertex: {e}"))?;
+                let vs = gl.compile(false, p.vs).map_err(|log| PairFailure { at: Where::Vertex, log })?;
                 let fs = match gl.compile(true, p.fs) {
                     Ok(fs) => fs,
-                    Err(e) => {
+                    Err(log) => {
                         gl.delete(vs, 0, None);
-                        return Err(format!("fragment: {e}"));
+                        return Err(PairFailure { at: Where::Fragment, log });
                     }
                 };
                 let program = gl.link(vs, fs);
@@ -265,9 +338,9 @@ pub fn preflight(gl: &mut dyn ShaderGl, pairs: &[Pair]) -> Vec<PairResult> {
                         gl.delete(vs, fs, Some(program));
                         Ok(())
                     }
-                    Err(e) => {
+                    Err(log) => {
                         gl.delete(vs, fs, None);
-                        Err(format!("link: {e}"))
+                        Err(PairFailure { at: Where::Link, log })
                     }
                 }
             })();
@@ -276,54 +349,111 @@ pub fn preflight(gl: &mut dyn ShaderGl, pairs: &[Pair]) -> Vec<PairResult> {
         .collect()
 }
 
-/// The driver's answer to a shader or program, first line only, for the panel.
+/// The first non-empty line of a driver's answer, whole.
 fn first_line(s: &str) -> String {
     s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("(empty info log)").to_string()
 }
 
+/// Room for a driver's info log. `plx_gfx` reads 1024 bytes; a log that fills this one is cut by the buffer,
+/// which is why it is large.
+const INFO_LOG_MAX: usize = 8192;
+
 /// [`ShaderGl`] over the opened libGLESv2.
 pub struct RealShaderGl<'a>(pub &'a ProbeSyms);
 
-impl RealShaderGl<'_> {
-    fn log_text(buf: &[c_char], n: i32) -> String {
-        let n = (n.max(0) as usize).min(buf.len());
-        let bytes: Vec<u8> = buf[..n].iter().map(|&c| c as u8).collect();
-        first_line(&String::from_utf8_lossy(&bytes))
-    }
+/// A shader after `glCompileShader`, before anyone decided what to do with it.
+struct Compiled {
+    shader: u32,
+    ok: bool,
+    log: String,
+    /// The bytes handed to `glShaderSource`, all strings joined, NULs not counted.
+    passed: Vec<u8>,
 }
 
-impl ShaderGl for RealShaderGl<'_> {
-    fn compile(&mut self, fragment: bool, src: &'static str) -> Result<u32, String> {
+impl RealShaderGl<'_> {
+    /// The text of an info log: `n` bytes (the length the driver wrote), trailing blanks trimmed. Whole.
+    fn log_text(buf: &[c_char], n: i32) -> String {
+        let n = (n.max(0) as usize).min(buf.len());
+        let bytes: Vec<u8> = buf[..n].iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        String::from_utf8_lossy(&bytes).trim_end().to_string()
+    }
+
+    /// `glShaderSource` + `glCompileShader` for `parts`, handed over as `plx_gfx` hands its sources: one
+    /// NUL-terminated string each, no length array.
+    fn compile_parts(&self, fragment: bool, parts: &[&str]) -> Result<Compiled, String> {
         let s = self.0;
+        let owned: Vec<CString> = parts
+            .iter()
+            .map(|p| CString::new(p.strip_suffix('\0').unwrap_or(p)))
+            .collect::<Result<_, _>>()
+            .map_err(|_| "a shader source contains a NUL byte".to_string())?;
+        let ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
         let kind = if fragment { GL_FRAGMENT_SHADER } else { GL_VERTEX_SHADER };
-        // SAFETY (whole function): the render thread's context is current; `src` is NUL-terminated
-        // static text (the `sh!` macros append the terminator); the log buffer's size is passed.
+        // SAFETY (whole function): the render thread's context is current; every pointer is a NUL-terminated
+        // string that outlives the calls; the log buffer's size is passed.
         let shader = unsafe { (s.create_shader)(kind) };
         if shader == 0 {
             return Err("glCreateShader returned 0".to_string());
         }
-        let ptr = src.as_ptr() as *const c_char;
         let mut ok = 0i32;
+        let mut buf = vec![0 as c_char; INFO_LOG_MAX];
+        let mut n = 0i32;
         unsafe {
-            (s.shader_source)(shader, 1, &ptr, std::ptr::null());
+            (s.shader_source)(shader, ptrs.len() as i32, ptrs.as_ptr(), std::ptr::null());
             (s.compile_shader)(shader);
             (s.get_shaderiv)(shader, GL_COMPILE_STATUS, &mut ok);
+            (s.get_shader_info_log)(shader, buf.len() as i32, &mut n, buf.as_mut_ptr());
         }
-        if ok == 0 {
-            let mut buf = [0 as c_char; 512];
+        Ok(Compiled {
+            shader,
+            ok: ok != 0,
+            log: Self::log_text(&buf, n),
+            passed: owned.iter().flat_map(|c| c.as_bytes().iter().copied()).collect(),
+        })
+    }
+}
+
+impl ShaderGl for RealShaderGl<'_> {
+    fn compile(&mut self, fragment: bool, src: &str) -> Result<u32, String> {
+        let c = self.compile_parts(fragment, &[ES_PREAMBLE, src])?;
+        if c.ok {
+            return Ok(c.shader);
+        }
+        // SAFETY: a shader name made on this context just now.
+        unsafe { (self.0.delete_shader)(c.shader) };
+        Err(if c.log.is_empty() { "(the driver gave no info log)".to_string() } else { c.log })
+    }
+
+    fn trial(&mut self, fragment: bool, parts: &[&str]) -> Trial {
+        let s = self.0;
+        let c = match self.compile_parts(fragment, parts) {
+            Ok(c) => c,
+            Err(why) => return Trial { log: why, ..Trial::default() },
+        };
+        let mut source_length = 0i32;
+        // SAFETY: as `compile_parts`; the readback buffer is `passed + 64` bytes and its size is passed.
+        unsafe { (s.get_shaderiv)(c.shader, GL_SHADER_SOURCE_LENGTH, &mut source_length) };
+        let readback = s.get_shader_source.map(|get| {
+            let cap = c.passed.len() + 64;
+            let mut buf = vec![0 as c_char; cap];
             let mut n = 0i32;
-            unsafe {
-                (s.get_shader_info_log)(shader, buf.len() as i32, &mut n, buf.as_mut_ptr());
-                (s.delete_shader)(shader);
-            }
-            return Err(Self::log_text(&buf, n));
-        }
-        Ok(shader)
+            unsafe { get(c.shader, cap as i32, &mut n, buf.as_mut_ptr()) };
+            let got: Vec<u8> = buf[..(n.max(0) as usize).min(cap)].iter().map(|&b| b as u8).collect();
+            let first_diff = got
+                .iter()
+                .zip(&c.passed)
+                .position(|(a, b)| a != b)
+                .or_else(|| (got.len() != c.passed.len()).then(|| got.len().min(c.passed.len())));
+            Readback { returned: n, same: got == c.passed, first_diff }
+        });
+        // SAFETY: a shader name made on this context just now.
+        unsafe { (s.delete_shader)(c.shader) };
+        Trial { compiled: c.ok, log: c.log, passed_len: c.passed.len(), source_length: Some(source_length), readback }
     }
 
     fn link(&mut self, vs: u32, fs: u32) -> Result<u32, String> {
         let s = self.0;
-        // SAFETY: as `compile`.
+        // SAFETY: as `compile_parts`.
         let program = unsafe { (s.create_program)() };
         if program == 0 {
             return Err("glCreateProgram returned 0".to_string());
@@ -337,13 +467,14 @@ impl ShaderGl for RealShaderGl<'_> {
             (s.get_programiv)(program, GL_LINK_STATUS, &mut ok);
         }
         if ok == 0 {
-            let mut buf = [0 as c_char; 512];
+            let mut buf = vec![0 as c_char; INFO_LOG_MAX];
             let mut n = 0i32;
             unsafe {
                 (s.get_program_info_log)(program, buf.len() as i32, &mut n, buf.as_mut_ptr());
                 (s.delete_program)(program);
             }
-            return Err(Self::log_text(&buf, n));
+            let log = Self::log_text(&buf, n);
+            return Err(if log.is_empty() { "(the driver gave no info log)".to_string() } else { log });
         }
         Ok(program)
     }
@@ -412,14 +543,34 @@ fn short_extension(alts: &[&str]) -> String {
 
 // --- the report -------------------------------------------------------------------------------------
 
+/// The first shader pair that did not make a program, with the driver's first log line WHOLE.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderFailure {
+    pub pair: &'static str,
+    pub at: Where,
+    pub first_line: String,
+    /// Non-empty log lines after the first (all of them are in the UDP log).
+    pub more_lines: usize,
+}
+
+/// The shader preflight's tally.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderCheck {
+    pub passed: usize,
+    pub total: usize,
+    pub first_failure: Option<ShaderFailure>,
+}
+
 /// What the probe learned, in one place; [`Report::lines`] is what the panel shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {
     /// Why `plx_gfx` was not entered (the preflight failed, the GL is not ES, an entry is missing, built
     /// without it). `None` when it was entered.
     pub refusal: Option<String>,
-    /// `(passed, total)` of the shader preflight, and the first failure (`name: driver's words`).
-    pub shaders: Option<(usize, usize, Option<String>)>,
+    /// The shader preflight: how many pairs passed and the first failure.
+    pub shaders: Option<ShaderCheck>,
+    /// The shader bisect ([`crate::shader_bisect`]), when it ran.
+    pub bisect: Option<BisectReport>,
     /// The four init calls that ran, each with how it ended (`Err` is a panic's message).
     pub stages: Vec<(&'static str, Result<(), String>)>,
     /// `glGetError` (first nonzero of up to 16, drained) after init, after the frame's draw, after the swap.
@@ -469,19 +620,23 @@ impl Report {
         self.refusal.is_none()
             && self.stages.len() == 4
             && self.stages.iter().all(|(_, r)| r.is_ok())
-            && self.shaders.as_ref().is_some_and(|(ok, total, _)| ok == total)
+            && self.shaders.as_ref().is_some_and(|c| c.passed == c.total)
             && self.rect_drawn
             && self.text_px.is_some_and(|w| w > 0.0)
             && [self.err_init, self.err_frame, self.err_swap].iter().all(|e| *e == Some(0))
             && self.late_fault.is_none()
     }
 
-    /// The panel's two lines for step 8 and whether the step is green. Each line is at most [`LINE_MAX`]
-    /// characters; the verdict comes first so a cut loses detail, not the answer.
-    pub fn lines(&self) -> (bool, [String; 2]) {
+    /// The panel's lines for step 8 and whether the step is green. The verdict is line 1. Nothing is cut
+    /// here: the first shader error and the missing-extension list are the evidence a photograph has to
+    /// carry, so a line is as long as its text and the renderer wraps it (the panel's own cap is
+    /// `panel::STEP_LINE_MAX`, a guard against a runaway string, not a column count).
+    ///
+    /// A refusal: verdict, the first shader failure, the tally with the missing extensions, the bisect.
+    /// Anything else: verdict, GL errors and faults with the missing extensions, the bisect.
+    pub fn lines(&self) -> (bool, Vec<String>) {
         let shaders = match &self.shaders {
-            Some((ok, total, None)) => format!("shaders {ok}/{total} compile+link"),
-            Some((ok, total, Some(first))) => format!("shaders {ok}/{total} compile+link, first failure {first}"),
+            Some(c) => format!("shaders {}/{} compile+link", c.passed, c.total),
             None => "shaders not checked".to_string(),
         };
         let ext = if self.missing_ext.is_empty() {
@@ -492,13 +647,19 @@ impl Report {
         // The font finding rides on the draw part of line 1 (the text's own result) and is shown only when
         // the redirect was what opened the font.
         let font = if self.font_redirected { " (res/ font)" } else { "" };
-        let l1 = if let Some(why) = &self.refusal {
-            format!("FAILED, plx_gfx not entered: {why}")
+        let mut out: Vec<String> = Vec::new();
+        if let Some(why) = &self.refusal {
+            out.push(format!("FAILED, plx_gfx not entered: {why}"));
+            if let Some(f) = self.shaders.as_ref().and_then(|c| c.first_failure.as_ref()) {
+                let more = if f.more_lines > 0 { format!(" (+{} more log lines in the UDP log)", f.more_lines) } else { String::new() };
+                out.push(format!("first failure {}, {} stage: {}{more}", f.pair, f.at.name(), f.first_line));
+            }
+            out.push([shaders.clone(), ext].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("; "));
         } else {
             let bad: Vec<String> = self
                 .stages
                 .iter()
-                .filter_map(|(n, r)| r.as_ref().err().map(|e| format!("{n} PANICKED ({})", cap(e, 30))))
+                .filter_map(|(n, r)| r.as_ref().err().map(|e| format!("{n} PANICKED ({})", cap(e, 120))))
                 .collect();
             let stages = if bad.is_empty() && self.stages.len() == 4 {
                 "init_gl+text+image+blur ran".to_string()
@@ -514,13 +675,9 @@ impl Report {
                 (false, _) => "no swatch drawn yet".to_string(),
             };
             let verdict = if self.is_ok() { "OK" } else { "NOT OK" };
-            format!("{verdict}: {stages}; {shaders}; {draw}")
-        };
-        // Line 2, most important first (a cut loses the tail): the GL error codes, then anything that went
-        // wrong, then the extensions the renderer wanted and this GL does not list.
-        let l2 = if self.refusal.is_some() {
-            [shaders.clone(), ext].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("; ")
-        } else {
+            out.push(format!("{verdict}: {stages}; {shaders}; {draw}"));
+            // Line 2: the GL error codes, then anything that went wrong, then the extensions the renderer
+            // wanted and this GL does not list.
             let mut parts = vec![format!(
                 "glGetError init/frame/swap {}/{}/{}",
                 err_hex(self.err_init),
@@ -528,7 +685,7 @@ impl Report {
                 err_hex(self.err_swap)
             )];
             if self.text_px == Some(0.0) {
-                parts.push(format!("no font face, looked in {}", cap(&self.font_expected, 40)));
+                parts.push(format!("no font face, looked in {}", cap(&self.font_expected, 120)));
             }
             if let Some(f) = &self.late_fault {
                 parts.push(f.clone());
@@ -537,15 +694,18 @@ impl Report {
                 parts.push(format!(
                     "{} failure line(s) in plx_gfx's log, first: {}",
                     self.failure_events,
-                    cap(self.first_failure_event.as_deref().unwrap_or(""), 40)
+                    cap(self.first_failure_event.as_deref().unwrap_or(""), 160)
                 ));
             }
             if !ext.is_empty() {
                 parts.push(ext);
             }
-            parts.join("; ")
-        };
-        (self.is_ok(), [cap(&l1, LINE_MAX), cap(&l2, LINE_MAX)])
+            out.push(parts.join("; "));
+        }
+        if let Some(b) = &self.bisect {
+            out.push(b.summary());
+        }
+        (self.is_ok(), out)
     }
 }
 
@@ -610,8 +770,8 @@ pub trait Env {
     fn new_events(&mut self) -> Vec<String>;
     /// `(count, first name)` of calls that reached an unbound GL forwarder.
     fn unbound_calls(&self) -> (u32, Option<&'static str>);
-    /// Put the step's two lines on the panel (`ok` picks its colour).
-    fn publish(&mut self, ok: bool, lines: [String; 2]);
+    /// Put the step's lines on the panel (`ok` picks its colour). They are shown whole and wrapped.
+    fn publish(&mut self, ok: bool, lines: Vec<String>);
 }
 
 /// Where the probe is. Each arrow is a separate render-loop frame so the panel shows how far the probe got
@@ -656,13 +816,21 @@ impl<E: Env> Probe<E> {
     }
 
     fn publish_provisional(&mut self, line1: &str, line2: &str) {
-        plog!("H7 gfx: {line1} | {line2}");
-        self.env.publish(true, [cap(line1, LINE_MAX), cap(line2, LINE_MAX)]);
+        plog_full!("H7 gfx: {line1} | {line2}");
+        self.env.publish(true, vec![line1.to_string(), line2.to_string()]);
     }
 
+    /// The result, on the panel and in the log. The log gets every line whole (`H7 RESULT:` is line 1, then
+    /// `H7 RESULT+1:` and so on), each split into continuations rather than cut when it is long.
     fn publish_report(&mut self) {
         let (ok, lines) = self.report.lines();
-        plog!("H7 RESULT: {} | {}", lines[0], lines[1]);
+        for (i, l) in lines.iter().enumerate() {
+            if i == 0 {
+                plog_full!("H7 RESULT: {l}");
+            } else {
+                plog_full!("H7 RESULT+{i}: {l}");
+            }
+        }
         self.env.publish(ok, lines);
     }
 
@@ -677,7 +845,7 @@ impl<E: Env> Probe<E> {
     }
 
     fn refuse(&mut self, why: String) {
-        plog!("H7 gfx: plx_gfx NOT entered: {why}");
+        plog_full!("H7 gfx: plx_gfx NOT entered: {why}");
         self.report.refusal = Some(why);
         self.phase = Phase::Done;
         self.publish_report();
@@ -713,7 +881,7 @@ impl<E: Env> Probe<E> {
     fn run_preflight(&mut self) {
         let strings = self.env.gl_strings();
         plog!("H7 gfx: GL_VERSION {:?} GLSL {:?}", strings.version, strings.glsl);
-        plog!("H7 gfx: GL_EXTENSIONS {}", strings.extensions);
+        plog_full!("H7 gfx: GL_EXTENSIONS {}", strings.extensions);
         self.report.missing_ext = missing_extensions(&strings.extensions);
         let missing = self.env.missing_gl();
         if !missing.is_empty() {
@@ -722,28 +890,48 @@ impl<E: Env> Probe<E> {
         if !glsl_is_es(&strings.glsl) {
             return self.refuse(format!(
                 "GLSL {:?} is not OpenGL ES (plx_gfx would prepend #version 410 core)",
-                cap(&strings.glsl, 30)
+                cap(&strings.glsl, 60)
             ));
         }
         let results = match catch_unwind(AssertUnwindSafe(|| preflight(self.env.shader_gl(), PAIRS))) {
             Ok(r) => r,
-            Err(p) => return self.refuse(format!("the shader preflight panicked: {}", cap(&panic_text(&*p), 50))),
+            Err(p) => return self.refuse(format!("the shader preflight panicked: {}", cap(&panic_text(&*p), 120))),
         };
         let total = results.len();
         let passed = results.iter().filter(|r| r.outcome.is_ok()).count();
-        let first = results.iter().find_map(|r| r.outcome.as_ref().err().map(|e| format!("{}: {}", r.name, cap(e, 40))));
+        let first_failure = results.iter().find_map(|r| {
+            r.outcome.as_ref().err().map(|e| ShaderFailure {
+                pair: r.name,
+                at: e.at,
+                first_line: e.first_line(),
+                more_lines: e.more_lines(),
+            })
+        });
         for r in &results {
             match &r.outcome {
                 Ok(()) => plog!("H7 gfx: shader pair {:?} compiled and linked", r.name),
-                Err(e) => plog!("H7 gfx: shader pair {:?} FAILED: {e}", r.name),
+                Err(e) => {
+                    plog!("H7 gfx: shader pair {:?} FAILED at the {} stage; the driver's whole info log follows", r.name, e.at.name());
+                    shader_bisect::log_block("H7 gfx:   info log: ", &e.log);
+                }
             }
         }
-        let failed = first.is_some();
-        self.report.shaders = Some((passed, total, first));
+        let failed = first_failure.is_some();
+        self.report.shaders = Some(ShaderCheck { passed, total, first_failure });
+        let _ = self.env.drain_errors();
+        // The bisect runs whether or not a pair failed (on a driver that accepts everything it is one short
+        // line), and BEFORE the refusal, so the refusal's panel text carries it. Compile-only; a panic in
+        // it must never stand in for the pair check's verdict.
+        match catch_unwind(AssertUnwindSafe(|| {
+            shader_bisect::run(self.env.shader_gl(), VS_AMBIENT_DITHERED.0, VS_SRC_DITHERED.0)
+        })) {
+            Ok(b) => self.report.bisect = Some(b),
+            Err(p) => plog!("H7 bisect: PANICKED: {}", panic_text(&*p)),
+        }
         let _ = self.env.drain_errors();
         if failed {
-            // The first failure (which pair, the driver's words) is on line 2 and in the log; line 1 keeps
-            // the verdict short enough to show whole.
+            // The first failure (which pair, which stage, the driver's first line whole) is the report's
+            // second line and the log has the whole info log; line 1 is the verdict.
             return self.refuse(format!("{} of {total} shader pairs do not compile+link (init would exit)", total - passed));
         }
         self.publish_provisional(
@@ -1140,7 +1328,7 @@ impl Env for RealEnv {
         forward_events()
     }
 
-    fn publish(&mut self, ok: bool, lines: [String; 2]) {
+    fn publish(&mut self, ok: bool, lines: Vec<String>) {
         panel::step_lines(Step::Gfx, ok, &lines);
     }
 
@@ -1188,18 +1376,33 @@ mod tests {
         next: u32,
         compiled: Vec<u32>,
         deleted: Vec<u32>,
-        sources: std::collections::HashMap<u32, &'static str>,
+        sources: std::collections::HashMap<u32, String>,
+        /// The source strings each `compile` was handed to compare with what the real one passes.
+        trials: Vec<usize>,
     }
 
     impl ShaderGl for FakeShaderGl {
-        fn compile(&mut self, _fragment: bool, src: &'static str) -> Result<u32, String> {
+        fn compile(&mut self, _fragment: bool, src: &str) -> Result<u32, String> {
             if self.fail_compile_on.is_some_and(|m| src.contains(m)) {
                 return Err("0:12: 'gl_LastFragColorARM' : undeclared identifier".to_string());
             }
             self.next += 1;
             self.compiled.push(self.next);
-            self.sources.insert(self.next, src);
+            self.sources.insert(self.next, src.to_string());
             Ok(self.next)
+        }
+
+        fn trial(&mut self, _fragment: bool, parts: &[&str]) -> Trial {
+            self.trials.push(parts.len());
+            let joined = parts.concat();
+            let fail = self.fail_compile_on.is_some_and(|m| joined.contains(m));
+            Trial {
+                compiled: !fail,
+                log: if fail { "0:12: 'gl_LastFragColorARM' : undeclared identifier".to_string() } else { String::new() },
+                passed_len: joined.len(),
+                source_length: Some(joined.len() as i32 + 1),
+                readback: Some(Readback { returned: joined.len() as i32, same: true, first_diff: None }),
+            }
         }
 
         fn link(&mut self, vs: u32, fs: u32) -> Result<u32, String> {
@@ -1231,7 +1434,7 @@ mod tests {
         events: Vec<String>,
         unbound: (u32, Option<&'static str>),
         redirected: bool,
-        published: Vec<(bool, [String; 2])>,
+        published: Vec<(bool, Vec<String>)>,
     }
 
     impl FakeEnv {
@@ -1296,7 +1499,7 @@ mod tests {
         fn unbound_calls(&self) -> (u32, Option<&'static str>) {
             self.unbound
         }
-        fn publish(&mut self, ok: bool, lines: [String; 2]) {
+        fn publish(&mut self, ok: bool, lines: Vec<String>) {
             self.published.push((ok, lines));
         }
     }
@@ -1397,7 +1600,7 @@ mod tests {
         let failed: Vec<&PairResult> = results.iter().filter(|r| r.outcome.is_err()).collect();
         assert!(!failed.is_empty() && failed.iter().any(|r| r.name == "init_gl shadow"));
         let e = failed.iter().find(|r| r.name == "init_gl shadow").unwrap().outcome.clone().unwrap_err();
-        assert!(e.starts_with("fragment: ") && e.contains("undeclared identifier"), "{e}");
+        assert!(e.at == Where::Fragment && e.log.contains("undeclared identifier"), "{e:?}");
         assert!(results.iter().any(|r| r.outcome.is_ok()), "the other pairs were still checked");
     }
 
@@ -1406,7 +1609,7 @@ mod tests {
         let mut gl = FakeShaderGl { fail_link_on: Some("plx_dither"), ..Default::default() };
         let results = preflight(&mut gl, PAIRS);
         let first = results.iter().find(|r| r.outcome.is_err()).expect("a dithered pair fails to link");
-        assert!(first.outcome.clone().unwrap_err().starts_with("link: "));
+        assert_eq!(first.outcome.clone().unwrap_err().at, Where::Link);
         assert_eq!(gl.deleted.len(), gl.compiled.len());
     }
 
@@ -1433,7 +1636,7 @@ mod tests {
 
     fn good_report() -> Report {
         Report {
-            shaders: Some((14, 14, None)),
+            shaders: Some(ShaderCheck { passed: 14, total: 14, first_failure: None }),
             stages: Stage::ALL.iter().map(|s| (s.name(), Ok(()))).collect(),
             err_init: Some(0),
             err_frame: Some(0),
@@ -1453,18 +1656,25 @@ mod tests {
         assert!(ok);
         assert_eq!(l[0], "OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px (res/ font)");
         assert_eq!(l[1], "glGetError init/frame/swap 0/0/0; no GL ext: ARM|EXT_shader_framebuffer_fetch");
-        assert!(l.iter().all(|s| s.chars().count() <= LINE_MAX), "{l:?}");
+        assert_eq!(l.len(), 2, "no bisect ran, so no bisect line: {l:?}");
     }
 
-    /// Both extensions missing (what an emulator will most likely say) is the longest good line 2: it must
-    /// still show every name whole.
+    /// The owner's photo of the first emulator run: "no G..." was the end of a line cut at 108 characters
+    /// while most of the row was empty. Both extensions missing is the common emulator answer; the list
+    /// must be shown whole, with whatever else line 2 says, and never be cut by a count.
     #[test]
     fn both_missing_extensions_are_shown_whole_on_a_good_report() {
         let mut r = good_report();
         r.missing_ext = vec!["ARM|EXT_shader_framebuffer_fetch".into(), "EXT_disjoint_timer_query".into()];
         let (_, l) = r.lines();
         assert_eq!(l[1], "glGetError init/frame/swap 0/0/0; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query");
-        assert!(l[1].chars().count() <= LINE_MAX, "{}", l[1].chars().count());
+        // And with a fault and a failure line in front of it, the list is still last and still whole.
+        r.late_fault = Some("glGetError 0x0502 on a later frame".into());
+        r.failure_events = 2;
+        r.first_failure_event = Some("text fade prog link failed".into());
+        let (_, l) = r.lines();
+        assert!(l[1].ends_with("no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query"), "{}", l[1]);
+        assert!(!l[1].contains("..."), "nothing is cut: {}", l[1]);
     }
 
     #[test]
@@ -1489,39 +1699,89 @@ mod tests {
         assert!(l[1].contains("no font face, looked in /usr/bin/appfont.ttf"), "{}", l[1]);
     }
 
+    /// The emulator's own result, as the owner's photo showed it, with the cut parts back: the failing pair,
+    /// the stage, the driver's first line WHOLE, the tally with both missing extensions, and the bisect.
     #[test]
-    fn a_refusal_is_failed_first_and_the_second_line_keeps_the_shader_and_extension_facts() {
+    fn a_refusal_shows_the_whole_first_shader_error_and_the_whole_extension_list() {
+        let first = ShaderFailure {
+            pair: "init_gl ambient",
+            at: Where::Vertex,
+            first_line: "0:37(9): error: syntax error, unexpected NEW_IDENTIFIER".into(),
+            more_lines: 0,
+        };
         let r = Report {
-            refusal: Some("2 of 14 shader pairs do not compile+link (init would exit); first: init_gl shadow: fragment: 0:3: syntax".into()),
-            shaders: Some((12, 14, Some("init_gl shadow: fragment: 0:3: syntax".into()))),
-            missing_ext: vec!["EXT_disjoint_timer_query".into()],
+            refusal: Some("1 of 14 shader pairs do not compile+link (init would exit)".into()),
+            shaders: Some(ShaderCheck { passed: 13, total: 14, first_failure: Some(first) }),
+            missing_ext: vec!["ARM|EXT_shader_framebuffer_fetch".into(), "EXT_disjoint_timer_query".into()],
+            bisect: Some(BisectReport::default()),
             ..Report::default()
         };
         let (ok, l) = r.lines();
         assert!(!ok);
-        assert!(l[0].starts_with("FAILED, plx_gfx not entered: 2 of 14 shader pairs"), "{}", l[0]);
-        assert!(l[1].starts_with("shaders 12/14 compile+link, first failure init_gl shadow"), "{}", l[1]);
-        assert!(l.iter().all(|s| s.chars().count() <= LINE_MAX), "{l:?}");
+        assert_eq!(l[0], "FAILED, plx_gfx not entered: 1 of 14 shader pairs do not compile+link (init would exit)");
+        assert_eq!(l[1], "first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER");
+        assert_eq!(l[2], "shaders 13/14 compile+link; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query");
+        assert!(l[3].starts_with("shader bisect"), "the bisect summary is the last line: {l:?}");
+        assert_eq!(l.len(), 4);
+        assert!(l.iter().all(|s| !s.contains("...")), "{l:?}");
     }
 
     #[test]
-    fn a_panicked_init_is_named_and_the_lines_stay_inside_the_cap() {
+    fn a_first_failure_with_a_longer_log_says_how_many_more_lines_the_udp_log_has() {
+        let r = Report {
+            refusal: Some("x".into()),
+            shaders: Some(ShaderCheck {
+                passed: 13,
+                total: 14,
+                first_failure: Some(ShaderFailure { pair: "init_gl base rect", at: Where::Link, first_line: "bad".into(), more_lines: 3 }),
+            }),
+            ..Report::default()
+        };
+        assert_eq!(r.lines().1[1], "first failure init_gl base rect, link stage: bad (+3 more log lines in the UDP log)");
+    }
+
+    #[test]
+    fn a_refusal_without_a_shader_failure_has_a_verdict_and_the_tally_only() {
+        let r = Report { refusal: Some("GL entries not found in libGLESv2: glFoo".into()), ..Report::default() };
+        let (_, l) = r.lines();
+        assert_eq!(l, vec!["FAILED, plx_gfx not entered: GL entries not found in libGLESv2: glFoo".to_string(), "shaders not checked".to_string()]);
+    }
+
+    #[test]
+    fn the_bisect_summary_is_the_last_line_of_a_good_report_too() {
+        let mut r = good_report();
+        r.bisect = Some(BisectReport::default());
+        let (_, l) = r.lines();
+        assert_eq!(l.len(), 3, "{l:?}");
+        assert!(l[2].starts_with("shader bisect"), "{l:?}");
+    }
+
+    #[test]
+    fn a_panicked_init_is_named_and_its_words_and_the_failure_line_are_kept() {
         let mut r = good_report();
         r.stages[1] = ("init_text", Err("called `Option::unwrap()` on a `None` value".into()));
         r.failure_events = 3;
         r.first_failure_event = Some("text prog link failed with a very long explanation of why".into());
         let (ok, l) = r.lines();
         assert!(!ok);
-        assert!(l[0].contains("init_text PANICKED"), "{}", l[0]);
-        assert!(l[1].contains("3 failure line(s)"), "{}", l[1]);
-        assert!(l.iter().all(|s| s.chars().count() <= LINE_MAX), "{l:?}");
+        assert!(l[0].contains("init_text PANICKED (called `Option::unwrap()` on a `None` value)"), "{}", l[0]);
+        assert!(l[1].contains("3 failure line(s) in plx_gfx's log, first: text prog link failed with a very long explanation of why"), "{}", l[1]);
     }
 
+    /// A runaway string is bounded by the panel's own step cap (`panel::step_lines`, tested there); every
+    /// line the report makes from the strings a real run produces is under it, so nothing is cut.
     #[test]
-    fn the_panel_text_of_a_good_run_and_a_refusal_fits_the_two_line_budget() {
-        for r in [good_report(), Report { refusal: Some("x".repeat(400)), ..Report::default() }] {
+    fn the_report_of_a_real_run_stays_under_the_panels_step_cap() {
+        let mut cases = vec![good_report()];
+        let mut r = good_report();
+        r.missing_ext = vec!["ARM|EXT_shader_framebuffer_fetch".into(), "EXT_disjoint_timer_query".into()];
+        r.late_fault = Some("2 unbound GL call(s), first glFooBar".into());
+        r.failure_events = 1;
+        r.first_failure_event = Some("shader compile FAILED: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER".into());
+        cases.push(r);
+        for r in cases {
             let (_, l) = r.lines();
-            assert!(l.iter().all(|s| s.chars().count() <= LINE_MAX));
+            assert!(l.iter().all(|s| s.chars().count() < panel::STEP_LINE_MAX), "{l:?}");
         }
     }
 
@@ -1587,7 +1847,21 @@ mod tests {
         assert_eq!(p.phase(), Phase::Done);
         let (ok, l) = p.report.lines();
         assert!(!ok && l[0].starts_with("FAILED, plx_gfx not entered: "), "{l:?}");
-        assert!(p.report.shaders.as_ref().is_some_and(|(ok, total, first)| ok < total && first.is_some()));
+        assert!(p.report.shaders.as_ref().is_some_and(|c| c.passed < c.total && c.first_failure.is_some()));
+        // The first failure's words are whole on line 2, and the bisect ran and is the last line.
+        assert!(l[1].starts_with("first failure init_gl ") && l[1].contains("undeclared identifier"), "{l:?}");
+        assert!(l.last().unwrap().starts_with("shader bisect"), "{l:?}");
+        assert!(p.report.bisect.is_some());
+    }
+
+    #[test]
+    fn the_bisect_runs_on_a_healthy_driver_too_and_says_so_in_one_short_line() {
+        let p = run(FakeEnv::healthy(), START_FRAME + 6);
+        let (ok, l) = p.report.lines();
+        assert!(ok, "{l:?}");
+        assert_eq!(l.last().unwrap(), "shader bisect: all 14 variants compile; j bytes clean");
+        assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 1).count(), 1, "one variant is the one-string call");
+        assert_eq!(p.env.shader.trials.iter().filter(|n| **n == 2).count(), 13, "the rest are plx_gfx's two-string call");
     }
 
     #[test]
@@ -1641,8 +1915,9 @@ mod tests {
     #[test]
     fn gl_errors_are_attributed_to_the_stage_that_saw_them() {
         let mut env = FakeEnv::healthy();
-        // drain order: preflight's drain, after init, after the draw, after the swap
-        env.errors = VecDeque::from([0, 0x0501, 0x0502, 0x0506]);
+        // drain order: after the pair check, after the bisect (its failed compiles may leave an error that
+        // must not be read as init's), after init, after the draw, after the swap
+        env.errors = VecDeque::from([0, 0x0500, 0x0501, 0x0502, 0x0506]);
         let p = run(env, START_FRAME + 6);
         assert_eq!((p.report.err_init, p.report.err_frame, p.report.err_swap), (Some(0x0501), Some(0x0502), Some(0x0506)));
     }
@@ -1665,16 +1940,17 @@ mod tests {
     }
 
     #[test]
-    fn every_phase_publishes_two_lines_inside_the_cap_and_the_last_one_is_the_verdict() {
+    fn every_phase_publishes_lines_inside_the_step_cap_and_the_last_one_is_the_verdict() {
         let p = run(FakeEnv::healthy(), START_FRAME + 6);
         assert!(p.env.published.len() >= 4, "a provisional line per phase, then the report");
         for (_, l) in &p.env.published {
-            assert!(l.iter().all(|s| !s.is_empty() && s.chars().count() <= LINE_MAX), "{l:?}");
+            assert!(l.iter().all(|s| !s.is_empty() && s.chars().count() < panel::STEP_LINE_MAX), "{l:?}");
         }
         let (ok, last) = p.env.published.last().unwrap();
         assert!(*ok);
         assert!(last[0].starts_with("OK: init_gl+text+image+blur ran;"), "{last:?}");
         assert!(last[1].starts_with("glGetError init/frame/swap"), "{last:?}");
+        assert!(last[2].starts_with("shader bisect"), "{last:?}");
         // The provisional lines come first (not a verdict yet).
         assert!(p.env.published[0].1[0].starts_with("preflight:"), "{:?}", p.env.published[0]);
     }

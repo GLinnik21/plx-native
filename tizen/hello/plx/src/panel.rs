@@ -42,6 +42,11 @@ const SEEN_SHOWN_CHARS: usize = 420;
 pub const LIFECYCLE_RING: usize = 4;
 /// Longest value taken from a fact, so one runaway string cannot push everything else off screen.
 const VALUE_MAX: usize = 110;
+/// Longest line of a multi-line step result (steps 8 and 9). Those lines are EVIDENCE (a driver's error, the
+/// list of missing GL extensions): they are wrapped by the renderer, not cut at a value's 110 characters,
+/// so the tester's photo carries the whole message. The cap only stops a runaway string; the log has the
+/// text in full whatever this is.
+pub const STEP_LINE_MAX: usize = 400;
 
 /// A colour role. The renderer owns the actual colours.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -188,10 +193,12 @@ impl Panel {
     }
 
     /// Record (or replace) one step's result that takes more than one line (steps 8 and 9: the verdict
-    /// first, then the evidence). Each line is [`clean`]ed on its own and the lines are joined with `\n`,
-    /// which `compose` and the renderer keep as line breaks; blank lines are dropped.
+    /// first, then the evidence). Each line is [`clean`]ed on its own (to [`STEP_LINE_MAX`], not a value's
+    /// [`VALUE_MAX`]: the renderer wraps a long line) and the lines are joined with `\n`, which `compose`
+    /// and the renderer keep as line breaks; blank lines are dropped.
     pub fn step_lines(&self, step: Step, ok: bool, lines: &[String]) {
-        let text = lines.iter().map(|l| clean(l)).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        let text =
+            lines.iter().map(|l| clean_to(l, STEP_LINE_MAX)).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
         self.set_step(step, ok, text);
     }
 
@@ -384,8 +391,13 @@ fn cap(s: &str, max: usize) -> String {
 /// A text value as the panel may show it: control characters become spaces, the ends are trimmed and
 /// a runaway length is cut ([`VALUE_MAX`]).
 pub fn clean(s: &str) -> String {
+    clean_to(s, VALUE_MAX)
+}
+
+/// [`clean`] with the cut at `max` characters.
+fn clean_to(s: &str, max: usize) -> String {
     let flat: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    cap(flat.trim(), VALUE_MAX)
+    cap(flat.trim(), max)
 }
 
 /// A key name: printable, no spaces (a space would blur the `name=code` pairs), short.
@@ -717,13 +729,13 @@ mod tests {
     fn step_lines_cleans_each_line_drops_blank_ones_and_moves_the_version_only_on_a_change() {
         let p = Panel::new();
         let v0 = p.version();
-        let lines = ["a\u{7}b".to_string(), "   ".to_string(), "x".repeat(300)];
+        let lines = ["a\u{7}b".to_string(), "   ".to_string(), "x".repeat(600)];
         p.step_lines(Step::Gfx, true, &lines);
         let t = text_of(&p);
         let mut it = t.lines().filter(|l| l.starts_with("8 gfx") || l.starts_with('x'));
         assert_eq!(it.next(), Some("8 gfx: a b"), "{t}");
         let second = it.next().unwrap();
-        assert_eq!(second.chars().count(), VALUE_MAX, "a runaway line is cut like any value");
+        assert_eq!(second.chars().count(), STEP_LINE_MAX, "a runaway line is cut at the step cap");
         assert!(second.ends_with("..."));
         let v1 = p.version();
         assert!(v1 > v0);
@@ -731,6 +743,26 @@ mod tests {
         assert_eq!(p.version(), v1, "the same two lines again is not a change");
         p.step_lines(Step::Gfx, false, &lines);
         assert!(p.version() > v1);
+    }
+
+    /// The owner's photo of the first emulator run showed "...syntax error,...; no G...": a step line was cut
+    /// at a value's 110 characters while most of the row was empty. A step line is evidence and is wrapped,
+    /// not cut, up to the step cap.
+    #[test]
+    fn a_step_line_of_evidence_is_shown_whole_not_cut_at_a_values_cap() {
+        let first = "first failure init_gl ambient, vertex: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER";
+        let ext = "shaders 13/14 compile+link; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query";
+        assert!(first.chars().count() < STEP_LINE_MAX && ext.chars().count() < STEP_LINE_MAX);
+        assert!(first.chars().count() + ext.chars().count() > 2 * VALUE_MAX - 40);
+        let p = Panel::new();
+        p.step_lines(Step::Gfx, false, &["FAILED".to_string(), first.repeat(2), ext.to_string()]);
+        let t = text_of(&p);
+        assert!(t.contains(&first.repeat(2)) && t.contains(ext), "{t}");
+        assert!(!t.contains("..."), "nothing under the step cap is cut: {t}");
+        // A single-line step still obeys a value's cap.
+        p.step(Step::Sample, true, &"v".repeat(300));
+        let t = text_of(&p);
+        assert!(t.contains(&format!("{}...", "v".repeat(VALUE_MAX - 3))) && !t.contains(&"v".repeat(VALUE_MAX - 2)), "{t}");
     }
 
     #[test]

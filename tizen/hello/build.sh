@@ -139,20 +139,47 @@ if [ "$HOST_TEST" = 1 ]; then
   export PATH="$HOME/.cargo/bin:$PATH" CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$PLX/target"
   say "static SDL2 + SDL2_ttf for this machine (sdl/build-sdl.sh host; cached)"
   "$HERE/sdl/build-sdl.sh" host
-  say "cargo test (PLX_SDL_PREFIX=$HERE/sdl-build/host): the H5 label test renders to an SDL_Surface, no GL"
-  # shellcheck disable=SC2086
-  PLX_SDL_PREFIX="$HERE/sdl-build/host" cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" 2>&1 \
-    | grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' || true
-  [ "${PIPESTATUS[0]}" = 0 ] || die "cargo test failed"
+  export PLX_SDL_PREFIX="$HERE/sdl-build/host"
+  # One `cargo test` pass whose exit status DECIDES this script. The two passes used to be
+  # `cargo test ... | grep ... || true` followed by `[ "${PIPESTATUS[0]}" = 0 ] || die`: under `set -o pipefail`
+  # the `|| true` is a command of its own, which resets PIPESTATUS to (0), so the `die` could never fire and a
+  # failing test went out as a green build.sh (found on the Windows/WSL run). Here cargo's output goes to a
+  # file, so its status is its own, the summary lines are picked out of the file, and a failing cargo dumps the
+  # file's tail (a compile error is not among the summary lines) before it dies.
+  run_cargo_test() {
+    local label="$1"; shift
+    local out rc=0
+    out="$(mktemp "${TMPDIR:-/tmp}/plx-host-test.XXXXXX")" || die "mktemp failed"
+    # shellcheck disable=SC2086
+    cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" "$@" >"$out" 2>&1 || rc=$?
+    # (The library's own log lines, mirrored to stderr as `plx: ...`, often say FAILED about a probe's expected
+    # failure; they are not test results.)
+    grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' "$out" | grep -v '^plx: ' || true
+    if [ "$rc" != 0 ]; then
+      echo "--- cargo exited $rc; the last 40 lines of its output:" >&2
+      tail -n 40 "$out" >&2
+      rm -f "$out"
+      die "$label failed (cargo test exit status $rc)"
+    fi
+    rm -f "$out"
+  }
+  say "cargo test (PLX_SDL_PREFIX=$PLX_SDL_PREFIX): the H5 label test renders to an SDL_Surface, no GL"
+  run_cargo_test "cargo test"
   if [ "$NO_GFX" = 0 ]; then
     # The same suite with plx_gfx linked in: the gl_shim tests (the forwarders, and the drift test that fails
     # when plx_gfx imports a gl* function the shim lacks) and the shader table's checks against gfx.rs run only
     # here. Needs the host's SDL2 headers/libs for plx_gfx's own link (gfx/build.rs); --no-gfx skips it.
+    #
+    # `-L native=<prefix>/lib` first on the search path: on a non-ARM host plx_gfx's build script emits
+    # `-lSDL2 -lSDL2_ttf`, which would otherwise find the system's SDL_ttf (Homebrew's, a shared one with its own
+    # FreeType) instead of the pinned static archive the first pass and the shipped .so use. Text metrics then
+    # differ from the shipped build's, and the panel's fit test measured a 1006 px panel as 994 px (and the full
+    # key sweep as 1040 of 1048 px with the new lines): see README "Host test". The prefix holds only the .a
+    # files sdl/build-sdl.sh built, so `-lSDL2` / `-lSDL2_ttf` resolve to them, the same arrangement `build_so`
+    # uses for the x86 library. Verified on macOS (`otool -L` on the test binary shows no SDL2 dylib); on Linux
+    # the system's shared SDL2 may still be preferred by the linker if `-L native` is ignored: not verified.
     say "cargo test --features gfx (plx_gfx linked: the GL forwarders and the shader table's drift tests)"
-    # shellcheck disable=SC2086
-    PLX_SDL_PREFIX="$HERE/sdl-build/host" cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" --features gfx 2>&1 \
-      | grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' || true
-    [ "${PIPESTATUS[0]}" = 0 ] || die "cargo test --features gfx failed (a host without plx_gfx's link dependencies can pass --no-gfx)"
+    RUSTFLAGS="${RUSTFLAGS:-} -L native=$PLX_SDL_PREFIX/lib" run_cargo_test "cargo test --features gfx (a host without plx_gfx's link dependencies can pass --no-gfx)" --features gfx
   fi
   echo "(PLX_H5_DUMP=/path/label.bmp and PLX_PANEL_DUMP=/path/stem write the rendered label and panels as BMPs; add -- --nocapture to read the log lines)"
   exit 0

@@ -39,7 +39,9 @@ pub const MOCK_FILE: &str = "mock-host.txt";
 /// text only: the list itself is private to that crate. A test reads `net.rs` and fails if the two differ.
 pub const CANDIDATES: [&str; 3] = ["libcurl.so.4", "libcurl.so.5", "libcurl.4.dylib"];
 
-/// Longest panel line this probe writes (the panel caps a line at 110; see `gfx_probe::LINE_MAX`).
+/// Longest panel line this probe writes: its own bound, well under the panel's runaway guard
+/// (`panel::STEP_LINE_MAX`, 400). A `9 net` line is the verdict and a short reason; the URL, the load
+/// result and the version are also logged on their own `H8 net:` lines.
 const LINE_MAX: usize = 108;
 /// The identity body is a few hundred bytes; anything past this is not it.
 const BODY_MAX: usize = 64 * 1024;

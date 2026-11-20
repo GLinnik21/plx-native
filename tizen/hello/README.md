@@ -59,7 +59,9 @@ order: the arrow keys, OK, Back, Play/Pause, Stop, rewind and fast-forward, red/
 the digits 0-9 and CH+/CH- (the instruction line says so). Each press shows in the panel's key
 list and changes the colour. **Back does not exit** (nothing treats any key as quit); leave with the
 TV's Home. Then photograph the screen. A second photo after pressing Home and re-opening the app
-shows the lifecycle line (`pause +12.3s | resume, paused 2.8s +15.1s`).
+shows the lifecycle line (`pause +12.3s | resume, paused 2.8s +15.1s`). The first resume of a run, with
+no pause before it (the app was opened, not left and re-entered), reads `resume (first) +1.3s`: only the
+time since the start, never a pause length it does not have.
 
 **What to send back:** the photo(s), the TV's model and year, and how it was installed (Apps2Samsung
 or other) and whether it asked anything.
@@ -70,13 +72,15 @@ or other) and whether it asked anything.
 - the instruction line;
 - the last 8 key events, oldest first: DOWN/UP, Ecore keyname, keycode (a key whose event carries no
   name shows as `(none)`); and below them every distinct key seen so far, `name=keycode`;
-- lifecycle lines since start (`focus IN`, `pause`, `resume, paused 2.8s`, locale changes);
+- lifecycle lines since start (`focus IN`, `pause`, `resume (first)` when nothing paused before it,
+  `resume, paused 2.8s` after a real pause, locale changes), each with its `+Ns` since the start;
 - the step results, green when they passed: `1 .so` (loaded, `plx_tizen_create` result), `2 libs`
   (which Ecore/EGL/GLES libraries opened), `3 window`, `4 EGL` (vendor, version), `5 GL` (vendor,
   renderer, version), `6 SDL/TTF` (the single `H5 RESULT`), `7 UTF-8` (a Latin + check mark + Cyrillic
-  sample that must read `PlxNative H5 ✓ Привет`), `8 gfx` (H7, two lines: the verdict and the shader
-  and `glGetError` evidence; the real renderer's own rectangle and text are also drawn in the bottom-right
-  corner of the screen), `9 net` (H8, two lines: the GET's verdict, then which libcurl opened and its
+  sample that must read `PlxNative H5 ✓ Привет`), `8 gfx` (H7, two to four lines, never cut at a
+  character count: the verdict, the first shader error whole when a shader failed, the full list of
+  missing GL extensions, and the shader-bisect line; the real renderer's own rectangle and text are also
+  drawn in the bottom-right corner of the screen), `9 net` (H8, two lines: the GET's verdict, then which libcurl opened and its
   version);
 - device facts: Tizen platform and native API version, model, manufacturer, build string, the four CPU
   architecture flags, `uname` machine, what `libplx.so` was built for, the .NET runtime, OS and process
@@ -92,12 +96,12 @@ and `>>` there (and says so nowhere else: it is not a failure).
 | the app never opens, or closes at once | the host or `libplx.so` failed before a window existed (the native create returned an error and the host exits). No panel is possible: a `--log-host` build, or the TV's own error text, is the next step |
 | a plain colour, no text | the window and EGL work; SDL/TTF or the panel's GL did not (H5 failed). Same next step |
 | the panel, a step in orange | the step named failed; the text after it is the reason |
-| `8 gfx` orange, "plx_gfx not entered" | the real renderer was NOT started because it would have exited the process (see "H7"); the line names the shader pair and the driver's own words |
+| `8 gfx` orange, "plx_gfx not entered" | the real renderer was NOT started because it would have exited the process (see "H7"); the line names the shader pair, the stage and the driver's own first error line, and the last `8 gfx` line says which of the bisect's variants compile |
 | `9 net` orange | libcurl did not load, or the GET failed; the line carries the `curl error N` text or the HTTP status |
 | keys listed, colour changes | keys arrive; the codes to read off the photo |
 | the panel frozen after Home | expected: the render loop idles while the app is in the background |
 
-**Not verified (see also the last section).** The panel build has not run on any TV or emulator (the H5 probe before it passed on the TV 10.0 emulator, as reported to us). Whether
+**Not verified (see also the last section).** The panel build has not run on any TV (the H5 probe before it passed on the TV 10.0 emulator, and the H7/H8 build ran once on the x86_64 emulator inside WSL, both as reported to us). Whether
 the media and colour keys reach an ordinary app at all is open: some TVs may deliver them only after the app
 registers the key with the platform, which this build does not do, so a key missing from the photo
 means "does not arrive unregistered", which is itself the answer wanted. The
@@ -235,7 +239,11 @@ unchanged and is what proves the SDL_ttf path before the panel uses it:
 2. Render thread (the EGL context owner): compile a textured-quad program, open the font itself
    (`TTF_OpenFont` is thread-agnostic here: only this thread uses it), rasterise the panel text
    (`panel.rs` is the text model; `panel_render.rs` lays it out at 28 px on a 1872x1048 plate authored for
-   a 1080-line screen), `glTexImage2D` the RGBA bytes, and draw the quad (centred, scaled to the screen
+   a 1080-line screen: 12 px of padding and a 2 px gap between sections, and a 31 px pitch between the
+   rows of a wrapped line, which `TTF_SetFontLineSkip` sets (SDL_ttf 2.22 or later, the pinned build is
+   2.24.0) without changing the 28 px glyphs. They were 16, 4 and the font's default, about 34 px; the
+   step 8 lines written out in full no longer fit otherwise. Text may reach `CONTENT_LIMIT`, row 1036, and a
+   test fails a panel that does not), `glTexImage2D` the RGBA bytes, and draw the quad (centred, scaled to the screen
    height) after every clear and before the swap. The panel texture is re-rendered and re-uploaded only
    when its text changed (a version counter; log lines `panel: render #N` and `H5 gl: texture N upload
    #K`), so a still panel costs one textured quad per frame. It logs the first presented frame with
@@ -284,10 +292,23 @@ ceiling: SDL's and FreeType's C objects are compiled against the build machine's
 headers turn calls like `strtol` into `__isoc23_strtol@GLIBC_2.38`. `build.sh` then stops with `GLIBC_2.xx
 exceeds GLIBC_2.39` (the `x86_64` limit; `PLX_MAX_GLIBC` overrides it) and its message names the way out:
 `X86_SYSROOT=<an older sysroot>` applies to the SDL compile as well as the Rust link. The first build downloads the two tarballs and compiles SDL2
-and SDL2_ttf. `--host-test` builds SDL for the host (macOS or Linux) and runs `cargo test`, which
-renders the label and the diagnostics panel (a typical one, a long but plausible one and an absurd one)
+and SDL2_ttf. `--host-test` builds SDL for the host (macOS or Linux) and runs `cargo test` twice (without, then with
+`--features gfx`), which
+renders the label and the diagnostics panel (a typical one, one with the emulator's expected `8 gfx` lines,
+a long but plausible one, the longest step 8 the report can build, and an absurd one)
 to surfaces without any GL and checks their pixels (`PLX_H5_DUMP=/some/file.bmp` writes the label and
-`PLX_PANEL_DUMP=/some/stem` the panels as BMPs to look at).
+`PLX_PANEL_DUMP=/some/stem` the panels as BMPs to look at). The script fails when either `cargo test` does
+(the exit status of cargo itself, kept in a temp file: an earlier `cargo test | grep || true` followed by
+`${PIPESTATUS[0]}` could never fail under `set -o pipefail`, because the `|| true` runs first and resets
+`PIPESTATUS` to the `true`'s status; the fix was proven by a deliberately failing test, then removed).
+The `gfx` pass sets `RUSTFLAGS=-L native=<the SDL prefix>/lib` as well: `plx_gfx`'s build script asks for
+`-lSDL2 -lSDL2_ttf` on a non-ARM target, which on a machine with SDL installed linked that
+SDL_ttf instead of the pinned static 2.24.0 this script built, and its text metrics (the wrapped-row pitch)
+made the panel test measure a different panel than the device draws. The panel's 1040-of-1048 px
+failure that showed this was a wrong message, not a wrong assertion: the test compared the bottom of
+the text, with its trailing section gap, against the plate's height; the bound that decides is
+`CONTENT_LIMIT` (the plate less its bottom padding, `panel_render.rs`), and the message now reports
+headroom against that.
 
 **Expect in the log** on success (device lines, in this order; `...` is elided detail):
 
@@ -299,7 +320,7 @@ H5 ttf: TTF_Init -> 0 (OK); SDL_ttf 2.24.0 (TTF_WasInit=1), FreeType 2.13.2, Har
 H5 ttf: TTF_OpenFont -> ok; family "Inter" style "Regular" height 88px
 H5 ttf: TTF_RenderUTF8_Blended -> SDL_Surface 791x88 pitch ... in N ms
 H5 sdl: stage 1 finished OK
-panel: render #1 (content v...) N sections, rasterised in N ms, uploaded; plate N/1048 px used
+panel: render #1 (content v...) N sections, rasterised in N ms, uploaded; text reaches row N of 1036 usable
 H5 gl: texture N upload #1 1872x1048 RGBA (7847424 bytes), glError=0x0000
 H5 gl: first frame presented with the panel drawn (glGetError=0x0000)
 H5 RESULT: OK (static SDL2 + SDL2_ttf: SDL_Init, TTF_Init, font open, UTF-8 render to SDL_Surface, GLES2 texture upload and draw on the render thread; the diagnostics panel, with the UTF-8 sample, is on screen)
@@ -338,13 +359,30 @@ context step 1 made current, from the frame after the panel's first (and after H
    against). A panel drawn with `plx_gfx`'s buffer still bound would read its arrays as offsets and
    vanish.
 
-**The panel line** (`8 gfx`, two lines, the verdict first; the full text is in the log as
-`H7 RESULT: ...`):
+**The panel line** (`8 gfx`, the verdict first; the whole text is also in the log, as `H7 RESULT: ...`
+then `H7 RESULT+1: ...` for each further line). A healthy driver:
 
 ```
 OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px (res/ font)
 glGetError init/frame/swap 0/0/0; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
+shader bisect: all 14 variants compile; j bytes clean
 ```
+
+A refusal (a shader the driver rejects; `plx_gfx` is not entered):
+
+```
+FAILED, plx_gfx not entered: shaders 13/14 compile+link
+first failure init_gl ambient, vertex stage: 0:37(9): error: syntax error, unexpected NEW_IDENTIFIER (+1 more log lines in the UDP log)
+shaders 13/14 compile+link; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
+shader bisect (+ compiles, - fails): a- b- c+ d- e- ... ; j bytes clean
+```
+
+(The two samples are illustrative: the second is the shape of the first emulator run's failure, not a
+recorded panel.) Nothing on these lines is cut at a character count: the panel wraps at its width and
+the log splits any text longer than 1000 bytes into `(cont.) ` lines so that no UDP datagram is truncated
+(the log's `plog_full!`, `log.rs`); an earlier build cut the second line to "...syntax error,...; no G...".
+`+N more log lines` says the driver's info log had further lines (all of them are in the log, under
+`H7 gfx:   info log:`).
 
 `no GL ext:` lists the extensions the renderer uses when present that this GL does not list: the
 ARM or EXT framebuffer fetch its straighten pass reads in place (without it the pass copies the frame
@@ -353,8 +391,66 @@ all are there. They are information, not a failure. The
 `glGetError` triple is after the inits, after the frame's draw and after the swap, `0` = none, else
 `0x....`. The GL strings and the full extension list are logged (`H7 gfx: GL_VERSION ... GLSL ...`,
 `H7 gfx: GL_EXTENSIONS ...`), and so is each shader pair (`H7 gfx: shader pair "init_gl base rect"
-compiled and linked`, or `... FAILED: <the driver's info log>`). A failure reads `FAILED, plx_gfx not
+compiled and linked`, or `... FAILED` and then the driver's whole info log, a line each, under
+`H7 gfx:   info log:`). A failure reads `FAILED, plx_gfx not
 entered: <why>` and the app carries on with the colour and the panel.
+
+**The shader bisect** (`plx/src/shader_bisect.rs`). The first emulator run (YaGL GLESv2, "OpenGL ES GLSL
+ES 1.4") compiled 13 of the 14 pairs; `init_gl ambient` (`VS_AMBIENT_DITHERED` + `FS_AMBIENT`) failed in
+the vertex stage with `0:37(9): error: syntax error, unexpected NEW_IDENTIFIER` (Mesa's error format:
+source 0, line 37, column 9). The same declaration compiles in two sibling shaders, so the cause
+is **not determined**; this step finds it on the device. It runs after the preflight, whether or not
+the preflight passed, never enters `plx_gfx`, and each trial is logged before it runs, so a crash names
+the variant. All variants compile `VS_AMBIENT_DITHERED` (3 `#define` lines, then `vs_ambient.vert`) as a
+vertex shader, through `glShaderSource` with the two strings `plx_gfx` passes (an empty preamble, which is
+what it prepends on an ES context, then the source) except `m`:
+
+| id | the source |
+|---|---|
+| a | as is: what the preflight and `plx_gfx` compile |
+| b | every `//` comment line removed (line numbers shift) |
+| k | the comment text blanked, every line kept (line numbers unchanged: a comment character is ruled in or out without moving the error) |
+| c | `highp` dropped from the `varying highp vec2 v_dither_nc;` line only |
+| d | only `#define PLX_DITHER_NC` (the other defines gone) |
+| e | `PLX_DITHER_NC` + `PLX_WASH_INK` |
+| f | `PLX_DITHER_NC` + `PLX_SCRIM` |
+| g | `#version 100` as the first line |
+| h | the text after `#ifdef` resolution (no directive left) |
+| i | everything through the `v_dither_nc` block (its closing `#endif` included, so the text is 39 lines, not 35: cutting at 35 would leave an `#ifdef` open and fail for another reason), then `void main(){ gl_Position = vec4(a_pos,0.,1.); v_col = vec4(1.); v_dither_nc = a_pos; }` |
+| l | control: `VS_SRC_DITHERED` (the sibling that compiled in the first run) |
+| m | `a` again, but ONE source string: what the first run's preflight passed (`plx_gfx` passes two: an empty preamble, then the source). So `m-` is the expected result there, and `a+` with `m-` would mean the first run's failure was an artifact of the probe's call, not of `plx_gfx`'s |
+| n | the `v_dither_nc` declaration moved to the top of the source |
+| o | every precision qualifier removed |
+| j | not a compile: the bytes of `a`, counted for CR, TAB, a leading BOM, NUL and non-ASCII (the log line gives all five; the panel summary says `j bytes clean`, or `j bytes: <what>` for a CR, TAB, BOM or NUL; non-ASCII alone is ordinary here, the comments have dashes) |
+
+For each compile the log has, in order (`X` is the id):
+
+```
+H7 bisect X: compiling (two strings): <what>
+H7 bisect X: <N> bytes, <M> lines -> COMPILED|FAILED; passed <N> bytes + NUL; GL_SHADER_SOURCE_LENGTH <n>; glGetShaderSource returned <n> bytes, identical|DIFFERENT from what was passed (first difference at byte <b>)
+H7 bisect X info log: <each line of the driver's whole info log>
+H7 bisect X: the log blames line <n>: <that line of the variant's text>
+```
+
+`GL_SHADER_SOURCE_LENGTH` and the `glGetShaderSource` read-back answer whether YaGL truncates or alters the
+text it was handed (the read-back is the driver's own copy; if the host translates ES to desktop GLSL,
+the line numbers in its log may be the translated text's, which is what "the log blames line n" and a
+difference in `glGetShaderSource` would show). Then `H7 bisect j: ...` (the byte checks) and last
+`H7 bisect: <summary>`, which is also the panel's last `8 gfx` line:
+
+```
+shader bisect: all 14 variants compile; j bytes clean
+shader bisect (+ compiles, - fails): a- b- c+ d- e- f- g+ h- i- k- l- m- n- o+; j bytes clean
+```
+
+(`+` the variant compiled, `-` it did not; the second line is an example of the form, from the unit test's
+fake driver, not a measurement.) When `glGetShaderSource` returns text that differs from what was passed
+the summary ends `; the driver's copy of the source differs for <ids>`. Reading it: `a-` with `c+` means
+the `highp` on that line; `a-` and `b+` or `k+` a comment; `a-` with `d+`, `e+` or `f+` the combination of
+defines; `g+` the driver wants a `#version` line; `a+` with `m-` the one-string call (see `m`);
+`a-` and `h+` the preprocessor; `i-` the first 39 lines already fail. If every variant including the
+control `l` fails the stage itself is broken. These are the rules for reading the result, not findings:
+nothing has been run on the emulator.
 
 **Findings, none of which change `rust-modules/`:**
 
@@ -365,7 +461,9 @@ entered: <why>` and the app carries on with the colour and the panel.
    result without a log) along. The non-exiting pieces (`try_compile`, `link_optional_program`,
    `link_shaders`) are private. So the probe does its own **preflight**: the 14 vertex+fragment pairs the
    four init functions pass to `link_program`, composed from the very same `include_str!` shader sources
-   (`gfx_probe.rs`, `PAIRS`), are compiled and linked with the probe's own non-exiting GL calls, and
+   (`gfx_probe.rs`, `PAIRS`), are compiled and linked with the probe's own non-exiting GL calls (through `glShaderSource` with the same
+   two strings `plx_gfx` passes, an empty preamble and the source; the first emulator run's preflight passed
+   one string, a difference the bisect's variant `m` keeps), and
    `plx_gfx` is entered only if every one passes, the GLSL version string is an ES one (`plx_gfx`
    prepends a `#version` line by the GL kind it detects) and every GL function it imports exists in the
    opened library. A test reads `gfx.rs` and `text.rs` and fails if a shader pair the renderer
@@ -380,7 +478,7 @@ entered: <why>` and the app carries on with the colour and the panel.
 2. **`plx_gfx` links its GL at build time (`glClear`, ... as plain imports); `libplx.so` must not have a
    `DT_NEEDED` for the GL library** (step 1 opens libEGL/libGLESv2 itself, and the cdylib is `BIND_NOW`, so
    one unresolved `gl*` name would make `dlopen("libplx.so")` fail and the whole app with it). The
-   library therefore defines the 48 GL entry points `plx_gfx` imports itself (`gl_shim.rs`) as
+   library therefore defines the 50 GL entry points `plx_gfx` imports itself (`gl_shim.rs`) as
    forwarders to function pointers `dlsym`ed from the library step 1 opened (library-scoped, never
    `RTLD_DEFAULT`). A missing entry is recorded and refuses to enter `plx_gfx`; a test fails when
    `gfx.rs`, `text.rs`, `egl.rs` or `gpu_timer.rs` start importing a function the shim lacks.
@@ -447,19 +545,28 @@ libcurl LOADED; no GET made (this package has no mock host: build with --mock-ho
 
 **The server.** `tests/mock_pms.py` (the repo's mock Plex Media Server; its `/identity` is tokenless
 JSON with a `machineIdentifier`; the id it returns is synthetic, from a seed). It binds `127.0.0.1` by
-default, which the emulator or a TV cannot reach, so bind all interfaces, from a checkout of this branch
-on the machine named in `--mock-host`:
+default. Whether that is reachable depends on where the client is:
+
+- **A Tizen emulator running inside WSL** (the run this probe was first tried on): QEMU's user-mode
+  networking maps the guest's `10.0.2.2` to the loopback of the machine the emulator runs on, here
+  WSL's, so a mock bound to `127.0.0.1` IS reachable. Build with `--mock-host 10.0.2.2:32499` and start
+  `python3 tests/mock_pms.py --host 127.0.0.1 --port 32499` inside WSL (the first run did exactly this: the
+  GET returned 200). An earlier version of this README said a loopback mock could not be reached from the
+  emulator; that was wrong for this setup.
+- **A real TV, or an emulator on another machine than the mock:** the loopback address is the mock's
+  machine only, so bind all interfaces, from a checkout of this branch on the machine named in
+  `--mock-host`:
 
 ```sh
 python3 tests/mock_pms.py --host 0.0.0.0 --port 32499     # serves http://<PC-IP>:32499/identity; Ctrl-C stops it
 curl http://<PC-IP>:32499/identity                         # from the same machine: must print machineIdentifier
 ```
 
-Allow inbound TCP 32499 through that machine's firewall. On WSL2 the Windows firewall and the WSL2 NAT
-both apply (not verified here): `--mock-host` must be an address the emulator or the TV can route to,
-i.e. a Windows host address, with the port reachable on it (WSL2's mirrored networking mode, or a
-`netsh interface portproxy` from Windows to the WSL2 address). From the emulator the host machine is
-usually `10.0.2.2` (QEMU's user-mode network), as for `--log-host`.
+For the real-TV case allow inbound TCP 32499 through that machine's firewall, and give `--mock-host` an
+address the TV can route to (`<PC-IP>`, the machine's LAN address). WSL2 behind its own NAT is a third
+case for a real TV (not verified here): the address has to be a Windows host address with the port
+reachable on it (WSL2's mirrored networking mode, or a `netsh interface portproxy` from Windows to the
+WSL2 address). `10.0.2.2` is only the emulator's name for its host, as for `--log-host`.
 `mock_pms.py` is a long-running local server, so stop it (Ctrl-C) when the run is done.
 
 ## Install and run
@@ -524,40 +631,62 @@ screen colour (below) still answers questions 1 to 4.
    (`code`): 4 a library did not open, 5 a symbol is missing (the `MISSING (required)` lines name it),
    6 to 11 Ecore/window/key handlers, 12 to 16 EGL, 17 to 19 the render thread. Host-side: -1 .so not
    found, -2 export missing, -3 other.
-9. H7: the panel's two `8 gfx` lines, the log's `H7 ...` lines (`H7 RESULT:`, `GL_VERSION`, `GL_EXTENSIONS`,
-   each `shader pair`, `entering ...`), and whether the rounded rectangle and the `plx_gfx text` line
+9. H7: the panel's `8 gfx` lines (all of them, the last one is the shader-bisect summary), the log's
+   `H7 ...` lines (`H7 RESULT:` and its `RESULT+N:` continuations, `GL_VERSION`, `GL_EXTENSIONS`, each
+   `shader pair` and its `info log:`, `entering ...`) and, whether or not a shader failed, every
+   `H7 bisect ...` line (the compile result, the info log and the read-back per variant, then the
+   `H7 bisect:` summary), and whether the rounded rectangle and the `plx_gfx text` line
    are on screen in the bottom-right corner. If the log stops after `H7 gfx: entering <call>`, the
    process died inside that call (no panel then): that line is the finding.
 10. H8: the two `9 net` lines and the `H8 ...` log lines. A `curl error N` is `CURLcode` N (7 = could not
     connect: the server, the address or the firewall; 28 = timeout; 6 = name not resolved).
 
-## Unverified (the panel build has not run on any device; the H5 probe before it passed on the TV 10.0 emulator, as reported)
+## Unverified (the panel build has not run on a TV; the H5 probe before it passed on the TV 10.0 emulator, and the H7/H8 build ran once on the x86_64 emulator inside WSL, as reported to us)
 
-H5, the tester-build panel, H7 and H8, on the Mac (no Tizen device, no Linux), only these were run:
-`build.sh --host-test` (85 tests with SDL, then 89 with `--features gfx`: the label and the panel render
-to surfaces with the right pixels, the panel fits at 28 px with typical and long contents including the
-two new steps, the key-string guard refuses unmapped and `PROT_NONE` pointers, the create path logs one
+**What the first emulator run reported** (x86_64 emulator inside WSL, the build before the shader
+bisect; reported to us, not run by the author): H8 passed (libcurl loaded; `GET http://10.0.2.2:32499/identity`
+-> 200 against a mock bound to `127.0.0.1`); the x86_64 link with `plx_gfx` was clean and all 50 GL
+forwarders bound; the GL is "YaGL GLESv2", "OpenGL ES 2.0", GLSL "OpenGL ES GLSL ES 1.4"; H7's preflight
+compiled and linked 13 of 14 shader pairs and refused: `init_gl ambient`, vertex stage,
+`0:37(9): error: syntax error, unexpected NEW_IDENTIFIER`, which is the `varying highp vec2
+v_dither_nc;` declaration (`vs_ambient.vert:34`, composed line 37 after three `#define` lines); the same
+declaration compiles in `VS_SRC_DITHERED` and `VS_IMG_DITHERED`; non-ASCII bytes in the comments were
+ruled out by a look; the app stayed healthy (about 31 fps, `glGetError` 0). **The cause is undetermined**
+and the shader bisect (see "H7") is the step that finds it. Nothing of that run is a claim about a TV.
+
+H5, the tester-build panel, H7, the shader bisect and H8, on the Mac (no Tizen device, no Linux), only these
+were run:
+`build.sh --host-test` (110 tests with SDL, then 114 with `--features gfx`: the label and the panel render
+to surfaces with the right pixels, the panel fits at 28 px with typical, emulator-shaped, long and
+worst-case contents including the new steps (against `CONTENT_LIMIT`, with the pinned static SDL_ttf), the key-string guard refuses unmapped and `PROT_NONE` pointers, the create path logs one
 line per fact; H7: the GL forwarders and their drift test against `plx_gfx`'s imports, the shader table
-against `gfx.rs` / `text.rs`, the state machine, the preflight and its refusals, the panel lines;
+against `gfx.rs` / `text.rs`, the state machine, the preflight and its refusals, the panel lines, the
+bisect's variants and summary against a fake driver that rejects the way the emulator did, the log's
+no-truncation chunking, the first-resume wording;
 H8: the `mock-host.txt` parse, the line formats, the SONAME list against `net.rs`, a real libcurl GET
 against a loopback server), the ARM link of `libplx.so` with and without `--no-gfx` and the checks above
-(the same five `plx_tizen_*` exports, no `libSDL2` in `DT_NEEDED`, no undefined `gl*`, the 48 forwarders
+(the same five `plx_tizen_*` exports, no `libSDL2` in `DT_NEEDED`, no undefined `gl*`, the 50 forwarders
 exported, the git sha inside the object), `cargo check` for the host and for `x86_64-unknown-linux-gnu`
 (with and without `gfx`), `bash -n build.sh`, `tests/mock_pms.py --host 127.0.0.1` answering `/identity`,
 the `--tpk-only` refusal without certificates, and the ARM `.tpk` build with throwaway certificates (the C#
 host compiles with the four-argument `plx_tizen_create`, 0 warnings, and the package lists
 `res/appfont.ttf`, `res/OFL.txt` and the same `libplx.so`; that was before H7 and H8). Not verified:
 
-- **H7 and H8 on any GL or any TV.** Whether `plx_gfx`'s shaders (written for the television's Mali)
-  compile on YaGL, whether `init_blur` and `init_image` run there, what `glGetError` says, and whether libcurl exists on a Tizen set under one of
-  the three SONAMEs, are exactly what these probes are for.
+- **H7 and H8 on any TV, and H7 past the preflight on any GL.** Whether `plx_gfx`'s 14 shaders (written
+  for the television's Mali) all compile on YaGL (13 did; the bisect is the step for the 14th), whether
+  `init_blur` and `init_image` run there, what `glGetError` says, and whether libcurl exists on a
+  Tizen TV under one of the three SONAMEs (it does on the emulator, as reported), are what these
+  probes are for.
+- **The bisect itself on a device.** Its result on the emulator is not known; the host tests prove only
+  that the variants are built as described and that the summary reads right against a fake driver.
 - **The `x86_64` link with `plx_gfx`** (see "H7", "How the x86 link works"): the static-archive search
   path, the empty `libGL.a`, the svg object not reaching the link, `--wrap=TTF_OpenFont` under GNU ld and
   that the glibc ceiling still holds with the extra code. `cargo check` passes for that target; nothing
   was linked. `--no-gfx` is the fallback.
 - That `__wrap_TTF_OpenFont` (the font retry) finds `res/` on a device: it uses the directory the host
   gave `plx_tizen_create`, the same one H5 uses; the log's `H7 gfx` lines say which font opened.
-- The mock-server reachability from the emulator or a TV through WSL2's network (see "H8").
+- The mock-server reachability from a real TV (the emulator inside WSL reached it at `10.0.2.2` with the
+  mock on `127.0.0.1`, as reported; a TV needs a LAN address and `--host 0.0.0.0`, see "H8").
 
 - That the panel is legible in a phone photo of a real TV (the host test reads the rendered panel at
   1872x1048 and the text is 28 px on a 1080-line screen; nobody has looked at it on a screen), and the

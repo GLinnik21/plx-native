@@ -114,6 +114,7 @@ extern "C" {
     fn TTF_OpenFont(file: *const c_char, ptsize: c_int) -> *mut c_void;
     fn TTF_CloseFont(font: *mut c_void);
     fn TTF_FontHeight(font: *const c_void) -> c_int;
+    fn TTF_SetFontLineSkip(font: *mut c_void, lineskip: c_int);
     fn TTF_FontFaceFamilyName(font: *const c_void) -> *const c_char;
     fn TTF_FontFaceStyleName(font: *const c_void) -> *const c_char;
     fn TTF_GlyphIsProvided32(font: *mut c_void, ch: u32) -> c_int;
@@ -375,6 +376,12 @@ impl Font {
 
     pub fn height(&self) -> i32 {
         unsafe { TTF_FontHeight(self.0.as_ptr()) }
+    }
+
+    /// Set the distance between two wrapped lines, in pixels. The glyphs keep their size; only the pitch of
+    /// the lines moves (`TTF_SetFontLineSkip`, SDL2_ttf 2.22 and later; the pinned build is 2.24.0).
+    pub fn set_line_skip(&mut self, px: i32) {
+        unsafe { TTF_SetFontLineSkip(self.0.as_ptr(), px) }
     }
 
     pub fn family(&self) -> String {

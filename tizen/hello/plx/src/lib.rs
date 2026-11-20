@@ -35,6 +35,7 @@ mod net_probe;
 mod panel;
 mod panel_render;
 mod render;
+mod shader_bisect;
 #[cfg(plx_sdl)]
 mod sdl;
 mod sym;
@@ -177,8 +178,34 @@ fn so_line(outcome: &str) -> String {
     )
 }
 
-/// When `pause` ran, as `f64` bits of `panel::uptime()`; `resume` reports how long the pause lasted.
-static PAUSED_AT: AtomicU64 = AtomicU64::new(0);
+/// "No pause is pending" for [`PAUSED_AT`]: an all-ones pattern, which is a NaN as an `f64` and so no
+/// uptime `pause` can ever store.
+const NOT_PAUSED: u64 = u64::MAX;
+
+/// When `pause` ran, as `f64` bits of `panel::uptime()`, or [`NOT_PAUSED`]; `resume` reports how long the
+/// pause lasted, and takes the value so a second `resume` with no pause between cannot reuse it.
+static PAUSED_AT: AtomicU64 = AtomicU64::new(NOT_PAUSED);
+
+/// What the lifecycle line says for a resume, given when the pause it ends began (`None`: there was none,
+/// the host's first resume after launch). The line gets `+<seconds since start>s` after this text, so a
+/// resume that ends a real pause reads `resume, paused 1.3s +15.1s`, and the very first one, which has no
+/// pause before it, reads `resume (first) +1.3s`: the time shown is then the time since START, not a pause
+/// length (the first emulator run showed `resume, paused 1.3s +1.3s`, which read as a 1.3 s pause that no
+/// log line begins).
+fn resume_text(paused_at: Option<f64>, now: f64) -> String {
+    match paused_at {
+        Some(at) => format!("resume, paused {:.1}s", (now - at).max(0.0)),
+        None => "resume (first)".to_string(),
+    }
+}
+
+/// [`PAUSED_AT`] as the helper wants it: the pause's start, once.
+fn take_paused_at() -> Option<f64> {
+    match PAUSED_AT.swap(NOT_PAUSED, Ordering::AcqRel) {
+        NOT_PAUSED => None,
+        bits => Some(f64::from_bits(bits)),
+    }
+}
 
 /// The host went to the background: stop drawing. The panel's lifecycle line is written BEFORE the
 /// flag, so the one frame the render thread still presents after it already says "pause" (render.rs).
@@ -196,10 +223,10 @@ pub extern "C" fn plx_tizen_pause() {
 #[no_mangle]
 pub extern "C" fn plx_tizen_resume() {
     guard("plx_tizen_resume", (), || {
-        let paused_for = panel::uptime() - f64::from_bits(PAUSED_AT.load(Ordering::Acquire));
-        panel::lifecycle(&format!("resume, paused {paused_for:.1}s"));
+        let what = resume_text(take_paused_at(), panel::uptime());
+        panel::lifecycle(&what);
         render::PAUSED.store(false, Ordering::Release);
-        plog!("lifecycle: resume");
+        plog!("lifecycle: {what}");
     });
 }
 
@@ -507,6 +534,37 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     use std::net::UdpSocket;
+
+    #[test]
+    fn the_first_resume_is_worded_as_time_since_start_and_only_a_real_pause_has_a_pause_length() {
+        // The first resume of a launch has no pause before it: it must not claim a pause length.
+        assert_eq!(resume_text(None, 1.3), "resume (first)");
+        assert!(!resume_text(None, 1.3).contains("paused"));
+        // After a pause, how long it lasted (the panel adds `+<since start>s`).
+        assert_eq!(resume_text(Some(12.34), 15.06), "resume, paused 2.7s");
+        assert_eq!(resume_text(Some(5.0), 4.9), "resume, paused 0.0s", "a clock that stepped back never prints a negative length");
+        // What the panel prints, end to end.
+        let p = panel::Panel::new();
+        p.lifecycle(1.3, &resume_text(None, 1.3));
+        p.lifecycle(12.3, "pause");
+        p.lifecycle(15.1, &resume_text(Some(12.3), 15.1));
+        let (_, sections) = p.snapshot();
+        let text: String = sections.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("resume (first) +1.3s   |   pause +12.3s   |   resume, paused 2.8s +15.1s"), "{text}");
+    }
+
+    #[test]
+    fn a_pause_is_taken_once_so_a_second_resume_without_a_pause_is_not_given_the_old_length() {
+        let _g = h5::test_guard(); // PAUSED_AT is process-global
+        PAUSED_AT.store(NOT_PAUSED, Ordering::SeqCst);
+        assert_eq!(take_paused_at(), None, "nothing paused yet");
+        PAUSED_AT.store(7.5f64.to_bits(), Ordering::SeqCst);
+        assert_eq!(take_paused_at(), Some(7.5));
+        assert_eq!(take_paused_at(), None, "the pause was consumed by the resume that ended it");
+        PAUSED_AT.store(0.0f64.to_bits(), Ordering::SeqCst);
+        assert_eq!(take_paused_at(), Some(0.0), "a pause at uptime exactly 0 is still a pause");
+        assert_eq!(take_paused_at(), None);
+    }
 
     /// The whole path a TV tester relies on: the host's two arguments reach the log, and every line
     /// of the file also arrives as a numbered datagram. On a development machine `create` stops at
