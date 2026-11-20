@@ -854,9 +854,12 @@ split by who reads it (critic M4):
    - `system { go_home, poll_home, deliver_toast }`;
    - `storage { authority }` (W8a): `Authority::Helper` (webOS: the LS2/DB8 storage helper is the canonical store of
      the session, the install's preferences and the consent record; the app's own files there are the legacy
-     migration inputs and the marked fallback of a helper outage) or `Authority::Files` (desktop, Tizen, a host
+     migration inputs, the marked fallback of a helper outage and the install-preferences file a sign-out writes
+     when the helper's clear is not durable) or `Authority::Files` (desktop, Tizen, a host
      test: the app's own record files are the store), read through
-     `tv::authority::authority()`. It replaces the `target_os = "linux"` + `target_arch = "arm"` fence the persistence
+     `tv::authority::authority()`. `secure::mode()` decides the session record ahead of it: under `MemoryOnly`
+     (where Tizen starts, W9) the session lives in memory and no credential store is read or written, whatever the
+     authority says; only the install's own preference file persists. It replaces the `target_os = "linux"` + `target_arch = "arm"` fence the persistence
      layers chose their store by; the helper's wake-up (`storage::client::install_activator`) joins it after W7b;
    - `legacy_webos_media { sink, display_sink, uri_media }`: the Starfish, ACB and `com.webos.media` verbs (F31),
      named for what they are (critic M3). Every hook is required (Decision 2, C): a platform states each field,
