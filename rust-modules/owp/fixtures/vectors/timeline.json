@@ -1,0 +1,31 @@
+{
+  "table": "timeline",
+  "cases": [
+    {"name":"idle holds positionMs","input":{"room":{"phase":"idle","positionMs":0,"atMs":1000,"rate":1},"durationMs":3487000,"serverNowMs":50000},"expect":{"positionMs":0,"running":false}},
+    {"name":"paused ignores time","input":{"room":{"phase":"paused","positionMs":61234,"atMs":1000,"rate":1},"durationMs":3487000,"serverNowMs":900000},"expect":{"positionMs":61234,"running":false}},
+    {"name":"waiting ignores time","input":{"room":{"phase":"waiting","positionMs":61234,"atMs":1000,"rate":1},"durationMs":3487000,"serverNowMs":900000},"expect":{"positionMs":61234,"running":false}},
+    {"name":"paused at durationMs","input":{"room":{"phase":"paused","positionMs":3487000,"atMs":1000,"rate":1},"durationMs":3487000,"serverNowMs":5000},"expect":{"positionMs":3487000,"running":false}},
+    {"name":"paused ignores rate","input":{"room":{"phase":"paused","positionMs":61234,"atMs":1000,"rate":2},"durationMs":3487000,"serverNowMs":900000},"expect":{"positionMs":61234,"running":false}},
+    {"name":"playing at atMs","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918273645},"expect":{"positionMs":61234,"running":true}},
+    {"name":"playing 1 ms before atMs is a scheduled start","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918273644},"expect":{"positionMs":61234,"running":false}},
+    {"name":"playing 1500 ms before atMs is a scheduled start","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918272145},"expect":{"positionMs":61234,"running":false}},
+    {"name":"playing 1 ms after atMs","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918273646},"expect":{"positionMs":61235,"running":true}},
+    {"name":"playing 1000 ms at rate 1","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918274645},"expect":{"positionMs":62234,"running":true}},
+    {"name":"rate 1.25 floors","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1.25},"durationMs":3487000,"serverNowMs":918274644},"expect":{"positionMs":62482,"running":true}},
+    {"name":"rate 0.5 floors","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":0.5},"durationMs":3487000,"serverNowMs":918273648},"expect":{"positionMs":61235,"running":true}},
+    {"name":"rate 0.5 one millisecond","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":0.5},"durationMs":3487000,"serverNowMs":918273646},"expect":{"positionMs":61234,"running":true}},
+    {"name":"rate 2","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":2},"durationMs":3487000,"serverNowMs":918274645},"expect":{"positionMs":63234,"running":true}},
+    {"name":"rate 1.1 uses double arithmetic","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1.1},"durationMs":3487000,"serverNowMs":918273652},"expect":{"positionMs":61241,"running":true}},
+    {"name":"rate 1.15: the product is a double (114.99999999999999)","input":{"room":{"phase":"playing","positionMs":0,"atMs":918273645,"rate":1.15},"durationMs":3487000,"serverNowMs":918273745},"expect":{"positionMs":114,"running":true}},
+    {"name":"rate 1.15: the floor applies to the whole sum","input":{"room":{"phase":"playing","positionMs":61234,"atMs":918273645,"rate":1.15},"durationMs":3487000,"serverNowMs":918273665},"expect":{"positionMs":61257,"running":true}},
+    {"name":"from zero at relay start","input":{"room":{"phase":"playing","positionMs":0,"atMs":0,"rate":1},"durationMs":3487000,"serverNowMs":0},"expect":{"positionMs":0,"running":true}},
+    {"name":"one hour in","input":{"room":{"phase":"playing","positionMs":0,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":921873645},"expect":{"positionMs":3487000,"running":true}},
+    {"name":"cap: 1 ms before durationMs","input":{"room":{"phase":"playing","positionMs":3486000,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918274644},"expect":{"positionMs":3486999,"running":true}},
+    {"name":"cap: exactly durationMs","input":{"room":{"phase":"playing","positionMs":3486000,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918274645},"expect":{"positionMs":3487000,"running":true}},
+    {"name":"cap: 1 ms past durationMs","input":{"room":{"phase":"playing","positionMs":3486000,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918274646},"expect":{"positionMs":3487000,"running":true}},
+    {"name":"cap: far past durationMs","input":{"room":{"phase":"playing","positionMs":3486000,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918873645},"expect":{"positionMs":3487000,"running":true}},
+    {"name":"cap at rate 2","input":{"room":{"phase":"playing","positionMs":3486000,"atMs":918273645,"rate":2},"durationMs":3487000,"serverNowMs":918274146},"expect":{"positionMs":3487000,"running":true}},
+    {"name":"cap on a short clip","input":{"room":{"phase":"playing","positionMs":0,"atMs":918273645,"rate":1},"durationMs":5000,"serverNowMs":918278646},"expect":{"positionMs":5000,"running":true}},
+    {"name":"positionMs already at durationMs","input":{"room":{"phase":"playing","positionMs":3487000,"atMs":918273645,"rate":1},"durationMs":3487000,"serverNowMs":918273655},"expect":{"positionMs":3487000,"running":true}}
+  ]
+}

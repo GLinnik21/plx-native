@@ -108,6 +108,7 @@ play_feed      net  playback_contract  media_codecs                       + plat
 play_uri       playback_contract                                          + platform base
 media_codecs   playback_contract                                          + base
 playback_contract                                                         + base
+owp
 platform                                                                             machine base
 machine                                                                                      base
 base
@@ -180,6 +181,14 @@ Production offers it a source only for a viewer who turned on Settings > Video &
 Experimental: `media::route::uri_preflight::ProductQualifier` answers `Unknown` for everyone else, for an original
 Standard would not direct-play (the plan's own `StandardDirectPlay` verdicts for the video, Dolby Vision, audio and
 container, not the server's decision, which the offer precedes), and for a converted PMS output. `ci/check-deps.sh` reads the whole crate for the same IO and clock gates as every other layer.
+
+`owp` is a nineteenth layer, declared the same way. Its crate is `plx_owp` (`rust-modules/owp/`); it
+names no other layer and no `plx_*` crate, so it can be used on its own: the Open Watch Party client protocol, sans-IO. It holds the JSON reader that keeps
+unpaired surrogate escapes visible to the checks, the message codec, the checks on names, room codes, the
+relay list, descriptors and room snapshots, the clock sync and the room timeline, each run against the
+vendored conformance vectors in `rust-modules/owp/fixtures/`. The WebSocket under it is `plx_net::ws`; the
+application does not name the crate yet. `ci/check-deps.sh` reads the whole crate for the same IO and clock
+gates as every other layer, and as machine code.
 
 The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
 intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with

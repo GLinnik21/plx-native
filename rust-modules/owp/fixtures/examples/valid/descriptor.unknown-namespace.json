@@ -1,0 +1,15 @@
+{
+  "kind": "movie",
+  "title": "Arrival",
+  "year": 2016,
+  "ids": {
+    "imdb": "tt2543164",
+    "letterboxd": "arrival-2016"
+  },
+  "durationMs": 6960000,
+  "file": {
+    "sizeBytes": 4294967296,
+    "oshash": "0f1e2d3c4b5a6978",
+    "name": "Arrival.2016.1080p.mkv"
+  }
+}

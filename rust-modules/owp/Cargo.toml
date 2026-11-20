@@ -1,0 +1,22 @@
+[package]
+name = "plx_owp"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Open Watch Party client protocol for PlxNative, sans-IO: the JSON reader, messages, checks, clock sync and the room timeline."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[package.metadata.plx]
+mount = "owp"
+
+[lib]
+name = "plx_owp"
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+
+[lints]
+workspace = true

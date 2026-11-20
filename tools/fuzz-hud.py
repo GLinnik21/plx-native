@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build and run the `cargo fuzz` package over the HUD package and registry parsers and the WebSocket codec (`fuzz/`).
+"""Build and run the `cargo fuzz` package over the HUD package and registry parsers, the WebSocket codec and the
+Open Watch Party reader (`fuzz/`).
 
     python3 tools/fuzz-hud.py list
     python3 tools/fuzz-hud.py seed                    # fuzz/seeds/: seed corpora and dictionaries, from files in the tree
@@ -56,6 +57,7 @@ ICONS = ROOT / "assets/icons"
 ORIGIN = "https://huds.plxnative.com"       # data/src/hudpacks/catalog.rs, ORIGIN
 CATALOG = ROOT / "rust-modules/data/src/hudpacks/catalog.rs"
 CATALOG_TESTING = ROOT / "rust-modules/data/src/hudpacks/catalog/testing.rs"
+OWP_FIXTURES = ROOT / "rust-modules/owp/fixtures"
 
 # target -> (dictionary, -max_len). max_len is above the bound the parser checks first (a bundle's 2 MiB is a
 # plain length compare, covered in-crate; an SVG's 16 KiB and an address's 2048 bytes are reached), because
@@ -70,6 +72,7 @@ TARGETS = {
     "catalog_verify": ("catalog", 65536),
     "catalog_cache": ("catalog", 65536),
     "ws_frame": ("ws", 20000),
+    "owp_json": ("owp", 70000),
 }
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -135,6 +138,26 @@ def ws_seeds():
         "upgrade-refused": b"\x01" + b"HTTP/1.1 403 Forbidden\r\n\r\n",
         "empty": b"\x00",
     }
+
+
+OWP_ROOM = ('{"type":"room","rev":2,"code":"K7MQ2X","epoch":0,"phase":"idle","positionMs":0,"atMs":0,"rate":1,'
+            '"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Edde",'
+            '"client":"Example/1.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}],'
+            '"action":{"kind":"join","by":"p1"}}')
+
+
+def owp_seeds():
+    seeds = {f"{path.parent.name}-{path.name}": path.read_bytes() for path in sorted(OWP_FIXTURES.glob("examples/*/*.json"))}
+    seeds["relays"] = (OWP_FIXTURES / "relays.json").read_bytes()
+    seeds.update({
+        "room": OWP_ROOM,
+        "pong": '{"type":"pong","id":"a-17","serverTime":918273001}',
+        "error": '{"type":"error","code":"room_full","message":"full","re":"join"}',
+        "closed": '{"type":"closed","reason":"kicked"}',
+        "lone-surrogates": r'{"\ud800":["\udc00x","\\ud83d\ude00","\\\ud83d"]}',
+        "overflow": '[1e400,-1e400,"1e400",2,9007199254740992,1.79769313486231581e308]',
+    })
+    return seeds
 
 
 def byte_entries(entries):
@@ -355,6 +378,9 @@ def write_seeds():
     for name, data in ws_seeds().items():
         put(seeds / "ws_frame", name, data)
 
+    for name, data in owp_seeds().items():
+        put(seeds / "owp_json", name, data)
+
     words = schema_words()
     dicts = seeds / "dict"
     put(dicts, "hud.dict", dict_entries(words) + '"PK\\x03\\x04"\n"PK\\x01\\x02"\n"PK\\x05\\x06"\n"manifest.json"\n"hud.json"\n"assets/"\n')
@@ -373,6 +399,12 @@ def write_seeds():
         b"\xce\xba", b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"\xe2\x82\xac", b"\r\n\r\n", b"HTTP/1.1 101 ",
         b"Upgrade: websocket\r\n", b"Connection: Upgrade\r\n", b"Sec-WebSocket-Accept: ",
         b"Sec-WebSocket-Extensions: ", b"Sec-WebSocket-Protocol: ",
+    ]))
+    put(dicts, "owp.dict", dict_entries([
+        "type", "joined", "room", "pong", "error", "closed", "code", "you", "peerId", "token", "media", "serverTime",
+        "rev", "epoch", "phase", "positionMs", "atMs", "rate", "control", "locked", "waitingOn", "participants",
+        "action", "kind", "by", "ext", "ids", "title", "durationMs", "\\ud800", "\\udc00", "\\ud83d\\ude00",
+        "\\u0000", "\\\\", "\\\"", "1e400", "-1e400", "9007199254740992", "null", "true",
     ]))
     put(dicts, "catalog.dict", dict_entries([
         "format", "entries", "revoked", "id", "name", "version", "author", "license", "package_format", "hud_format",

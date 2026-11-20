@@ -1,0 +1,17 @@
+{
+  "kind": "video",
+  "title": "Summer 2024",
+  "durationMs": 754000,
+  "file": {
+    "sizeBytes": 318767104,
+    "oshash": "a1b2c3d4e5f60718",
+    "name": "summer-2024.mp4"
+  },
+  "ext": {
+    "org.example": {
+      "type": "other",
+      "metaId": "local:abc",
+      "videoId": "local:abc:1"
+    }
+  }
+}

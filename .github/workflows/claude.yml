@@ -3,8 +3,12 @@ name: Claude
 # Answers `@claude` in an issue, a pull request comment, an inline review comment or a review body,
 # with the Claude Code GitHub Action (https://code.claude.com/docs/en/github-actions). Its main job is
 # reviewing pull requests, including ones from outside contributors' forks. It runs Claude Fable (the
-# `fable` alias: the newest Fable the action's Claude Code knows). `--append-system-prompt` sets the
-# tone: findings as inline review comments, and a short, casual summary comment.
+# `fable` alias: the newest Fable the action's Claude Code knows). `--append-system-prompt` sets how it
+# reviews, after umputun's review skill (github.com/umputun/cc-thingz, plugins/review): read the whole
+# conversation first and never repeat a settled point, diff against main, read CI instead of running
+# tests, findings inline, and a summary that is `lgtm` or a short numbered list, with none of the usual
+# bot noise. Read-only git (`git fetch origin`, `git diff`, `git log`, `git show`) is allowed in both
+# jobs for that diff: Fable runs without auto mode, so anything not allowed is refused.
 #
 # TWO JOBS. `route` decides whether the thread is a pull request from a fork, from GitHub's own record
 # of the head repository, and nothing else; then exactly one of these runs:
@@ -133,10 +137,11 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
             --model fable
-            --append-system-prompt "Write like a teammate on GitHub: short, casual, plain words. Put each finding on the line it is about as an inline review comment, one or two sentences, with a suggestion block when the fix is small. Keep the summary comment to a few lines: a one-line verdict, then at most a few bullets for what is not tied to a line. No headings, no restating the PR, no list of files you read, no praise. If nothing needs changing, say so in one line."
+            --append-system-prompt "Review like a terse maintainer. First read the whole conversation, the earlier inline comments and any bot reviews: never raise a point that was already resolved or that a maintainer already made, and keep a bot finding only if you checked it yourself. To see the whole change, run git fetch origin main (git fetch origin --deepen=200 if there is no merge base), then git diff origin/main...HEAD. Read the CI results of the pull request instead of running tests. Look for real bugs, missing error handling, code that does not match the patterns around it, over-engineering (say what simpler thing would do), and changes unrelated to the purpose of the pull request. Put each finding inline on its line, one or two sentences, with a suggestion block when the fix is small. Summary comment: lgtm when nothing is wrong, otherwise a short numbered list of what is not tied to a line, with file:line. Casual tone, lowercase is fine. Never restate what the pull request does. No headings, no praise, no list of files you read, no sign-off, no filler, and none of these words: comprehensive, robust, leverage, utilize, facilitate, seamless, it is worth noting."
             --settings '{"disableAllHooks":true}'
             --disallowedTools "Bash(git tag:*)" "Bash(git push --tags:*)"
             --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            "Bash(git fetch origin:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"
 
   fork:
     needs: route
@@ -177,8 +182,9 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: >-
             --model fable
-            --append-system-prompt "Write like a teammate on GitHub: short, casual, plain words. Put each finding on the line it is about as an inline review comment, one or two sentences, with a suggestion block when the fix is small. Keep the summary comment to a few lines: a one-line verdict, then at most a few bullets for what is not tied to a line. No headings, no restating the PR, no list of files you read, no praise. If nothing needs changing, say so in one line."
+            --append-system-prompt "Review like a terse maintainer. First read the whole conversation, the earlier inline comments and any bot reviews: never raise a point that was already resolved or that a maintainer already made, and keep a bot finding only if you checked it yourself. To see the whole change, run git fetch origin main (git fetch origin --deepen=200 if there is no merge base), then git diff origin/main...HEAD. Read the CI results of the pull request instead of running tests. Look for real bugs, missing error handling, code that does not match the patterns around it, over-engineering (say what simpler thing would do), and changes unrelated to the purpose of the pull request. Put each finding inline on its line, one or two sentences, with a suggestion block when the fix is small. Summary comment: lgtm when nothing is wrong, otherwise a short numbered list of what is not tied to a line, with file:line. Casual tone, lowercase is fine. Never restate what the pull request does. No headings, no praise, no list of files you read, no sign-off, no filler, and none of these words: comprehensive, robust, leverage, utilize, facilitate, seamless, it is worth noting."
             --settings '{"disableAllHooks":true,"disableSkillShellExecution":true}'
             --disallowedTools "Skill" "Agent" "Task" "Bash(curl:*)" "Bash(wget:*)" "Bash(gh:*)"
             "Bash(git push:*)" "Bash(git tag:*)" "Bash(tools/:*)" "Bash(./tools/:*)" "Read(//proc/**)"
             --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            "Bash(git fetch origin:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"

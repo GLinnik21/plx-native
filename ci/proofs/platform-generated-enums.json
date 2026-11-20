@@ -30,7 +30,7 @@
   },
   "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
   "manifests": {
-    "Cargo.toml": "c57b1c2d662d460a6d71f6de158397f1cb2f2fecb167bfa738631d77b661248b",
+    "Cargo.toml": "bc1d99641ae550b5ea510bb5364c971fed278358019073e5cf8fb7759ab71218",
     "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
     "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
     "data/Cargo.toml": "90a763a8a9e22bda7e95f8ede4dc10ec6e92a62b90bd0fd2e622c617d75ec6c7",
@@ -39,6 +39,7 @@
     "media/Cargo.toml": "2b3bb41264db9b9f30869015dfe0dd6656147c432728c9ea9301988c710a4202",
     "media-codecs/Cargo.toml": "503c8681289314b5c8a63195aad6796cbad93fcb3eedd8d7cba9e8ed0233783f",
     "net/Cargo.toml": "bfdb3a08200642eeeafc9762733718c407529f26dce8a7b90665bc77ac928171",
+    "owp/Cargo.toml": "2c1354bce16b34f0d006fc04cd4c8eb22ef91f00063b53a1113e32f475ecae33",
     "platform/Cargo.toml": "4181b79fa53a7ff6e8b0157f4d1ffe258737896603d267b4802551dee0812472",
     "play-feed/Cargo.toml": "b85320257da74a1affd81238b8fb6caa7f28960181d5ea0e07704ceef4800515",
     "play-uri/Cargo.toml": "107832fa33c96b7d2a4150c294aea9cd40954c3aabf66f809fc771bb52f5c280",
@@ -56,7 +57,7 @@
     "../.cargo/config": null,
     "../.cargo/config.toml": null
   },
-  "lock": "c56af60124266be5ee0b7dfa7ae81b4f0ff38b047fe672f40a009f6e1c22d3d3",
+  "lock": "fae665206e8c713c34753e06eaca52d43e0eb9b7b5d10e2420e7ec33152dfe78",
   "grammar": {
     "Preference": {
       "prefix": [
