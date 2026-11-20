@@ -1181,10 +1181,12 @@ else fail "fnlen: run_application (app/mod.rs) is ${runapp_len:-unknown} lines, 
 plexmain_len=$(fn_body_lines "$SRC/port.rs" 'plex_main')
 if [ -n "$plexmain_len" ] && [ "$plexmain_len" -le 10 ]; then ok "fnlen: plex_main (port.rs) ($plexmain_len lines)"
 else fail "fnlen: plex_main (port.rs) is ${plexmain_len:-unknown} lines, budget 10"; fi
-# plex_run is the one-line C wrapper over plex_main (the `-> !` entry the const beside it proves).
+# plex_run is the one-line C wrapper over plex_main (the `-> !` entry the const beside it proves): its
+# signature, the call and the closing brace. `app::exit`'s lifecycle_no_production_exit test holds the
+# body to exactly that call.
 plexrun_len=$(fn_body_lines "$SRC/port.rs" 'plex_run')
-if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 5 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
-else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 5 — it only calls plex_main"; fi
+if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 3 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
+else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 3 — it only calls plex_main"; fi
 fi # fnlen
 
 # testmod: `#[cfg(test)] mod` count in app/mod.rs = 0 (D4/D8) — every test module named in D8's

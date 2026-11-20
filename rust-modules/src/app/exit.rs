@@ -525,13 +525,29 @@ mod lifecycle_tests {
             if f == root.join("src/port.rs") {
                 // The process entry ends the process itself and is typed `-> !`: `plex_run` returns
                 // into `__libc_start_main`'s libc `exit` if it ever returns (#1115). The const is the
-                // compile-time proof; this holds that it is still there and still the one that exits.
-                let main = prod.split_once("fn plex_main(").expect("port.rs must keep plex_main").1;
+                // compile-time proof for `plex_main` only; `plex_run`, the C entry, is `-> c_int`, so
+                // an early `return 2;` above its call to `plex_main` would compile (`!` coerces). This
+                // holds the const still there, `plex_main` still the one that exits, and `plex_run`
+                // exactly the one call. All of it is read off comment-stripped lines, so a commented-out
+                // const or call cannot satisfy it (and no block comment may exist to defeat that).
+                assert!(!prod.contains("/*"), "port.rs has a block comment; strip those as well");
+                let code: String =
+                    prod.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                let main = code.split_once("fn plex_main(").expect("port.rs must keep plex_main").1;
                 let main = main.split_once("\n}\n").expect("the end of plex_main").0;
                 assert!(main.contains(exit_now), "plex_main must end the process through exit_now");
                 assert!(
-                    prod.contains("const _: fn(*const c_char, c_int) -> ! = plex_main;"),
+                    code.contains("const _: fn(*const c_char, c_int) -> ! = plex_main;"),
                     "the const proving plex_main never returns is gone"
+                );
+                let run = code.split_once("fn plex_run(").expect("port.rs must keep plex_run").1;
+                let run = run.split_once('{').expect("the start of plex_run's body").1;
+                let run = run.split_once('}').expect("the end of plex_run's body").0;
+                assert_eq!(
+                    run.split_whitespace().collect::<Vec<_>>().join(" "),
+                    "plex_main(pms_host, pms_port)",
+                    "plex_run must be exactly the call to plex_main: no `return`, no other statement, \
+                     or it can return into libc `exit` (#1115)"
                 );
             }
             for (n, line) in prod.lines().enumerate() {
