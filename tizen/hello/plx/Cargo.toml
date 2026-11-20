@@ -17,6 +17,22 @@ crate-type = ["cdylib"]
 # so the .so's DT_NEEDED is only the C runtime. Measured on the ARM build: libgcc_s, librt, libpthread,
 # libdl, libc and ld-linux (the TLS resolver); no Tizen library.
 libc = "0.2"
+# H7 (step 8 "gfx"): the application's own GLES2 renderer, the real `plx_gfx` crate by path. OPTIONAL,
+# so steps 1-7 and 9 (and a plain `cargo test`, which needs no SDL) never depend on it: `build.sh`
+# passes `--features gfx` unless it is given `--no-gfx`. See `src/gfx_probe.rs` and the README, "H7".
+plx_gfx = { path = "../../../rust-modules/gfx", optional = true }
+# H8 (step 9 "net"): the application's own HTTP client. It binds libcurl at run time through
+# `plx_base::dynlib!` and the app's SONAME list, so nothing is linked and libplx.so gets no DT_NEEDED
+# for curl. `lab-diagnostics` is plx_base's in-memory copy of the event log, which is the only way to
+# read the app crates' own log lines (they write /tmp/plxnative-events.log, which nothing here can read).
+plx_net = { path = "../../../rust-modules/net" }
+plx_base = { path = "../../../rust-modules/base", features = ["lab-diagnostics"] }
+
+[features]
+default = []
+# Link the application's renderer (plx_gfx) into libplx.so and run it on the render thread. Off: step 8
+# reports "built without plx_gfx". On: see "H7" in the README for what it needs at link time.
+gfx = ["dep:plx_gfx"]
 
 [workspace]
 

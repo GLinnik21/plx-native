@@ -24,7 +24,7 @@ use std::time::Instant;
 pub const PANEL_W: i32 = 1872;
 pub const PANEL_H: i32 = 1048;
 /// Body text size. SDL_ttf's point size is the pixel em at 72 dpi.
-pub const FONT_PX: i32 = 30;
+pub const FONT_PX: i32 = 28;
 /// Inner padding of the plate and the space between two sections, in pixels.
 #[cfg(plx_sdl)]
 const PAD: i32 = 16;
@@ -284,6 +284,56 @@ mod tests {
         out
     }
 
+    /// Steps 8 and 9 as the probes really word them (`Report::lines`, `NetReport::lines`), two lines each.
+    /// `typical`: an emulator that lists neither GL extension and a mock that answers; otherwise the
+    /// longest failure each can write (a cut compile error, a long curl version string and host name).
+    fn add_probe_steps(p: &Panel, typical: bool) {
+        use crate::gfx_probe::Report;
+        use crate::net_probe::{CurlFacts, GetResult, MockHost, NetReport};
+        let ext = vec!["ARM|EXT_shader_framebuffer_fetch".to_string(), "EXT_disjoint_timer_query".to_string()];
+        let gfx = if typical {
+            Report {
+                shaders: Some((14, 14, None)),
+                stages: ["init_gl", "init_text", "init_image", "init_blur"].iter().map(|n| (*n, Ok(()))).collect(),
+                err_init: Some(0),
+                err_frame: Some(0),
+                err_swap: Some(0),
+                text_px: Some(187.0),
+                rect_drawn: true,
+                missing_ext: ext,
+                font_redirected: true,
+                ..Report::default()
+            }
+        } else {
+            Report {
+                refusal: Some("3 of 14 shader pairs do not compile+link (init would exit); first: init_gl base rect: fragment: 0:12: 'gl_LastFragColorARM' : undeclared identifier".into()),
+                shaders: Some((11, 14, Some("init_gl base rect: fragment: 0:12: 'gl_LastFragColorARM' : undeclared identifier".into()))),
+                missing_ext: ext,
+                ..Report::default()
+            }
+        };
+        let (ok, l) = gfx.lines();
+        p.step_lines(Step::Gfx, ok, &l);
+        let version = "libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 nghttp2/1.59.0".to_string();
+        let net = if typical {
+            NetReport {
+                curl: CurlFacts { loaded: Ok("libcurl.so.4"), init_ok: true, version: Some("libcurl/7.53.1 OpenSSL/1.0.2k zlib/1.2.8 libidn/1.33".into()) },
+                mock: MockHost::Set("10.0.2.2:32499".into()),
+                get: Some(GetResult::Reply { status: 200, body: br#"{"MediaContainer":{"machineIdentifier":"6f9c0a1e2b3d4c5e6f7a8b9c0d1e2f3a4b5c6d7e"}}"#.to_vec() }),
+                pending: false,
+            }
+        } else {
+            NetReport {
+                curl: CurlFacts { loaded: Ok("libcurl.so.4"), init_ok: true, version: Some(version) },
+                mock: MockHost::Set("a-very-long-host-name-for-the-tester-pc.example.com:32499".into()),
+                get: Some(GetResult::Failed { rc: Some(56), timed_out: false }),
+                pending: false,
+            }
+        };
+        let (ok, l) = net.lines();
+        p.step_lines(Step::Net, ok, &l);
+    }
+
     fn typical_panel() -> Panel {
         let p = Panel::new();
         p.set_host_facts(parse_host_facts(
@@ -305,6 +355,7 @@ mod tests {
         p.step(Step::Gl, true, "vendor \"ARM\" renderer \"Mali-T860\" version \"OpenGL ES 3.2\"");
         p.step(Step::Sdl, true, "H5 static SDL2 + SDL2_ttf: OK");
         p.step(Step::Sample, true, crate::panel::SAMPLE_TEXT);
+        add_probe_steps(&p, true);
         p.lifecycle(0.4, "focus IN");
         p.lifecycle(12.3, "pause");
         p.lifecycle(15.1, "resume");
@@ -341,6 +392,7 @@ mod tests {
         p.step(Step::Egl, true, "EGL 1.4 vendor \"ARM\" version \"1.4 Midgard-r28p0-06rel0-git(6d4e2f5)\"; ES2 context and window surface created");
         p.step(Step::Gl, true, "vendor \"ARM\" renderer \"Mali-T860\" version \"OpenGL ES 3.2 v1.r28p0-06rel0.f1d3e2b5a7c9d4e6f8a0b1c2d3e4f5a6\"");
         p.step(Step::Sdl, false, "SDL2 2.32.10, SDL2_ttf 2.24.0: FAILED at gl: drawing the panel raised glError 0x0502 after the first present");
+        add_probe_steps(&p, false);
         p
     }
 
@@ -406,7 +458,7 @@ mod tests {
         assert!(FONT_PX >= 28, "the brief asks for >= 28 px text");
         with_renderer(|r| {
             // The ink height of a capital letter must be a sane fraction of the em (Inter's cap height
-            // is ~0.73 em), so 30 px text really is ~22 px tall letters.
+            // is ~0.73 em), so 28 px text really is ~20 px tall letters.
             let s = Section { tone: Tone::Fact, text: "HEH".to_string() };
             let rendered = r.render(&[s]).unwrap();
             let bands = ink_rows(&rendered.image);

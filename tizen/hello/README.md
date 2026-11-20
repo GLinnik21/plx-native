@@ -22,6 +22,12 @@ can our own `.so` carry a statically linked SDL2 and SDL2_ttf, with the window a
 draw text with them? The panel is drawn through that path (panel step `6 SDL/TTF`), so it is also H5's
 on-screen proof. It is additive: the colour and key behaviour above are unchanged.
 
+**Probes H7 and H8** (sections "H7: the real renderer" and "H8: libcurl and the mock server" below) add
+two more, each one line pair on the panel (steps `8 gfx` and `9 net`): does the application's real
+GLES2 renderer (`plx_gfx`, the crate the app draws everything with) run on this set's GL (on the
+emulator that is YaGL, GLES 2.0), and does the app's own libcurl binding load and reach a server on
+the tester's PC. Both are additive and neither can crash the app or skip the panel.
+
 Why this shape: retail Samsung TVs refuse a native `capp` package, so the package is `type="dotnet"`
 and its C# host P/Invokes a native library (flutter-tizen's model). The host is a plain
 `CoreUIApplication` whose `OnCreate` calls the library once on the main thread; the library creates
@@ -58,7 +64,7 @@ shows the lifecycle line (`pause +12.3s | resume, paused 2.8s +15.1s`).
 **What to send back:** the photo(s), the TV's model and year, and how it was installed (Apps2Samsung
 or other) and whether it asked anything.
 
-**The panel**, top to bottom (text 30 px on a 1080-line screen, re-rendered only when it changes):
+**The panel**, top to bottom (text 28 px on a 1080-line screen, re-rendered only when it changes):
 
 - the header, with the version and git sha;
 - the instruction line;
@@ -68,7 +74,10 @@ or other) and whether it asked anything.
 - the step results, green when they passed: `1 .so` (loaded, `plx_tizen_create` result), `2 libs`
   (which Ecore/EGL/GLES libraries opened), `3 window`, `4 EGL` (vendor, version), `5 GL` (vendor,
   renderer, version), `6 SDL/TTF` (the single `H5 RESULT`), `7 UTF-8` (a Latin + check mark + Cyrillic
-  sample that must read `PlxNative H5 ✓ Привет`);
+  sample that must read `PlxNative H5 ✓ Привет`), `8 gfx` (H7, two lines: the verdict and the shader
+  and `glGetError` evidence; the real renderer's own rectangle and text are also drawn in the bottom-right
+  corner of the screen), `9 net` (H8, two lines: the GET's verdict, then which libcurl opened and its
+  version);
 - device facts: Tizen platform and native API version, model, manufacturer, build string, the four CPU
   architecture flags, `uname` machine, what `libplx.so` was built for, the .NET runtime, OS and process
   architecture, `IntPtr` size, the process executable and the glibc version.
@@ -83,6 +92,8 @@ and `>>` there (and says so nowhere else: it is not a failure).
 | the app never opens, or closes at once | the host or `libplx.so` failed before a window existed (the native create returned an error and the host exits). No panel is possible: a `--log-host` build, or the TV's own error text, is the next step |
 | a plain colour, no text | the window and EGL work; SDL/TTF or the panel's GL did not (H5 failed). Same next step |
 | the panel, a step in orange | the step named failed; the text after it is the reason |
+| `8 gfx` orange, "plx_gfx not entered" | the real renderer was NOT started because it would have exited the process (see "H7"); the line names the shader pair and the driver's own words |
+| `9 net` orange | libcurl did not load, or the GET failed; the line carries the `curl error N` text or the HTTP status |
 | keys listed, colour changes | keys arrive; the codes to read off the photo |
 | the panel frozen after Home | expected: the render loop idles while the app is in the background |
 
@@ -96,11 +107,12 @@ Ecore key layout is read from the upstream EFL header; every pointer in it is ch
 
 ```
 tizen/hello/
-  plx/                  Rust crate -> libplx.so (own [workspace], only dependency: libc)
+  plx/                  Rust crate -> libplx.so (own [workspace]; libc, plus path dependencies on the app's own
+                        rust-modules/{base,net} and, with the `gfx` feature, rust-modules/gfx; nothing in rust-modules/ is changed)
   sdl/                  build-sdl.sh: static SDL2 + SDL2_ttf per arch (H5); layout-check.c, an ABI gate
   sdl-build/            its cache (gitignored): tarballs, per-arch include/ + lib/*.a + link-libs.txt
   host/PlxHello/        C# host + tizen-manifest.xml (package and app id: plxnhello0)
-  build.sh              builds SDL, the .so and the .tpk (signed; --log-host optionally adds the network log)
+  build.sh              builds SDL, the .so and the .tpk (signed; --log-host adds the network log, --mock-host the H8 server)
   log-receiver.py       UDP receiver for the network log (`nc -klu PORT` also works)
   out/                  build output (gitignored): out/<arch>/libplx.so, out/PlxHello-<arch>.tpk
 ```
@@ -122,8 +134,15 @@ tizen/hello/build.sh                    # arm: out/arm/libplx.so, out/PlxHello-a
 tizen/hello/build.sh --arch x86_64      # in WSL2: out/PlxHello-x86_64.tpk
 tizen/hello/build.sh --arch i686        # in WSL2, for the 9.0 emulator image
 tizen/hello/build.sh --arch x86_64 --log-host 10.0.2.2:9999   # + network log ("The log", below)
+tizen/hello/build.sh --arch x86_64 --log-host <PC-IP>:9999 --mock-host <PC-IP>:32499   # + H8's server ("H8")
 tizen/hello/build.sh --arch x86_64 --so-only    # no .NET, no certificates (then --tpk-only elsewhere)
+tizen/hello/build.sh --arch x86_64 --no-gfx     # without plx_gfx (H7 reports "no plx_gfx"): the fallback if the gfx link fails
 ```
+
+`--mock-host HOST:PORT` (an IPv4 literal or a DNS name, a port 1-65535, no scheme and no path) writes
+`res/mock-host.txt` into the package exactly as `--log-host` writes `res/log-host.txt`, and the build
+checks the file is in the `.tpk` (and absent without the flag). `--no-gfx` builds the library without
+the `gfx` cargo feature (and `--host-test` then skips its second, `--features gfx`, pass).
 
 Prerequisites, all user-local, nothing system-wide:
 
@@ -134,14 +153,25 @@ Prerequisites, all user-local, nothing system-wide:
   SDL2_ttf need; `curl` and `unzip`/`tar` fetch and unpack the pinned source tarballs (the first build
   needs the internet; later builds use the cache). No `pkg-config`, `cmake` or `-dev` packages: the
   SDL build is configured with every optional backend off and links nothing from the build machine.
+- `x86_64`/`i686` with the `gfx` feature (the default): also `python3` and `ar` (binutils, which
+  `build-essential` brings). `plx_gfx`'s own build script (`rust-modules/build_support/host_link.rs`,
+  written for the desktop simulator, run unchanged because `rust-modules/` is not touched) stages the
+  pinned nanosvg headers with `python3 ci/deps.py stage nanosvg` (the first build needs the internet or
+  the repo's dependency cache) and compiles `src/svg.c` with `cc`; see "H7", "How the x86 link works".
+  `--no-gfx` needs none of that. Keep `libsdl2-dev` / `libsdl2-ttf-dev` off the build machine: with them
+  installed the build script also puts the system `libSDL2.so` on the search path, and if that directory
+  is searched before the one `build.sh` adds, the library gets a `DT_NEEDED libSDL2.so.0` and `build.sh`'s
+  allowlist check fails (not verified which order the linker uses; it is the first thing to look at).
 - .NET 8 SDK in `~/.dotnet`: `dotnet-install.sh --channel 8.0 --install-dir ~/.dotnet`. The package
   uses the legacy `Tizen.NET.Sdk` NuGet route (`tizen80`, which covers Tizen 6.0), not the
   `net6.0-tizen` workload, which only accepts Tizen 8+. NuGet restore needs the internet.
 
 `build.sh` verifies the library and the package after building (file type, ELF attributes,
 DT_NEEDED against a C-runtime-only allowlist, text relocations, highest glibc symbol version, exports,
-that SDL/SDL_ttf/FreeType are inside the object and neither exported nor imported, `unzip -l`) and
-fails on a surprise. A library
+that SDL/SDL_ttf/FreeType are inside the object and neither exported nor imported, that `plx_gfx` is
+inside the object with its `gl*` imports answered by the library's own forwarders (or, with `--no-gfx`,
+that none of it is), `unzip -l`, and `res/mock-host.txt` present in the package exactly when asked for)
+and fails on a surprise. A library
 needing a newer glibc than the target has (`PLX_MAX_GLIBC`) is a failure: on a WSL2 distro newer than
 the emulator, see `X86_SYSROOT` in the script header.
 
@@ -204,7 +234,7 @@ unchanged and is what proves the SDL_ttf path before the panel uses it:
    no SDL object crosses a thread. `terminate` calls `TTF_Quit` and `SDL_Quit`.
 2. Render thread (the EGL context owner): compile a textured-quad program, open the font itself
    (`TTF_OpenFont` is thread-agnostic here: only this thread uses it), rasterise the panel text
-   (`panel.rs` is the text model; `panel_render.rs` lays it out at 30 px on a 1872x1048 plate authored for
+   (`panel.rs` is the text model; `panel_render.rs` lays it out at 28 px on a 1872x1048 plate authored for
    a 1080-line screen), `glTexImage2D` the RGBA bytes, and draw the quad (centred, scaled to the screen
    height) after every clear and before the swap. The panel texture is re-rendered and re-uploaded only
    when its text changed (a version counter; log lines `panel: render #N` and `H5 gl: texture N upload
@@ -282,6 +312,146 @@ or `INCOMPLETE ...` line; the colour and keys still work, with no panel when SDL
 The size above (791x88) is what the host test measures for the stage-1 sample; the device may differ by
 a pixel or two.
 
+## H7: the real renderer on this set's GL
+
+**Question.** Does `plx_gfx` (`rust-modules/gfx`, what the app draws every screen with) work on the
+emulator's YaGL GLES 2.0 (and on a real set's GL): do its shaders compile, do its init functions run, do
+its rectangle and text paths draw?
+
+**What the library does** (`plx/src/gfx_probe.rs`, `gl_shim.rs`; `plx_gfx` is a path dependency behind
+the `gfx` cargo feature, which `build.sh` turns on unless `--no-gfx`). On the render thread, in the EGL
+context step 1 made current, from the frame after the panel's first (and after H5's result):
+
+1. *Preflight* (below): compile and link every shader pair `plx_gfx` would, without exiting.
+2. Only when all of them pass, the same four calls `rust-modules/src/app/boot.rs` makes at lines
+   1730-1733, in that order: `plx_gfx::gfx::init_gl()`, `plx_gfx::text::init_text()`,
+   `plx_gfx::gfx::init_image()`, `plx_gfx::gfx::init_blur()`. Each runs under `catch_unwind` and is
+   logged before (`H7 gfx: entering init_gl`) and after (`... returned`), so a hang or a crash names
+   the call.
+3. Every frame after, over the panel, bottom-right corner: a rounded rect and the line `plx_gfx text`
+   drawn by `plx_gfx`'s own `draw_rect` and `draw_text` (the text through its SDL_ttf glyph path, so a
+   font that did not open shows as a missing line and a text width of 0). The panel's own GL state is
+   saved and restored around it (`plx_gfx` wants its vertex buffer, attribute 0 and blending; the panel's
+   draw uses client-side arrays and blending off).
+
+**The panel line** (`8 gfx`, two lines, the verdict first; the full text is in the log as
+`H7 RESULT: ...`):
+
+```
+OK: init_gl+text+image+blur ran; shaders 14/14 compile+link; rect drawn, text 187px (res/ font)
+glGetError init/frame/swap 0/0/0; no GL ext: ARM|EXT_shader_framebuffer_fetch EXT_disjoint_timer_query
+```
+
+`no GL ext:` lists the extensions the renderer uses when present that this GL does not list: the
+ARM or EXT framebuffer fetch its straighten pass reads in place (without it the pass copies the frame
+instead), and the disjoint timer query its GPU timing uses (without it timing stays off); `none` when
+all are there. They are information, not a failure. The
+`glGetError` triple is after the inits, after the frame's draw and after the swap, `0` = none, else
+`0x....`. The GL strings and the full extension list are logged (`H7 gfx: GL_VERSION ... GLSL ...`,
+`H7 gfx: GL_EXTENSIONS ...`), and so is each shader pair (`H7 gfx: shader pair "init_gl base rect"
+compiled and linked`, or `... FAILED: <the driver's info log>`). A failure reads `FAILED, plx_gfx not
+entered: <why>` and the app carries on with the colour and the panel.
+
+**Findings, none of which change `rust-modules/`:**
+
+1. **`plx_gfx` has no entry that survives a failed shader.** A required shader that does not compile goes
+   `link_program` -> `gfx_compile` -> `plx_base::process::exit_now(1)` (`gfx.rs:1231-1232`), and a base
+   program that does not link does the same in `init_gl` (`gfx.rs:1451`). `exit_now` is `_exit`: no panic
+   to catch, no destructor, and the .NET host dies with it, taking the panel (the only way to read the
+   result without a log) along. The non-exiting pieces (`try_compile`, `link_optional_program`,
+   `link_shaders`) are private. So the probe does its own **preflight**: the 14 vertex+fragment pairs the
+   four init functions pass to `link_program`, composed from the very same `include_str!` shader sources
+   (`gfx_probe.rs`, `PAIRS`), are compiled and linked with the probe's own non-exiting GL calls, and
+   `plx_gfx` is entered only if every one passes, the GLSL version string is an ES one (`plx_gfx`
+   prepends a `#version` line by the GL kind it detects) and every GL function it imports exists in the
+   opened library. A test reads `gfx.rs` and `text.rs` and fails if a shader pair the renderer
+   passes to `link_program` is missing from the table, so a shader added later cannot silently escape the
+   preflight. If the real renderer's own compile still fails after the preflight passed (the same source,
+   so not expected) the process exits and the log ends at `H7 gfx: entering init_gl`.
+2. **`plx_gfx` links its GL at build time (`glClear`, ... as plain imports); `libplx.so` must not have a
+   `DT_NEEDED` for the GL library** (step 1 opens libEGL/libGLESv2 itself, and the cdylib is `BIND_NOW`, so
+   one unresolved `gl*` name would make `dlopen("libplx.so")` fail and the whole app with it). The
+   library therefore defines the 48 GL entry points `plx_gfx` imports itself (`gl_shim.rs`) as
+   forwarders to function pointers `dlsym`ed from the library step 1 opened (library-scoped, never
+   `RTLD_DEFAULT`). A missing entry is recorded and refuses to enter `plx_gfx`; a test fails when
+   `gfx.rs`, `text.rs`, `egl.rs` or `gpu_timer.rs` start importing a function the shim lacks.
+   `build.sh` checks the product: none of them undefined, the forwarders exported.
+3. **The font.** `plx_gfx` opens `<dir of the running executable>/appfont.ttf`; the executable here is
+   `dotnet`/the launcher, so the open fails and no text is drawn. On Linux the build links with
+   `-Wl,--wrap=TTF_OpenFont` (`plx/build.rs`) and the probe's `__wrap_TTF_OpenFont` retries a failed
+   `appfont*.ttf` open from the package's `res/` (the H5 probe's font). macOS's linker has no `--wrap`,
+   so the host test build leaves it out (the wrapper is not compiled there).
+4. **Event ring.** `plx_gfx` writes its own lines (`plx_base::eventlog::log`, e.g. `base prog link
+   FAILED — exiting` just before the exit above) into `plx_base`'s event ring, which keeps records
+   here because the crate is built with its `lab-diagnostics` feature; the probe forwards new ring
+   records to the log as `evt +Nms ...` lines, so the renderer's own words reach the UDP receiver.
+
+**How the x86 link works (not built or run on the machine this was written on).** On a non-ARM target
+`plx_gfx`'s build script emits `-lSDL2 -lSDL2_ttf -lGL` and, as a link argument that does not reach
+dependents, an object file built from `src/svg.c`; ARM emits nothing. `build.sh` handles the first two
+for the x86 build: it puts the SDL prefix's STATIC archives on the library search path (`-L native=`) so
+`-lSDL2` / `-lSDL2_ttf` find the `.a` files this script built instead of a shared library, and creates
+an empty `libGL.a` there so `-lGL` is satisfied by nothing (the GL names are the library's own
+forwarders). The svg object does not reach the `libplx.so` link: its nanosvg symbols stay undefined in
+`plx_gfx` and are dropped with the code that uses them (the ARM build, which has the same property, shows
+no undefined `svg` symbol). If this does not link or `build.sh`'s allowlist check fails, **`--no-gfx`**
+builds the library without `plx_gfx` and the panel's `8 gfx` says so.
+
+**Dependencies.** `cargo tree --features gfx` adds, below `plx_gfx`: `image` 0.25 (with `png`, `zune-jpeg`,
+`moxcms`, `flate2`/`miniz_oxide`, `crc32fast`, `fdeflate`, `bytemuck`, `byteorder-lite`, `num-traits`,
+`bitflags`, `simd-adler32`, `adler2`, `zune-core`, `pxfm`; the deepest chain is plx_gfx -> image -> png ->
+flate2 -> miniz_oxide -> adler2, five levels), `plx_machine` (-> `plx_base`) and `libc`: 21 more
+crates in all than the build without the feature, all pure Rust, no FFmpeg, Sentry or webOS-only
+link. (The ARM `libplx.so` grows from 2,749,312 to 3,079,212 bytes.)
+
+## H8: libcurl and the mock server
+
+**Question.** Does the app's own libcurl binding (`plx_net`, the crate behind every Plex request the
+app makes, on `plx_base`'s `dynlib!` loader) find a libcurl on this set under one of the app's SONAMEs, and
+can it make an HTTP request to a server on the tester's PC?
+
+**What the library does** (`plx/src/net_probe.rs`). At the end of `plx_tizen_create`:
+
+1. `plx_net::net::curl::load(None)`: the app's own candidate list, `libcurl.so.4`, `libcurl.so.5`,
+   `libcurl.4.dylib` (`rust-modules/net/src/net.rs`; a test reads that file and fails if the probe's copy
+   of the list, used for the panel's "tried ..." text, drifts). Nothing is linked: `libplx.so` has no
+   `DT_NEEDED` for curl. The panel and log say which name opened, or that none did, or that one opened
+   with symbols missing.
+2. `plx_net::net::global_init()` (what the app calls once on its main thread: `curl_global_init`, the
+   OpenSSL locks where the TLS backend needs them) and `plx_net::net::curl_version()`, shown as the
+   version string (it names the TLS backend).
+3. If the package has `res/mock-host.txt`: on its own thread (`plx-net-probe`), `plx_net::net::
+   request_result_evidence` (the one function every libcurl easy request in the app passes through)
+   `GET http://<mock-host>/identity`, and the HTTP status and the `machineIdentifier` from the JSON
+   body, or the `CURLcode` and its words. Without the file nothing is requested and the panel says so.
+
+**The panel line** (`9 net`, two lines; log lines `H8 net: ...`, the final `H8 RESULT: ...`):
+
+```
+OK: GET http://<PC-IP>:32499/identity -> 200, machineIdentifier s2265b1f5s91b7584a
+libcurl libcurl.so.4: libcurl/7.xx.x OpenSSL/... zlib/...
+FAILED: GET http://<PC-IP>:32499/identity: curl error 7: failed to connect to host     (no server, or a firewall)
+libcurl NOT loaded: none opened (tried libcurl.so.4 libcurl.so.5 libcurl.4.dylib)      (no libcurl on this set)
+libcurl LOADED; no GET made (this package has no mock host: build with --mock-host)
+```
+
+**The server.** `tests/mock_pms.py` (the repo's mock Plex Media Server; its `/identity` is tokenless
+JSON with a `machineIdentifier`; the id it returns is synthetic, from a seed). It binds `127.0.0.1` by
+default, which the emulator or a TV cannot reach, so bind all interfaces, from a checkout of this branch
+on the machine named in `--mock-host`:
+
+```sh
+python3 tests/mock_pms.py --host 0.0.0.0 --port 32499     # serves http://<PC-IP>:32499/identity; Ctrl-C stops it
+curl http://<PC-IP>:32499/identity                         # from the same machine: must print machineIdentifier
+```
+
+Allow inbound TCP 32499 through that machine's firewall. On WSL2 the Windows firewall and the WSL2 NAT
+both apply (not verified here): `--mock-host` must be an address the emulator or the TV can route to,
+i.e. a Windows host address, with the port reachable on it (WSL2's mirrored networking mode, or a
+`netsh interface portproxy` from Windows to the WSL2 address). From the emulator the host machine is
+usually `10.0.2.2` (QEMU's user-mode network), as for `--log-host`.
+`mock_pms.py` is a long-running local server, so stop it (Ctrl-C) when the run is done.
+
 ## Install and run
 
 **Real TV (Developer Mode on, its DUID in the profile):** `sdb connect <tv-ip>`, then
@@ -344,20 +514,43 @@ screen colour (below) still answers questions 1 to 4.
    (`code`): 4 a library did not open, 5 a symbol is missing (the `MISSING (required)` lines name it),
    6 to 11 Ecore/window/key handlers, 12 to 16 EGL, 17 to 19 the render thread. Host-side: -1 .so not
    found, -2 export missing, -3 other.
+9. H7: the panel's two `8 gfx` lines, the log's `H7 ...` lines (`H7 RESULT:`, `GL_VERSION`, `GL_EXTENSIONS`,
+   each `shader pair`, `entering ...`), and whether the rounded rectangle and the `plx_gfx text` line
+   are on screen in the bottom-right corner. If the log stops after `H7 gfx: entering <call>`, the
+   process died inside that call (no panel then): that line is the finding.
+10. H8: the two `9 net` lines and the `H8 ...` log lines. A `curl error N` is `CURLcode` N (7 = could not
+    connect: the server, the address or the firewall; 28 = timeout; 6 = name not resolved).
 
 ## Unverified (the panel build has not run on any device; the H5 probe before it passed on the TV 10.0 emulator, as reported)
 
-H5 and the tester-build panel, on the Mac (no Tizen device, no Linux), only these were run: `cargo test`
-(stub, 27 tests), `--host-test` (35 tests: the label and the panel render to surfaces with the right
-pixels, the panel fits at 28+ px with typical and long contents, the key-string guard refuses unmapped
-and `PROT_NONE` pointers, the create path logs one line per fact), the ARM link of `libplx.so` with the
-checks above (the same five `plx_tizen_*` exports, no `libSDL2` in `DT_NEEDED`, the git sha inside the
-object), `bash -n build.sh`, the `--tpk-only` refusal without certificates, and the ARM `.tpk` build with
-throwaway certificates (the C# host compiles with the four-argument `plx_tizen_create`, 0 warnings, and
-the package lists `res/appfont.ttf`, `res/OFL.txt` and the same `libplx.so`). Not verified:
+H5, the tester-build panel, H7 and H8, on the Mac (no Tizen device, no Linux), only these were run:
+`build.sh --host-test` (85 tests with SDL, then 89 with `--features gfx`: the label and the panel render
+to surfaces with the right pixels, the panel fits at 28 px with typical and long contents including the
+two new steps, the key-string guard refuses unmapped and `PROT_NONE` pointers, the create path logs one
+line per fact; H7: the GL forwarders and their drift test against `plx_gfx`'s imports, the shader table
+against `gfx.rs` / `text.rs`, the state machine, the preflight and its refusals, the panel lines;
+H8: the `mock-host.txt` parse, the line formats, the SONAME list against `net.rs`, a real libcurl GET
+against a loopback server), the ARM link of `libplx.so` with and without `--no-gfx` and the checks above
+(the same five `plx_tizen_*` exports, no `libSDL2` in `DT_NEEDED`, no undefined `gl*`, the 48 forwarders
+exported, the git sha inside the object), `cargo check` for the host and for `x86_64-unknown-linux-gnu`
+(with and without `gfx`), `bash -n build.sh`, `tests/mock_pms.py --host 127.0.0.1` answering `/identity`,
+the `--tpk-only` refusal without certificates, and the ARM `.tpk` build with throwaway certificates (the C#
+host compiles with the four-argument `plx_tizen_create`, 0 warnings, and the package lists
+`res/appfont.ttf`, `res/OFL.txt` and the same `libplx.so`; that was before H7 and H8). Not verified:
+
+- **H7 and H8 on any GL or any TV.** Whether `plx_gfx`'s shaders (written for the television's Mali)
+  compile on YaGL, whether `init_blur` and `init_image` run there, what `glGetError` says, and whether libcurl exists on a Tizen set under one of
+  the three SONAMEs, are exactly what these probes are for.
+- **The `x86_64` link with `plx_gfx`** (see "H7", "How the x86 link works"): the static-archive search
+  path, the empty `libGL.a`, the svg object not reaching the link, `--wrap=TTF_OpenFont` under GNU ld and
+  that the glibc ceiling still holds with the extra code. `cargo check` passes for that target; nothing
+  was linked. `--no-gfx` is the fallback.
+- That `__wrap_TTF_OpenFont` (the font retry) finds `res/` on a device: it uses the directory the host
+  gave `plx_tizen_create`, the same one H5 uses; the log's `H7 gfx` lines say which font opened.
+- The mock-server reachability from the emulator or a TV through WSL2's network (see "H8").
 
 - That the panel is legible in a phone photo of a real TV (the host test reads the rendered panel at
-  1872x1048 and the text is 30 px on a 1080-line screen; nobody has looked at it on a screen), and the
+  1872x1048 and the text is 28 px on a 1080-line screen; nobody has looked at it on a screen), and the
   whole Apps2Samsung path ("Tester build").
 - That the C# host's facts arrive intact through the `LPStr` marshaling on a device (the create test
   feeds the same `name=value` lines from Rust).

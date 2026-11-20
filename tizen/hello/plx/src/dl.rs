@@ -23,6 +23,19 @@ pub struct Lib {
 unsafe impl Send for Lib {}
 unsafe impl Sync for Lib {}
 
+impl Lib {
+    /// `sym` in THIS library only (and the libraries it pulls in), never the process's global scope.
+    /// The GL forwarders ([`crate::gl_shim`]) are exported from `libplx.so` itself, so a global-scope
+    /// lookup of a `gl*` name could answer with a forwarder and make it call itself.
+    #[cfg_attr(not(feature = "gfx"), allow(dead_code))]
+    pub fn sym(&self, sym: &str) -> Option<Ptr> {
+        let c = CString::new(sym).ok()?;
+        // SAFETY: valid handle from dlopen, valid C string.
+        let p = unsafe { libc::dlsym(self.handle, c.as_ptr()) };
+        (!p.is_null()).then_some(p)
+    }
+}
+
 fn dlerror_text() -> String {
     // SAFETY: dlerror returns null or a NUL-terminated string valid until the next dl* call on this
     // thread; it is copied immediately.

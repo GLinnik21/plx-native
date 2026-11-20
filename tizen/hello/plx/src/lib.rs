@@ -24,10 +24,14 @@
 //! device: see the README for what is verified and what is guessed.
 
 mod dl;
+mod gfx_probe;
+#[cfg(feature = "gfx")]
+mod gl_shim;
 mod h5;
 mod keys;
 mod label_gl;
 mod log;
+mod net_probe;
 mod panel;
 mod panel_render;
 mod render;
@@ -356,8 +360,13 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
             return rc;
         }
     };
+    // H7: bind the GL forwarders `plx_gfx` links against to the libGLESv2 opened above, and hand the render
+    // thread the probe's own entry points. Main thread, before the render thread exists, so no thread can
+    // reach an unbound forwarder. Never fatal: a failure is a panel line on the render thread.
+    gfx_probe::set_res_dir(res.as_deref());
+    let gfx_job = gfx_probe::job(&gles_lib);
     let (tx, rx) = mpsc::channel();
-    let render = match render::spawn(egl, gles, egl_ctx, window.width, window.height, panel_job, tx) {
+    let render = match render::spawn(egl, gles, egl_ctx, window.width, window.height, panel_job, gfx_job, tx) {
         Ok(h) => h,
         Err(e) => {
             plog!("cannot spawn the render thread: {e}");
@@ -387,6 +396,11 @@ fn create(data_dir: *const c_char, log_host: *const c_char, res_dir: *const c_ch
     }
 
     *slot = Some(Runtime { ecore, egl, egl_ctx, window, handlers, render: Some(render) });
+
+    // H8: libcurl by the application's own name list and a GET of the mock server on a worker thread.
+    // Last, on this (main) thread, because `curl_global_init` must run before any thread uses curl; it
+    // cannot fail the create (it catches its own panics and reports on the panel).
+    net_probe::start(res.as_deref());
     0
 }
 

@@ -5,7 +5,8 @@
 # has uncommitted changes): build a tester's package from a clean, pushed commit.
 #
 #   tizen/hello/build.sh [--arch arm|x86_64|i686] [--so-only | --tpk-only]
-#                        [--log-host IPV4:PORT] [--author-p12 FILE] [--dist-p12 FILE]
+#                        [--log-host IPV4:PORT] [--mock-host HOST:PORT] [--no-gfx]
+#                        [--author-p12 FILE] [--dist-p12 FILE]
 #   tizen/hello/build.sh --host-test       # the H5 unit test on this machine (macOS or Linux), no TV
 #
 #   --arch arm      (default) real TVs, 32-bit ARMv7 softfp. Built on this Mac with the webOS NDK's
@@ -25,6 +26,15 @@
 #                   machine is usually 10.0.2.2. Receive with `nc -klu PORT`. Without the flag the package
 #                   carries no address and nothing is sent: the on-screen panel is always on and is what a
 #                   tester with a retail TV photographs (README, "Tester build").
+#   --mock-host HOST:PORT  OPTIONAL. Ship the address of a mock Plex server (tests/mock_pms.py) in the package
+#                   (res/mock-host.txt, written exactly as res/log-host.txt is); step 9 "net" of the panel then
+#                   makes `GET http://HOST:PORT/identity` through the app's own libcurl binding and shows the
+#                   HTTP status and the machineIdentifier. HOST is an IPv4 literal or a DNS name. Without the
+#                   flag step 9 only reports whether libcurl loaded. README, "H8".
+#   --no-gfx        Build WITHOUT the application's renderer (the `gfx` cargo feature of plx/): step 8 "gfx" of
+#                   the panel then says so. The default links plx_gfx in; use this when that link fails (it is
+#                   the fallback if the x86_64 link in WSL cannot be made, README "H7") or to measure the
+#                   library without it.
 #   --author-p12 FILE, --dist-p12 FILE   the signing certificates (see "Signing" below).
 #
 # Signing: building the .tpk REQUIRES a Samsung certificate profile (author + VD Public distributor
@@ -45,6 +55,12 @@
 # carries res/appfont.ttf (a copy of the repository's pkg/appfont.ttf, Inter, SIL OFL) and res/OFL.txt.
 # Verified after the build: no DT_NEEDED outside the C runtime (no libSDL2), the SDL/TTF code present
 # inside the object but not exported.
+#
+# H7 (the application's renderer, plx_gfx, `--features gfx`, the default): plx_gfx binds GLES2 at LINK time,
+# which a library that must not name libGLESv2 in DT_NEEDED cannot do, so plx/src/gl_shim.rs defines every gl*
+# function plx_gfx imports and forwards it to the libGLESv2 the library dlopens. Verified after the build: no
+# undefined gl* symbol remains (the existing "only getauxval" check), the forwarders are exported, plx_gfx's
+# code is inside the object (or, with --no-gfx, is not).
 #
 # Output (all gitignored):
 #   tizen/hello/out/<arch>/libplx.so       the library
@@ -79,6 +95,8 @@ DO_SO=1
 DO_TPK=1
 HOST_TEST=0
 LOG_HOST=""
+MOCK_HOST=""
+NO_GFX=0
 AUTHOR_P12="${PLX_TIZEN_AUTHOR_P12:-}"
 DIST_P12="${PLX_TIZEN_DIST_P12:-}"
 while [ $# -gt 0 ]; do
@@ -90,6 +108,9 @@ while [ $# -gt 0 ]; do
     --host-test) HOST_TEST=1; shift ;;
     --log-host) LOG_HOST="${2:?--log-host needs IPV4:PORT}"; shift 2 ;;
     --log-host=*) LOG_HOST="${1#--log-host=}"; shift ;;
+    --mock-host) MOCK_HOST="${2:?--mock-host needs HOST:PORT}"; shift 2 ;;
+    --mock-host=*) MOCK_HOST="${1#--mock-host=}"; shift ;;
+    --no-gfx) NO_GFX=1; shift ;;
     --author-p12) AUTHOR_P12="${2:?--author-p12 needs a file}"; shift 2 ;;
     --author-p12=*) AUTHOR_P12="${1#--author-p12=}"; shift ;;
     --dist-p12) DIST_P12="${2:?--dist-p12 needs a file}"; shift 2 ;;
@@ -114,7 +135,7 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 
 # --- --host-test: the H5 unit test on this machine, with the static SDL linked --------------------
 if [ "$HOST_TEST" = 1 ]; then
-  [ "$DO_SO" = 1 ] && [ "$DO_TPK" = 1 ] && [ -z "$LOG_HOST" ] || die "--host-test takes no other flag"
+  [ "$DO_SO" = 1 ] && [ "$DO_TPK" = 1 ] && [ -z "$LOG_HOST" ] && [ -z "$MOCK_HOST" ] || die "--host-test takes no other flag (except --no-gfx)"
   export PATH="$HOME/.cargo/bin:$PATH" CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$PLX/target"
   say "static SDL2 + SDL2_ttf for this machine (sdl/build-sdl.sh host; cached)"
   "$HERE/sdl/build-sdl.sh" host
@@ -123,6 +144,16 @@ if [ "$HOST_TEST" = 1 ]; then
   PLX_SDL_PREFIX="$HERE/sdl-build/host" cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" 2>&1 \
     | grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' || true
   [ "${PIPESTATUS[0]}" = 0 ] || die "cargo test failed"
+  if [ "$NO_GFX" = 0 ]; then
+    # The same suite with plx_gfx linked in: the gl_shim tests (the forwarders, and the drift test that fails
+    # when plx_gfx imports a gl* function the shim lacks) and the shader table's checks against gfx.rs run only
+    # here. Needs the host's SDL2 headers/libs for plx_gfx's own link (gfx/build.rs); --no-gfx skips it.
+    say "cargo test --features gfx (plx_gfx linked: the GL forwarders and the shader table's drift tests)"
+    # shellcheck disable=SC2086
+    PLX_SDL_PREFIX="$HERE/sdl-build/host" cargo ${RUST_TOOLCHAIN:+"+$RUST_TOOLCHAIN"} test --manifest-path "$PLX/Cargo.toml" --features gfx 2>&1 \
+      | grep -E '^(test |running )|test result|panicked|FAILED|^(error|warning)' || true
+    [ "${PIPESTATUS[0]}" = 0 ] || die "cargo test --features gfx failed (a host without plx_gfx's link dependencies can pass --no-gfx)"
+  fi
   echo "(PLX_H5_DUMP=/path/label.bmp and PLX_PANEL_DUMP=/path/stem write the rendered label and panels as BMPs; add -- --nocapture to read the log lines)"
   exit 0
 fi
@@ -137,6 +168,25 @@ if [ -n "$LOG_HOST" ]; then
   for _lh_octet in $(tr '.:' '  ' <<<"${LOG_HOST%:*}"); do
     [ "$((10#$_lh_octet))" -le 255 ] || die "--log-host address octet out of range: $_lh_octet"
   done
+fi
+
+# --mock-host: HOST:PORT where HOST is an IPv4 literal (four octets, each 0-255) or a DNS name, never a URL
+# (no scheme, no path: the probe builds http://HOST:PORT/identity itself). The same rules the library applies
+# when it reads res/mock-host.txt (plx/src/net_probe.rs parse_mock_host), so a value this accepts is one the
+# library accepts.
+if [ -n "$MOCK_HOST" ]; then
+  [ "$DO_TPK" = 1 ] || die "--mock-host goes into the .tpk; it has no meaning with --so-only"
+  grep -Eq '^[A-Za-z0-9.-]+:[0-9]{1,5}$' <<<"$MOCK_HOST" || die "--mock-host must be HOST:PORT, e.g. 10.0.2.2:32499 (no http://, no path; got: $MOCK_HOST)"
+  _mh_host="${MOCK_HOST%:*}"; _mh_port="${MOCK_HOST##*:}"
+  { [ "$((10#$_mh_port))" -ge 1 ] && [ "$((10#$_mh_port))" -le 65535 ]; } || die "--mock-host port out of range: $_mh_port"
+  if grep -Eq '^[0-9.]+$' <<<"$_mh_host"; then
+    grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' <<<"$_mh_host" || die "--mock-host $_mh_host is not an IPv4 address (four numbers 0-255)"
+    for _mh_octet in $(tr '.' ' ' <<<"$_mh_host"); do
+      [ "$((10#$_mh_octet))" -le 255 ] || die "--mock-host address octet out of range: $_mh_octet"
+    done
+  else
+    grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$' <<<"$_mh_host" || die "--mock-host $_mh_host is not a host name (letters, digits, '-' and '.', no empty label)"
+  fi
 fi
 
 # Refuse to build the .tpk without a Samsung certificate profile. Names the missing variables, never
@@ -241,9 +291,28 @@ build_so() {
     rustup target add ${toolchain:+--toolchain "$toolchain"} "$TRIPLE"
   fi
 
-  say "cargo ${plus} build --release --target $TRIPLE"
+  # H7: the application's renderer. On a non-ARM target plx_gfx's own build script emits `-lSDL2 -lSDL2_ttf
+  # -lGL` (it is written for the desktop simulator), and those would put libSDL2 / libGL in DT_NEEDED, which
+  # verify_so refuses. Put the prefix's STATIC archives first on the search path so `-lSDL2` / `-lSDL2_ttf`
+  # find them (the .a files this script built are the only ones there), and give `-lGL` an empty archive:
+  # plx_gfx's GL imports are the library's own forwarders (gl_shim.rs), so nothing is needed from libGL.
+  # (Not built or run on the machine this was written on: README "H7", "What is not verified".)
+  local features=""
+  if [ "$NO_GFX" = 0 ]; then
+    features="--features gfx"
+    if [ "$ARCH" != arm ]; then
+      command -v ar >/dev/null 2>&1 || die "need ar (binutils) for the empty libGL.a the x86 gfx link uses; or build with --no-gfx"
+      ( cd "$PLX_SDL_PREFIX/lib" && rm -f libGL.a && ar rcs libGL.a )
+      export RUSTFLAGS="$RUSTFLAGS -L native=$PLX_SDL_PREFIX/lib"
+    fi
+  fi
+
+  say "cargo ${plus} build --release --target $TRIPLE ${features:-(no gfx feature: --no-gfx)}"
   # shellcheck disable=SC2086
-  cargo $plus build --release --manifest-path "$PLX/Cargo.toml" --target "$TRIPLE"
+  if ! cargo $plus build --release --manifest-path "$PLX/Cargo.toml" --target "$TRIPLE" $features; then
+    [ -z "$features" ] || echo "build.sh: the build with plx_gfx failed; if it is the gfx link (see the messages above), build.sh --no-gfx builds the library without it and the panel's step 8 says so" >&2
+    die "cargo build failed"
+  fi
   mkdir -p "$OUT/$ARCH"
   cp "$PLX/target/$TRIPLE/release/libplx.so" "$SO"
 
@@ -299,6 +368,22 @@ verify_so() {
   [ -z "$unexpected" ] || die "unexpected unresolved symbols: $(echo $unexpected)"
   echo "-- exported (every DllImport'd name must appear):"
   "$nm" -D --defined-only "$SO" | sed 's/^/   /'
+  # H7: the library either carries the application's renderer, with its GL imports answered by the library's
+  # own forwarders (an undefined gl* symbol would have failed the check above: the cdylib is BIND_NOW, so
+  # one would stop dlopen of the whole library), or, with --no-gfx, carries none of it.
+  local gfx_syms; gfx_syms="$("$nm" "$SO" 2>/dev/null | grep -c 'plx_gfx' || true)"
+  if [ "$NO_GFX" = 0 ]; then
+    [ "${gfx_syms:-0}" -gt 0 ] || die "$SO holds no plx_gfx code although the gfx feature was requested (stale build?)"
+    # Captured first: `grep -q` closing a pipe early would fail the pipeline under pipefail.
+    local fw exported; exported="$("$nm" -D --defined-only "$SO" | awk '{print $3}')"
+    for fw in glClear glDrawArrays glGetString glBlendFuncSeparate; do
+      grep -qx "$fw" <<<"$exported" || die "the GL forwarder $fw is not exported from $SO (gl_shim.rs)"
+    done
+    echo "-- plx_gfx is inside the object ($gfx_syms symbols); its gl* imports are the library's own forwarders (none undefined)"
+  else
+    [ "${gfx_syms:-0}" -eq 0 ] || die "$SO holds plx_gfx code although --no-gfx was given"
+    echo "-- built without plx_gfx (--no-gfx)"
+  fi
   local want got
   want="$(grep -hoE 'plx_tizen_[a-z]+' "$HOST/Program.cs" | sort -u)"
   got="$("$nm" -D --defined-only "$SO" | awk '{print $3}')"
@@ -336,8 +421,8 @@ build_tpk() {
   mkdir -p "$HOST/lib"
   cp "$SO" "$HOST/lib/libplx.so"
 
-  # res/ is generated (gitignored): the H5 probe's font with its licence and, with --log-host,
-  # log-host.txt. A stale res/ or a stale copy in the SDK's staging directory would silently switch the
+  # res/ is generated (gitignored): the H5 probe's font with its licence and, with --log-host and
+  # --mock-host, log-host.txt and mock-host.txt. A stale res/ or a stale copy in the SDK's staging directory would silently switch the
   # network log on (or leave an old address in), so both go first. The font is the app's own Inter
   # (SIL OFL); the licence travels with it. Copied here, not in build_so, so --tpk-only works on a
   # machine that never built the library.
@@ -349,6 +434,10 @@ build_tpk() {
   if [ -n "$LOG_HOST" ]; then
     say "log host $LOG_HOST -> res/log-host.txt (the app mirrors its log to it over UDP)"
     printf '%s\n' "$LOG_HOST" > "$HOST/res/log-host.txt"
+  fi
+  if [ -n "$MOCK_HOST" ]; then
+    say "mock host $MOCK_HOST -> res/mock-host.txt (step 9 GETs http://$MOCK_HOST/identity)"
+    printf '%s\n' "$MOCK_HOST" > "$HOST/res/mock-host.txt"
   fi
 
   say "dotnet build -c Release (Tizen.NET.Sdk, tizen80; signed with the supplied certificates)"
@@ -384,6 +473,13 @@ build_tpk() {
   else
     ! grep -q ' res/log-host.txt$' <<<"$listing" || die "$TPK carries a res/log-host.txt although no --log-host was given (stale staging?)"
   fi
+  # Likewise the mock host: in the package exactly when asked for, and the address that was asked for.
+  if [ -n "$MOCK_HOST" ]; then
+    grep -q ' res/mock-host.txt$' <<<"$listing" || die "$TPK lacks res/mock-host.txt although --mock-host was given"
+    [ "$(unzip -p "$TPK" res/mock-host.txt | tr -d '\r\n')" = "$MOCK_HOST" ] || die "res/mock-host.txt in $TPK does not hold $MOCK_HOST"
+  else
+    ! grep -q ' res/mock-host.txt$' <<<"$listing" || die "$TPK carries a res/mock-host.txt although no --mock-host was given (stale staging?)"
+  fi
   # The library in the package must be byte-identical to the one that was verified.
   local tmp; tmp="$(mktemp -d)"
   unzip -qo "$TPK" lib/libplx.so -d "$tmp"
@@ -405,5 +501,13 @@ if [ "$DO_TPK" = 1 ]; then
   else
     echo "  log  no network log (no --log-host)"
   fi
+  if [ -n "$MOCK_HOST" ]; then
+    echo "  net  step 9 GETs http://$MOCK_HOST/identity (serve it: python3 tests/mock_pms.py --host 0.0.0.0 --port ${MOCK_HOST##*:})"
+  else
+    echo "  net  no mock host (no --mock-host): step 9 only reports whether libcurl loaded"
+  fi
+fi
+if [ "$DO_SO" = 1 ]; then
+  if [ "$NO_GFX" = 1 ]; then echo "  gfx  not built (--no-gfx): step 8 says so"; else echo "  gfx  plx_gfx linked in; step 8 runs the application's renderer"; fi
 fi
 exit 0

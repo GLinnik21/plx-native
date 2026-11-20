@@ -8,6 +8,7 @@
 
 use crate::code;
 use crate::dl::Ptr;
+use crate::gfx_probe::{self, GfxJob};
 use crate::h5;
 use crate::keys;
 use crate::log::plog;
@@ -202,20 +203,40 @@ pub fn spawn(
     width: i32,
     height: i32,
     panel: Option<PanelJob>,
+    gfx: GfxJob,
     ready: Sender<Result<(), i32>>,
 ) -> std::io::Result<JoinHandle<()>> {
     RUNNING.store(true, Ordering::Release);
-    let args = SendBox((egl, gles, ctx, ready, panel));
+    let args = SendBox((egl, gles, ctx, ready, panel, gfx));
     std::thread::Builder::new().name("plx-render".into()).spawn(move || {
         let args = args;
-        let (egl, gles, ctx, ready, panel) = args.0;
-        let result = catch_unwind(AssertUnwindSafe(|| body(&egl, &gles, &ctx, width, height, panel, &ready)));
+        let (egl, gles, ctx, ready, panel, gfx) = args.0;
+        let result = catch_unwind(AssertUnwindSafe(|| body(&egl, &gles, &ctx, width, height, panel, gfx, &ready)));
         if result.is_err() {
             plog!("PANIC in render thread; thread stops");
             let _ = ready.send(Err(code::PANIC));
         }
         plog!("render thread exit");
     })
+}
+
+/// Run one call on the H7 probe; a panic that got past the probe's own `catch_unwind`s drops the probe
+/// (logged, and the step's panel line says it was dropped) instead of ending the render thread.
+fn probe_call(
+    gfx: &mut Option<gfx_probe::Probe<gfx_probe::RealEnv>>,
+    what: &str,
+    f: impl FnOnce(&mut gfx_probe::Probe<gfx_probe::RealEnv>),
+) {
+    let Some(p) = gfx.as_mut() else { return };
+    if catch_unwind(AssertUnwindSafe(|| f(p))).is_err() {
+        plog!("H7 gfx: PANIC in the probe's {what}; the probe is dropped, the panel and the colour test go on");
+        panel::step_lines(
+            Step::Gfx,
+            false,
+            &[format!("FAILED: the gfx probe panicked in {what} and was stopped"), "see the log for the panic message".to_string()],
+        );
+        *gfx = None;
+    }
 }
 
 fn body(
@@ -225,6 +246,7 @@ fn body(
     width: i32,
     height: i32,
     panel_job: Option<PanelJob>,
+    gfx_job: GfxJob,
     ready: &Sender<Result<(), i32>>,
 ) {
     // SAFETY (whole function): this thread now owns the context; handles come from setup().
@@ -251,6 +273,10 @@ fn body(
     // untouched.
     let mut panel: Option<Drawer> = panel_job.and_then(Drawer::start);
     let mut panel_reported = false;
+    // H7: the application's renderer, stepped one phase per frame over the panel (gfx_probe.rs). It
+    // catches its own panics; the `probe_call` wrapper below is the last line, so that nothing it does
+    // can end this thread (and with it the panel).
+    let mut gfx: Option<gfx_probe::Probe<gfx_probe::RealEnv>> = Some(gfx_probe::Probe::new(gfx_probe::RealEnv::new(gfx_job)));
 
     let mut idx = 0usize;
     let mut frames = 0u64;
@@ -280,6 +306,7 @@ fn body(
             (gles.clear)(GL_COLOR_BUFFER_BIT);
         }
         let panel_err = panel.as_ref().and_then(|p| p.draw(width, height));
+        probe_call(&mut gfx, "frame", |g| g.frame(frames, width, height));
         let swapped = unsafe { (egl.swap_buffers)(ctx.display, ctx.surface) };
         if swapped == 0 {
             if swap_failures % 60 == 0 {
@@ -301,6 +328,7 @@ fn body(
                 plog!("H5 gl: first frame presented with the panel drawn (glGetError=0x{err:04x})");
                 h5::gl_done(if err == 0 { Ok(()) } else { Err(format!("drawing the panel raised glError 0x{err:04x}")) });
             }
+            probe_call(&mut gfx, "presented", |g| g.presented());
             frames += 1;
             if frames % 60 == 0 {
                 plog!("frames={frames} colour=#{idx} {}", PALETTE[idx].0);

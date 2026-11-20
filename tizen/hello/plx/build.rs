@@ -43,6 +43,16 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(plx_sdl)");
     println!("cargo:rustc-env=PLX_GIT_SHA={}", revision());
 
+    // H7 (the `gfx` feature, Linux only): `plx_gfx` opens its font as `<dir of the running executable>/
+    // appfont.ttf`, and here that executable is the .NET launcher, so the open fails and no text is drawn.
+    // GNU ld's `--wrap=TTF_OpenFont` sends every reference to `TTF_OpenFont` to `__wrap_TTF_OpenFont`
+    // (gfx_probe.rs), which retries a failed `appfont*.ttf` open from the package's `res/` directory and
+    // reaches the real function as `__real_TTF_OpenFont`. Nothing in `rust-modules/` changes. Mach-O's
+    // linker has no `--wrap`, so the macOS host test build leaves it out (the wrapper is `cfg`'d the same).
+    if env::var_os("CARGO_FEATURE_GFX").is_some() && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg=-Wl,--wrap=TTF_OpenFont");
+    }
+
     let Some(prefix) = env::var_os("PLX_SDL_PREFIX").filter(|p| !p.is_empty()) else {
         return;
     };

@@ -28,3 +28,11 @@ pub fn dump_bmp(label: &Label, path: &str) {
     }
     std::fs::write(path, out).unwrap();
 }
+
+/// Tests that write the process-global log (`plog!`) hold this for their whole body. `lib.rs`'s
+/// log-mirroring test reads the log file and the UDP datagrams and compares them line for line, so a line
+/// another test writes in between breaks it. It is the H5 tests' lock (they log too), under a name that
+/// says what it protects here.
+pub(crate) fn log_serial() -> std::sync::MutexGuard<'static, ()> {
+    crate::h5::test_guard()
+}

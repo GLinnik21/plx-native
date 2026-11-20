@@ -78,6 +78,10 @@ pub enum Step {
     Sdl,
     /// The UTF-8 sample line.
     Sample,
+    /// H7: the application's own GLES2 renderer (`plx_gfx`) on this set's GL. Two lines.
+    Gfx,
+    /// H8: libcurl loaded by the application's name list, and a GET of the PC's mock server. Two lines.
+    Net,
 }
 
 /// What the library itself learns about the device (`sysinfo.rs`).
@@ -183,9 +187,20 @@ impl Panel {
         });
     }
 
+    /// Record (or replace) one step's result that takes more than one line (steps 8 and 9: the verdict
+    /// first, then the evidence). Each line is [`clean`]ed on its own and the lines are joined with `\n`,
+    /// which `compose` and the renderer keep as line breaks; blank lines are dropped.
+    pub fn step_lines(&self, step: Step, ok: bool, lines: &[String]) {
+        let text = lines.iter().map(|l| clean(l)).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        self.set_step(step, ok, text);
+    }
+
     /// Record (or replace) one step's result. `ok` picks the colour role.
     pub fn step(&self, step: Step, ok: bool, text: &str) {
-        let text = clean(text);
+        self.set_step(step, ok, clean(text));
+    }
+
+    fn set_step(&self, step: Step, ok: bool, text: String) {
         self.edit(|st| {
             match st.steps.iter_mut().find(|(s, _, _)| *s == step) {
                 Some((_, eok, etext)) => {
@@ -308,13 +323,16 @@ fn compose(st: &State) -> Vec<Section> {
             Step::Gl => "5 GL",
             Step::Sdl => "6 SDL/TTF",
             Step::Sample => "7 UTF-8",
+            Step::Gfx => "8 gfx",
+            Step::Net => "9 net",
         };
         out.push(Section { tone: if *ok { Tone::Ok } else { Tone::Warn }, text: format!("{label}: {text}") });
     }
 
     // --- device facts -----------------------------------------------------------------------
     // Each value is capped to what a real one needs, so one odd string cannot push the lines below it
-    // off the plate (the plate has room for about four wrapped lines more than a typical panel uses).
+    // off the plate (at 28 px the plate has room for about two wrapped lines more than a typical panel
+    // uses, steps 8 and 9 included; `panel_render`'s fit tests are what keep that true).
     let mut facts = Vec::new();
     facts.push(format!(
         "Tizen {} (native API {}) | model {} | maker {} | build {}",
@@ -417,6 +435,11 @@ pub fn snapshot() -> (u64, Vec<Section>) {
 
 pub fn step(step: Step, ok: bool, text: &str) {
     PANEL.step(step, ok, text);
+}
+
+/// A step result of several lines (steps 8 and 9); see [`Panel::step_lines`].
+pub fn step_lines(step: Step, ok: bool, lines: &[String]) {
+    PANEL.step_lines(step, ok, lines);
 }
 
 pub fn key_event(down: bool, name: &str, code: u32) {
@@ -672,6 +695,42 @@ mod tests {
         let facts = typical().snapshot().1.pop().unwrap().text;
         assert!(!facts.contains("..."), "{facts}");
         assert!(!t.lines().skip_while(|l| !l.starts_with("Tizen")).any(|l| l.contains("...")), "{t}");
+    }
+
+    #[test]
+    fn steps_8_and_9_follow_step_7_and_a_multi_line_result_keeps_its_line_breaks() {
+        let p = Panel::new();
+        p.step_lines(Step::Net, true, &["OK: GET /identity -> 200".to_string(), "libcurl.so.4, curl 8.5.0".to_string()]);
+        p.step_lines(Step::Gfx, false, &["FAILED: plx_gfx not entered".to_string(), "shaders 12/14 compile+link".to_string()]);
+        p.step(Step::Sample, true, "sample");
+        let t = text_of(&p);
+        let (s7, s8, s9) = (t.find("7 UTF-8").unwrap(), t.find("8 gfx").unwrap(), t.find("9 net").unwrap());
+        assert!(s7 < s8 && s8 < s9, "{t}");
+        assert!(t.contains("8 gfx: FAILED: plx_gfx not entered\nshaders 12/14 compile+link"), "{t}");
+        assert!(t.contains("9 net: OK: GET /identity -> 200\nlibcurl.so.4, curl 8.5.0"), "{t}");
+        let (_, s) = p.snapshot();
+        assert!(s.iter().any(|x| x.tone == Tone::Warn && x.text.starts_with("8 gfx")), "a failed step is Warn");
+        assert!(s.iter().any(|x| x.tone == Tone::Ok && x.text.starts_with("9 net")));
+    }
+
+    #[test]
+    fn step_lines_cleans_each_line_drops_blank_ones_and_moves_the_version_only_on_a_change() {
+        let p = Panel::new();
+        let v0 = p.version();
+        let lines = ["a\u{7}b".to_string(), "   ".to_string(), "x".repeat(300)];
+        p.step_lines(Step::Gfx, true, &lines);
+        let t = text_of(&p);
+        let mut it = t.lines().filter(|l| l.starts_with("8 gfx") || l.starts_with('x'));
+        assert_eq!(it.next(), Some("8 gfx: a b"), "{t}");
+        let second = it.next().unwrap();
+        assert_eq!(second.chars().count(), VALUE_MAX, "a runaway line is cut like any value");
+        assert!(second.ends_with("..."));
+        let v1 = p.version();
+        assert!(v1 > v0);
+        p.step_lines(Step::Gfx, true, &lines);
+        assert_eq!(p.version(), v1, "the same two lines again is not a change");
+        p.step_lines(Step::Gfx, false, &lines);
+        assert!(p.version() > v1);
     }
 
     #[test]
