@@ -295,6 +295,8 @@ fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
         step(&mut screen, &ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
             focus: FocusTarget::FirstInGroup(hero::HERO_GROUP),
         }), None);
+        assert_eq!(screen.restore_intent.is_some(), seeded || no_driver,
+            "no_driver={no_driver} seeded={seeded}: armed by the seed, or by Enter when no driver can play; with one, Enter arms nothing");
         let mut engine = FocusEngine::new();
         let first = if no_driver { hero::ELEM_MARK_WATCHED } else { hero::ELEM_PLAY };
         match engine.enter::<TestHost>(OWNER, &screen, FocusTarget::FirstInGroup(hero::HERO_GROUP), None, &cx(&measure, None)) {
@@ -312,6 +314,31 @@ fn a_page_seated_before_its_item_lands_leaves_the_write_control_when_it_does() {
         };
         let want = if no_driver { first_extra(&screen) } else { hero::ELEM_PLAY };
         assert_eq!(after, want, "no_driver={no_driver} seeded={seeded}: where focus stands once the item is there");
+        clear();
+    }
+}
+
+/// `Enter` arms the default restore only for the page it is about: a FRESH open, with no driver, whose
+/// item is not there yet and that is not already returning. A page whose item is there is seated by
+/// the default at once, and a Back return brings its own spot.
+#[test]
+fn enter_arms_the_default_restore_only_for_a_fresh_open_whose_item_is_not_there() {
+    use plx_ui::screen::Enter;
+    let sid = ServerId::UNSET;
+    let fresh = Enter::Fresh { focus: FocusTarget::FirstInGroup(hero::HERO_GROUP) };
+    let _driver = NoDriver::set(true);
+    // (what, item landed, return pending, the enter, armed)
+    for (what, landed, returning, enter, armed) in [
+        ("a fresh open before its item lands", false, false, fresh, true),
+        ("a fresh open whose item is already there", true, false, fresh, false),
+        ("a page that is returning", false, true, fresh, false),
+        ("a restored enter", false, false, Enter::Restored, false),
+    ] {
+        let guard = install(if landed { resumable(sid) } else { Detail { sid, rk: "other".into(), ..Default::default() } });
+        let mut screen = bare(&guard, sid, "movie");
+        screen.return_pending = returning;
+        step(&mut screen, &ScreenEvent::Enter(enter), None);
+        assert_eq!(screen.restore_intent.is_some(), armed, "{what}");
         clear();
     }
 }
