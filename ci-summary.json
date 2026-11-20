@@ -127,21 +127,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-20T09:36:58Z",
+ "generated": "2026-11-20T09:55:45Z",
  "metrics": [
   {
    "change30_pct": -12.6,
-   "change7_pct": -12.2,
-   "d30": 485,
-   "delta30": -61,
-   "delta7": -59.0,
+   "change7_pct": -12.5,
+   "d30": 483.5,
+   "delta30": -61.0,
+   "delta7": -60.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 157,
+   "n_now": 158,
    "n_prev": 146,
-   "now": 424,
+   "now": 422.5,
    "prev7": 483.0,
    "shown": true,
    "state": "flat",
@@ -172,10 +172,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 28.2,
+   "change30_pct": 18.7,
    "change7_pct": -11.2,
-   "d30": 21.7,
-   "delta30": 6.1,
+   "d30": 23.4,
+   "delta30": 4.4,
    "delta7": -3.5,
    "group": "local",
    "id": "bench.app",
@@ -187,16 +187,16 @@
    "prev7": 31.3,
    "shown": true,
    "state": "flat",
-   "state30": "worse",
+   "state30": "flat",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
    "unit": "s"
   },
   {
-   "change30_pct": 29.8,
+   "change30_pct": 26.7,
    "change7_pct": -6.5,
-   "d30": 45.6,
-   "delta30": 13.6,
+   "d30": 46.7,
+   "delta30": 12.5,
    "delta7": -4.1,
    "group": "local",
    "id": "bench.screens",
@@ -214,10 +214,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 71.0,
+   "change30_pct": 56.4,
    "change7_pct": -6.4,
-   "d30": 50.7,
-   "delta30": 36.0,
+   "d30": 55.5,
+   "delta30": 31.3,
    "delta7": -6.0,
    "group": "local",
    "id": "bench.ui",
@@ -256,10 +256,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 0.5,
+   "change30_pct": -0.5,
    "change7_pct": -33.0,
-   "d30": 127.3,
-   "delta30": 0.7,
+   "d30": 128.7,
+   "delta30": -0.7,
    "delta7": -63.1,
    "group": "local",
    "id": "bench.tests",
@@ -310,10 +310,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 19.6,
+   "change30_pct": 19.1,
    "change7_pct": -8.1,
-   "d30": 2108.5,
-   "delta30": 412.5,
+   "d30": 2117.0,
+   "delta30": 404.0,
    "delta7": -223,
    "group": "ci",
    "id": "minutes",
@@ -354,7 +354,7 @@
   {
    "change30_pct": 27.1,
    "change7_pct": 4.1,
-   "d30": 312,
+   "d30": 312.0,
    "delta30": 84.5,
    "delta7": 15.5,
    "group": "ci",
@@ -373,10 +373,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.6,
+   "change30_pct": 43.0,
    "change7_pct": 8.4,
-   "d30": 243,
-   "delta30": 106,
+   "d30": 244,
+   "delta30": 105,
    "delta7": 27,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -457,10 +457,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -22.1,
+   "change30_pct": -21.3,
    "change7_pct": -45.0,
-   "d30": 299,
-   "delta30": -66.0,
+   "d30": 296,
+   "delta30": -63.0,
    "delta7": -191.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -650,7 +650,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 0.0,
-   "d30": 5,
+   "d30": 5.0,
    "delta30": 0.0,
    "delta7": 0.0,
    "group": "ci",
@@ -711,9 +711,9 @@
    "unit": "s"
   },
   {
-   "change30_pct": -16.0,
+   "change30_pct": -10.3,
    "change7_pct": -20.1,
-   "d30": 0.8,
+   "d30": 0.7,
    "delta30": -0.1,
    "delta7": -0.2,
    "group": "local",
