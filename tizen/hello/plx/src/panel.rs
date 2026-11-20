@@ -241,8 +241,17 @@ impl Panel {
     }
 }
 
+/// What the host writes for a Tizen key it could not read (`Program.cs` `AddFact`).
+const HOST_UNAVAILABLE: &str = "(unavailable)";
+
+/// A host fact as the panel shows it: `?` when the host sent nothing, `n/a` when it sent
+/// [`HOST_UNAVAILABLE`] (the long form would not fit the short caps, e.g. the CPU flags' 8 characters).
 fn host<'a>(st: &'a State, key: &str) -> &'a str {
-    st.host.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str()).filter(|v| !v.is_empty()).unwrap_or("?")
+    match st.host.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str()).filter(|v| !v.is_empty()) {
+        Some(HOST_UNAVAILABLE) => "n/a",
+        Some(v) => v,
+        None => "?",
+    }
 }
 
 fn compose(st: &State) -> Vec<Section> {
@@ -641,6 +650,28 @@ mod tests {
         assert_eq!(clean_token("Page Up\n"), "Page_Up_");
         assert_eq!(clean_token(""), "(none)");
         assert_eq!(clean_token(&"k".repeat(60)).chars().count(), 24);
+    }
+
+    #[test]
+    fn a_value_the_host_could_not_read_prints_n_a_and_no_device_value_is_cut() {
+        // The host writes "(unavailable)" for a Tizen key that is missing (Program.cs `AddFact`). At 13
+        // characters it was cut to "(unav..." by the 8-character cap of the CPU flags; "n/a" fits every cap.
+        let all = [
+            "platform.version", "native.api", "model_name", "manufacturer", "build.string", "cpu.armv7", "cpu.aarch64",
+            "cpu.x86", "cpu.x86_64", "runtime", "procarch", "osarch", "intptr", "os",
+        ];
+        let raw: String = all.iter().map(|k| format!("{k}=(unavailable)\n")).collect();
+        let p = Panel::new();
+        p.set_host_facts(parse_host_facts(&raw));
+        let t = text_of(&p);
+        let cpu = t.lines().find(|l| l.starts_with("CPU flags")).unwrap();
+        assert!(cpu.starts_with("CPU flags: armv7 n/a | aarch64 n/a | x86 n/a | x86_64 n/a |"), "{cpu}");
+        assert!(!t.contains("unav") && !t.contains("(un"), "{t}");
+        assert!(t.contains("Tizen n/a (native API n/a) | model n/a | maker n/a | build n/a"), "{t}");
+        // A real set's facts are shown whole: no value hits its cap (a cut ends in "...").
+        let facts = typical().snapshot().1.pop().unwrap().text;
+        assert!(!facts.contains("..."), "{facts}");
+        assert!(!t.lines().skip_while(|l| !l.starts_with("Tizen")).any(|l| l.contains("...")), "{t}");
     }
 
     #[test]
