@@ -1,10 +1,12 @@
-//! The television's own Dolby Vision capability: the type, and the cache the port's boot probe
-//! publishes into (`webos::caps`).
+//! The television's own Dolby Vision capability: the type, the cache a platform's boot probe
+//! publishes into (the webOS port's is `webos::caps`, the desktop platform's its own), and the dev
+//! triggers that force the answer, which every platform's probe honours the same way.
 //!
-//! An early render-thread read never initializes the cache: the port's worker is the only
+//! An early render-thread read never initializes the cache: the platform's probe is the only
 //! publisher, and a failed or late answer cannot be mistaken for an affirmative capability.
 
 use std::sync::OnceLock;
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DvCapability {
@@ -110,9 +112,96 @@ pub fn publish(probe: DvProbe) {
     RESULT.publish(probe);
 }
 
+/// The configd key the webOS probe asks for, and the one every probe line names.
+pub const CONFIG_KEY: &str = "tv.config.supportDolbyHDRContents";
+
+plx_base::devtrig::latched_flag!(
+    /// `/tmp/plxnative-dvcaps0` — force the boot's platform answer to unsupported.
+    fn forced_unsupported = "dvcaps0";
+);
+
+plx_base::devtrig::latched_flag!(
+    /// `/tmp/plxnative-dvcaps1` — force the boot's platform answer to supported.
+    fn forced_supported = "dvcaps1";
+);
+
+fn override_capability(zero: bool, one: bool) -> Option<(DvCapability, bool)> {
+    if zero {
+        Some((DvCapability::Unsupported, one))
+    } else if one {
+        Some((DvCapability::Supported, false))
+    } else {
+        None
+    }
+}
+
+/// Publish a probe's answer and log it, one `webos-caps:` line, with the time the probe took. A
+/// platform's probe ends in this call whatever it learned, so every answer leaves the same line.
+pub fn publish_logged(probe: DvProbe, started: Instant, code: Option<i64>, detail: Option<&str>) {
+    publish(probe);
+    let elapsed = started.elapsed().as_millis();
+    if probe.capability == DvCapability::Unknown {
+        let code = code.map(|n| format!(" code={n}")).unwrap_or_default();
+        let detail = detail
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" detail={s}"))
+            .unwrap_or_default();
+        plx_base::eventlog::log(&format!(
+            "webos-caps: key={CONFIG_KEY} answer=unknown stage={}{}{} elapsed_ms={elapsed}",
+            probe.reason, code, detail,
+        ));
+    } else {
+        plx_base::eventlog::log(&format!(
+            "webos-caps: key={CONFIG_KEY} answer={} source={} elapsed_ms={elapsed}",
+            probe.capability.label(),
+            probe.provenance(),
+        ));
+    }
+}
+
+/// The dev triggers' answer, if one is armed: `dvcaps0` forces unsupported and `dvcaps1` supported,
+/// `dvcaps0` winning when both are (and saying so). Published and logged like any probe answer, and
+/// answers whether it did, so the probe stops there instead of asking its platform.
+pub fn publish_forced(started: Instant) -> bool {
+    let Some((capability, conflict)) = override_capability(forced_unsupported(), forced_supported()) else {
+        return false;
+    };
+    if conflict {
+        plx_base::eventlog::log("webos-caps: dvcaps0 and dvcaps1 both armed; dvcaps0 wins");
+    }
+    publish_logged(
+        DvProbe {
+            capability,
+            source: ProbeSource::Override,
+            reason: if conflict { "override-conflict" } else { "override" },
+        },
+        started,
+        None,
+        None,
+    );
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DvCache, DvCapability, DvProbe, ProbeSource};
+    use super::{override_capability, DvCache, DvCapability, DvProbe, ProbeSource};
+
+    #[test]
+    fn dv_caps_override_precedence() {
+        assert_eq!(override_capability(false, false), None);
+        assert_eq!(
+            override_capability(true, false),
+            Some((DvCapability::Unsupported, false))
+        );
+        assert_eq!(
+            override_capability(false, true),
+            Some((DvCapability::Supported, false))
+        );
+        assert_eq!(
+            override_capability(true, true),
+            Some((DvCapability::Unsupported, true))
+        );
+    }
 
     #[test]
     fn early_caps_read_does_not_initialize_cache() {

@@ -3,25 +3,21 @@
 //! `plx_os::tv::Services` is what the lower layers read, and `app::platform::Platform` adds the shell
 //! and the frame probe the loop alone reads. Everything outside this module reaches the television
 //! through those; this is the only place that names `webos`, `keymanager`, `system` and the native
-//! video sink together. Its functions keep their own `cfg(any(hostsim, test))` arms, so the
-//! simulator runs on these same tables and behaves as it always did.
+//! video sink together. The simulator and the macOS app are not on these tables: they are their own
+//! platform (`platform_desktop`), which never names this module, so a desktop build compiles the
+//! television's code and the linker drops it.
 use crate::app::platform::{FrameProbe, Platform, Shell};
 use std::os::raw::{c_char, c_int, c_void};
 
-#[cfg(all(not(feature = "hostsim"), not(test), feature = "play-feed"))]
+#[cfg(all(not(test), feature = "play-feed"))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::webos::video_sink::StarfishSink;
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-const SINK: &dyn plx_os::tv::sink::VideoSink = &crate::app::adapters::hostsim::HOST_SINK;
-#[cfg(any(
-    all(feature = "hostsim", not(feature = "play-feed")),
-    all(not(feature = "hostsim"), any(test, not(feature = "play-feed"))),
-))]
+#[cfg(any(test, not(feature = "play-feed")))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::tv::sink::NoSink;
 
 // URI-only native builds retain the display vtable without the packet-feed vtable.
-#[cfg(all(not(feature = "hostsim"), not(test)))]
+#[cfg(not(test))]
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = &plx_os::webos::video_sink::StarfishSink;
-#[cfg(any(feature = "hostsim", test))]
+#[cfg(test)]
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 
 /// What the lower layers read: the webOS identity, key manager, Home key and toast, and the native
@@ -109,8 +105,8 @@ impl FrameProbe for WebosProbe {
 /// for the lower layers and keeps it for the loop.
 static PLATFORM: Platform = Platform::new(&SERVICES, &WebosShell, &WebosProbe);
 
-/// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`). The `-> c_int` is only
-/// the C signature: `plex_main` never returns, so neither does this.
+/// The C shim's entry (`src/main.c`). The `-> c_int` is only the C signature: `plex_main` never
+/// returns, so neither does this.
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     plex_main(pms_host, pms_port)
@@ -151,22 +147,4 @@ pub unsafe extern "C" fn plx_launch_args(json: *const c_char) {
     }
     let raw = unsafe { std::ffi::CStr::from_ptr(json) }.to_string_lossy();
     plx_os::tv::launch::offer(&raw);
-}
-
-#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
-mod tests {
-    use super::SERVICES;
-
-    /// The app's plane boot resolves the display through `display_installed()` (this table's
-    /// `display_sink`), where media's old `acb_init` resolved it through `player::display()`. In
-    /// the simulator both must be the host sink, never `NoSink`: a boot that read `NoSink` would
-    /// report no plane to every backend and nothing in a simulator run would say so.
-    #[test]
-    fn the_simulator_port_display_is_the_host_sink_the_acb_init_reads() {
-        let host = std::ptr::from_ref(&crate::app::adapters::hostsim::HOST_SINK).cast::<()>();
-        let media = &SERVICES.legacy_webos_media;
-        assert_eq!(std::ptr::from_ref(media.display_sink).cast::<()>(), host,
-            "display_installed() is the host sink");
-        assert_eq!(std::ptr::from_ref(media.sink).cast::<()>(), host, "so is the video sink");
-    }
 }

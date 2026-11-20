@@ -203,26 +203,24 @@ fn call_with(client: &mut platform::Client, uri: &str, payload: &Value) -> Optio
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 mod platform {
     pub(super) struct Client;
 
     impl Client {
         pub(super) fn new() -> Result<Self, ()> {
-            #[cfg(any(test, feature = "test-support"))]
             if super::RPC_FOR_TEST.with(|hook| hook.get().is_some()) { return Ok(Self); }
             Err(())
         }
 
-        pub(super) fn call(&mut self, _uri: &str, _payload: &str) -> Result<String, ()> {
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(rpc) = super::RPC_FOR_TEST.with(|hook| hook.get()) { return rpc(_uri, _payload); }
+        pub(super) fn call(&mut self, uri: &str, payload: &str) -> Result<String, ()> {
+            if let Some(rpc) = super::RPC_FOR_TEST.with(|hook| hook.get()) { return rpc(uri, payload); }
             Err(())
         }
     }
 }
 
-#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+#[cfg(not(any(test, feature = "test-support")))]
 mod platform {
     use std::time::Duration;
 

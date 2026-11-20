@@ -6,57 +6,19 @@
 //! publishes into): the worker is the only publisher, and a failed or late answer cannot be
 //! mistaken for an affirmative capability.
 
-use crate::devcaps::dv::{DvCapability, DvProbe, ProbeSource};
+use crate::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-const KEY: &str = "tv.config.supportDolbyHDRContents";
+#[cfg(any(test, all(target_arch = "arm", target_os = "linux")))]
+const KEY: &str = dv::CONFIG_KEY;
 
 static STARTED: OnceLock<()> = OnceLock::new();
 
-plx_base::devtrig::latched_flag!(
-    /// `/tmp/plxnative-dvcaps0` — force the boot's platform answer to unsupported.
-    pub fn forced_unsupported = "dvcaps0";
-);
-
-plx_base::devtrig::latched_flag!(
-    /// `/tmp/plxnative-dvcaps1` — force the boot's platform answer to supported.
-    pub fn forced_supported = "dvcaps1";
-);
-
-fn override_capability(zero: bool, one: bool) -> Option<(DvCapability, bool)> {
-    if zero {
-        Some((DvCapability::Unsupported, one))
-    } else if one {
-        Some((DvCapability::Supported, false))
-    } else {
-        None
-    }
-}
-
-fn publish(probe: DvProbe, started: Instant, code: Option<i64>, detail: Option<&str>) {
-    crate::devcaps::dv::publish(probe);
-    let elapsed = started.elapsed().as_millis();
-    if probe.capability == DvCapability::Unknown {
-        let code = code.map(|n| format!(" code={n}")).unwrap_or_default();
-        let detail = detail
-            .filter(|s| !s.is_empty())
-            .map(|s| format!(" detail={s}"))
-            .unwrap_or_default();
-        plx_base::eventlog::log(&format!(
-            "webos-caps: key={KEY} answer=unknown stage={}{}{} elapsed_ms={elapsed}",
-            probe.reason, code, detail,
-        ));
-    } else {
-        plx_base::eventlog::log(&format!(
-            "webos-caps: key={KEY} answer={} source={} elapsed_ms={elapsed}",
-            probe.capability.label(),
-            probe.provenance(),
-        ));
-    }
-    // The boot worker publishes DvProbe only. Bridge captures the typed probe before present
-    // admission and owns the Page damage when this diagnostic fact changes.
-}
+// The boot worker publishes DvProbe only (`dv::publish_logged`, which every platform's probe ends
+// in). Bridge captures the typed probe before present admission and owns the Page damage when this
+// diagnostic fact changes. The dev triggers that force the answer (`dvcaps0`, `dvcaps1`) are
+// `dv::publish_forced`'s, so a platform other than this one honours them the same way.
 
 /// Start the one boot probe. The registration and its private GLib context are both created and
 /// dropped on this worker; no LS2 handle crosses a thread boundary and the app never joins it.
@@ -65,7 +27,7 @@ pub fn start_probe() {
         return;
     }
     if plx_base::task::spawn("dv-caps-probe", run_probe).is_none() {
-        publish(
+        dv::publish_logged(
             DvProbe {
                 capability: DvCapability::Unknown,
                 source: ProbeSource::Failure,
@@ -80,26 +42,7 @@ pub fn start_probe() {
 
 fn run_probe() {
     let started = Instant::now();
-    if let Some((capability, conflict)) =
-        override_capability(forced_unsupported(), forced_supported())
-    {
-        if conflict {
-            plx_base::eventlog::log("webos-caps: dvcaps0 and dvcaps1 both armed; dvcaps0 wins");
-        }
-        publish(
-            DvProbe {
-                capability,
-                source: ProbeSource::Override,
-                reason: if conflict {
-                    "override-conflict"
-                } else {
-                    "override"
-                },
-            },
-            started,
-            None,
-            None,
-        );
+    if dv::publish_forced(started) {
         return;
     }
     run_transport(started);
@@ -108,7 +51,6 @@ fn run_probe() {
 #[cfg(all(
     target_arch = "arm",
     target_os = "linux",
-    not(feature = "hostsim"),
     not(any(test, feature = "test-support"))
 ))]
 fn run_transport(started: Instant) {
@@ -121,7 +63,7 @@ fn run_transport(started: Instant) {
             detail,
             code,
         }) => {
-            publish(
+            dv::publish_logged(
                 DvProbe {
                     capability: DvCapability::Unknown,
                     source: ProbeSource::Failure,
@@ -141,7 +83,7 @@ fn run_transport(started: Instant) {
     );
     match reply {
         Ok(reply) => match parse_dv_reply(&reply) {
-            Ok(capability) => publish(
+            Ok(capability) => dv::publish_logged(
                 platform_gate(
                     DvProbe {
                         capability,
@@ -154,7 +96,7 @@ fn run_transport(started: Instant) {
                 None,
                 None,
             ),
-            Err(failure) => publish(
+            Err(failure) => dv::publish_logged(
                 DvProbe {
                     capability: DvCapability::Unknown,
                     source: ProbeSource::Failure,
@@ -165,7 +107,7 @@ fn run_transport(started: Instant) {
                 None,
             ),
         },
-        Err(super::ls2::Fail::Timeout) => publish(
+        Err(super::ls2::Fail::Timeout) => dv::publish_logged(
             DvProbe {
                 capability: DvCapability::Unknown,
                 source: ProbeSource::Failure,
@@ -179,7 +121,7 @@ fn run_transport(started: Instant) {
             stage,
             detail,
             code,
-        }) => publish(
+        }) => dv::publish_logged(
             DvProbe {
                 capability: DvCapability::Unknown,
                 source: ProbeSource::Failure,
@@ -195,11 +137,10 @@ fn run_transport(started: Instant) {
 #[cfg(not(all(
     target_arch = "arm",
     target_os = "linux",
-    not(feature = "hostsim"),
     not(any(test, feature = "test-support"))
 )))]
 fn run_transport(started: Instant) {
-    publish(
+    dv::publish_logged(
         DvProbe {
             capability: DvCapability::Unknown,
             source: ProbeSource::Host,
@@ -214,7 +155,6 @@ fn run_transport(started: Instant) {
 #[cfg(all(
     target_arch = "arm",
     target_os = "linux",
-    not(feature = "hostsim"),
     not(any(test, feature = "test-support"))
 ))]
 fn reply_error_code(reply: &str) -> Option<i64> {
@@ -228,7 +168,7 @@ fn reply_error_code(reply: &str) -> Option<i64> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(any(
     test,
-    all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
+    all(target_arch = "arm", target_os = "linux")
 ))]
 enum ProbeFailure {
     Json,
@@ -240,13 +180,12 @@ enum ProbeFailure {
 
 #[cfg(any(
     test,
-    all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
+    all(target_arch = "arm", target_os = "linux")
 ))]
 impl ProbeFailure {
     #[cfg(all(
         target_arch = "arm",
         target_os = "linux",
-        not(feature = "hostsim"),
         not(any(test, feature = "test-support"))
     ))]
     const fn stage(self) -> &'static str {
@@ -270,7 +209,7 @@ impl ProbeFailure {
 /// gets. `major == 0` is an unknown version and keeps configd's answer; webOS 4+ is untouched.
 #[cfg(any(
     test,
-    all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
+    all(target_arch = "arm", target_os = "linux")
 ))]
 fn platform_gate(probe: DvProbe, webos_major: u32) -> DvProbe {
     if probe.capability == DvCapability::Supported && (1..=3).contains(&webos_major) {
@@ -288,7 +227,7 @@ fn platform_gate(probe: DvProbe, webos_major: u32) -> DvProbe {
 /// by a boolean elsewhere in the object.
 #[cfg(any(
     test,
-    all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
+    all(target_arch = "arm", target_os = "linux")
 ))]
 fn parse_dv_reply(reply: &str) -> Result<DvCapability, ProbeFailure> {
     let value: serde_json::Value = serde_json::from_str(reply).map_err(|_| ProbeFailure::Json)?;
@@ -322,7 +261,7 @@ fn parse_dv_reply(reply: &str) -> Result<DvCapability, ProbeFailure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{override_capability, parse_dv_reply, platform_gate, DvCapability, ProbeFailure};
+    use super::{parse_dv_reply, platform_gate, DvCapability, ProbeFailure};
     use crate::devcaps::dv::{DvProbe, ProbeSource};
 
     fn configd(capability: DvCapability) -> DvProbe {
@@ -365,23 +304,6 @@ mod tests {
         assert_eq!(
             platform_gate(configd(DvCapability::Unknown), 3),
             configd(DvCapability::Unknown)
-        );
-    }
-
-    #[test]
-    fn dv_caps_override_precedence() {
-        assert_eq!(override_capability(false, false), None);
-        assert_eq!(
-            override_capability(true, false),
-            Some((DvCapability::Unsupported, false))
-        );
-        assert_eq!(
-            override_capability(false, true),
-            Some((DvCapability::Supported, false))
-        );
-        assert_eq!(
-            override_capability(true, true),
-            Some((DvCapability::Unsupported, true))
         );
     }
 

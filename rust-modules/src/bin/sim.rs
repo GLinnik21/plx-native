@@ -36,9 +36,8 @@
 //!   PLXNATIVE_RUNTIME_DIR                     this instance's trigger/FIFO/log root
 //!   PLXNATIVE_APP_DIR                         where appfont*.ttf and the icons live (repo `pkg/`)
 
-use plxnative_modules::port::plex_run;
+use plxnative_modules::platform_desktop;
 use std::ffi::CString;
-use std::os::raw::c_int;
 
 /// Defaults chosen to fail loudly rather than silently talk to the wrong thing.
 const DEFAULT_PORT: u16 = 32400;
@@ -97,7 +96,7 @@ fn main() {
 
     // No host is not an error — it is what a person who was SENT this app has. The boot host is
     // only ever consulted by the two paths that already hold credentials (the stored session and
-    // the harness's injected token); with neither, `plex_run` goes to QR sign-in and plex.tv's
+    // the harness's injected token); with neither, the application goes to QR sign-in and plex.tv's
     // `/api/v2/resources` supplies the address, exactly as on a television out of the box.
     //
     // The dev loop keeps its loud failure where it belongs: the Makefile's `SIM_PRE` refuses to
@@ -145,9 +144,9 @@ fn main() {
         plx_base::process::exit_now(2)
     });
 
-    // `as c_int` directly — an intermediate i16 would wrap every port above 32767.
-    // `plex_run` ends the process itself through `plx_base::process::exit_now` (no `atexit`
-    // handlers under live workers, #1115); the call is typed `c_int` only for the C shim.
-    let rc = plex_run(c_host.as_ptr(), port as c_int);
+    // The desktop platform's entry returns the status the application ended with; ending the
+    // process is this executable's, through `plx_base::process::exit_now` (no `atexit` handlers
+    // under live workers, #1115).
+    let rc = platform_desktop::run(&c_host, port);
     plx_base::process::exit_now(rc)
 }

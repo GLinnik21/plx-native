@@ -72,17 +72,17 @@ pub fn sim_events_log() -> std::path::PathBuf {
     plx_base::eventlog::events_log()
 }
 
-/// The port holds `plex_run`, the C entry the simulator binary calls too. It is reached by path
-/// (`plxnative_modules::port::plex_run`) so the SAME entry the C shim calls is the one called, with
-/// the compiler checking the signature. It previously re-declared `plex_run` in its own `extern "C"`
-/// block, which meant the one binary whose whole premise is "cannot drift from the shipped boot
-/// path" was the one place a signature change would become a silent ABI mismatch instead of a
-/// compile error. There is deliberately no `pub use` here: a re-export would be a reference from
-/// the crate root into the port.
-#[cfg(feature = "hostsim")]
-pub mod port;
-#[cfg(not(feature = "hostsim"))]
+/// The webOS port: `plex_run`, the C entry `src/main.c` calls, and the two tables it hands the
+/// application. Every build compiles it, the desktop ones included, and a desktop executable never
+/// reaches it.
 mod port;
+/// The desktop platform, the simulator's and the macOS app's own: its tables and its entry, which
+/// `src/bin/sim.rs` calls by path (`plxnative_modules::platform_desktop::run`) because that binary
+/// is a separate crate. It never names the webOS port, so the television's code stays unreferenced
+/// in its executable. There is deliberately no `pub use` here: a re-export would be a reference from
+/// the crate root into the platform.
+#[cfg(feature = "hostsim")]
+pub mod platform_desktop;
 #[cfg(feature = "hostsim")]
 pub use app::synthetic_home_initial;
 
