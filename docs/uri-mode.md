@@ -36,7 +36,8 @@ displayed its URI fixture on the 4.5 dev set, as recorded below.
 ## What the 5+ firmware actually does with the load
 
 Read from `libplayerAPIs`, `libav-proxy`, `libav-connector`, `libav`, `videosink` and
-`umediaserver` across 5.5, 5.6, 6.5, 7.6, 8.3, 9.2, 10.3 and 11.2:
+`umediaserver` across 5.5, 5.6, 6.5, 7.6, 9.2, 10.3 and 11.2 (on 8.3.1 only `libplayerAPIs` and
+`starfish-media-pipeline` were read):
 
 - **`umediaserver` does not parse `option` itself.** `loadCommand` reads `uri`, `type`,
   `payload`, `option` and `payload.appId`, requires `uri` then `type`, and hands the payload to the
@@ -247,8 +248,8 @@ webOS firmware major as the set reports it, so major 5 covers every 5.x release:
 on 5.6.2, the earlier probe-only run on 5.4.2, and no other 5.x minor has a run. Major 10 covers every
 10.x release the same way: the product runs (the rule's is the 2026-11-14 one, on a 2.39:1 original) and
 the probe were on one LG C2 on 10.3.1 (33.31.68), and no other 10.x minor has a run. Majors 6, 7, 8 and 9 each cover every release of that major the same
-way, though one image per major is all that has been read (6.5.3, 7.6.0, 8.3.1, 9.2.4) and no set has
-run a product play.
+way, though one image per major is all that has been read (6.5.3, 7.6.0, 8.3.1, 9.2.4) and none has a
+rule (b) product run (the 6.x C1's Dolby Vision plays, in the 6.5.3 row, are not one).
 An entry needs three things in this file's Results table, each with the tester log's decisive
 lines (one exception follows the list). A release is never admitted on the probe's evidence alone: a run of the product backend is
 required.
