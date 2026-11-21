@@ -480,11 +480,12 @@ mod lifecycle_tests {
     /// `plx_base::process::exit_now`; and that is the executable entries' to call, because a host
     /// is killed under its own runtime by one. `run_application` and the graphics boot RETURN
     /// (`Exit`, `GfxFault`), so the production `exit_now(` sites are the entries that own the
-    /// process end (`port::plex_main`, the simulator's `main`), the frame dump (`devtriggers`, off in
+    /// process end (the webOS crate's `port::plex_main`, the simulator's `main`), the frame dump (`devtriggers`, off in
     /// a release build) and the helper itself. A new exit anywhere else fails here.
     #[test]
     fn lifecycle_no_production_exit_is_reachable_from_a_hosted_process() {
-        // The app process links every crate under rust-modules except `storage` (the separate
+        // The app process links every crate under rust-modules (the two platform crates among them, whose
+        // `port.rs` and `bin/sim.rs` are the entries) except `storage` (the separate
         // `plxstorage` helper binary, no OpenSSL workers) and os's `storage_service/` (that
         // helper's body). `base/src/process.rs` is the helper itself.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -502,7 +503,7 @@ mod lifecycle_tests {
             collect_rs(&dir.join("src"), &mut files);
         }
         assert!(files.len() > 100, "the scan must see the whole tree");
-        let owns_process_end = ["src/port.rs", "src/bin/sim.rs", "src/dev/framedump.rs"].map(|p| root.join(p));
+        let owns_process_end = ["platform-webos/src/port.rs", "src/bin/sim.rs", "src/dev/framedump.rs"].map(|p| root.join(p));
         for entry in &owns_process_end {
             assert!(entry.is_file(), "{}: an entry the scan allows is gone; update the list", entry.display());
         }
@@ -523,7 +524,7 @@ mod lifecycle_tests {
             if path.ends_with("src/app/mod.rs") {
                 assert!(prod.contains("fn run_application"), "the scan must still reach run_application");
             }
-            if f == root.join("src/port.rs") {
+            if f == root.join("platform-webos/src/port.rs") {
                 assert_process_entry(&text, exit_now);
             }
             for (n, line) in prod.lines().enumerate() {
@@ -599,7 +600,7 @@ pub extern \"C\" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int 
     plex_main(pms_host, pms_port)
 }
 fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
-    plx_base::process::exit_now(crate::app::run_application(&PLATFORM, pms_host, pms_port).code)
+    plx_base::process::exit_now(host::run(&PLATFORM, host, port).code)
 }
 const _: fn(*const c_char, c_int) -> ! = plex_main;
 ";

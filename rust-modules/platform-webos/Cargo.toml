@@ -52,6 +52,20 @@ hostsim = ["plxnative-modules/hostsim"]
 
 [dependencies]
 plxnative-modules = { path = "..", default-features = false }
+plx_base = { path = "../base" }
+plx_os = { path = "../os" }
+plx_gfx = { path = "../gfx" }
+plx_telemetry = { path = "../telemetry" }
+plx_shell_sdl = { path = "../shell-sdl" }
+libc = "0.2"
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+
+[dev-dependencies]
+# The `cfg(test)` seams of the layers below (`testlock`, `tv`'s sandbox and secure-store seams, the
+# telemetry consent fixtures): a dependency is never built `cfg(test)`, so the tests here ask by feature.
+plx_base = { path = "../base", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
+plx_telemetry = { path = "../telemetry", features = ["test-support"] }
 
 [lints]
 workspace = true

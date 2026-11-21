@@ -3,7 +3,7 @@
 //! the per-frame tick, draw orchestration, app lifecycle, the buffer-feed pump orchestration, and
 //! the dev triggers. The C boot shim
 //! (main.c) sets up the log and fallback crash tracer, calls the Rust image-marker and native-spool
-//! entries when required, then calls `plex_run` (port.rs), which hands over to `run_application`
+//! entries when required, then calls `plex_run` (the webOS platform crate's port.rs), which hands over to `run_application`
 //! and, when it returns its `Exit` (`exit.rs`), ends the process. The desktop executable
 //! (`src/bin/sim.rs`) enters through `platform_desktop::run` instead and ends the process itself.
 //! The only application subsystems left in C are the starfish.c C++ Feed seam and the video_plane.c

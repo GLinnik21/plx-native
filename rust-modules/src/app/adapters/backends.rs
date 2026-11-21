@@ -15,8 +15,8 @@
 //!     too. They publish nothing: they return what they composed, and the application's one
 //!     publisher (`app::platform::publish_composition`) tells the route session the set the
 //!     installed drivers form, so policy offers what is physically there instead of what Cargo
-//!     features happened to be on. `port.rs` and `platform_desktop.rs` name these two through
-//!     `Platform::media`, and the platform crates will take them as the ready `MediaBoot`s `host` publishes
+//!     features happened to be on. the platform crates name these two through
+//!     `Platform::media`, as the ready `MediaBoot`s `host` publishes
 //!     (`host::WEBOS_MEDIA`, `host::FEED_MEDIA`); the bodies stay here until W11a moves the composition into
 //!     the webOS platform.
 //!   - [`install_uri_product`] builds the product URI driver (`plx_play_uri::backend::UriBackend`)

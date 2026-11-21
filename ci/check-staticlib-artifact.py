@@ -8,7 +8,8 @@ make decides what to link by a timestamp on the archive path, and cargo does not
 Since the crate declares `crate-type = ["rlib"]`, the `.a` exists only because the Makefile asks
 `cargo rustc --crate-type staticlib` for it, so a silent miss would link an OLD archive with no
 comment. cargo names every file it produced or vouches for in its `compiler-artifact` records;
-this requires exactly one `.a` for the app crate there and that the path make links is that file.
+this requires exactly one `.a` for the shipping crate (`plx_platform_webos`, which links the
+application crate and every layer into the one archive) there and that the path make links is that file.
 Timestamps cannot do this: a fresh build legitimately leaves the archive older than the recipe.
 """
 import filecmp
@@ -16,7 +17,7 @@ import json
 import os
 import sys
 
-CRATE = "plxnative_modules"
+CRATE = "plx_platform_webos"
 
 
 def artifacts(lines):

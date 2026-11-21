@@ -1245,7 +1245,7 @@ fn register_lazy(
         EXHAUSTED.store(true, Ordering::Release);
         // Loud on purpose: nothing but a new process gives this registry room again. The plan's
         // answer is a SAM `launch` of the app's own id, but the only launch call that exists is the
-        // Home-launcher one (`os::webos::launch_home`), and its device note says launching the
+        // Home-launcher one (the webOS platform crate's `webos::launch_home`), and its device note says launching the
         // app's own id FOREGROUNDS the running process rather than restarting it. Until that is
         // proven on the set this records the need and does not pretend to meet it.
         plx_base::eventlog::log(

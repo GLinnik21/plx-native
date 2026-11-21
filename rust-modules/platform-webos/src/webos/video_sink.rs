@@ -103,8 +103,8 @@ mod sys {
 /// The completion mailbox the firmware's thread fills (`acb_on_event` below) and
 /// `PlaneOwner::pump` drains on the main thread. Sized well above the handful of tasks one frame
 /// can have in flight; an overflow is counted and surfaces as a `Dropped` marker, never silently.
-static COMPLETIONS: std::sync::LazyLock<crate::tv::plane::CompletionQueue> =
-    std::sync::LazyLock::new(|| crate::tv::plane::CompletionQueue::new(64));
+static COMPLETIONS: std::sync::LazyLock<plx_os::tv::plane::CompletionQueue> =
+    std::sync::LazyLock::new(|| plx_os::tv::plane::CompletionQueue::new(64));
 
 /// The completion callback of `libAcbAPI`, forwarded by `acb_cb` in `src/video_plane.c` on the
 /// LIBRARY'S thread: `id` is the handle `plane_create` returned for the core that issued the call
@@ -131,7 +131,7 @@ pub extern "C" fn acb_on_event(id: c_long, task: c_long, ev: c_long, reply: *con
 pub struct StarfishSink;
 
 #[cfg(feature = "feed-sink")]
-impl crate::tv::sink::VideoSink for StarfishSink {
+impl plx_os::tv::sink::VideoSink for StarfishSink {
     /// **One of the two verbs of this seam that is NOT main-thread (the other is `unload`, on its
     /// `UnloadTicket`), and the missing token is how you can tell.** `Load` blocks for the pipeline construction and the library owns its own GMainContext
     /// behind it, so it runs on the media worker (`native_load::load_thread`) by design — putting it on
@@ -206,7 +206,7 @@ impl crate::tv::sink::VideoSink for StarfishSink {
         sys::sf_feed(p, size, pts, es_data)
     }
     #[inline]
-    unsafe fn unload(&self, _: &crate::tv::sink::UnloadTicket) {
+    unsafe fn unload(&self, _: &plx_os::tv::sink::UnloadTicket) {
         sys::sf_unload()
     }
     #[inline]
@@ -227,7 +227,7 @@ impl crate::tv::sink::VideoSink for StarfishSink {
     }
 }
 
-impl crate::tv::sink::DisplaySink for StarfishSink {
+impl plx_os::tv::sink::DisplaySink for StarfishSink {
     /// Resolved once inside the seam and cached there, so this is cheap to call repeatedly. Takes no
     /// token: it only reads a memoized int and touches no pipeline state.
     #[inline]
@@ -290,10 +290,10 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
     unsafe fn plane_loaded(&self, _: &MainThread) -> c_int { sys::acb_loaded() }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { sys::acb_probe_connect_dass() }
-    unsafe fn plane_finish(&self, _: &MainThread) -> crate::tv::sink::PlaneFinish {
+    unsafe fn plane_finish(&self, _: &MainThread) -> plx_os::tv::sink::PlaneFinish {
         let (mut display_task, mut playing_task): (c_long, c_long) = (0, 0);
         let rv = sys::acb_finish(&mut display_task, &mut playing_task);
-        crate::tv::sink::PlaneFinish { rv, display_task, playing_task }
+        plx_os::tv::sink::PlaneFinish { rv, display_task, playing_task }
     }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         sys::acb_bind(media_id)
@@ -311,13 +311,13 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
         sys::acb_start(x, y, w, h)
     }
     #[inline]
-    unsafe fn plane_unload(&self, _: &MainThread) -> crate::tv::sink::PlaneUnload {
+    unsafe fn plane_unload(&self, _: &MainThread) -> plx_os::tv::sink::PlaneUnload {
         let mut task: c_long = 0;
         let rv = sys::acb_unload(&mut task);
-        crate::tv::sink::PlaneUnload { rv, task }
+        plx_os::tv::sink::PlaneUnload { rv, task }
     }
     #[inline]
-    fn plane_completions(&self, _: &MainThread) -> Vec<crate::tv::plane::PlaneCompletion> {
+    fn plane_completions(&self, _: &MainThread) -> Vec<plx_os::tv::plane::PlaneCompletion> {
         COMPLETIONS.drain()
     }
     #[inline]

@@ -165,6 +165,8 @@ class InventoryTests(unittest.TestCase):
                        'rust-modules/media/src/player/ass.rs: a listed product file is missing',
                        'rust-modules/data/src/metadata.rs: a listed product file is missing',
                        'rust-modules/data/src/person.rs: a listed product file is missing',
+                       'rust-modules/platform-webos/src/webos.rs: a listed product file is missing',
+                       'rust-modules/platform-webos/src: a directory this gate reads is missing',
                        'rust-modules/screens/src: a directory this gate reads is missing'):
             self.assertIn(needle, err.getvalue())
 

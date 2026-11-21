@@ -13,8 +13,9 @@ objects with a `reason` are looked at; `cargo test` also prints harness text on 
 
 * `SecondBuildIsFreshTests` builds the real crate twice from `rust-modules/` and demands that the
   second run recompiled nothing of the crate: every `plxnative_modules` (and `plx_os`, the
-  layer crate whose own build script generates the catalog, and `plx_gfx`, whose build script
-  compiles the nanosvg object for its own test binary) compiler-artifact is `fresh`, and the
+  layer crate whose own build script generates the catalog, `plx_gfx`, whose build script
+  compiles the nanosvg object for its own test binary, and the two platform crates, whose build
+  scripts print the link argument for theirs) compiler-artifact is `fresh`, and the
   crate's build script did not write its output again (cargo replays a
   `build-script-executed` record even for a fresh script, so the mtime of the script's output file
   is read, wherever this cargo keeps it).
@@ -64,6 +65,10 @@ PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_
 # always-dirty either, or every crate above it would rebuild with it.
 OS_CRATE = "plx_os"
 GFX_CRATE = "plx_gfx"
+# The two platform crates carry a build script of their own too (the nanosvg link argument,
+# `rust-modules/build_support/host_link.rs`): an always-dirty one would relink the ARM archive's crate
+# and the simulator's on every build.
+PLATFORM_CRATES = ("plx_platform_webos", "plx_platform_desktop")
 NIGHTLY = pinned()  # the repo's one toolchain (historic name)
 
 
@@ -114,7 +119,7 @@ def rebuilt(records):
     return [f"{(rec.get('target') or {}).get('name')} ({'/'.join((rec.get('target') or {}).get('kind') or [])}) was recompiled"
             for rec in records
             if rec.get("reason") == "compiler-artifact"
-            and (rec.get("target") or {}).get("name") in (CRATE, OS_CRATE, GFX_CRATE) and not rec.get("fresh")]
+            and (rec.get("target") or {}).get("name") in (CRATE, OS_CRATE, GFX_CRATE, *PLATFORM_CRATES) and not rec.get("fresh")]
 
 
 def freeze_stamps(records):

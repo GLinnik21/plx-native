@@ -1,4 +1,4 @@
-//! The feature-gated webOS transport for [`crate::tv::uri::UriMedia`] over `com.webos.media`.
+//! The feature-gated webOS transport for [`plx_os::tv::uri::UriMedia`] over `com.webos.media`.
 //! The diagnostic probe uses it; compiling this worker does not select URI playback.
 //!
 //! **One worker owns the bus handle.** `open` starts a thread that registers (`Shape::Named` is
@@ -23,7 +23,7 @@
 //!
 //! Log lines carry the prefix `ls2uri:` and never a payload.
 use super::{error_text, g_main_context_iteration, register_as, LSCall, LSError, LSErrorFree, LSErrorInit, LSMessageGetPayload, Registration};
-use crate::tv::uri::{CloseSignal, CloseStatus, ReplyQueue, RequestId, SessionId, SessionSlot, Shape, UriMedia, UriPoll};
+use plx_os::tv::uri::{CloseSignal, CloseStatus, ReplyQueue, RequestId, SessionId, SessionSlot, Shape, UriMedia, UriPoll};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
 use std::sync::mpsc::{self, RecvTimeoutError};

@@ -165,7 +165,7 @@ HOST_TEST_ARGS = ("test", "--lib", "-p", "plxnative-modules", "-p", "plx_base", 
 HOST_TEST_BUILD_ARGS = HOST_TEST_ARGS + ("--no-run", "--message-format=json")
 ARM_ARGS_HEAD = ("rustc",)  # then the Makefile's ARM_PROFILE_FLAG (`--release` / `--profile tvdev`)
 ARM_ARGS_TARGET = ("--target",)  # then the target triple
-ARM_ARGS_LIB = ("--lib", "--crate-type", "staticlib", "--target-dir")  # then the target dir
+ARM_ARGS_LIB = ("-p", "plx_platform_webos", "--lib", "--crate-type", "staticlib", "--target-dir")  # then the target dir
 ARM_ARGS_TAIL = ("--message-format=json-render-diagnostics",)  # after the feature flags
 
 ALL_SCENARIOS = ("noop", "leaf", "machine", "os", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "media", "appkit", "screens", "app", "hub", "leaf-inc", "hub-inc", "tests", "arm", "sizes")

@@ -725,8 +725,9 @@ unsafe fn play_loaded_hero(
 /// [`menu_play_tick`], never resolved on the press frame.
 ///
 /// Runs in the default feature set too: `menu_play_tick`'s landed arm reaches `start_playback` and
-/// the video sink, but `port.rs` installs `tv::sink::NoSink` under `cfg(test)`, so the sink a bare
-/// `cargo test --lib` meets answers every verb with nothing (the native sink is compiled, and never reached).
+/// the video sink, but a test installs no `tv::Services`, so `tv::sink::installed()` is the host-test
+/// default (`tv::sink::NoSink`) and a bare `cargo test --lib` meets a sink that answers every verb with nothing
+/// (the native sink lives in the webOS platform crate, and is never linked here).
 #[cfg(test)]
 mod activate_card_tests {
     use super::*;

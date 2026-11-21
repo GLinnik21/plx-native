@@ -98,6 +98,24 @@ class ForwardedFeatures(unittest.TestCase):
                 self.assertIn("host_link::emit", (MODULES / directory / "build.rs").read_text(encoding="utf-8"))
                 self.assertIn(directory, load(MODULES / "Cargo.toml")["workspace"]["members"])
 
+    def test_the_webos_crate_owns_the_two_sink_features(self):
+        # `feed-sink` (the Starfish sink's Feed half) and `uri-transport` (the com.webos.media LS2 worker) are
+        # what the backends switch on in the webOS port's own code, so they are this crate's features, set by
+        # its `play-feed` and `play-uri`; `plx_os`, which held them while the port was its module, and the
+        # application, which forwarded them to it, name neither any more.
+        webos = load(MODULES / "platform-webos" / "Cargo.toml")["features"]
+        self.assertEqual(webos["feed-sink"], [])
+        self.assertEqual(webos["uri-transport"], [])
+        self.assertIn("feed-sink", webos["play-feed"])
+        self.assertIn("uri-transport", webos["play-uri"])
+        app = load(MODULES / "Cargo.toml")["features"]
+        for crate in (MODULES / "os" / "Cargo.toml", MODULES / "Cargo.toml"):
+            features = load(crate).get("features", {})
+            for word in ("feed-sink", "uri-transport"):
+                self.assertNotIn(word, features, f"{crate}: `{word}` left with the port")
+        for feature in ("play-feed", "play-uri"):
+            self.assertFalse([f for f in app[feature] if f.startswith("plx_os/")], f"app `{feature}` still forwards into plx_os")
+
     def test_the_application_names_no_platform_crate(self):
         app = load(MODULES / "Cargo.toml")
         for table in ("dependencies", "dev-dependencies", "build-dependencies"):

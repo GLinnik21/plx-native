@@ -755,8 +755,8 @@ fn probed_clear(presented: impl FnOnce() -> bool, clear: impl FnOnce()) {
 /// The frame's first framebuffer-0 command is where this driver parks the wait for a free back
 /// buffer, and on every route but the player it is the page's [`frame_clear`]. The dev frame
 /// probe (`/tmp/plxnative-framecb`) prices that wait, but its clock is the platform's
-/// (`crate::system` on webOS, which the loop reaches as `app::platform::FrameProbe`), in the
-/// application crate above this one, so the platform's entry (`port::plex_main`) hands the two
+/// (the webOS platform crate's `system`, which the loop reaches as `app::platform::FrameProbe`), in
+/// the crates above this one, so the platform's entry (`port::plex_main`) hands the two
 /// edges down once, before `run_application`: `waiting` runs just before the clear, `acquired`
 /// just after it returns.
 pub fn install_clear_probe(waiting: fn(), acquired: fn()) {

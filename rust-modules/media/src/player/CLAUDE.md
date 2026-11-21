@@ -198,7 +198,7 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   `AttemptFacts::load_abandoned`.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_os::tv::sink` (`rust-modules/os/src/tv/sink.rs`)
-(Starfish-shaped: one method per verb, reached through `PlayerAdapter::display_sink`). `os/src/webos/video_sink.rs`'s `extern "C"`
+(Starfish-shaped: one method per verb, reached through `PlayerAdapter::display_sink`). `platform-webos/src/webos/video_sink.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
 television; `HostSink` (`play-feed/src/ffi_host.rs`, `plx_play_feed::ffi_host`) is the simulator's. Every verb but `load` and `unload`
 takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`

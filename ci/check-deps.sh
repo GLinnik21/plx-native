@@ -14,7 +14,7 @@
 #   present  — the present gate's worker door: ONE atomic static in machine/src/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
-#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs, port.rs, platform_desktop.rs and app/adapters/backends.rs
+#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs, the two platform crates and app/adapters/backends.rs
 #              (step L15: the Starfish/ACB verbs are the player's alone).
 #
 # Phase 4 rule (D3 rewrite, phase 12):
@@ -1089,7 +1089,7 @@ want ladder && gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn 
 want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/app"
 
 # frame: the three privileged OS-primitive calls — `pump_bus`, `opaque_route` and `clear_opaque_region`
-# on the platform's `Shell` (`app::platform`, passed to `run_application` by `port.rs`) — ZERO-TOLERANCE outside
+# on the platform's `Shell` (`app::platform`, passed to `host::run` by the webOS crate's `port.rs`) — ZERO-TOLERANCE outside
 # `app/run.rs` (D4) — no allowlist file, because there is exactly one legitimate home once D1 lands:
 # `app/run.rs` is the frame loop, and `app/bridge.rs`'s `Rig` impl delegates to `run::rig_opaque_route`/
 # `rig_clear_opaque_region` (a one-line pass-through) rather than naming the `shell` itself,
@@ -1146,8 +1146,8 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 fi # frame
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
-# `player/`, `play-uri/`, the native `webos/` port, and `port.rs` and `platform_desktop.rs` (which
-# name one each) and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
+# `player/`, `play-uri/`, the two platform crates (`platform-webos/`, whose `webos/` is the native port and
+# whose `port.rs` names one, and `platform-desktop/`) and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
 # `app/adapters/backends.rs`, the boot composition that resolves the installed display once for the
 # ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
 # driver set is built). Every other module reaches the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
@@ -1162,12 +1162,12 @@ while IFS= read -r line; do
   case "$p" in "$SRC_PLAY_FEED"/*|"$SRC_PLAY_URI"/*)
     case "$line" in *tv::sink::installed*|*tv::sink::display_installed*) ;; *) continue ;; esac ;;
   esac
-  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_OS"/tv/*|"$SRC_OS"/tv.rs|"$SRC_OS"/webos/*|"$SRC"/port.rs|"$SRC"/platform_desktop.rs|"$SRC_PLATFORM_WEBOS"/*|"$SRC_PLATFORM_DESKTOP"/*|"$SRC"/app/adapters/backends.rs) continue ;; esac
+  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_OS"/tv/*|"$SRC_OS"/tv.rs|"$SRC"/platform_desktop.rs|"$SRC_PLATFORM_WEBOS"/*|"$SRC_PLATFORM_DESKTOP"/*|"$SRC"/app/adapters/backends.rs) continue ;; esac
   if is_wholly_test "$p"; then continue; fi
   echo "    $line"; sink_bad=$((sink_bad+1))
 done < <(grep_code 'tv::sink::(installed|display_installed)|\b(VideoSink|DisplaySink)\b' "$SRC" "$SRC_OS" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_OWP" "$SRC_SHELL_SDL" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP")
 if [ "$sink_bad" -eq 0 ]; then ok "sink"
-else fail "sink: $sink_bad line(s) naming the video sink outside playback execution, port.rs, platform_desktop.rs, tv.rs and tv/"; fi
+else fail "sink: $sink_bad line(s) naming the video sink outside playback execution, the platform crates, tv.rs and tv/"; fi
 fi # sink
 
 # route: `Route::` in app/ = 0, and `enum Route` gone from the whole tree (D1/D4). No allowlist:
@@ -1185,7 +1185,7 @@ fi
 fi # route
 
 # fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
-# plex_main (port.rs: the clear hook, hand the platform over, end the process) <= 10 — counted by brace
+# plex_main (platform-webos/src/port.rs: the clear hook, hand the platform over, end the process) <= 10 — counted by brace
 # depth from the `fn` line to its matching close, not by grep pattern.
 fn_body_lines() {
   # fn_body_lines <file> <fn-name-pattern> — prints the line count of the first matching fn's body
@@ -1205,13 +1205,13 @@ else fail "fnlen: app/run.rs::run is ${run_len:-unknown} lines, budget 200 — a
 runapp_len=$(fn_body_lines "$SRC/app/mod.rs" 'run_application')
 if [ -n "$runapp_len" ] && [ "$runapp_len" -le 10 ]; then ok "fnlen: run_application (app/mod.rs) ($runapp_len lines)"
 else fail "fnlen: run_application (app/mod.rs) is ${runapp_len:-unknown} lines, budget 10"; fi
-plexmain_len=$(fn_body_lines "$SRC/port.rs" 'plex_main')
+plexmain_len=$(fn_body_lines "$SRC_PLATFORM_WEBOS/port.rs" 'plex_main')
 if [ -n "$plexmain_len" ] && [ "$plexmain_len" -le 10 ]; then ok "fnlen: plex_main (port.rs) ($plexmain_len lines)"
 else fail "fnlen: plex_main (port.rs) is ${plexmain_len:-unknown} lines, budget 10"; fi
 # plex_run is the one-line C wrapper over plex_main (the `-> !` entry the const beside it proves): its
 # signature, the call and the closing brace. `app::exit`'s lifecycle_no_production_exit test holds the
 # body to exactly that call.
-plexrun_len=$(fn_body_lines "$SRC/port.rs" 'plex_run')
+plexrun_len=$(fn_body_lines "$SRC_PLATFORM_WEBOS/port.rs" 'plex_run')
 if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 3 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
 else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 3 — it only calls plex_main"; fi
 fi # fnlen

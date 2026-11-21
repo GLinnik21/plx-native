@@ -66,7 +66,7 @@ CASES = [
     (FIRE, "Write", edit("/repo/rust-modules/src/dev.rs", tool="Write"), ROOT),
     (FIRE, "a layer crate's source", edit("/repo/rust-modules/base/src/paths.rs"), ROOT),
     (FIRE, "the machine layer crate's source", edit("/repo/rust-modules/machine/src/idle.rs"), ROOT),
-    (FIRE, "the os layer crate's source", edit("/repo/rust-modules/os/src/webos.rs"), ROOT),
+    (FIRE, "the os layer crate's source", edit("/repo/rust-modules/os/src/devcaps.rs"), ROOT),
     (FIRE, "the gfx layer crate's source", edit("/repo/rust-modules/gfx/src/gfx.rs"), ROOT),
     (FIRE, "the net layer crate's source", edit("/repo/rust-modules/net/src/net.rs"), ROOT),
     (FIRE, "the ui layer crate's source", edit("/repo/rust-modules/ui/src/widgets.rs"), ROOT),

@@ -1,25 +1,22 @@
 //! The webOS port: the two tables that fill the platform, and the C entry that hands them over.
 //!
-//! `plx_os::tv::Services` is what the lower layers read, and `app::platform::Platform` adds the shell
-//! and the frame probe the loop alone reads. Everything outside this module reaches the television
-//! through those; this is the only place that names `webos`, `keymanager`, `system` and the native
-//! video sink together. The simulator and the macOS app are not on these tables: they are their own
-//! platform (`platform_desktop`), which never names this module, so a desktop build compiles the
-//! television's code and the linker drops it.
-use crate::app::adapters::backends;
-use crate::app::platform::{sdl_init, sdl_open, FrameProbe, InitHooks, MediaBoot, OpenAsk, Platform, Shell, Surface};
-use crate::app::Exit;
-use plx_base::task::MainThread;
+//! `plx_os::tv::Services` is what the lower layers read, and `host::Platform` (the application's
+//! `app::platform::Platform`) adds the shell and the frame probe the loop alone reads. Everything outside
+//! this crate reaches the television through those; this is the only place that names `webos`,
+//! `keymanager`, `system` and the native video sink together. The simulator and the macOS app are not on
+//! these tables: they are their own platform (`plx_platform_desktop`), a different crate that never names
+//! this one, so a desktop executable does not contain the television's code at all.
+use plxnative_modules::host::{self, sdl_init, sdl_open, Exit, FrameProbe, InitHooks, MainThread, OpenAsk, Platform, Shell, Surface};
 use std::os::raw::{c_char, c_int, c_void};
 
 #[cfg(all(not(test), feature = "play-feed"))]
-const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::webos::video_sink::StarfishSink;
+const SINK: &dyn plx_os::tv::sink::VideoSink = &crate::webos::video_sink::StarfishSink;
 #[cfg(any(test, not(feature = "play-feed")))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::tv::sink::NoSink;
 
 // URI-only native builds retain the display vtable without the packet-feed vtable.
 #[cfg(not(test))]
-const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = &plx_os::webos::video_sink::StarfishSink;
+const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = &crate::webos::video_sink::StarfishSink;
 #[cfg(test)]
 const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 
@@ -27,29 +24,29 @@ const DISPLAY: &dyn plx_os::tv::sink::DisplaySink = SINK;
 /// and the native playback seam. The window, the bus pump and the frame probe are the loop's own, in [`PLATFORM`].
 static SERVICES: plx_os::tv::Services = plx_os::tv::Services {
     identity: plx_os::tv::IdentityHooks {
-        probe_device: plx_os::webos::probe,
-        start_capability_probe: plx_os::webos::caps::start_probe,
-        repair_native_video: Some(plx_os::webos::jail_repair::execute),
-        device_files: plx_os::webos::DEVICE_FILES,
-        system_locale: plx_os::webos::system_locale,
-        sound_output: plx_os::webos::sound_output,
+        probe_device: crate::webos::probe,
+        start_capability_probe: crate::webos::caps::start_probe,
+        repair_native_video: Some(crate::webos::jail_repair::execute),
+        device_files: crate::webos::DEVICE_FILES,
+        system_locale: crate::webos::system_locale,
+        sound_output: crate::webos::sound_output,
     },
     secure: plx_os::tv::SecureHooks {
-        seal: plx_os::keymanager::seal,
-        open: plx_os::keymanager::open,
-        remove: plx_os::keymanager::remove,
+        seal: crate::keymanager::seal,
+        open: crate::keymanager::open,
+        remove: crate::keymanager::remove,
         mode: plx_os::tv::secure::StoreMode::Durable,
     },
     system: plx_os::tv::SystemHooks {
-        go_home: plx_os::webos::go_home,
-        poll_home: plx_os::webos::poll_home,
-        deliver_toast: plx_os::webos::toast::deliver,
+        go_home: crate::webos::go_home,
+        poll_home: crate::webos::poll_home,
+        deliver_toast: crate::webos::toast::deliver,
     },
     storage: plx_os::tv::StorageHooks { authority: plx_os::tv::authority::Authority::Helper },
     legacy_webos_media: plx_os::tv::LegacyWebosMedia {
         sink: SINK,
         display_sink: DISPLAY,
-        uri_media: plx_os::webos::URI_MEDIA,
+        uri_media: crate::webos::URI_MEDIA,
     },
 };
 
@@ -78,7 +75,7 @@ impl Shell for WebosShell {
         sdl_open(mt, ask)
     }
     fn bind_window(&self, win: *mut c_void) {
-        plx_os::webos::bind_window(win);
+        crate::webos::bind_window(win);
     }
     fn grab_surface(&self, win: *mut c_void) {
         crate::system::sys_grab_wayland(win);
@@ -133,16 +130,16 @@ impl FrameProbe for WebosProbe {
     }
 }
 
-/// The webOS platform: what `plex_main` hands `app::run_application`, which installs its services
-/// for the lower layers and keeps it for the loop. Its media boot is the television's: the plane
-/// owner's boot, and the Feed plus the product URI driver. The bodies are the application's
-/// `adapters::backends` until the webOS platform owns that file: the dev surface and the tests name the
-/// URI product there, and nothing outside this module may name `port`.
+/// The webOS platform: what `plex_main` hands `host::run`, which installs its services for the lower
+/// layers and keeps it for the loop. Its media boot is the television's: the plane owner's boot, and the
+/// Feed plus the product URI driver. The bodies are the application's `adapters::backends`, handed over as
+/// the ready value `host::WEBOS_MEDIA`, until the webOS platform owns that file (W11a): the dev surface and
+/// the tests name the URI product there, and nothing outside this crate may name `port`.
 static PLATFORM: Platform = Platform::new(
     &SERVICES,
     &WebosShell,
     &WebosProbe,
-    MediaBoot { early_init: backends::acb_init, compose: backends::compose_native },
+    host::WEBOS_MEDIA,
 );
 
 /// The C shim's entry (`src/main.c`). The `-> c_int` is only the C signature: `plex_main` never
@@ -152,7 +149,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     plex_main(pms_host, pms_port)
 }
 
-/// The process entry: hand the platform to `app::run_application`, then end the process with the
+/// The process entry: hand the platform to the application (`host::run`), then end the process with the
 /// status it returned. The renderer's clear hook (`gfx::install_clear_probe`) takes plain functions, so
 /// it is installed here, with the webOS frame probe's own, on the thread the app boots and draws on.
 ///
@@ -168,9 +165,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 /// lets this return does not compile.
 fn plex_main(pms_host: *const c_char, pms_port: c_int) -> ! {
     #[cfg(target_os = "linux")]
-    let _ = plx_os::storage::client::install_activator(plx_os::webos::activate_storage_helper);
+    let _ = plx_os::storage::client::install_activator(crate::webos::activate_storage_helper);
     plx_gfx::gfx::install_clear_probe(crate::system::frame_probe_waiting, crate::system::frame_probe_acquired);
-    plx_base::process::exit_now(crate::app::run_application(&PLATFORM, pms_host, pms_port).code)
+    // SAFETY: `src/main.c` hands `PMS_HOST`, a NUL-terminated string literal, so the pointer is never NULL.
+    let host = unsafe { std::ffi::CStr::from_ptr(pms_host) };
+    let port = u16::try_from(pms_port).expect("PMS_PORT is a TCP port");
+    plx_base::process::exit_now(host::run(&PLATFORM, host, port).code)
 }
 
 const _: fn(*const c_char, c_int) -> ! = plex_main;
@@ -236,62 +236,5 @@ mod tests {
         ] {
             assert_eq!(source.matches(hook).count(), 1, "{hook} is named by `WebosShell::init` and nowhere else");
         }
-    }
-
-    /// Every `.rs` file under the application crate's `src`, as text.
-    fn crate_sources() -> Vec<String> {
-        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
-            for entry in std::fs::read_dir(dir).expect("read a source directory") {
-                let path = entry.expect("a directory entry").path();
-                if path.is_dir() {
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    out.push(std::fs::read_to_string(&path).expect("read a source file"));
-                }
-            }
-        }
-        let mut out = Vec::new();
-        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut out);
-        out
-    }
-
-    /// `run_application` installs the services as its first statement, before anything can read
-    /// them: a process that has installed none reads the host-test answers, which for the storage
-    /// group is `Files`, so a television that persisted ahead of its install would be told it has no
-    /// helper. One production install, and the only caller of `tv::install` is the `Platform` method
-    /// it goes through. Reads the source, like `app::boot`'s `seam_order_tests`, because no host test
-    /// can run the entry.
-    #[test]
-    fn the_services_are_installed_first_and_only_there() {
-        let body = include_str!("app/mod.rs")
-            .split_once("fn run_application(")
-            .expect("run_application")
-            .1
-            .split_once('{')
-            .expect("run_application's body")
-            .1;
-        let first = body
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty() && !line.starts_with("//"))
-            .expect("a first statement");
-        let first = first.split_once("//").map_or(first, |(code, _)| code).trim();
-        assert_eq!(
-            first,
-            concat!("platform.install_", "services();"),
-            "the install must be run_application's first statement"
-        );
-        let sources = crate_sources();
-        let count = |needle: &str| sources.iter().map(|text| text.matches(needle).count()).sum::<usize>();
-        assert_eq!(
-            count(concat!(".install_", "services()")),
-            1,
-            "one production install; a second would be refused by tv and could hide a missing first"
-        );
-        assert_eq!(
-            count(concat!("tv::", "install(")),
-            1,
-            "`tv::install` is called by `Platform::install_services` and nowhere else"
-        );
     }
 }

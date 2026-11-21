@@ -84,7 +84,7 @@ pub fn run(platform: &'static Platform, pms_host: &CStr, pms_port: u16) -> Exit 
 /// **The owner's ruling, held in the source.** `tests/host_interface.rs` is a separate crate and reads only its own
 /// spelling, so nothing there stops `lib.rs` from growing `pub mod app;` or `pub use app::platform::Shell;`: every
 /// test would still pass. These pins read the crate's own source, in the style of the `include_str!` pins of
-/// `port.rs` and `app/boot.rs`, and fail on that edit. The reason is Decision 3's amendment of 2026-11-21
+/// the webOS crate's `port.rs` and `app/boot.rs`, and fail on that edit. The reason is Decision 3's amendment of 2026-11-21
 /// (`docs/platform-ports.md`): `host` is the only way a platform crate reaches the application's types.
 #[cfg(test)]
 mod surface_pin_tests {

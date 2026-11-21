@@ -896,7 +896,14 @@ dependencies = [
 name = "plx_platform_webos"
 version = "0.0.0"
 dependencies = [
+ "libc",
+ "plx_base",
+ "plx_gfx",
+ "plx_os",
+ "plx_shell_sdl",
+ "plx_telemetry",
  "plxnative-modules",
+ "serde_json",
 ]
 
 [[package]]

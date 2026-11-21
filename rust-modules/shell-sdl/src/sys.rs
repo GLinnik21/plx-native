@@ -7,7 +7,7 @@
 //!
 //! The Wayland and `SDL_SysWMinfo` calls are NOT here and never may be: the television's SDL fork
 //! writes a larger `SDL_SysWMinfo` than the headers declare, and that over-allocated buffer
-//! lives in the application crate's `system.rs` with the rest of the LG half (a pin in `lib.rs`
+//! lives in the webOS platform crate's `system.rs` with the rest of the LG half (a pin in `lib.rs`
 //! keeps this file from naming it).
 #![allow(non_snake_case)]
 use std::os::raw::{c_char, c_int, c_void};

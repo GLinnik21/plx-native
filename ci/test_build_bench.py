@@ -118,7 +118,7 @@ elif args[0] == "rustc":
     tdir = args[args.index("--target-dir") + 1]
     out = os.path.join(tdir, tgt, "release")
     os.makedirs(out, exist_ok=True)
-    open(os.path.join(out, "libplxnative_modules.a"), "wb").write(b"!<arch>\nfake archive")
+    open(os.path.join(out, "libplx_platform_webos.a"), "wb").write(b"!<arch>\nfake archive")
     print(json.dumps({"reason": "compiler-artifact", "fresh": False}))
 '''
 FAKE_RUSTC = "#!/bin/sh\necho 'rustc 1.99.0-nightly (fake 2026-01-01)'\n"
@@ -128,7 +128,7 @@ FAKE_SYSCTL = ('#!/bin/sh\ncase "$2" in\n'
                '  *) echo "Fake CPU";;\nesac\n')
 SCRATCH_MAKEFILE = r'''print-bench-config:
 	@printf '%s\n' 'RUST_TOOLCHAIN=1.0.0' 'RUST_TDIR=target' 'RUST_TARGET=armv7-unknown-linux-gnueabi' \
-	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a' \
+	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/armv7-unknown-linux-gnueabi/release/libplx_platform_webos.a' \
 	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'UNIT_RUN=python3 ../tools/cargo-test-parallel.py' 'RELEASE=$(RELEASE)'
 '''
 LEAF = "rust-modules/base/src/cbuf.rs"
@@ -292,7 +292,7 @@ class ShapeTests(unittest.TestCase):
     def test_cargo_is_called_the_way_the_makefile_does(self):
         with Sandbox() as sb:
             (sb.repo / "rust-modules" / "target-fast").mkdir(parents=True)
-            lib = sb.repo / "rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a"
+            lib = sb.repo / "rust-modules/target/armv7-unknown-linux-gnueabi/release/libplx_platform_webos.a"
             lib.parent.mkdir(parents=True)
             lib.write_bytes(b"old")
             proc = sb.run("--runs", "1", "--only", "noop,leaf-inc,tests,arm")
@@ -314,7 +314,7 @@ class ShapeTests(unittest.TestCase):
             arm = [c for c in calls if c["args"][0] == "rustc"]
             self.assertEqual(len(arm), 1)
             self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "armv7-unknown-linux-gnueabi",
-                                              "--lib", "--crate-type", "staticlib", "--target-dir", "target",
+                                              "-p", "plx_platform_webos", "--lib", "--crate-type", "staticlib", "--target-dir", "target",
                                               "--message-format=json-render-diagnostics"])
             self.assertEqual(arm[0]["incr"], "0")
             self.assertEqual(arm[0]["rustflags"], "-C target-cpu=fake -C x")

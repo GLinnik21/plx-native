@@ -1,11 +1,11 @@
 //! plx_os: what this television is and keeps, for the PlxNative application core.
 //!
-//! The webOS identity (`webos`), the storage helper's client and its wire protocol (`storage`), the
-//! key stores (`keymanager`), the codec table (`devcaps`), the artwork cache (`imgcache`), the
-//! localization catalog (`i18n`), the Cloud Lab session file (`labcfg`) and the interfaces the
-//! webOS port fills at boot (`tv`). It is the `os` layer of `ci/module-layers.ini`: it uses
-//! `base` and `machine` and nothing else. `webos` and `keymanager` are also the port's
-//! (`[platform webos]`), and nothing outside the port names them.
+//! The storage helper's client and its wire protocol (`storage`), the codec table (`devcaps`), the
+//! artwork cache (`imgcache`), the localization catalog (`i18n`), the Cloud Lab session file
+//! (`labcfg`) and the interfaces the webOS port fills at boot (`tv`). It is the `os` layer of
+//! `ci/module-layers.ini`: it uses `base` and `machine` and nothing else. The webOS identity
+//! (`webos`) and the LS2 key stores (`keymanager`) are not here: they are the webOS platform
+//! crate's (`plx_platform_webos`, W7b of `docs/platform-ports.md`), which fills `tv` at boot.
 //!
 //! The crate owns its build script: it generates the `i18n::msg` catalog and the `Preference`/`Language` enums from `locales/` and
 //! `locales/languages.json`, and the
@@ -23,11 +23,9 @@
 pub mod devcaps; // what this SoC decodes — the TV's own codec table, read once at boot (the capability profile + direct-play gate derive from it)
 pub mod i18n;
 pub mod imgcache; // bounded persistent artwork cache shared by every image source
-pub mod keymanager; // public LS2 key stores: keymanager3, legacy Palm service, or unavailable
 pub mod playback_trace;
 pub mod labcfg; // `lab.json` (the Cloud Lab session config) and the two answers `ui/` and `screens/` ask of it: is this key the trigger, is the menu row on
 // Stage A foundation: owner adapters connect these APIs in the next integration stage.
 #[allow(dead_code)]
 pub mod storage;
-pub mod tv; // the television as everything outside the port sees it: the interfaces the webOS port fills at boot (step L15)
-pub mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename)
+pub mod tv; // the television as everything outside the platform crate sees it: the interfaces the webOS port fills at boot (step L15)

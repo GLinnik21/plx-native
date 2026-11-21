@@ -58,7 +58,7 @@ class ArmProfileSelection(unittest.TestCase):
         cfg = resolved()
         self.assertEqual(cfg["ARM_PROFILE"], "tvdev")
         self.assertEqual(cfg["ARM_PROFILE_FLAG"], "--profile tvdev")
-        self.assertTrue(cfg["RUST_LIB"].endswith("/armv7-unknown-linux-gnueabi/tvdev/libplxnative_modules.a"),
+        self.assertTrue(cfg["RUST_LIB"].endswith("/armv7-unknown-linux-gnueabi/tvdev/libplx_platform_webos.a"),
                         cfg["RUST_LIB"])
         self.assertEqual(self.profile("FLAVOR=debug", "LAB=1"), "tvdev")
 
@@ -75,7 +75,7 @@ class ArmProfileSelection(unittest.TestCase):
                 cfg = resolved(*args, env=env)
                 self.assertEqual(cfg["ARM_PROFILE"], "release")
                 self.assertEqual(cfg["ARM_PROFILE_FLAG"], "--release")
-                self.assertTrue(cfg["RUST_LIB"].endswith("/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a"),
+                self.assertTrue(cfg["RUST_LIB"].endswith("/armv7-unknown-linux-gnueabi/release/libplx_platform_webos.a"),
                                 cfg["RUST_LIB"])
 
     def test_the_override_wins_in_both_directions(self):
