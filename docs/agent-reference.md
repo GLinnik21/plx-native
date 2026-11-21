@@ -334,7 +334,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
   under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
 - `make test-host-interface` — W7a's gate (`docs/platform-ports.md`, Target shape 8): the application crate's
-  `host` module (`rust-modules/src/host.rs`, the one path a platform crate names) used from OUTSIDE the crate by
+  `host` module (`rust-modules/src/host.rs`, the one path a platform crate names the application's types by) used from OUTSIDE the crate by
   `rust-modules/tests/host_interface.rs`, an integration test and so a crate of its own. It builds a `static
   Platform` from a fake `Shell`, `Surface` and `FrameProbe`, boots it through `host::run` (the real
   `run_application`) and asserts that `init` ran before `open`, the `OpenAsk` the application made, and the fake's
@@ -345,7 +345,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   replaces the process's panic hook (`install_panic_logger`, which wraps the previous hook and also writes the
   event and crash logs), and only one test in the file boots, because the platform's services install once per
   process. The file also holds a source scan that every path into the application crate starts
-  `plxnative_modules::host`. Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
+  `plxnative_modules::host` (its own spelling only; the crate's surface is pinned by `host.rs`'s tests, which
+  `make test-crate C=plxnative_modules` runs). Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
   `$(UNIT_RUN)` (a `--test` line is passed through), refused under `RELEASE=1`, in `SIDE_EFFECT_FREE` and
   `DISK_ENTRIES`. `make check` runs the same test non-incrementally as the second cargo line of
   `check-cargo-unit-hostsim` (`--lib` never builds an integration test), pinned in `ci/test_ci_split.py`'s `GATES`.

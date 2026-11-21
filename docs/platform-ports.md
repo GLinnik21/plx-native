@@ -1189,7 +1189,12 @@ Ecore names to `remote_token_key` pairs".
   `Composition`, `Exit`, `Release`) are reachable ONLY through `host` (owner ruling, 2026-11-21; Decision 3, amended):
   `Exit` and `Release` are `pub` inside the private `app`, and `Platform` and the traits are `pub` in a private
   module, so no path outside `host` names them. `Services` is not one of the eight: it stays `plx_os::tv::Services`,
-  already a `pub` type of a lower crate, which `host` re-exports so that a platform crate names `host` alone. The split is by thread: registration data (the `static
+  already a `pub` type of a lower crate, which `host` re-exports beside them. A platform crate names the APPLICATION
+  crate's types through `host` alone, but not everything it builds is the application's: a `Services` is built from
+  the hook tables of `plx_os::tv` (`IdentityHooks`, `SecureHooks`, `SystemHooks`, `StorageHooks`, `LegacyWebosMedia`,
+  `LocaleReply`) and `MediaBoot::compose` takes `plx_media::player::adapter::PlayerAdapter`, so a platform crate
+  depends on `plx_os` and `plx_media` directly, as well as on the application crate. `host` does not re-export them.
+  The split is by thread: registration data (the `static
   PLATFORM`: function pointers and `&'static dyn` of `Sync` types, `Shell` included as a factory) is `Sync` and
   shared; thread-affine state (window, GL context, the Ecore handles) lives only in a `Surface` that
   `Shell::open(&self, &MainThread, &OpenAsk)` returns on the loop thread and that the app owns inside `App`.
@@ -1201,7 +1206,8 @@ Ecore names to `remote_token_key` pairs".
   required, `poll` is defaulted to `false` and `#[doc(hidden)]`, and the loop's `drain_sdl` drains `poll` as before and
   then calls `deliver` once. The SDL shells deliver nothing through the sink, so every SDL event still comes through
   `poll` (a unit test pins both). `poll` is RETIRED once the SDL shells deliver through the sink, W9 at the latest.
-- Gate. Before extraction, a platform is compiled against `host` alone: an integration test
+- Gate. Before extraction, a platform is compiled against the application crate through `host` alone (and against
+  `plx_os` and `plx_media` for the hook tables and `PlayerAdapter` it names): an integration test
   (`rust-modules/tests/host_interface.rs`, a separate crate that can name only `pub` items) builds a
   `static PLATFORM` from a fake `Shell`, `Surface` and `FrameProbe` and boots it through the real `run_application`
   (`host::run`) to the fake `Shell::open`'s refusal, under `hostsim` and a throwaway `PLXNATIVE_RUNTIME_DIR`. It
@@ -1210,7 +1216,11 @@ Ecore names to `remote_token_key` pairs".
   (`init_gl` links the renderer's programs), which need a current GL context, and nothing stubs GL under
   `test-support`. The loop's fake-surface tests stay in the crate (`make test-hostsim`). The test's one source rule is
   that every path into the application crate begins `plxnative_modules::host`; the lower-layer crates a platform
-  lists as its own dependencies (`plx_os`, `plx_media`) are fair to name. W7b extracts only after it passes.
+  lists as its own dependencies (`plx_os`, `plx_media`) are fair to name, and it must, as above. That rule holds
+  only this file's own spelling. The crate's SURFACE is held by an in-crate source pin in `host.rs`'s tests (`make
+  test-crate C=plxnative_modules`): the crate root's `pub` items are `host` plus the `hostsim`-only simulator
+  doors, and `host.rs` is the only `pub use crate::app` site, apart from the root's `hostsim`-only
+  `synthetic_home_initial`. W7b extracts only after it passes.
 - Runner (G8; F52). As of `e9924f0f9` no target ran it (every one was `cargo test --lib`; `rust-modules/tests/` did not
   exist), so a test file alone would have been a gate nobody ran. W7a added (1) `make test-host-interface`: `cargo
   test -p plxnative-modules --features hostsim --test host_interface`, incrementally in `target-hostsim` like
@@ -1683,7 +1693,9 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   amended 2026-11-21).
 - The Cargo mechanism of the PLATFORM axis lands here: the ARM recipe passes `RUST_FEATFLAGS`
   (`Makefile:1023-1024`), so each platform crate depends on the app with `default-features = false` and forwards
-  every app feature the Makefile passes (`rust-modules/Cargo.toml:78-82`), same defaults.
+  every app feature the Makefile passes (`rust-modules/Cargo.toml:78-82`), same defaults. W7b's platform crates
+  also depend on `plx_os` and `plx_media` directly: the hook tables of `Services` and `PlayerAdapter` are theirs, and
+  `host` does not re-export them (`rust-modules/tests/host_interface.rs` shows what a platform crate names).
 - Files: `src/lib.rs`, `src/host.rs`, `rust-modules/tests/host_interface.rs`, `rust-modules/Cargo.toml`, the `Makefile` `RUST_LIB`
   and `cargo rustc` lines and (W7a, G8; F52) the new `test-host-interface` target with its `DISK_ENTRIES` entry and a
   line in `check-cargo-unit-hostsim`, `ci/test_ci_split.py` (its `GATES`), `ci/check-staticlib-artifact.py`
@@ -1694,7 +1706,9 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - As landed (W7a): the interface, not the move. `src/host.rs` is the one public module of a television build (re-exports and `run`; a `hostsim` build keeps the simulator binary's own doors), the
   eight application-crate items of the owner's ruling are reachable through it only (`Services` is `plx_os`'s own `pub` type, re-exported), and `rust-modules/tests/host_interface.rs` builds
   a `static Platform` from fakes and boots it through `host::run` to the fake shell's refusal, with a source scan
-  that holds every mention of the application crate to `plxnative_modules::host`. The test has no `[[test]]`
+  that holds every mention of the application crate in that file to `plxnative_modules::host`; the crate's own
+  surface is held by a source pin in `host.rs`'s tests. A platform crate depends on `plx_os` and `plx_media` as well as
+  the application crate. The test has no `[[test]]`
   entry (cargo discovers `tests/*.rs`), so no `Cargo.toml` and no `ci/proofs` certificate changed. `make
   test-host-interface` is the incremental loop and `check-cargo-unit-hostsim` runs the same line, pinned in
   `ci/test_ci_split.py` (`GATES`). `Surface::poll` and `Surface::deliver` coexist until W9 retires `poll`; the SDL
@@ -1867,8 +1881,10 @@ emulator runs E11 and E12); they are recorded below and the body follows them.
 - 2026-11-21, Decision 3 amended (owner): the EIGHT application-crate items `Platform`, `Shell`, `Surface`,
   `FrameProbe`, `MediaBoot`, `Composition`, `Exit` and `Release` are reachable only through `plxnative_modules::host`,
   never as general `pub` items of the application crate. `Services` is not one of the eight: it is
-  `plx_os::tv::Services`, already a `pub` type of a lower crate, which `host` re-exports so that a platform crate
-  names `host` alone. `HostEvent` stays app-private, and `EventSink` is the public face of input (it too is
+  `plx_os::tv::Services`, already a `pub` type of a lower crate, which `host` re-exports beside them. A platform
+  crate names the application crate's types through `host` alone; the hook tables a `Services` is built from
+  (`plx_os::tv`) and `PlayerAdapter` (`plx_media`) come from their own crates, which it depends on directly.
+  `HostEvent` stays app-private, and `EventSink` is the public face of input (it too is
   reachable only through `host`). This replaces "`Shell` and `HostEvent` stay app-private" above for `Shell` and
   only `Shell`.
 - 2026-11-20, Decision 4 (order): A. The three contracts (W3a-c) first, then the rest, the Samsung-facing types

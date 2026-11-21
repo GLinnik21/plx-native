@@ -1,4 +1,5 @@
-//! W7a's gate: a platform built against `plxnative_modules::host` alone (`docs/platform-ports.md`,
+//! W7a's gate: a platform built against the application crate through `plxnative_modules::host`, with the hook
+//! tables of `plx_os::tv` and `plx_media`'s `PlayerAdapter` from their own crates (`docs/platform-ports.md`,
 //! Target shape 8).
 //!
 //! This is an integration test, a separate crate that can name only the `pub` items of the application
@@ -219,10 +220,13 @@ fn an_event_sink_is_implementable_from_outside_and_receives_a_surfaces_events_in
     );
 }
 
-/// **The one source rule of this file** (it is how "against `host` alone" is held): every path into the
-/// application crate starts `plxnative_modules::host`. The lower-layer crates a platform crate lists as its
-/// own dependencies (`plx_os`, `plx_media`) are fine to name; the application's private modules are not
-/// reachable, and this keeps a future edit from reaching for a re-export that would widen the surface.
+/// **The one source rule of this file**, and it holds this file's own spelling only: every path into the
+/// application crate starts `plxnative_modules::host`. What the crate itself makes reachable is not read here;
+/// that is pinned in-crate, by the source pins in `host.rs`'s tests (the crate root's `pub` items, and `host.rs` as
+/// the only `pub use crate::app` site). The lower-layer crates a platform crate lists as its
+/// own dependencies (`plx_os`, `plx_media`) are fine to name, and this file must (a `Services` is built from
+/// `plx_os::tv`'s hook tables, `MediaBoot::compose` takes `plx_media`'s `PlayerAdapter`); an edit to this file that
+/// names the application crate any other way fails here.
 #[test]
 fn every_path_into_the_application_crate_goes_through_host() {
     let source = include_str!("host_interface.rs");
