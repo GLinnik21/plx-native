@@ -469,12 +469,24 @@ def page_census_violations(source):
     return []
 
 
+# The application crate and the two platform crates that took files out of it (`port.rs`, `system.rs`,
+# `platform_desktop.rs` and `bin/sim.rs` were `rust-modules/src`'s): the ladder gate read all of them as one tree.
+EXTENSION_ROOTS = ('rust-modules/src', 'rust-modules/platform-webos/src', 'rust-modules/platform-desktop/src')
+
+
 def check_extension_registration(root):
-    source_root = root / 'rust-modules/src'
-    tests = rust.wholly_test_files(source_root)
-    errors = [f'{path}: {error}' for path in sorted(source_root.rglob('*.rs'))
-              if path.resolve() not in tests
-              for error in external_arg_match_violations(path.read_text(encoding='utf-8'))]
+    source_root = root / EXTENSION_ROOTS[0]
+    errors = []
+    for rel in EXTENSION_ROOTS:
+        base = root / rel
+        if not base.is_dir():
+            # A missing directory would make `rglob` yield nothing, which reads as "no ladder".
+            errors.append(f'{rel}: a directory this gate reads is missing (moved? fix EXTENSION_ROOTS in ci/ui_boundaries.py)')
+            continue
+        tests = rust.wholly_test_files(base)
+        errors.extend(f'{path}: {error}' for path in sorted(base.rglob('*.rs'))
+                      if path.resolve() not in tests
+                      for error in external_arg_match_violations(path.read_text(encoding='utf-8')))
     words = source_root / 'app/words.rs'
     if words.exists():
         errors.extend(f'{words}: {error}' for error in page_census_violations(words.read_text(encoding='utf-8')))

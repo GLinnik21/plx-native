@@ -155,6 +155,12 @@ SRC_OWP=rust-modules/owp/src
 SRC_SHELL_SDL=rust-modules/shell-sdl/src
 SRC_PLATFORM_WEBOS=rust-modules/platform-webos/src
 SRC_PLATFORM_DESKTOP=rust-modules/platform-desktop/src
+# The two platform crates took files out of `$SRC` (`port.rs`, `system.rs`, `platform_desktop.rs`, `bin/sim.rs`) and
+# out of `$SRC_OS` (`keymanager.rs`, `webos.rs`, `webos/`). A rule that reads the WHOLE of `$SRC` or of `$SRC_OS` reads
+# both platform crates too, so that moving a file into one does not move it out of the gate; only a rule scoped to a
+# directory of `$SRC` (`app/`, `dev/`) or to a file of `$SRC_OS` (`tv/plane.rs`) cannot reach them and stays as it is.
+# `tests/test_harness.py` (`DepGates.test_a_gate_that_reads_the_whole_app_or_os_crate_reads_the_platform_crates`) fails
+# on a command that names one of the two roots whole and not the platform crates.
 fails=0
 fail() { echo "::error::check-deps: $*"; fails=$((fails+1)); }
 ok()   { echo "  ok — $*"; }
@@ -250,7 +256,8 @@ grep_code() {
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
 }
 
-# grep_code_owner <pattern>: grep_code "$SRC" for the six owner rules below, from ONE shared pass.
+# grep_code_owner <pattern>: grep_code over the application crate, data, appkit, screens and the two platform crates
+# for the six owner rules below, from ONE shared pass.
 # Each carries a ~100-name alternation that this platform's grep evaluates line by line at ~0.5 s
 # a rule over the whole tree. Every line any of them can match names one of the six modules'
 # paths (`crate::<module>::` or `stores::<module>::`, the leading part of the pattern), so one
@@ -260,7 +267,7 @@ grep_code() {
 OWNER_PREFIX='(crate|plx_data)::(browse|viewstate|person|search|pms|metadata)::|stores::(browse|viewstate|person|search|hubs|metadata)::'
 # PRELUDE 1 of 3 (see "selecting rules"): computed only when one of the six owner rules is selected.
 if any_wanted browse-owner viewstate-owner person-owner search-owner hubs-owner metadata-owner; then
-OWNER_LINES="$(grep -HrnE --include='*.rs' "$OWNER_PREFIX" "$SRC" "$SRC_DATA" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null || true)"
+OWNER_LINES="$(grep -HrnE --include='*.rs' "$OWNER_PREFIX" "$SRC" "$SRC_DATA" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP" 2>/dev/null || true)"
 fi
 grep_code_owner() {
   printf '%s\n' "$OWNER_LINES" | grep -E -- "$1" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
@@ -864,7 +871,7 @@ done
 if [ "$vis_bad" -eq 0 ]; then ok "mutators-visibility"; else fail "mutators-visibility: $vis_bad fn(s) still crate-visible"; fi
 fi # mutators-visibility
 
-want nav && gate nav '(crate::ui|plx_ui)::nav::' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS"
+want nav && gate nav '(crate::ui|plx_ui)::nav::' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP"
 
 # Completed ownership migration: legacy publications and the old gate cannot return.
 if want ui-owner-legacy; then
@@ -887,7 +894,7 @@ fi # ui-owner-files
 
 # Motion collectors may not own generic damage or a second process-global notification adapter.
 if want owned-damage; then
-owned_damage_hits=$(grep_code 'motion::report::(invalidate|take_damage|select_damage|take_page_damage|OwnScope)' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_OS")
+owned_damage_hits=$(grep_code 'motion::report::(invalidate|take_damage|select_damage|take_page_damage|OwnScope)' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_OS" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP")
 report_adapter=$(grep_code '\bAtomic[A-Za-z0-9_]*\b|pub fn (invalidate|take_damage|select_damage|take_page_damage|present_dirty|wake)\b' "$SRC_MACHINE/motion/report.rs")
 if [ -z "$owned_damage_hits$report_adapter" ]; then ok "owned-damage"; else
   printf '%s\n%s\n' "$owned_damage_hits" "$report_adapter"
@@ -1047,7 +1054,7 @@ while IFS= read -r f; do
     { print NR":"$0 }' "$f" | grep -E '(crate|plx_gfx)::text::(text_width|elide|cap_h)\(' | grep -vE '^[0-9]+:[[:space:]]*//' || true)
 # ...over the files that spell a raw measurement call at all: the `awk` below only DROPS the body of
 # an `impl … Measure for …` block, so a file with no raw call has nothing for it to find.
-done < <(grep -rlE --include='*.rs' '(crate|plx_gfx)::text::(text_width|elide|cap_h)\(' "$SRC" "$SRC_GFX" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null | sort)
+done < <(grep -rlE --include='*.rs' '(crate|plx_gfx)::text::(text_width|elide|cap_h)\(' "$SRC" "$SRC_GFX" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP" 2>/dev/null | sort)
 if [ "$tm_bad" -eq 0 ]; then ok "textmeasure"; else fail "textmeasure: $tm_bad line(s) outside the Measure seam"; fi
 fi # textmeasure
 
@@ -1178,7 +1185,7 @@ if want route; then
 route_app=$(grep_code 'Route::' "$SRC/app")
 if [ -z "$route_app" ]; then ok "route: Route:: in app/"
 else fail "route: $(echo "$route_app" | wc -l | tr -d ' ') \`Route::\` use(s) in app/ — the page alphabet is \`AppArg\` (D1)"; fi
-route_enum=$(grep -rn --include='*.rs' 'enum Route\b' "$SRC" "$SRC_UI" 2>/dev/null || true)
+route_enum=$(grep -rn --include='*.rs' 'enum Route\b' "$SRC" "$SRC_UI" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP" 2>/dev/null || true)
 if [ -z "$route_enum" ]; then ok "route: enum Route absent"
 else
   echo "$route_enum" | sed 's/^/    /'
@@ -1625,7 +1632,7 @@ if want fxlanes; then
 if python3 ci/check-app-command-routing.py; then :
 else fail "fxlanes: external FIFO proof failed"; fi
 fxlanes_sites=$(
-  grep -rlE --include='*.rs' 'fn app_effect' "$SRC" 2>/dev/null | sort \
+  grep -rlE --include='*.rs' 'fn app_effect' "$SRC" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP" 2>/dev/null | sort \
     | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_MATCH='(^|[^A-Za-z0-9_])match[[:space:]]+fx[[:space:]]*\{' LG_ARM_OK='Fx::Deliver\(|unreachable!\(' \
       ledger_scan | sort
 )

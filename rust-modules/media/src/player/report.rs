@@ -3125,17 +3125,25 @@ mod tests {
     #[test]
     fn no_atomic_read_modify_write_uses_the_deprecated_fetch_update() {
         let needle = concat!(".", "fetch_update", "(");
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
-        // Every crate of the workspace: this crate (`src`), the application (`../src`) and each
-        // layer crate split out of it. The list read `src` and `ui/src` of the application crate
-        // until the media split moved this test, and the layers that had left before then were
-        // not in it, so moving a directory had already moved it out of this scan.
-        let layers = ["base", "machine", "os", "gfx", "net", "ui", "plex", "telemetry", "data", "session", "appkit", "screens"];
-        let roots = [manifest.join("src"), manifest.join("../src")]
-            .into_iter()
-            .chain(layers.iter().map(|layer| manifest.join("..").join(layer).join("src")));
+        // Every crate of the workspace: the application (`rust-modules/src`) and each
+        // `rust-modules/<crate>/src` beside it, found by listing the workspace directory. The list
+        // this replaced named the crates one by one, so each crate split out of the application had
+        // to be added to it by hand: the layers that had left before the media split were not in it,
+        // and neither were the platform crates (`platform-webos`, `platform-desktop`), which took
+        // `port.rs`, `system.rs` and the `webos/` port with them.
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut crates: Vec<std::path::PathBuf> = std::fs::read_dir(&workspace)
+            .expect("the rust-modules directory")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|dir| {
+                let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                !name.starts_with("target") && dir.join("src").is_dir()
+            })
+            .collect();
+        crates.sort();
+        let roots = std::iter::once(workspace.join("src")).chain(crates.into_iter().map(|dir| dir.join("src")));
         for src in roots {
             walk(&src, &mut |path: &std::path::Path, text: &str| {
                 files += 1;

@@ -88,6 +88,55 @@ class BoundaryTests(unittest.TestCase):
             (root / 'lib.rs').write_text('mod fixture;')
             self.assertTrue(boundary.check_screens(root))
 
+    def _extension_tree(self, directory, planted=None):
+        """The three roots the closed-ladder gate reads, empty, with one file planted in one of them."""
+        root = Path(directory)
+        for rel in ('rust-modules/src', 'rust-modules/platform-webos/src', 'rust-modules/platform-desktop/src'):
+            (root / rel).mkdir(parents=True)
+            (root / rel / 'lib.rs').write_text('')
+        if planted:
+            rel, source = planted
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source)
+        return root
+
+    def test_the_platform_crates_are_read_for_a_closed_arg_ladder(self):
+        """W7b: `port.rs`, `system.rs`, `platform_desktop.rs` and `bin/sim.rs` left `rust-modules/src` for the two
+        platform crates, and this gate read only `rust-modules/src`: a closed `AppArg` match in any of them passed.
+        RED against the one-root gate: each platform crate's files fail, and are named."""
+        ladder = 'fn word(arg: &AppArg) { match arg { AppArg::Home => "home", AppArg::Search => "search" } }'
+        for rel in ('rust-modules/platform-webos/src/system.rs', 'rust-modules/platform-webos/src/webos/toast.rs',
+                    'rust-modules/platform-desktop/src/bin/sim.rs', 'rust-modules/platform-desktop/src/lib.rs'):
+            with self.subTest(file=rel), TemporaryDirectory() as directory:
+                root = self._extension_tree(directory, (rel, ladder))
+                errors = boundary.check_extension_registration(root)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(rel, errors[0])
+
+    def test_the_application_crate_is_still_read_beside_the_platform_crates(self):
+        ladder = 'fn word(arg: &AppArg) { match arg { AppArg::Home => "home", AppArg::Search => "search" } }'
+        with TemporaryDirectory() as directory:
+            root = self._extension_tree(directory, ('rust-modules/src/app/words2.rs', ladder))
+            errors = boundary.check_extension_registration(root)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn('rust-modules/src/app/words2.rs', errors[0])
+
+    def test_a_platform_crate_with_no_ladder_passes(self):
+        with TemporaryDirectory() as directory:
+            root = self._extension_tree(directory, ('rust-modules/platform-webos/src/system.rs',
+                                                    'fn word(arg: &AppArg) { arg.route_word() }'))
+            self.assertEqual(boundary.check_extension_registration(root), [])
+
+    def test_a_missing_platform_root_is_reported_not_read_as_no_ladder(self):
+        with TemporaryDirectory() as directory:
+            root = self._extension_tree(directory)
+            (root / 'rust-modules/platform-webos/src/lib.rs').unlink()
+            (root / 'rust-modules/platform-webos/src').rmdir()
+            errors = boundary.check_extension_registration(root)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn('rust-modules/platform-webos/src: a directory this gate reads is missing', errors[0])
+
     def test_orphan_named_tests_is_not_exempt(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
