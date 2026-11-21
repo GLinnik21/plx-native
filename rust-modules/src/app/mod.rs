@@ -74,6 +74,7 @@ pub(crate) mod words;
 pub(crate) mod page_title;
 pub(crate) mod clock;
 mod clock_notice;
+mod server_security_notice;
 mod hint_taught;
 mod recorder;
 mod window_activity;

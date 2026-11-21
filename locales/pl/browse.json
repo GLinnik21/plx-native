@@ -297,5 +297,6 @@
   "browse.clock.key_changed": "Klucz Twojego serwera się zmienił. Połącz raz TV z internetem, aby aplikacja mogła go ponownie sprawdzić.",
   "browse.detail.mark_episode_watched": "Oznacz odcinek jako obejrzany",
   "browse.detail.mark_episode_unwatched": "Oznacz odcinek jako nieobejrzany",
-  "browse.detail.minutes_left": "Pozostało: {minutes} min"
+  "browse.detail.minutes_left": "Pozostało: {minutes} min",
+  "browse.server_security.notice": "Zaktualizuj serwer Plex {name} ze względów bezpieczeństwa."
 }

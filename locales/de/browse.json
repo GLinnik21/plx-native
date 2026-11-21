@@ -273,5 +273,6 @@
   "browse.clock.key_changed": "Der Schlüssel deines Servers hat sich geändert. Verbinde den Fernseher einmal mit dem Internet, damit die App ihn neu prüfen kann.",
   "browse.detail.mark_episode_watched": "Episode als gesehen markieren",
   "browse.detail.mark_episode_unwatched": "Episode als ungesehen markieren",
-  "browse.detail.minutes_left": "Noch {minutes} Min."
+  "browse.detail.minutes_left": "Noch {minutes} Min.",
+  "browse.server_security.notice": "Plex-Server {name} benötigt ein Sicherheitsupdate."
 }

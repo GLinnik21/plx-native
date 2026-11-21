@@ -273,5 +273,6 @@
   "browse.clock.key_changed": "A szerver kulcsa megváltozott. Csatlakoztassa egyszer a TV-t az internethez, hogy az alkalmazás újra ellenőrizhesse.",
   "browse.detail.mark_episode_watched": "Epizód megjelölése megnézettként",
   "browse.detail.mark_episode_unwatched": "Epizód megjelölése nem megnézettként",
-  "browse.detail.minutes_left": "{minutes} perc van hátra"
+  "browse.detail.minutes_left": "{minutes} perc van hátra",
+  "browse.server_security.notice": "Biztonsági frissítés szükséges: frissítse a(z) {name} Plex-kiszolgálót."
 }

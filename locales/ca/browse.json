@@ -285,5 +285,6 @@
   "browse.clock.key_changed": "La clau del teu servidor ha canviat. Connecta el televisor a Internet una vegada perquè l'aplicació la pugui verificar de nou.",
   "browse.detail.mark_episode_watched": "Marca l'episodi com a vist",
   "browse.detail.mark_episode_unwatched": "Marca l'episodi com a no vist",
-  "browse.detail.minutes_left": "Queden {minutes} min"
+  "browse.detail.minutes_left": "Queden {minutes} min",
+  "browse.server_security.notice": "Actualitzeu el servidor Plex {name} per seguretat."
 }

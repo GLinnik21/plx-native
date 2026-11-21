@@ -114,11 +114,12 @@ impl Frame {
 pub(crate) unsafe fn run(app: &mut App) {
     let watchdog = plx_base::task::watchdog::LoopWatch::start();
     let mut clock_notice = super::clock_notice::ClockNotice::new();
+    let mut server_security_notice = super::server_security_notice::ServerSecurityNotice::default();
     let mut hint_taught = super::hint_taught::HintTaught::new(app.pages.input.hold_hint);
     while app.running {
         watchdog.advance();
         let fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
-        let mut runtime = ProductFrameRuntime { app, fr, clock_notice: &mut clock_notice,
+        let mut runtime = ProductFrameRuntime { app, fr, clock_notice: &mut clock_notice, server_security_notice: &mut server_security_notice,
             hint_taught: &mut hint_taught,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             wslg_frame_budget: None };
@@ -133,6 +134,7 @@ struct ProductFrameRuntime<'a> {
     app: &'a mut App,
     fr: Frame,
     clock_notice: &'a mut super::clock_notice::ClockNotice,
+    server_security_notice: &'a mut super::server_security_notice::ServerSecurityNotice,
     hint_taught: &'a mut super::hint_taught::HintTaught,
     #[cfg(all(feature = "hostsim", target_os = "linux"))]
     wslg_frame_budget: Option<super::window_activity::WslgFrameBudget>,
@@ -177,6 +179,7 @@ impl plx_ui::dispatch::FrameRuntime<AppHost> for ProductFrameRuntime<'_> {
         plx_os::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         self.clock_notice.poll();
+        self.server_security_notice.poll(fr.now, matches!(app.route(), AppArg::Player));
         // What the hold hint has taught since last frame, written once to the install's session.
         let mut command = None;
         self.hint_taught.poll(app.runtime.auth_read().0.scope.0, &mut app.pages.input.hold_hint,
@@ -7236,10 +7239,11 @@ pub(in crate::app) mod lifecycle_regression_tests {
             app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
             if blocked { app.window_activity.event(0x104); }
             let mut notice = super::super::clock_notice::ClockNotice::new();
+            let mut security_notice = super::super::server_security_notice::ServerSecurityNotice::default();
             let mut hint = super::super::hint_taught::HintTaught::new(app.pages.input.hold_hint);
             let fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
             let mut rig = TracedProductFrame { native: ProductFrameRuntime {
-                app: &mut app, fr, clock_notice: &mut notice, hint_taught: &mut hint,
+                app: &mut app, fr, clock_notice: &mut notice, server_security_notice: &mut security_notice, hint_taught: &mut hint,
                 #[cfg(all(feature = "hostsim", target_os = "linux"))]
                 wslg_frame_budget: None }, trace: vec![], remaining: 0,
                 resource_arrived: false, swap_returns };

@@ -297,5 +297,6 @@
   "browse.clock.key_changed": "Ключ сервера изменился. Подключите телевизор к интернету, чтобы приложение могло проверить его заново.",
   "browse.detail.mark_episode_watched": "Отметить серию просмотренной",
   "browse.detail.mark_episode_unwatched": "Отметить серию непросмотренной",
-  "browse.detail.minutes_left": "Осталось {minutes} мин"
+  "browse.detail.minutes_left": "Осталось {minutes} мин",
+  "browse.server_security.notice": "Обновите сервер Plex «{name}»: требуется исправление безопасности."
 }

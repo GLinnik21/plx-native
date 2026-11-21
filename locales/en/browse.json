@@ -2281,5 +2281,12 @@
       "minutes": "i64"
     },
     "description": "Remaining playback time on the hero facts line, under one hour. Keep the minute unit compact."
+  },
+  "browse.server_security.notice": {
+    "value": "Security update needed: update Plex server {name}.",
+    "args": {
+      "name": "str"
+    },
+    "description": "System toast naming a Plex Media Server whose reported full build predates 1.43.3.10861, affected by the September 2026 security advisory. Ask the owner to update the server; do not claim the server is compromised. The server name is at most 24 characters. Keep the full toast under 120 characters."
   }
 }
