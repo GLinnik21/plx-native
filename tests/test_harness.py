@@ -10391,6 +10391,40 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — sink", out)
 
+    @_grades("sink")
+    def test_sink_gate_reads_the_platform_crates_beyond_the_three_files_that_name_it(self):
+        """W7b: the exemption is `platform-webos`'s `webos/` and `port.rs` and `platform-desktop`'s `lib.rs`
+        (what `os/webos/*`, `port.rs` and `platform_desktop.rs` were before the platform crates), not the two
+        crates. RED: the webOS crate's other files (`system.rs`, `keymanager.rs`, `webos.rs` and `lib.rs`
+        sit beside `port.rs`) and the desktop crate's other files (the simulator binary among them) must
+        still fail `sink`, and each is named."""
+        call = "pub fn f() {\n    let _ = plx_os::tv::sink::installed();\n}\n"
+        r = self._plant_all([
+            ("_check_deps_selftest_sink_webos_root.rs", call, "platform-webos"),
+            ("_check_deps_selftest_sink_desktop_root.rs", call, "platform-desktop"),
+            ("bin/_check_deps_selftest_sink_desktop_bin.rs", call, "platform-desktop"),
+        ])
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("sink:", out)
+        for name in ("platform-webos/src/_check_deps_selftest_sink_webos_root.rs",
+                     "platform-desktop/src/_check_deps_selftest_sink_desktop_root.rs",
+                     "platform-desktop/src/bin/_check_deps_selftest_sink_desktop_bin.rs"):
+            with self.subTest(file=name):
+                self.assertIn(name, out)
+
+    @_grades("sink")
+    def test_sink_gate_allows_the_native_webos_port_to_name_the_video_sink(self):
+        """GREEN: a file under `platform-webos`'s `webos/` (the native port) may name the sink."""
+        r = self._plant(
+            "webos/_check_deps_selftest_sink_in.rs",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
+            crate_dir="platform-webos",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — sink", out)
+
     @_grades("frame")
     def test_frame_gate_catches_a_shell_call_outside_the_loop(self):
         """D4, and W2 of the platform plan: the window and the bus are the platform's `Shell`, and its
