@@ -854,8 +854,8 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # it from the recipe AND its prerequisites, never the name (`check-ass` is a test goal and stages the
 # host libass into `pkg/`). Two kinds qualify:
 #
-#   * HOST-ONLY goals: the unit-test loops, the fuzz runs and the lint pass (`test-hostsim`, `check-nodef`,
-#     `test-fast`, `test-crate`, `fuzz-hud`, `lint`, `build-bench`), the pieces of `check` that are plain host work
+#   * HOST-ONLY goals: the unit-test loops, the fuzz runs and the lint pass (`test-hostsim`, `test-host-interface`,
+#     `check-nodef`, `test-fast`, `test-crate`, `fuzz-hud`, `lint`, `build-bench`), the pieces of `check` that are plain host work
 #     (`check-cargo-lint`, `check-cargo-unit-hostsim`, `check-localization`, `check-c-unit`,
 #     `check-python-harness`), the notices tables, and the set-up and local tooling that writes outside
 #     `pkg/` (a toolchain install, the disk-watch agent, the test media, the demo library, the

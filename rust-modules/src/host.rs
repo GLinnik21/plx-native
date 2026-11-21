@@ -5,8 +5,10 @@
 //! name `app::Platform` or implement a crate-private `Shell`. This is the one narrow public face: re-exports
 //! of the types a platform builds or implements, an [`EventSink`] through which it reports input, and
 //! [`run`], the one function in here (it hands the platform to the application's entry). No other module of the
-//! application is public to a television build (a `hostsim` build also keeps the simulator binary's own doors:
-//! `platform_desktop::run`, `hud_cli`, the `sim_*` helpers). `HostEvent`, the loop's own event type, stays
+//! application is public to a television build. A `hostsim` build also keeps the simulator binary's own doors,
+//! each behind `feature = "hostsim"` in `lib.rs` (`grep -n 'feature = "hostsim"' rust-modules/src/lib.rs`):
+//! `platform_desktop::run`, `hud_cli`, `sim_runtime_dir`, `sim_events_log`, `publish_sim_webos_major` and
+//! `synthetic_home_initial`, the one `app` item re-exported at the crate root. `HostEvent`, the loop's own event type, stays
 //! private: a platform reports input through [`EventSink`] and the application converts it. The owner's ruling (2026-11-21, Decision 3
 //! amended): `Shell`, `Surface`, `Platform`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit` and `Release`
 //! are reachable only through this module (`Services` is `plx_os::tv::Services`, a lower layer's type that this
