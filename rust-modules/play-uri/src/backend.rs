@@ -93,9 +93,9 @@ pub fn product_binding(display_mode: i32, firmware_major: u32, strata: &[u32]) -
 /// The firmware majors on which the product backend selects the exported window
 /// ([`product_binding`]): the only way production ever composes [`Binding::Exported`]. An entry is
 /// a webOS firmware major as `device::info().major` reports it (5 for 5.x, 11 for 11.x). The table
-/// admits majors 5 and 10 on tester evidence, and majors 6, 7 and 9 as bracketed by them with no
-/// tester run, and no other, so every other webOS 5+ major (8 and 11 included) plays Standard until
-/// it earns an entry (a webOS 4.x set takes the ACB plane, which this table does not touch).
+/// admits majors 5 and 10 on tester evidence, and majors 6, 7, 8 and 9 as bracketed by them with no
+/// tester run, and no other, so every other webOS 5+ major (11 included) plays Standard until it
+/// earns an entry (a webOS 4.x set takes the ACB plane, which this table does not touch).
 ///
 /// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
 /// table, each recorded there with the tester log's decisive lines (one exception follows the
@@ -122,9 +122,9 @@ pub fn product_binding(display_mode: i32, firmware_major: u32, strata: &[u32]) -
 /// when the nearest admitted major below it and the nearest admitted major above it were both
 /// admitted on tester evidence. Its Results row then says "bracketed, no tester run". A major
 /// admitted only as bracketed was not admitted on tester evidence, so it is skipped when looking
-/// for a side and never extends a bracket: 6, 7 and 9 each stand between 5 and 10, never between
-/// one another. One side is not a bracket, a major with no image to read has no (a) (major 8 has
-/// none and stays out), and nothing else is inferred from a neighbouring major.
+/// for a side and never extends a bracket: 6, 7, 8 and 9 each stand between 5 and 10, never
+/// between one another. One side is not a bracket, a major with no image to read has no (a), and
+/// nothing else is inferred from a neighbouring major.
 ///
 /// Each entry carries a comment naming its Results row. `0` is never an entry: it is the unknown
 /// answer.
@@ -149,11 +149,15 @@ pub const EXPORTED_STRATA: &[u32] = &[
     // sha256 0969903e) reads `option.windowId` at load in `parseLoadMessage` (0x467c6); bracketed by
     // majors 5 and 10, both admitted on tester evidence; no tester run.
     7,
+    // Firmware major 8 (the 8.3.1 image): `docs/uri-mode.md` Results row "webOS 8.3.1 (firmware major
+    // 8)". Bracketed, no tester run. (a) the 8.3.1 image (HE_DTV_W23O_AFABATAA, OLED65C3PUA firmware
+    // 03.33.25, libplayerAPIs sha256 e5ab26e1) reads `option.windowId` at load in `parseLoadMessage`
+    // (0x47014); bracketed by majors 5 and 10, both admitted on tester evidence; no tester run.
+    8,
     // Firmware major 9 (the 9.2.4 image): `docs/uri-mode.md` Results row "webOS 9.2.4 / 10.3.1
     // (33.31.68)", #1064. Bracketed, no tester run. (a) the 9.2.4 image (HE_DTV_W24G_AFABATAA,
     // libplayerAPIs sha256 cc08e2b8) reads `option.windowId` at load in `parseLoadMessage` (0x4385c);
-    // bracketed by majors 5 and 10, both admitted on tester evidence; no tester run. Major 8 has no
-    // image read, so it has no (a) and no entry.
+    // bracketed by majors 5 and 10, both admitted on tester evidence; no tester run.
     9,
     // webOS 25 (firmware 10.3.1, 33.31.68), LG C2: `docs/uri-mode.md` Results row "webOS 9.2.4 / 10.3.1
     // (33.31.68)", #1064. (a) the 10.3 image reads `option.windowId` at load; (b) the product run of
