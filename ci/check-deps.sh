@@ -1162,7 +1162,7 @@ while IFS= read -r line; do
   case "$p" in "$SRC_PLAY_FEED"/*|"$SRC_PLAY_URI"/*)
     case "$line" in *tv::sink::installed*|*tv::sink::display_installed*) ;; *) continue ;; esac ;;
   esac
-  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_OS"/tv/*|"$SRC_OS"/tv.rs|"$SRC"/platform_desktop.rs|"$SRC_PLATFORM_WEBOS"/*|"$SRC_PLATFORM_DESKTOP"/*|"$SRC"/app/adapters/backends.rs) continue ;; esac
+  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_OS"/tv/*|"$SRC_OS"/tv.rs|"$SRC_PLATFORM_WEBOS"/*|"$SRC_PLATFORM_DESKTOP"/*|"$SRC"/app/adapters/backends.rs) continue ;; esac
   if is_wholly_test "$p"; then continue; fi
   echo "    $line"; sink_bad=$((sink_bad+1))
 done < <(grep_code 'tv::sink::(installed|display_installed)|\b(VideoSink|DisplaySink)\b' "$SRC" "$SRC_OS" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_OWP" "$SRC_SHELL_SDL" "$SRC_PLATFORM_WEBOS" "$SRC_PLATFORM_DESKTOP")

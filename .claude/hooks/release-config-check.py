@@ -96,7 +96,8 @@ WHAT IT DELIBERATELY DOES NOT CHECK.
     says so rather than blaming the release configuration for a plain compile error.)
   * **`hostsim`.** A third configuration, off by default, built only by `make sim`, and it ships to
     nobody. It has the same structural exposure and a much smaller blast radius.
-  * **`rust-modules/src/bin/sim.rs`** and anything else under `src/bin/`: `--lib` does not compile
+  * **`rust-modules/platform-desktop/src/bin/sim.rs`** (the simulator, the desktop platform crate's binary; that crate is
+    not in the checked set at all) and anything else under a `src/bin/`: `--lib` does not compile
     them, and `required-features = ["hostsim"]` means the release configuration never does either.
     Firing there would spend the 0.55 s and grade nothing.
   * **`rust-modules/build.rs`.** Cargo compiles the script in every configuration, so a break in

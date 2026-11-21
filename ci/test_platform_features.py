@@ -134,6 +134,17 @@ class ForwardedFeatures(unittest.TestCase):
                 self.assertEqual(binary.get("required-features"), ["hostsim"], binary.get("name"))
 
 
+    def test_the_simulator_is_the_desktop_crates_binary_and_the_applications_no_longer(self):
+        # `plxnative-sim` left the application package with W7b: every build of it selects `-p plx_platform_desktop`
+        # (ci/test_sim_backend.py), and the application package, which the ARM staticlib's crate and the unit suite
+        # depend on, holds no bin target for a `--bins` build to compile.
+        self.assertNotIn("bin", load(MODULES / "Cargo.toml"))
+        binaries = load(MODULES / "platform-desktop" / "Cargo.toml").get("bin", [])
+        self.assertEqual([(b["name"], b["path"]) for b in binaries], [("plxnative-sim", "src/bin/sim.rs")])
+        self.assertTrue((MODULES / "platform-desktop" / "src" / "bin" / "sim.rs").is_file())
+        self.assertEqual(sorted((MODULES / "src" / "bin").glob("*.rs")), [], "a bin of the application package is back")
+
+
 class TheCheckBites(unittest.TestCase):
     """`problems` is red on each way a platform crate can drift, so the green above is not vacuous."""
     APP = {"features": {"default": ["a"], "a": ["x/a"], "b": [], "c": []}}

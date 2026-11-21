@@ -9,7 +9,7 @@
 //! described below. No other module of the
 //! application is public to a television build. A `hostsim` build also keeps the simulator binary's own doors,
 //! each behind `feature = "hostsim"` in `lib.rs` (`grep -n 'feature = "hostsim"' rust-modules/src/lib.rs`):
-//! `platform_desktop::run`, `hud_cli`, `sim_runtime_dir`, `sim_events_log`, `publish_sim_webos_major` and
+//! `hud_cli`, `sim_runtime_dir`, `sim_events_log`, `publish_sim_webos_major` and
 //! `synthetic_home_initial`, the one `app` item re-exported at the crate root. `HostEvent`, the loop's own event type, stays
 //! private: a platform reports input through [`EventSink`] and the application converts it. The owner's ruling (2026-11-21, Decision 3
 //! amended): the eight application-crate items `Platform`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`,
@@ -76,7 +76,7 @@ pub const FEED_MEDIA: MediaBoot = MediaBoot {
 /// [`Shell`], runs the loop and tears down. Ending the process is the caller's, as for the television's
 /// and the desktop's own entries: a process that hosts the application never does.
 ///
-/// `pms_host` and `pms_port` are the pair `plex_run` hands the entry and `platform_desktop::run` takes.
+/// `pms_host` and `pms_port` are the pair `plex_run` hands the entry and `plx_platform_desktop::run` takes.
 pub fn run(platform: &'static Platform, pms_host: &CStr, pms_port: u16) -> Exit {
     crate::app::run_application(platform, pms_host.as_ptr(), c_int::from(pms_port))
 }
@@ -93,10 +93,9 @@ mod surface_pin_tests {
     /// What the crate root may make `pub`, by the head of the item: `host`, and the simulator binary's own doors
     /// (a separate crate, so they must be `pub`), each existing only under `feature = "hostsim"`. `host` alone is
     /// open to a television build.
-    const ROOT_ITEMS: [(&str, bool); 7] = [
+    const ROOT_ITEMS: [(&str, bool); 6] = [
         ("pub mod host", false),
         ("pub mod hud_cli", true),
-        ("pub mod platform_desktop", true),
         ("pub fn sim_runtime_dir", true),
         ("pub fn publish_sim_webos_major", true),
         ("pub fn sim_events_log", true),
@@ -502,7 +501,7 @@ mod surface_pin_tests {
 mod media_boot_tests {
     use super::*;
 
-    /// `FEED_MEDIA` is the media boot the desktop platform states today (`platform_desktop::media_compose`): it composes the
+    /// `FEED_MEDIA` is the media boot the desktop platform states (`plx_platform_desktop`'s `MEDIA`): it composes the
     /// Feed over the host sink and no URI driver, so the session holds no resolver and offers no `Uri`.
     #[test]
     fn the_desktop_feed_boot_composes_the_feed_and_no_resolver() {

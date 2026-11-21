@@ -27,7 +27,7 @@ mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder 
 /// build also exposes the simulator binary's own doors below).
 pub mod host;
 // The simulator's HUD tools (`--hud-lint`, `--hud-schema`, `--hud-export`): a library function the thin
-// `src/bin/sim.rs` calls before it reads a PMS host. `pub` because that binary is a separate crate; absent
+// `platform-desktop/src/bin/sim.rs` calls before it reads a PMS host. `pub` because that binary is a separate crate; absent
 // from the television build, which has no use for a linter and no argv to read it from.
 #[cfg(any(test, feature = "hostsim"))]
 pub mod hud_cli;
@@ -49,7 +49,7 @@ mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput 
 
 /// The instance root, for the simulator binary.
 ///
-/// `src/bin/sim.rs` is a separate crate and cannot see `pub(crate)` items, but it must create the
+/// `platform-desktop/src/bin/sim.rs` is a separate crate and cannot see `pub(crate)` items, but it must create the
 /// directory and truncate the event log inside it before the app starts. Exposing the resolver
 /// keeps ONE definition of where that is — a second `env::var` read in the binary would be a
 /// second answer waiting to drift from this one.
@@ -68,7 +68,7 @@ pub fn publish_sim_webos_major(major: u32) {
 
 /// The event log's path, built by the ONE expression [`plx_base::eventlog::log`] uses.
 ///
-/// `src/bin/sim.rs` truncates this file at startup. Spelling the name a second time over there
+/// `platform-desktop/src/bin/sim.rs` truncates this file at startup. Spelling the name a second time over there
 /// would mean a rename could leave the binary truncating a file the app never appends to — the
 /// simulator's log would silently start non-empty, which is exactly the state `tests/run.py` dates
 /// its first line from.
@@ -77,13 +77,6 @@ pub fn sim_events_log() -> std::path::PathBuf {
     plx_base::eventlog::events_log()
 }
 
-/// The desktop platform, the simulator's and the macOS app's own: its tables and its entry, which
-/// `src/bin/sim.rs` calls by path (`plxnative_modules::platform_desktop::run`) because that binary
-/// is a separate crate. It never names the webOS port, so the television's code stays unreferenced
-/// in its executable. There is deliberately no `pub use` here: a re-export would be a reference from
-/// the crate root into the platform.
-#[cfg(feature = "hostsim")]
-pub mod platform_desktop;
 #[cfg(feature = "hostsim")]
 pub use app::synthetic_home_initial;
 

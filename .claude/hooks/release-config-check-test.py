@@ -23,7 +23,7 @@ fixed in `run_check`, because its message carried an em-dash.
 The interesting cases are the NEGATIVES. A missed edit costs one unchecked release configuration
 and the next edit re-runs it; a false fire costs 0.55 s on every `.rs` write in the session and
 teaches the reader to reach for `PLX_RELEASE_CHECK_SKIP`. The three that are easy to get wrong are
-`src/bin/sim.rs` (a real Rust file under the tree, which `--lib` does not compile and the release
+the simulator's `src/bin/sim.rs` (a real Rust file under the tree, which `--lib` does not compile and the release
 set could not build anyway — `required-features = ["hostsim"]`), `build.rs` (cargo compiles the script in
 EVERY configuration, so a break in it is already covered by `make check` — true even though it now
 emits `PLX_VERSION` for every build rather than early-returning outside `hostsim`), and a file in a sibling `.claude/worktrees/`
@@ -90,7 +90,7 @@ CASES = [
       "cwd": WT}, WT, WT),
 
     # --- does not fire: right extension, wrong target -------------------------
-    (SKIP, "src/bin/sim.rs (not a --lib target, needs hostsim)",
+    (SKIP, "a bin under the application's src (not a --lib target, needs hostsim)",
      edit("/repo/rust-modules/src/bin/sim.rs"), ROOT),
     (SKIP, "the desktop platform crate's source (hostsim only: it compiles to nothing in the release set)",
      edit("/repo/rust-modules/platform-desktop/src/lib.rs"), ROOT),

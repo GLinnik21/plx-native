@@ -889,6 +889,9 @@ dependencies = [
 name = "plx_platform_desktop"
 version = "0.0.0"
 dependencies = [
+ "plx_base",
+ "plx_media",
+ "plx_os",
  "plxnative-modules",
 ]
 

@@ -776,7 +776,7 @@ def main():
     if args.build:
         subprocess.check_call(["cargo", "+" + pinned(ROOT), "build", "--manifest-path", str(ROOT / "rust-modules/Cargo.toml"),
                                "--target-dir", str(ROOT / "rust-modules/target-sim"), "--features",
-                               "hostsim", "--bin", "plxnative-sim"], env=dict(os.environ, CARGO_INCREMENTAL="0"))
+                               "hostsim", "-p", "plx_platform_desktop", "--bin", "plxnative-sim"], env=dict(os.environ, CARGO_INCREMENTAL="0"))
     if not args.sim.exists():
         sys.exit(f"no simulator at {args.sim}; run with --build")
     results, bad = [], 0

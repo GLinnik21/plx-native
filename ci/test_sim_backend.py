@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Every simulator build that drops the default features still selects the Feed backend.
 
-The simulator is its own platform (`platform_desktop`, which `hostsim` compiles), and the video sink
+The simulator is its own platform (`plx_platform_desktop`, which `hostsim` compiles, and whose binary
+`plxnative-sim` it is), and the video sink
 it hands the application is the Feed backend's host sink (`plx_play_feed::ffi_host`), which exists
 only when `play-feed` is built. A simulator built `--no-default-features --features hostsim` selects
 NO backend: its platform installs `NoSink`, so Play can only ever reach the failure read-out and the
@@ -126,6 +127,16 @@ class SimulatorBackend(unittest.TestCase):
             "a simulator built --no-default-features selects no backend, so it installs NoSink and "
             "can never play: add play-feed to its --features",
         )
+
+    def test_every_simulator_build_selects_the_desktop_platform_crate(self):
+        """`plxnative-sim` is the binary of `plx_platform_desktop`, not of the application package. A simulator
+        build or type-check that names no `-p plx_platform_desktop` selects the application package alone, which
+        has no such binary (and whose `hostsim` feature is not the one the desktop platform forwards)."""
+        builds = [(path, n, line) for path, n, line, _, _ in sim_commands(scan())
+                  if re.search(r"\b(build|check)\b", line) and not re.search(r"\btest\b", line)]
+        self.assertTrue(builds)
+        bad = [f"{path}:{n}: {line}" for path, n, line in builds if "plx_platform_desktop" not in line]
+        self.assertEqual(bad, [], "a simulator build that does not select `-p plx_platform_desktop`")
 
     def test_each_scripted_simulator_build_is_pinned_to_its_features(self):
         """The three bundle/screenshot/video builds and the CI type-check and link, spelled out."""

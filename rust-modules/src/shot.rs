@@ -255,7 +255,7 @@ pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize
 /// the sign-in worker (`auth::mint_pin` -> libcurl) is still mid-handshake on another thread,
 /// loading the CA bundle — SIGSEGV inside libcrypto, captured by `tools/sim-smoke.py --core-dir`.
 /// Ending the run here lets the app's own shutdown run, and the simulator's `main` then leaves
-/// without `atexit` teardown (`src/bin/sim.rs`).
+/// without `atexit` teardown (`platform-desktop/src/bin/sim.rs`).
 
 #[must_use = "a headless one-shot capture asks the caller to end the run"]
 pub(crate) fn maybe_capture(now: u32, busy: bool, last_change_ms: u32, vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {

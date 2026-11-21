@@ -19,6 +19,14 @@ name = "plx_platform_desktop"
 # An rlib the simulator binary of this package links, never an archive (ci/test_no_host_staticlib.py).
 crate-type = ["rlib"]
 
+# The macOS/desktop UI simulator. Not built by `make` outside the `sim*` targets, not shipped except as the
+# macOS app (`ci/mkmacapp.py`), and inert without `hostsim`: it was the application package's own binary until
+# the platform crates split (W7). `-p plx_platform_desktop --bin plxnative-sim` selects it.
+[[bin]]
+name = "plxnative-sim"
+path = "src/bin/sim.rs"
+required-features = ["hostsim"]
+
 # `hostsim` is this crate's OWN feature and is in NO default set. The whole library is
 # `#![cfg(feature = "hostsim")]` and the binary requires it, so a default-feature pass that lists this
 # package (`make check`'s unit pass) compiles an empty library and enables nothing on the application:
@@ -39,6 +47,16 @@ hostsim = ["plxnative-modules/hostsim"]
 
 [dependencies]
 plxnative-modules = { path = "..", default-features = false }
+# The lower layers this platform's tables are written from (`plx_os::tv`, `plx_os::devcaps::dv`) and the
+# process end the binary owns (`plx_base::process::exit_now`). Their features are the application's, which
+# this crate's own forward (above): a path dependency here adds none.
+plx_base = { path = "../base" }
+plx_os = { path = "../os" }
+
+[dev-dependencies]
+# `PlayerAdapter`, the type the desktop's media boot composes onto, which its test grades. A test-only edge:
+# the library names no `plx_media` (the application hands the boot over as a ready `host::FEED_MEDIA`).
+plx_media = { path = "../media" }
 
 [lints]
 workspace = true

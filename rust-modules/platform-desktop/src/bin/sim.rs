@@ -36,7 +36,6 @@
 //!   PLXNATIVE_RUNTIME_DIR                     this instance's trigger/FIFO/log root
 //!   PLXNATIVE_APP_DIR                         where appfont*.ttf and the icons live (repo `pkg/`)
 
-use plxnative_modules::platform_desktop;
 use std::ffi::CString;
 
 /// Defaults chosen to fail loudly rather than silently talk to the wrong thing.
@@ -147,6 +146,6 @@ fn main() {
     // The desktop platform's entry returns the status the application ended with; ending the
     // process is this executable's, through `plx_base::process::exit_now` (no `atexit` handlers
     // under live workers, #1115).
-    let rc = platform_desktop::run(&c_host, port);
+    let rc = plx_platform_desktop::run(&c_host, port);
     plx_base::process::exit_now(rc)
 }

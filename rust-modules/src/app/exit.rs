@@ -480,12 +480,12 @@ mod lifecycle_tests {
     /// `plx_base::process::exit_now`; and that is the executable entries' to call, because a host
     /// is killed under its own runtime by one. `run_application` and the graphics boot RETURN
     /// (`Exit`, `GfxFault`), so the production `exit_now(` sites are the entries that own the
-    /// process end (the webOS crate's `port::plex_main`, the simulator's `main`), the frame dump (`devtriggers`, off in
+    /// process end (the webOS crate's `port::plex_main`, the simulator's `main` in the desktop crate), the frame dump (`devtriggers`, off in
     /// a release build) and the helper itself. A new exit anywhere else fails here.
     #[test]
     fn lifecycle_no_production_exit_is_reachable_from_a_hosted_process() {
         // The app process links every crate under rust-modules (the two platform crates among them, whose
-        // `port.rs` and `bin/sim.rs` are the entries) except `storage` (the separate
+        // `port.rs` and the desktop crate's `bin/sim.rs` are the entries) except `storage` (the separate
         // `plxstorage` helper binary, no OpenSSL workers) and os's `storage_service/` (that
         // helper's body). `base/src/process.rs` is the helper itself.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -503,7 +503,7 @@ mod lifecycle_tests {
             collect_rs(&dir.join("src"), &mut files);
         }
         assert!(files.len() > 100, "the scan must see the whole tree");
-        let owns_process_end = ["platform-webos/src/port.rs", "src/bin/sim.rs", "src/dev/framedump.rs"].map(|p| root.join(p));
+        let owns_process_end = ["platform-webos/src/port.rs", "platform-desktop/src/bin/sim.rs", "src/dev/framedump.rs"].map(|p| root.join(p));
         for entry in &owns_process_end {
             assert!(entry.is_file(), "{}: an entry the scan allows is gone; update the list", entry.display());
         }

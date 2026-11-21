@@ -278,8 +278,8 @@ jobs:
         # answer for the same feature sets, so a change that only breaks the Mac side fails here first.
         run: |
           cd rust-modules
-          cargo "+$RUST_TOOLCHAIN" check --lib --features hostsim
-          cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features --features hostsim,play-feed
+          cargo "+$RUST_TOOLCHAIN" check --lib -p plx_platform_desktop --features hostsim
+          cargo "+$RUST_TOOLCHAIN" check --lib -p plx_platform_desktop --no-default-features --features hostsim,play-feed
 
   host-unit-default:
     name: host unit tests (default features)
