@@ -26,6 +26,7 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     for bl_compat in [1, 2, 4] {
         let dovi = Dovi {
@@ -71,6 +72,7 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     for capability in [
         plx_os::devcaps::dv::DvCapability::Unknown,
@@ -193,6 +195,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
@@ -241,6 +244,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     let dv = p5().presentation(DECLARED, plx_os::devcaps::dv::DvCapability::Supported, true);
     assert!(
@@ -296,6 +300,7 @@ fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     for signal in [SILENT, DECLARED] {
         let dv = p7().presentation(signal, Supported, true);
@@ -371,6 +376,7 @@ fn profile_8_and_plain_files_are_unaffected() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     for signal in [SILENT, DECLARED] {
         assert!(
@@ -527,6 +533,7 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     for capability in [
         plx_os::devcaps::dv::DvCapability::Unknown,
@@ -686,6 +693,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     // the codec agrees; the frame size must still refuse — on either codec
     assert!(!video_direct_plays(
@@ -741,6 +749,7 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         app_lossy: plx_os::devcaps::AppLossy::Off,
         app_lossy_in_force: Default::default(),
         dv_first_picture: plx_os::devcaps::DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     };
     assert!(video_direct_plays(
         "h264",

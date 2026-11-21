@@ -190,6 +190,22 @@ pub enum DvFirstPicture {
     IdrOnly,
 }
 
+/// Whether a set running webOS `release` ("10.3.1"; empty when unknown) carries a Matroska file's Dolby Vision to the
+/// picture when the TV's own pipeline demuxes it (the URI engine; Feed demuxes in the app and is not
+/// asked). A static read of the images (`libgstmatroska`'s `parse_stream`): 4.10.2 has no
+/// `dvcC`/`dvvC` code, 5.5.0-19 through 9.2.4 skip every `BlockAdditionMapping`, and 10.3.1 matches
+/// `dvcC`/`dvvC` and sets `dolby-vision`. No 10.0-10.2 image has been read, so the rule starts at
+/// 10.3, and an unparsable release counts as before it. Before it the set plays such a file's base
+/// layer; on an LG C1 (6.5.3) a `DolbyHdrInfo` node on the Load only switched the panel into its
+/// Dolby Vision mode over that decode (`docs/uri-mode.md`, "Dolby Vision on the load").
+pub fn matroska_dolby_vision_for(release: &str) -> bool {
+    let mut parts = release.split('.').map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor) >= (10, 3),
+        _ => false,
+    }
+}
+
 /// Whether `policy` admits `row`: the ONE answer to "may the app decode this lossy row".
 pub(crate) fn lossy_row_enabled(row: &AppDecoded, policy: AppLossy) -> bool {
     row.lossy
@@ -734,6 +750,10 @@ pub struct Caps {
     /// where an [`EXCLUSIONS`] row says so ([`Limit::DvFirstPictureIdr`]) or the `dvfirstpicture` dev
     /// trigger asks. Carried by the attempt's caps; it never reaches the PMS profile.
     pub dv_first_picture: DvFirstPicture,
+    /// This set's Matroska demuxer carries a file's Dolby Vision to the picture
+    /// ([`matroska_dolby_vision_for`]): true from webOS 10.3 in a table read, false in
+    /// [`Caps::assumed`]. Read by the URI engine's original offer, never by the PMS profile.
+    pub dv_matroska: bool,
 }
 
 impl Caps {
@@ -759,6 +779,7 @@ impl Caps {
             app_lossy: AppLossy::Off,
             app_lossy_in_force: Default::default(),
             dv_first_picture: DvFirstPicture::AnyIrap,
+            dv_matroska: false,
         }
     }
 
@@ -1373,6 +1394,7 @@ fn parse(s: &str) -> Option<Caps> {
         app_lossy: AppLossy::Measured,
         app_lossy_in_force: Default::default(),
         dv_first_picture: DvFirstPicture::AnyIrap,
+        dv_matroska: false,
     })
 }
 
@@ -1548,6 +1570,7 @@ fn read_caps(files: &Files) -> (Caps, bool) {
                 let mut c = c;
                 plx_base::eventlog::log(&format!("devcaps: table audio rows: {}", table_audio_rows(&s)));
                 c.vp9_bit_depth = vp9_bit_depth_for(crate::tv::device::info().major);
+                c.dv_matroska = matroska_dolby_vision_for(&crate::tv::device::info().release);
                 // Before the exclusions: a codec the conf lists as switched off is not a candidate to limit.
                 let (gst_dropped, gst_unlisted) = match (files.read)(GST_CONF) {
                     Ok(conf) => apply_gst_decoders(&mut c, &conf),
@@ -3164,6 +3187,20 @@ mod tests {
         }
         assert_eq!(Caps::assumed().vp9_bit_depth, 8);
         assert_eq!(parse(REAL).unwrap().vp9_bit_depth, 8, "parse() alone never claims it; probe() sets it");
+    }
+
+    /// The Matroska demuxer carries Dolby Vision from webOS 10.3 only (the image reads in
+    /// [`matroska_dolby_vision_for`]); an unknown or unread release and the assumed profile say no.
+    #[test]
+    fn matroska_dolby_vision_starts_at_webos_10_3() {
+        for release in ["", "x", "10", "4.10.2", "5.5.0", "6.5.3", "9.2.4", "10.0.0", "10.2.9"] {
+            assert!(!matroska_dolby_vision_for(release), "webOS {release:?}");
+        }
+        for release in ["10.3", "10.3.1", "10.4.0", "11.2.0"] {
+            assert!(matroska_dolby_vision_for(release), "webOS {release:?}");
+        }
+        assert!(!Caps::assumed().dv_matroska);
+        assert!(!parse(REAL).unwrap().dv_matroska, "parse() alone never claims it; probe() sets it");
     }
 
     /// A video facet above the 1080p floor lowers THAT codec's raster bound and nothing else; one at
