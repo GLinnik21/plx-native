@@ -8850,6 +8850,10 @@ class DepGates(unittest.TestCase):
         "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
+        # `SRC_PLATFORM_WEBOS` / `SRC_PLATFORM_DESKTOP`: the platform crates' sources. `fnlen` reads the webOS
+        # crate's `port.rs`, so a copy without it fails that rule for a reason the real tree does not share.
+        "rust-modules/platform-webos/src",
+        "rust-modules/platform-desktop/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
@@ -8870,6 +8874,10 @@ class DepGates(unittest.TestCase):
         "rust-modules/ui/build.rs",
         "rust-modules/storage/Cargo.toml",
         "rust-modules/storage/build.rs",
+        "rust-modules/platform-webos/Cargo.toml",
+        "rust-modules/platform-webos/build.rs",
+        "rust-modules/platform-desktop/Cargo.toml",
+        "rust-modules/platform-desktop/build.rs",
         "rust-modules/.cargo",
         "Makefile",
     )
@@ -9075,7 +9083,9 @@ class DepGates(unittest.TestCase):
                   "rust-modules/os/build.rs", "rust-modules/gfx/Cargo.toml",
                   "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
                   "rust-modules/storage/Cargo.toml",
-                  "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile")
+                  "rust-modules/storage/build.rs", "rust-modules/platform-webos/Cargo.toml", "rust-modules/platform-webos/build.rs",
+                  "rust-modules/platform-desktop/Cargo.toml", "rust-modules/platform-desktop/build.rs",
+                  "rust-modules/.cargo/config.toml", "Makefile")
         for rel in inputs:
             target = os.path.join(self.tree, rel)
             self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
@@ -10360,7 +10370,7 @@ impl PersonOwnerGateFixture {
     @_grades("sink")
     def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
         """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
-        `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
+        `player/`, the platform crates and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
         r = self._plant(
             "_check_deps_selftest_sink_out.rs",
             "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",

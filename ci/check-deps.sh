@@ -745,7 +745,7 @@ if python3 ci/check-ports.py; then ok "wall"; else fail "wall: outside exact ci/
 fi # wall
 
 if want fpflags; then
-if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/os/Cargo.toml rust-modules/os/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
+if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/os/Cargo.toml rust-modules/os/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/platform-webos/Cargo.toml rust-modules/platform-webos/build.rs rust-modules/platform-desktop/Cargo.toml rust-modules/platform-desktop/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
 else ok "fpflags"; fi
 fi # fpflags
