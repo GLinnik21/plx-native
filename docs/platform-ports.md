@@ -1734,8 +1734,8 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   eight application-crate items of the owner's ruling are reachable through it only (`Services` is `plx_os`'s own `pub` type, re-exported), and `rust-modules/tests/host_interface.rs` builds
   a `static Platform` from fakes and boots it through `host::run` to the fake shell's refusal, with a source scan
   that holds every mention of the application crate in that file to `plxnative_modules::host`; the crate's own
-  surface is held by a source pin in `host.rs`'s tests. A platform crate depends on `plx_os` and `plx_media` as well as
-  the application crate. The test has no `[[test]]`
+  surface is held by a source pin in `host.rs`'s tests. A platform crate depends on `plx_os` as well as
+  the application crate (W7a expected `plx_media` too; after W7b's first lane only the desktop crate's test of the composed backends needs it, see the next bullet). The test has no `[[test]]`
   entry (cargo discovers `tests/*.rs`), so no `Cargo.toml` and no `ci/proofs` certificate changed. `make
   test-host-interface` is the incremental loop and `check-cargo-unit-hostsim` runs the same line, pinned in
   `ci/test_ci_split.py` (`GATES`). `Surface::poll` and `Surface::deliver` coexist until W9 retires `poll`; the SDL
