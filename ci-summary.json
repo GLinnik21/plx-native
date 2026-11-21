@@ -141,7 +141,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-21T12:29:34Z",
+ "generated": "2026-11-21T12:43:45Z",
  "metrics": [
   {
    "change30_pct": 10.0,
@@ -154,9 +154,9 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 158,
-   "n_prev": 147,
+   "n_prev": 148,
    "now": 419.5,
-   "prev7": 478,
+   "prev7": 478.0,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -368,8 +368,8 @@
   {
    "change30_pct": 27.4,
    "change7_pct": 3.9,
-   "d30": 314.0,
-   "delta30": 86.0,
+   "d30": 314,
+   "delta30": 86,
    "delta7": 15,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
@@ -450,10 +450,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 25.5,
+   "change30_pct": 24.9,
    "change7_pct": 6.6,
-   "d30": 192,
-   "delta30": 49,
+   "d30": 193,
+   "delta30": 48,
    "delta7": 15,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -664,8 +664,8 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 0.0,
-   "d30": 5.0,
-   "delta30": 0.0,
+   "d30": 5,
+   "delta30": 0,
    "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
