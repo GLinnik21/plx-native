@@ -119,9 +119,71 @@ mod surface_pin_tests {
         predicate.is_some_and(|p| !can_be(p).0 .0)
     }
 
-    /// The `pub` items of `source` (not `pub(crate)`, which has no space after `pub`) as `(line, head, confined)`.
-    /// An attribute may span lines, so each is read to its closing bracket and joined before it is judged.
-    fn public_items(source: &str) -> Vec<(usize, String, bool)> {
+    /// The index just past the `]` that closes the attribute opened at the start of `text` (`#[`), or `None` while it is
+    /// still open. A bracket inside a string literal does not count.
+    fn attribute_end(text: &str) -> Option<usize> {
+        let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+        for (at, c) in text.char_indices() {
+            if in_string {
+                match (escaped, c) {
+                    (true, _) => escaped = false,
+                    (false, '\\') => escaped = true,
+                    (false, '"') => in_string = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '"' => in_string = true,
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(at + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The attributes that open `first` (each whitespace-removed), and what is left of the line after the last one.
+    /// An attribute may span lines, so each is read from `more` to its closing bracket, and several may share a line.
+    /// When the brackets balance mid-line, the text after the final `]` is the item's own line
+    /// (`#[doc(hidden)] pub mod app;`), not something to skip.
+    fn split_attributes<'a>(first: &str, more: &mut impl Iterator<Item = (usize, &'a str)>) -> (Vec<String>, String) {
+        let mut attrs = Vec::new();
+        let mut rest = first.trim().to_string();
+        while rest.starts_with("#[") {
+            let end = loop {
+                if let Some(end) = attribute_end(&rest) {
+                    break end;
+                }
+                match more.next() {
+                    Some((_, next)) => {
+                        rest.push(' ');
+                        rest.push_str(next.trim());
+                    }
+                    None => break rest.len(),
+                }
+            };
+            attrs.push(rest[..end].split_whitespace().collect());
+            rest = rest[end..].trim_start().to_string();
+        }
+        (attrs, rest)
+    }
+
+    /// One `pub` item of a source: where it starts, the attributes before it (each whitespace-removed, those that share its
+    /// line included), and its text: the item's own line, or a `pub use` read to its `;`, with single spaces.
+    struct Public {
+        at: usize,
+        attrs: Vec<String>,
+        text: String,
+    }
+
+    /// Every `pub` item of `source` (not `pub(crate)`, which has no space after `pub`).
+    fn public_statements(source: &str) -> Vec<Public> {
         let mut found = Vec::new();
         let mut attrs: Vec<String> = Vec::new();
         let mut lines = source.lines().enumerate();
@@ -130,23 +192,35 @@ mod surface_pin_tests {
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            if line.starts_with("#[") {
-                let mut attr = line.to_string();
-                while attr.matches('[').count() > attr.matches(']').count() {
+            let (read, mut text) = split_attributes(line, &mut lines);
+            attrs.extend(read);
+            if text.is_empty() || text.starts_with("//") {
+                continue;
+            }
+            if text.starts_with("pub ") {
+                // A statement runs to its `;`, so a `{ ... }` list over several lines is one.
+                while text.starts_with("pub use ") && !text.contains(';') {
                     match lines.next() {
-                        Some((_, more)) => attr.push_str(more.trim()),
+                        Some((_, more)) => {
+                            text.push(' ');
+                            text.push_str(more.trim());
+                        }
                         None => break,
                     }
                 }
-                attrs.push(attr.split_whitespace().collect());
-                continue;
-            }
-            if line.starts_with("pub ") {
-                found.push((at + 1, head(line).to_string(), attrs.iter().any(|a| confines_to_hostsim(a))));
+                found.push(Public { at: at + 1, attrs: std::mem::take(&mut attrs), text });
             }
             attrs.clear();
         }
         found
+    }
+
+    /// The `pub` items of `source` as `(line, head, confined)`.
+    fn public_items(source: &str) -> Vec<(usize, String, bool)> {
+        public_statements(source)
+            .into_iter()
+            .map(|p| (p.at, head(&p.text).to_string(), p.attrs.iter().any(|a| confines_to_hostsim(a))))
+            .collect()
     }
 
     #[test]
@@ -175,22 +249,16 @@ mod surface_pin_tests {
     }
 
     /// `pub use` statements of `text`, each as `(line number, its text after `pub use` with whitespace removed)`.
-    /// A statement runs to its `;`, so a `{ ... }` list over several lines is one.
+    /// A statement runs to its `;`, so a `{ ... }` list over several lines is one, and an attribute on its line
+    /// (`#[allow(unused_imports)] pub use ...;`) does not hide it.
     fn pub_uses(text: &str) -> Vec<(usize, String)> {
-        let mut found = Vec::new();
-        let mut lines = text.lines().enumerate();
-        while let Some((at, line)) = lines.next() {
-            let Some(rest) = line.trim_start().strip_prefix("pub use ") else { continue };
-            let mut statement = rest.to_string();
-            while !statement.contains(';') {
-                match lines.next() {
-                    Some((_, more)) => statement.push_str(more),
-                    None => break,
-                }
-            }
-            found.push((at + 1, statement.split_whitespace().collect()));
-        }
-        found
+        public_statements(text)
+            .into_iter()
+            .filter_map(|p| {
+                let tree = p.text.strip_prefix("pub use ")?;
+                Some((p.at, tree.split_whitespace().collect()))
+            })
+            .collect()
     }
 
     /// Whether a `pub use` tree has `app` as a path segment anywhere: `crate::app::X`, `super::app::X` (from a module
@@ -236,5 +304,50 @@ mod surface_pin_tests {
             }
         }
         assert!(in_host >= 2, "host.rs re-exports the application's types: the scan found {in_host} `pub use` of `app`");
+    }
+
+    /// The scanners read an attribute and its item on one line, and an attribute that spans lines, with the item after its
+    /// closing `]`. Before, a line starting `#[` was only ever an attribute, so `#[doc(hidden)] pub mod app;` and
+    /// `#[allow(unused_imports)] pub use app::platform::Shell;` passed every pin above. Each fixture line is its own
+    /// string, so no line of this file starts with the items it holds (the pins read this file too).
+    #[test]
+    fn the_scanners_read_an_attribute_and_its_item_on_one_line() {
+        let source = [
+            "#[doc(hidden)] pub mod app;",
+            "#[allow(unused_imports)] pub use app::platform::Shell;",
+            "#[cfg(feature = \"hostsim\")] pub fn sim_runtime_dir() {}",
+            "#[cfg(any(",
+            "    test,",
+            "    feature = \"hostsim\"",
+            "))] pub mod hud_cli;",
+            "#[cfg(feature = \"hostsim\")] #[doc(hidden)] pub fn two_on_a_line() {}",
+            "#[cfg(feature = \"hostsim\")]",
+            "#[allow(dead_code)] pub fn two_groups() {}",
+            "#[doc = \"a ] in a string\"] pub fn bracket_in_a_string() {}",
+            "#[allow(unused)] fn private() {}",
+            "pub fn plain() {}",
+        ]
+        .join("\n");
+        let items = public_items(&source);
+        let heads: Vec<(&str, bool)> = items.iter().map(|(_, head, confined)| (head.as_str(), *confined)).collect();
+        assert_eq!(
+            heads,
+            [
+                ("pub mod app", false),
+                ("pub use app::platform::Shell", false),
+                ("pub fn sim_runtime_dir", true),
+                ("pub mod hud_cli", true),
+                ("pub fn two_on_a_line", true),
+                ("pub fn two_groups", true),
+                ("pub fn bracket_in_a_string", false),
+                ("pub fn plain", false),
+            ]
+        );
+        assert_eq!(items[1].0, 2, "the line is the one the attribute starts on");
+        assert_eq!(pub_uses(&source), [(2, "app::platform::Shell;".to_string())]);
+        // The attribute above a multi-line `pub use` list still reaches the statement, and the attribute is not the item.
+        let list = ["#[cfg(feature = \"hostsim\")]", "pub use a::{", "    B,", "    C,", "};"].join("\n");
+        assert_eq!(pub_uses(&list), [(2, "a::{B,C,};".to_string())]);
+        assert!(public_statements(&list)[0].attrs.iter().any(|a| confines_to_hostsim(a)));
     }
 }
