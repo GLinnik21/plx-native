@@ -1185,10 +1185,11 @@ Ecore names to `remote_token_key` pairs".
   only": the entry is `pub(crate)`, and a platform crate has nothing else to call). The re-exports are `Platform`,
   `Services`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit`, `Release` and an `EventSink`
   trait, with the vocabulary their signatures use: `MainThread`, `OpenAsk`, `Placement`, `Lifecycle`, `PointerEdge`,
-  `Action`, `RawKey` and `Edge`. The application's eight (all but `Services`) are reachable ONLY through `host` (owner ruling, 2026-11-21;
-  Decision 3, amended): `Exit` and `Release` are `pub` inside the private `app`, and `Platform` and the traits are
-  `pub` in a private module, so no path outside `host` names them. `Services` stays `plx_os::tv::Services`, a lower
-  layer's type that `host` re-exports for one-stop naming. The split is by thread: registration data (the `static
+  `Action`, `RawKey` and `Edge`. The eight application-crate items (`Platform`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`,
+  `Composition`, `Exit`, `Release`) are reachable ONLY through `host` (owner ruling, 2026-11-21; Decision 3, amended):
+  `Exit` and `Release` are `pub` inside the private `app`, and `Platform` and the traits are `pub` in a private
+  module, so no path outside `host` names them. `Services` is not one of the eight: it stays `plx_os::tv::Services`,
+  already a `pub` type of a lower crate, which `host` re-exports so that a platform crate names `host` alone. The split is by thread: registration data (the `static
   PLATFORM`: function pointers and `&'static dyn` of `Sync` types, `Shell` included as a factory) is `Sync` and
   shared; thread-affine state (window, GL context, the Ecore handles) lives only in a `Surface` that
   `Shell::open(&self, &MainThread, &OpenAsk)` returns on the loop thread and that the app owns inside `App`.
@@ -1691,7 +1692,7 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   layer's `src/lib.rs` (drops `pub mod keymanager;` and `pub mod webos;`) with its `Cargo.toml`: both pinned, a
   reviewed certificate change (F25).
 - As landed (W7a): the interface, not the move. `src/host.rs` is the one public module of a television build (re-exports and `run`; a `hostsim` build keeps the simulator binary's own doors), the
-  eight application types of the owner's ruling are reachable through it only (`Services` is `plx_os`'s, re-exported), and `rust-modules/tests/host_interface.rs` builds
+  eight application-crate items of the owner's ruling are reachable through it only (`Services` is `plx_os`'s own `pub` type, re-exported), and `rust-modules/tests/host_interface.rs` builds
   a `static Platform` from fakes and boots it through `host::run` to the fake shell's refusal, with a source scan
   that holds every mention of the application crate to `plxnative_modules::host`. The test has no `[[test]]`
   entry (cargo discovers `tests/*.rs`), so no `Cargo.toml` and no `ci/proofs` certificate changed. `make
@@ -1863,11 +1864,13 @@ emulator runs E11 and E12); they are recorded below and the body follows them.
 - 2026-11-20, Decision 3 (W7 gate): A. W7 may start. H3 and H4 recorded as answered on the emulator only; H1 and
   H2 stay open and gate W9, not W7. `Shell` and `HostEvent` stay app-private. Read with Decision 8: the emulator MVP
   of W9 does not wait for H1 and H2 either.
-- 2026-11-21, Decision 3 amended (owner): `Shell`, `Surface`, `Platform`, `Services`, `FrameProbe`, `MediaBoot`,
-  `Composition`, `Exit` and `Release` are reachable only through `plxnative_modules::host`, never as general `pub`
-  items of the application crate. `HostEvent` stays app-private; `EventSink` is the public face of input. This
-  replaces "`Shell` and `HostEvent` stay app-private" above for `Shell` and only `Shell`. (`Services` is `plx_os::tv::Services`,
-  a `pub` type of a lower crate: `host` re-exports it, so it is nameable both ways; the other eight have one path.)
+- 2026-11-21, Decision 3 amended (owner): the EIGHT application-crate items `Platform`, `Shell`, `Surface`,
+  `FrameProbe`, `MediaBoot`, `Composition`, `Exit` and `Release` are reachable only through `plxnative_modules::host`,
+  never as general `pub` items of the application crate. `Services` is not one of the eight: it is
+  `plx_os::tv::Services`, already a `pub` type of a lower crate, which `host` re-exports so that a platform crate
+  names `host` alone. `HostEvent` stays app-private, and `EventSink` is the public face of input (it too is
+  reachable only through `host`). This replaces "`Shell` and `HostEvent` stay app-private" above for `Shell` and
+  only `Shell`.
 - 2026-11-20, Decision 4 (order): A. The three contracts (W3a-c) first, then the rest, the Samsung-facing types
   app-private (`Shell` and `Surface` are published through `host` only, by the 2026-11-21 amendment to Decision 3).
   Cut into the waves of "Workstreams".

@@ -10,9 +10,10 @@
 //! `platform_desktop::run`, `hud_cli`, `sim_runtime_dir`, `sim_events_log`, `publish_sim_webos_major` and
 //! `synthetic_home_initial`, the one `app` item re-exported at the crate root. `HostEvent`, the loop's own event type, stays
 //! private: a platform reports input through [`EventSink`] and the application converts it. The owner's ruling (2026-11-21, Decision 3
-//! amended): `Shell`, `Surface`, `Platform`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit` and `Release`
-//! are reachable only through this module (`Services` is `plx_os::tv::Services`, a lower layer's type that this
-//! module re-exports for one-stop naming).
+//! amended): the eight application-crate items `Platform`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`,
+//! `Composition`, `Exit` and `Release` are reachable only through this module. `Services` is not one of the eight:
+//! it is `plx_os::tv::Services`, already a `pub` type of a lower crate, which this module re-exports so that a
+//! platform crate names `host` alone.
 //!
 //! The split is by thread. A [`Platform`] is registration data in a `static`: function pointers and
 //! `&'static dyn` of `Sync` types, [`Shell`] included as a factory. The thread-affine state (the window,
