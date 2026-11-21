@@ -1219,7 +1219,7 @@ Ecore names to `remote_token_key` pairs".
   lists as its own dependencies (`plx_os`, `plx_media`) are fair to name, and it must, as above. That rule holds
   only this file's own spelling. The crate's SURFACE is held by an in-crate source pin in `host.rs`'s tests (`make
   test-crate C=plxnative_modules`): the crate root's `pub` items are `host` plus the `hostsim`-only simulator
-  doors, and `host.rs` is the only `pub use crate::app` site, apart from the root's `hostsim`-only
+  doors (each confined to `hostsim`, or `test`, by its `cfg`), and `host.rs` is the only `pub use` whose tree names `app` (as `crate::app`, `super::app`, `self::app` or in a group), apart from the root's `hostsim`-only
   `synthetic_home_initial`. W7b extracts only after it passes.
 - Runner (G8; F52). As of `e9924f0f9` no target ran it (every one was `cargo test --lib`; `rust-modules/tests/` did not
   exist), so a test file alone would have been a gate nobody ran. W7a added (1) `make test-host-interface`: `cargo

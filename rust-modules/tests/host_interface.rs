@@ -223,7 +223,7 @@ fn an_event_sink_is_implementable_from_outside_and_receives_a_surfaces_events_in
 /// **The one source rule of this file**, and it holds this file's own spelling only: every path into the
 /// application crate starts `plxnative_modules::host`. What the crate itself makes reachable is not read here;
 /// that is pinned in-crate, by the source pins in `host.rs`'s tests (the crate root's `pub` items, and `host.rs` as
-/// the only `pub use crate::app` site). The lower-layer crates a platform crate lists as its
+/// the only `pub use` that names `app`). The lower-layer crates a platform crate lists as its
 /// own dependencies (`plx_os`, `plx_media`) are fine to name, and this file must (a `Services` is built from
 /// `plx_os::tv`'s hook tables, `MediaBoot::compose` takes `plx_media`'s `PlayerAdapter`); an edit to this file that
 /// names the application crate any other way fails here.

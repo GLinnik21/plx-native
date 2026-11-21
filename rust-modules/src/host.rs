@@ -58,8 +58,8 @@ mod surface_pin_tests {
     use std::path::Path;
 
     /// What the crate root may make `pub`, by the head of the item: `host`, and the simulator binary's own doors
-    /// (a separate crate, so they must be `pub`), each behind `feature = "hostsim"`. `host` alone is open to a
-    /// television build.
+    /// (a separate crate, so they must be `pub`), each existing only under `feature = "hostsim"`. `host` alone is
+    /// open to a television build.
     const ROOT_ITEMS: [(&str, bool); 7] = [
         ("pub mod host", false),
         ("pub mod hud_cli", true),
@@ -70,57 +70,105 @@ mod surface_pin_tests {
         ("pub use app::synthetic_home_initial", true),
     ];
 
-    const HOW_TO_PROCEED: &str = "The application is reachable only through `host` (the crate root also keeps the simulator's \
-         `hostsim`-only doors, ROOT_ITEMS), because the owner's 2026-11-21 amendment to Decision 3 \
-         (docs/platform-ports.md) makes `host` the only way a platform crate reaches the application. If this edit is \
-         deliberate, extend ROOT_ITEMS in this test (or the one allowed `pub use` below) AND record the reason in that \
-         amendment; do not publish an application item from lib.rs or from another module.";
+    const HOW_TO_PROCEED: &str = "The application is reachable only through `host`, because the owner's 2026-11-21 amendment to \
+         Decision 3 (docs/platform-ports.md) makes `host` the only way a platform crate reaches it. To publish an \
+         application item (W7b's `sdl_init` and `sdl_open`, say), re-export it from host.rs, which the second pin allows. \
+         Only a new simulator door that is NOT an application item, existing only under `feature = \"hostsim\"`, extends \
+         ROOT_ITEMS in this test, and the reason is recorded in that amendment.";
 
-    /// The text of `item`'s head: up to its first `;`, `{`, `(` or `<`.
+    /// The text of an item's head: up to its first `;`, `{`, `(` or `<`.
     fn head(line: &str) -> &str {
         let end = line.find([';', '{', '(', '<']).unwrap_or(line.len());
         line[..end].trim()
     }
 
-    /// Whether the attributes directly above line `at` gate the item behind `feature = "hostsim"` (a `not(...)` does
-    /// not count), skipping the doc and line comments that sit between them.
-    fn gated_behind_hostsim(lines: &[&str], at: usize) -> bool {
-        let mut gated = false;
-        for line in lines[..at].iter().rev().map(|l| l.trim()) {
-            if line.starts_with("#[") {
-                gated |= line.starts_with("#[cfg(") && line.contains("feature = \"hostsim\"") && !line.contains("not(");
-            } else if !line.starts_with("//") {
-                break;
+    /// `(can be true, can be false)` for the cfg predicate at the start of `s` (whitespace removed), in a build with
+    /// neither `hostsim` nor `test` and whatever else set; also returns the rest of `s`. Any other predicate may be
+    /// either, so an `any(...)` naming another feature (`devtriggers` is on by default) can be true.
+    fn can_be(s: &str) -> ((bool, bool), &str) {
+        let end = s.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(s.len());
+        let (name, rest) = s.split_at(end);
+        if let Some(mut rest) = rest.strip_prefix('(') {
+            let mut parts = Vec::new();
+            while !rest.starts_with(')') {
+                assert!(!rest.is_empty(), "an unbalanced cfg predicate");
+                let (part, after) = can_be(rest);
+                parts.push(part);
+                rest = after.strip_prefix(',').unwrap_or(after);
             }
+            let result = match name {
+                "any" => (parts.iter().any(|p| p.0), parts.iter().all(|p| p.1)),
+                "all" => (parts.iter().all(|p| p.0), parts.iter().any(|p| p.1)),
+                "not" => (parts[0].1, parts[0].0),
+                other => panic!("an unknown cfg combinator `{other}`"),
+            };
+            return (result, &rest[1..]);
         }
-        gated
+        if let Some(value) = rest.strip_prefix("=\"") {
+            let (value, after) = value.split_once('"').expect("a closed string");
+            let never = name == "feature" && value == "hostsim";
+            return ((!never, true), after);
+        }
+        (((name != "test"), true), rest)
+    }
+
+    /// Whether the attribute `attr` (whitespace removed) is a `cfg` under which the item cannot exist without
+    /// `hostsim` or `test`: `feature = "hostsim"`, an `any` of those two, or an `all` with `hostsim` among its members.
+    fn confines_to_hostsim(attr: &str) -> bool {
+        let predicate = attr.strip_prefix("#[cfg(").and_then(|a| a.strip_suffix(")]"));
+        predicate.is_some_and(|p| !can_be(p).0 .0)
+    }
+
+    /// The `pub` items of `source` (not `pub(crate)`, which has no space after `pub`) as `(line, head, confined)`.
+    /// An attribute may span lines, so each is read to its closing bracket and joined before it is judged.
+    fn public_items(source: &str) -> Vec<(usize, String, bool)> {
+        let mut found = Vec::new();
+        let mut attrs: Vec<String> = Vec::new();
+        let mut lines = source.lines().enumerate();
+        while let Some((at, line)) = lines.next() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            if line.starts_with("#[") {
+                let mut attr = line.to_string();
+                while attr.matches('[').count() > attr.matches(']').count() {
+                    match lines.next() {
+                        Some((_, more)) => attr.push_str(more.trim()),
+                        None => break,
+                    }
+                }
+                attrs.push(attr.split_whitespace().collect());
+                continue;
+            }
+            if line.starts_with("pub ") {
+                found.push((at + 1, head(line).to_string(), attrs.iter().any(|a| confines_to_hostsim(a))));
+            }
+            attrs.clear();
+        }
+        found
     }
 
     #[test]
     fn the_crate_root_publishes_host_and_the_simulators_hostsim_doors_and_nothing_else() {
         let source = include_str!("lib.rs");
-        let lines: Vec<&str> = source.lines().collect();
-        let mut seen = Vec::new();
-        for (at, line) in lines.iter().enumerate() {
-            let line = line.trim_start();
-            // `pub(crate)` has no space after `pub`, so it is not public and is not matched.
-            if !line.starts_with("pub ") {
-                continue;
-            }
-            let item = head(line);
-            let Some(&(_, hostsim_only)) = ROOT_ITEMS.iter().find(|(known, _)| *known == item) else {
-                panic!("lib.rs line {} makes `{item}` public. {HOW_TO_PROCEED}", at + 1);
+        let items = public_items(source);
+        for (at, item, confined) in &items {
+            let Some(&(_, hostsim_only)) = ROOT_ITEMS.iter().find(|&&(known, _)| known == item.as_str()) else {
+                panic!("lib.rs line {at} makes `{item}` public. {HOW_TO_PROCEED}");
             };
             assert!(
-                !hostsim_only || gated_behind_hostsim(&lines, at),
-                "lib.rs line {}: `{item}` is a simulator door and must be behind `feature = \"hostsim\"`, or a \
-                 television build exposes it. {HOW_TO_PROCEED}",
-                at + 1
+                !hostsim_only || *confined,
+                "lib.rs line {at}: `{item}` is a simulator door and must exist only under `feature = \"hostsim\"` (with \
+                 `test` or `all(..)` at most): an `any(..)` naming another feature, `devtriggers` being on by default, \
+                 ships it in a television build. {HOW_TO_PROCEED}"
             );
-            seen.push(item);
         }
-        for (item, _) in ROOT_ITEMS {
-            assert!(seen.contains(&item), "lib.rs no longer makes `{item}` public: update ROOT_ITEMS to match. {HOW_TO_PROCEED}");
+        for (known, _) in ROOT_ITEMS {
+            assert!(
+                items.iter().any(|(_, item, _)| item == known),
+                "lib.rs no longer makes `{known}` public: update ROOT_ITEMS to match. {HOW_TO_PROCEED}"
+            );
         }
         // An exported macro is a public path into the crate that a `pub ` line scan cannot see.
         assert!(!source.contains(concat!("#[macro_", "export")), "lib.rs exports a macro. {HOW_TO_PROCEED}");
@@ -145,6 +193,12 @@ mod surface_pin_tests {
         found
     }
 
+    /// Whether a `pub use` tree has `app` as a path segment anywhere: `crate::app::X`, `super::app::X` (from a module
+    /// directly under `src/`), `self::app::X` (from `lib.rs`), `app::X` and `crate::{host, app::X}` all do.
+    fn names_the_application(statement: &str) -> bool {
+        statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|segment| segment == "app")
+    }
+
     fn rust_sources(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir).expect("the source directory").map(|e| e.expect("an entry").path()).collect();
         entries.sort();
@@ -167,8 +221,7 @@ mod surface_pin_tests {
         let mut in_host = 0;
         for (name, text) in &files {
             for (at, statement) in pub_uses(text) {
-                let names_app = ["crate::app::", "crate::{app", "app::", "{app"].iter().any(|p| statement.trim_start_matches("::").starts_with(p));
-                if !names_app {
+                if !names_the_application(&statement) {
                     continue;
                 }
                 if name == "host.rs" {
@@ -182,6 +235,6 @@ mod surface_pin_tests {
                 }
             }
         }
-        assert!(in_host >= 2, "host.rs re-exports the application's types: the scan found {in_host} `pub use` of `crate::app`");
+        assert!(in_host >= 2, "host.rs re-exports the application's types: the scan found {in_host} `pub use` of `app`");
     }
 }
