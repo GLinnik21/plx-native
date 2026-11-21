@@ -3,8 +3,10 @@
 //!
 //! The application's modules are private (`mod app;`), so a crate that is a sibling of this one cannot
 //! name `app::Platform` or implement a crate-private `Shell`. This is the one narrow public face: re-exports
-//! of the types a platform builds or implements, an [`EventSink`] through which it reports input, and
-//! [`run`], the one function in here (it hands the platform to the application's entry). No other module of the
+//! of the types a platform builds or implements, an [`EventSink`] through which it reports input, the two SDL
+//! helpers an SDL platform's `Shell` is built from ([`sdl_init`], [`sdl_open`], with [`InitHooks`]), [`run`], the
+//! one function defined in here (it hands the platform to the application's entry), and the ready media values
+//! described below. No other module of the
 //! application is public to a television build. A `hostsim` build also keeps the simulator binary's own doors,
 //! each behind `feature = "hostsim"` in `lib.rs` (`grep -n 'feature = "hostsim"' rust-modules/src/lib.rs`):
 //! `platform_desktop::run`, `hud_cli`, `sim_runtime_dir`, `sim_events_log`, `publish_sim_webos_major` and
@@ -14,8 +16,17 @@
 //! `Composition`, `Exit` and `Release` are reachable only through this module. `Services` is not one of the eight:
 //! it is `plx_os::tv::Services`, already a `pub` type of a lower crate, which this module re-exports beside them.
 //! A platform crate names the application crate's types through `host` alone; the hook tables a `Services` is
-//! built from (`plx_os::tv`) and `PlayerAdapter`, which `MediaBoot::compose` takes (`plx_media`), come from
-//! their own crates, which it depends on directly.
+//! built from (`plx_os::tv`) come from their own crate, which it depends on directly.
+//!
+//! **The media values.** The application keeps the playback composition (`app::adapters::backends`) until W11a
+//! moves it into the webOS platform, so `host` hands a platform READY [`MediaBoot`] values, and a platform crate names
+//! no `PlayerAdapter` (the type `MediaBoot::compose` takes): [`WEBOS_MEDIA`] is the television's (the plane owner's
+//! boot, then the Feed and the product URI driver), compiled in every build because the webOS port is, and, under
+//! `hostsim`, `FEED_MEDIA` is the desktop's (the Feed over the simulator's sink, no URI driver) and `HOST_SINK`
+//! is that sink itself (also `play-feed`, the module it lives in). A television build never has the desktop pair.
+//! Each retires at W11a, when the composition moves into the platform that owns it
+//! (`docs/platform-ports.md`, Target shape 8 and W7). The names this module publishes are a known list that a
+//! pin in this file's tests holds: growing it fails until the addition and its retirement point are recorded there.
 //!
 //! The split is by thread. A [`Platform`] is registration data in a `static`: function pointers and
 //! `&'static dyn` of `Sync` types, [`Shell`] included as a factory. The thread-affine state (the window,
@@ -24,19 +35,41 @@
 //!
 //! Beside the platform's own types, the vocabulary their signatures name is re-exported from the lower
 //! layers it lives in ([`MainThread`], [`Action`], [`Edge`], [`RawKey`], [`Lifecycle`], [`PointerEdge`],
-//! [`OpenAsk`], [`Placement`]), so a platform crate names the application crate's types, and the vocabulary they use, through `host` alone.
-//! The two SDL helpers (`sdl_init`, `sdl_open`) are not here: W7b publishes what the two real platforms need.
+//! [`OpenAsk`], [`Placement`], [`InitHooks`]), so a platform crate names the application crate's types, and the vocabulary they use, through `host` alone.
+//! [`sdl_open`] stays in the application, not in a platform crate: the `Surface` it returns is implemented for
+//! `plx_shell_sdl::Window` there, which the orphan rule allows nowhere else.
 use std::ffi::CStr;
 use std::os::raw::c_int;
 
-pub use crate::app::platform::{Composition, EventSink, FrameProbe, MediaBoot, Platform, Shell, Surface};
+pub use crate::app::platform::{sdl_init, sdl_open, Composition, EventSink, FrameProbe, MediaBoot, Platform, Shell, Surface};
 pub use crate::app::{Exit, Release};
 pub use plx_base::task::MainThread;
 pub use plx_machine::machine::Edge;
 pub use plx_os::tv::Services;
 pub use plx_shell_sdl::event::{Lifecycle, PointerEdge};
-pub use plx_shell_sdl::{OpenAsk, Placement};
+pub use plx_shell_sdl::{InitHooks, OpenAsk, Placement};
 pub use plx_ui::consts::{Action, RawKey};
+/// The simulator's video sink, the Feed backend's host sink built with the simulator's decoded picture: what the desktop
+/// platform's `Services` hold as their video sink and display binding. Under the cfg of the module it lives in, so a
+/// television build never has it. Retires at W11a with `FEED_MEDIA`.
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+pub use crate::app::adapters::hostsim::HOST_SINK;
+
+/// The television's [`MediaBoot`]: the plane owner's boot (`backends::acb_init`, once per process, on a boot that touches
+/// the television) and the composition of the Feed plus the product URI driver (`backends::compose_native`). Compiled in every
+/// build, because the webOS port is. Retires at W11a, when the composition moves into the webOS platform.
+pub const WEBOS_MEDIA: MediaBoot = MediaBoot {
+    early_init: crate::app::adapters::backends::acb_init,
+    compose: crate::app::adapters::backends::compose_native,
+};
+
+/// The desktop's [`MediaBoot`]: nothing to boot, and the Feed over the simulator's sink as the only driver, with no URI
+/// driver and so no resolver. `hostsim` builds only. Retires at W11a with [`WEBOS_MEDIA`].
+#[cfg(feature = "hostsim")]
+pub const FEED_MEDIA: MediaBoot = MediaBoot {
+    early_init: crate::app::adapters::backends::feed_early_init,
+    compose: crate::app::adapters::backends::compose_feed_alone,
+};
 
 /// Boot the application on `platform` and return the status it ended with: the application's entry
 /// (`run_application`), which installs the platform's services, brings the window up through its
@@ -72,9 +105,9 @@ mod surface_pin_tests {
 
     const HOW_TO_PROCEED: &str = "The application is reachable only through `host`, because the owner's 2026-11-21 amendment to \
          Decision 3 (docs/platform-ports.md) makes `host` the only way a platform crate reaches it. To publish an \
-         application item (W7b's `sdl_init` and `sdl_open`, say), re-export it from host.rs, which the second pin allows. \
-         Only a new simulator door that is NOT an application item, existing only under `feature = \"hostsim\"`, extends \
-         ROOT_ITEMS in this test, and the reason is recorded in that amendment.";
+         application item, re-export it from host.rs, which the second pin allows and the third pin (HOST_ITEMS) \
+         lists. Only a new simulator door that is NOT an application item, existing only under `feature = \"hostsim\"`, \
+         extends ROOT_ITEMS in this test, and the reason is recorded in that amendment.";
 
     /// The text of an item's head: up to its first `;`, `{`, `(` or `<`.
     fn head(line: &str) -> &str {
@@ -306,6 +339,119 @@ mod surface_pin_tests {
         assert!(in_host >= 2, "host.rs re-exports the application's types: the scan found {in_host} `pub use` of `app`");
     }
 
+    const HOW_TO_GROW_HOST: &str = "`host` is the application's whole public face to the platform crates, so what it carries is a \
+         recorded list. To add a name, record the addition and its retirement point in docs/platform-ports.md \
+         (Target shape 8's interface bullet and the W7 entry), then add it to HOST_ITEMS with the `cfg` its item carries.";
+
+    /// Every name `host.rs` re-exports or defines `pub`, each with the predicate of the `cfg` its item must carry (whitespace
+    /// removed; empty for none). The first groups are the interface of a platform's own types and entry; the media values
+    /// and the simulator's sink are there because the application keeps the playback composition until W11a, which retires
+    /// each of them (`docs/platform-ports.md`, Target shape 8 and W7).
+    const HOST_ITEMS: [(&str, &str); 25] = [
+        // What a platform builds, implements and reports input through, and the entry that boots it.
+        ("Platform", ""),
+        ("Shell", ""),
+        ("Surface", ""),
+        ("FrameProbe", ""),
+        ("EventSink", ""),
+        ("MediaBoot", ""),
+        ("Composition", ""),
+        ("Exit", ""),
+        ("Release", ""),
+        ("Services", ""),
+        ("run", ""),
+        // The vocabulary their signatures name.
+        ("MainThread", ""),
+        ("Edge", ""),
+        ("Action", ""),
+        ("RawKey", ""),
+        ("Lifecycle", ""),
+        ("PointerEdge", ""),
+        ("OpenAsk", ""),
+        ("Placement", ""),
+        // The SDL helpers an SDL platform's `Shell` is built from; `sdl_open` stays in the application (the orphan rule).
+        ("sdl_init", ""),
+        ("sdl_open", ""),
+        ("InitHooks", ""),
+        // The media values: each retires at W11a.
+        ("WEBOS_MEDIA", ""),
+        ("FEED_MEDIA", r#"feature="hostsim""#),
+        ("HOST_SINK", r#"all(feature="hostsim",feature="play-feed")"#),
+    ];
+
+    /// The names a `pub use` tree brings in: a group is expanded, `a as b` is `b`, and a glob is `*` (never on the list).
+    fn use_leaves(tree: &str) -> Vec<String> {
+        let tree = tree.trim();
+        let Some(open) = tree.find('{') else {
+            let leaf = tree.rsplit_once(" as ").map_or(tree, |(_, alias)| alias);
+            return vec![leaf.rsplit("::").next().unwrap_or(leaf).trim().to_string()];
+        };
+        let inner = &tree[open + 1..tree.rfind('}').expect("a closed use group")];
+        let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0usize);
+        for (at, c) in inner.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(&inner[start..at]);
+                    start = at + 1;
+                }
+                _ => {}
+            }
+        }
+        parts.push(&inner[start..]);
+        parts.into_iter().filter(|part| !part.trim().is_empty()).flat_map(use_leaves).collect()
+    }
+
+    /// The name an item's head declares (`pub const NAME: T = T`, `pub fn name`, `pub static NAME`).
+    fn item_name(head: &str) -> String {
+        const KEYWORDS: [&str; 14] =
+            ["pub", "unsafe", "const", "fn", "static", "mut", "struct", "enum", "trait", "type", "mod", "use", "async", "extern"];
+        head.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .find(|token| !token.is_empty() && !KEYWORDS.contains(token))
+            .expect("an item name")
+            .to_string()
+    }
+
+    /// The third pin: the names `host.rs` makes `pub` are exactly HOST_ITEMS, each under exactly its `cfg`. The first two pins
+    /// hold the crate root and every other file's re-exports out of the application; this holds `host` itself, which is
+    /// allowed to re-export the application, to a list a reviewer reads.
+    #[test]
+    fn host_makes_public_exactly_the_recorded_names_under_their_recorded_cfgs() {
+        let mut seen = Vec::new();
+        for public in public_statements(include_str!("host.rs")) {
+            let cfg = public
+                .attrs
+                .iter()
+                .filter_map(|attr| attr.strip_prefix("#[cfg(").and_then(|attr| attr.strip_suffix(")]")))
+                .collect::<Vec<_>>()
+                .join(";");
+            let names = match public.text.strip_prefix("pub use ") {
+                Some(tree) => use_leaves(tree.trim_end_matches(';')),
+                None => vec![item_name(head(&public.text))],
+            };
+            for name in names {
+                let Some(&(_, required)) = HOST_ITEMS.iter().find(|&&(known, _)| known == name) else {
+                    panic!("host.rs line {} makes `{name}` public, and it is not in HOST_ITEMS. {HOW_TO_GROW_HOST}", public.at);
+                };
+                assert_eq!(
+                    cfg, required,
+                    "host.rs line {}: `{name}` must carry exactly `cfg({required})` (empty: none), as HOST_ITEMS records it: a \
+                     television build must have no desktop name. {HOW_TO_GROW_HOST}",
+                    public.at
+                );
+                seen.push(name);
+            }
+        }
+        for (known, _) in HOST_ITEMS {
+            assert!(
+                seen.iter().any(|name| name == known),
+                "host.rs no longer makes `{known}` public: remove it from HOST_ITEMS, and record its retirement in \
+                 docs/platform-ports.md. {HOW_TO_GROW_HOST}"
+            );
+        }
+    }
+
     /// The scanners read an attribute and its item on one line, and an attribute that spans lines, with the item after its
     /// closing `]`. Before, a line starting `#[` was only ever an attribute, so `#[doc(hidden)] pub mod app;` and
     /// `#[allow(unused_imports)] pub use app::platform::Shell;` passed every pin above. Each fixture line is its own
@@ -349,5 +495,24 @@ mod surface_pin_tests {
         let list = ["#[cfg(feature = \"hostsim\")]", "pub use a::{", "    B,", "    C,", "};"].join("\n");
         assert_eq!(pub_uses(&list), [(2, "a::{B,C,};".to_string())]);
         assert!(public_statements(&list)[0].attrs.iter().any(|a| confines_to_hostsim(a)));
+    }
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+mod media_boot_tests {
+    use super::*;
+
+    /// `FEED_MEDIA` is the media boot the desktop platform states today (`platform_desktop::media_compose`): it composes the
+    /// Feed over the host sink and no URI driver, so the session holds no resolver and offers no `Uri`.
+    #[test]
+    fn the_desktop_feed_boot_composes_the_feed_and_no_resolver() {
+        let mt = unsafe { MainThread::assume() };
+        (FEED_MEDIA.early_init)(&mt);
+        let mut adapter = plx_media::player::adapter::PlayerAdapter::new(mt);
+        let composed = (FEED_MEDIA.compose)(&mut adapter, false);
+        assert!(composed.resolver.is_none());
+        assert!(!adapter.composed_backends().uri);
+        #[cfg(feature = "play-feed")]
+        assert!(adapter.composed_backends().feed, "the Feed is the desktop's driver");
     }
 }

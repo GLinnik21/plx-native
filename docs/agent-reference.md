@@ -346,7 +346,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   event and crash logs), and only one test in the file boots, because the platform's services install once per
   process. The file also holds a source scan that every path into the application crate starts
   `plxnative_modules::host` (its own spelling only; the crate's surface is pinned by `host.rs`'s tests, which
-  `make test-crate C=plxnative_modules` runs). Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
+  `make test-crate C=plxnative_modules` runs); it also type-checks from outside the crate the names W7b's first lane added to `host` (the SDL
+  helpers and the ready media values, `docs/platform-ports.md` Target shape 8). Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
   `$(UNIT_RUN)` (a `--test` line is passed through), refused under `RELEASE=1`, in `SIDE_EFFECT_FREE` and
   `DISK_ENTRIES`. `make check` runs the same test non-incrementally as the second cargo line of
   `check-cargo-unit-hostsim` (`--lib` never builds an integration test), pinned in `ci/test_ci_split.py`'s `GATES`.

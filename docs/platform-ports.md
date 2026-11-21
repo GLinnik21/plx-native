@@ -1180,20 +1180,22 @@ Ecore names to `remote_token_key` pairs".
   (`src/lib.rs:17`), so a sibling cannot name `app::Platform` or implement a crate-private `Shell`; and a
   `static PLATFORM` must be `Sync`, while window state is thread-affine (`MainThread` is `!Send + !Sync`,
   `base/src/task.rs:129`).
-- The interface. One narrow public module, `plxnative_modules::host`: re-exports, and ONE function, `run(&'static
+- The interface. One narrow public module, `plxnative_modules::host`: re-exports, ONE function, `run(&'static
   Platform, &CStr, u16) -> Exit`, which forwards to `run_application` (the single exception to "re-exports
-  only": the entry is `pub(crate)`, and a platform crate has nothing else to call). The re-exports are `Platform`,
+  only": the entry is `pub(crate)`, and a platform crate has nothing else to call), and the ready media values of
+  "What `host` carries beyond the types" below. The re-exports are `Platform`,
   `Services`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`, `Composition`, `Exit`, `Release` and an `EventSink`
-  trait, with the vocabulary their signatures use: `MainThread`, `OpenAsk`, `Placement`, `Lifecycle`, `PointerEdge`,
-  `Action`, `RawKey` and `Edge`. The eight application-crate items (`Platform`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`,
+  trait, the two SDL helpers `sdl_init` and `sdl_open` with `InitHooks` (W7b), and the vocabulary their signatures
+  use: `MainThread`, `OpenAsk`, `Placement`, `Lifecycle`, `PointerEdge`, `Action`, `RawKey` and `Edge`. The eight application-crate items (`Platform`, `Shell`, `Surface`, `FrameProbe`, `MediaBoot`,
   `Composition`, `Exit`, `Release`) are reachable ONLY through `host` (owner ruling, 2026-11-21; Decision 3, amended):
   `Exit` and `Release` are `pub` inside the private `app`, and `Platform` and the traits are `pub` in a private
   module, so no path outside `host` names them. `Services` is not one of the eight: it stays `plx_os::tv::Services`,
   already a `pub` type of a lower crate, which `host` re-exports beside them. A platform crate names the APPLICATION
   crate's types through `host` alone, but not everything it builds is the application's: a `Services` is built from
   the hook tables of `plx_os::tv` (`IdentityHooks`, `SecureHooks`, `SystemHooks`, `StorageHooks`, `LegacyWebosMedia`,
-  `LocaleReply`) and `MediaBoot::compose` takes `plx_media::player::adapter::PlayerAdapter`, so a platform crate
-  depends on `plx_os` and `plx_media` directly, as well as on the application crate. `host` does not re-export them.
+  `LocaleReply`), so a platform crate depends on `plx_os` directly, as well as on the application crate, and `host`
+  does not re-export them. `MediaBoot::compose` takes `plx_media::player::adapter::PlayerAdapter`, but no platform crate
+  names it: `host` hands each one a ready `MediaBoot` (the next paragraph but one).
   The split is by thread: registration data (the `static
   PLATFORM`: function pointers and `&'static dyn` of `Sync` types, `Shell` included as a factory) is `Sync` and
   shared; thread-affine state (window, GL context, the Ecore handles) lives only in a `Surface` that
@@ -1206,6 +1208,25 @@ Ecore names to `remote_token_key` pairs".
   required, `poll` is defaulted to `false` and `#[doc(hidden)]`, and the loop's `drain_sdl` drains `poll` as before and
   then calls `deliver` once. The SDL shells deliver nothing through the sink, so every SDL event still comes through
   `poll` (a unit test pins both). `poll` is RETIRED once the SDL shells deliver through the sink, W9 at the latest.
+- What `host` carries beyond the types (W7b). The application keeps the playback composition (`app/adapters/backends.rs`:
+  `acb_init`, `compose_native`, `compose_feed`) until W11a moves it into the webOS platform, and the simulator's video
+  sink (`HOST_SINK`, `adapters/hostsim.rs`) draws the decoded picture, which only the application may. So `host` hands a
+  platform READY values, and neither platform crate names `PlayerAdapter` in its production code:
+  - `WEBOS_MEDIA`, a `pub const MediaBoot { early_init: backends::acb_init, compose: backends::compose_native }`,
+    compiled in every build because `port.rs` is;
+  - `FEED_MEDIA` (`hostsim` builds only), the desktop's `MediaBoot`: a no-op `early_init` and `compose` over
+    `backends::compose_feed` alone, so no URI driver and no resolver;
+  - `HOST_SINK` (`hostsim` and `play-feed`, the cfg of the module it lives in), the simulator's video sink the desktop's
+    `Services` hold, re-exported under exactly that cfg so a television build never has it;
+  - `sdl_init`, `sdl_open` and `InitHooks`, which `port.rs` and `platform_desktop.rs` call today. `sdl_open` stays in the
+    application crate: `impl Surface for plx_shell_sdl::Window` can live only there (the orphan rule).
+
+  Each media value and the `HOST_SINK` re-export RETIRE AT W11a, when the composition moves into the webOS platform (and
+  the Feed over the host sink into the desktop); the SDL helpers are not part of that. `publish_composition` is not
+  exported: `platform_desktop.rs`'s test of the published composition names it, and the desktop move reworks that test onto
+  `PlayerAdapter::composed_backends()`, which is why the desktop crate needs `plx_media` in that test only and the webOS crate
+  not at all. A third pin in `host.rs`'s tests holds the list (see Gate): a name added to `host` fails it until the addition
+  and its retirement point are recorded here.
 - Gate. Before extraction, a platform is compiled against the application crate through `host` alone (and against
   `plx_os` and `plx_media` for the hook tables and `PlayerAdapter` it names): an integration test
   (`rust-modules/tests/host_interface.rs`, a separate crate that can name only `pub` items) builds a
@@ -1220,7 +1241,10 @@ Ecore names to `remote_token_key` pairs".
   only this file's own spelling. The crate's SURFACE is held by an in-crate source pin in `host.rs`'s tests (`make
   test-crate C=plxnative_modules`): the crate root's `pub` items are `host` plus the `hostsim`-only simulator
   doors (each confined to `hostsim`, or `test`, by its `cfg`), and `host.rs` is the only `pub use` whose tree names `app` (as `crate::app`, `super::app`, `self::app` or in a group), apart from the root's `hostsim`-only
-  `synthetic_home_initial`. W7b extracts only after it passes.
+  `synthetic_home_initial`. A third pin lists the names `host.rs` itself makes `pub`, each with the `cfg` it carries, so a
+  name added to `host` fails until it is recorded in the bullet above; all three read an attribute and its item on one
+  line (`#[doc(hidden)] pub mod app;`, `#[allow(unused_imports)] pub use ...;`) as they read a line of their own. W7b
+  extracts only after it passes.
 - Runner (G8; F52). As of `e9924f0f9` no target ran it (every one was `cargo test --lib`; `rust-modules/tests/` did not
   exist), so a test file alone would have been a gate nobody ran. W7a added (1) `make test-host-interface`: `cargo
   test -p plxnative-modules --features hostsim --test host_interface`, incrementally in `target-hostsim` like
@@ -1694,8 +1718,11 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 - The Cargo mechanism of the PLATFORM axis lands here: the ARM recipe passes `RUST_FEATFLAGS`
   (`Makefile:1023-1024`), so each platform crate depends on the app with `default-features = false` and forwards
   every app feature the Makefile passes (`rust-modules/Cargo.toml:78-82`), same defaults. W7b's platform crates
-  also depend on `plx_os` and `plx_media` directly: the hook tables of `Services` and `PlayerAdapter` are theirs, and
-  `host` does not re-export them (`rust-modules/tests/host_interface.rs` shows what a platform crate names).
+  also depend on `plx_os` directly: the hook tables of `Services` are theirs, and `host` does not re-export them
+  (`rust-modules/tests/host_interface.rs` shows what a platform crate names). They do not depend on `plx_media` for
+  `PlayerAdapter`: `host` hands each a ready `MediaBoot` (Target shape 8, "What `host` carries beyond the types"), so the
+  webOS platform crate has no `plx_media` dependency at all and the desktop needs it only in its test of the composed
+  backends.
 - Files: `src/lib.rs`, `src/host.rs`, `rust-modules/tests/host_interface.rs`, `rust-modules/Cargo.toml`, the `Makefile` `RUST_LIB`
   and `cargo rustc` lines and (W7a, G8; F52) the new `test-host-interface` target with its `DISK_ENTRIES` entry and a
   line in `check-cargo-unit-hostsim`, `ci/test_ci_split.py` (its `GATES`), `ci/check-staticlib-artifact.py`
@@ -1712,9 +1739,20 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   entry (cargo discovers `tests/*.rs`), so no `Cargo.toml` and no `ci/proofs` certificate changed. `make
   test-host-interface` is the incremental loop and `check-cargo-unit-hostsim` runs the same line, pinned in
   `ci/test_ci_split.py` (`GATES`). `Surface::poll` and `Surface::deliver` coexist until W9 retires `poll`; the SDL
-  shells' `deliver` delivers nothing. `sdl_init` and `sdl_open` are not published: W7b decides what the two real
-  platform crates need of them. The W6 minors rode along (the reviewer note's inventory claim, and the SDL crate's
+  shells' `deliver` delivers nothing. `sdl_init` and `sdl_open` were not published by W7a: the first lane of W7b decides
+  what the two real platform crates need of them (the next bullet). The W6 minors rode along (the reviewer note's inventory claim, and the SDL crate's
   source-file pin reading only `*.rs` entries).
+- As landed (W7b, first lane, before the move; three commits, no file moves): (1) the surface pins read an attribute and its
+  item on one line; (2) the certificate guard (`_workspace_hashes`, read by `ci/readonly_dependencies.py` and
+  `ci/readonly_generated.py`) allows a workspace crate that depends on the root by path, which both platform crates do:
+  a lock dependent may list the root only by bare name (a `"plxnative-modules 0.10.1"` token stays rejected), a pinned
+  manifest's dependency on the root may carry no `version`, and exactly one local root entry must exist, so the root's
+  release number still selects nothing (Cargo writes a path dependency into the lock by bare name, so a bump changes only
+  the root's own, masked, `[[package]]` block); a reviewer reads that guard diff and its tests, not only hashes, and
+  neither certificate is re-sealed by it; (3) `host` carries what the two real platforms need (Target shape 8, "What
+  `host` carries beyond the types"): `WEBOS_MEDIA`, `FEED_MEDIA`, `HOST_SINK`, `sdl_init`, `sdl_open` and `InitHooks`, and
+  a third pin holds the list. `port.rs` and `platform_desktop.rs` still call the application items by their crate paths;
+  they switch to `host` with the move.
 - Test: `make test-hostsim` and `make test-host-interface` (the integration test; run by both since W7a; `ci/
   test_disk_preflight.py` and `ci/test_ci_split.py` pass with it); W7a changes the `Makefile`, so its PR carries a
   build-bench table as well as W7b's; `ARM_PROFILE=release` size within budget;
@@ -1887,6 +1925,14 @@ emulator runs E11 and E12); they are recorded below and the body follows them.
   `HostEvent` stays app-private, and `EventSink` is the public face of input (it too is
   reachable only through `host`). This replaces "`Shell` and `HostEvent` stay app-private" above for `Shell` and
   only `Shell`.
+- 2026-11-21, read with that amendment (recorded in W7b's first lane; the ruling itself is unchanged: the application is
+  reached through `host` alone): the composition stays in the application until W11a, so `host` also carries what the two
+  real platforms need of it, which the amendment did not list: `sdl_init`, `sdl_open` and `InitHooks`, a webOS
+  `MediaBoot` (`WEBOS_MEDIA`), and, in a `hostsim` build, the desktop's (`FEED_MEDIA`) and the simulator's video sink
+  (`HOST_SINK`, also `play-feed`). A platform crate therefore names no `PlayerAdapter` in production code: the
+  `plx_media` dependency the amendment mentions is the desktop's test's alone. Each media value and the
+  `HOST_SINK` re-export retire at W11a (Target shape 8, "What `host` carries beyond the types"); a pin in `host.rs`'s
+  tests holds the list.
 - 2026-11-20, Decision 4 (order): A. The three contracts (W3a-c) first, then the rest, the Samsung-facing types
   app-private (`Shell` and `Surface` are published through `host` only, by the 2026-11-21 amendment to Decision 3).
   Cut into the waves of "Workstreams".

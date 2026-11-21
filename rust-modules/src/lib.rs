@@ -20,7 +20,8 @@ mod coldstart; // retires old last-page bookmarks; authenticated cold boots now 
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
 /// The one narrow public face of the application for a platform crate: the types it builds and implements
-/// (`Platform`, `Shell`, `Surface`, `EventSink`, ...) and the entry `run`, as re-exports. Every other module of
+/// (`Platform`, `Shell`, `Surface`, `EventSink`, ...), the SDL helpers, the entry `run` and the ready media values
+/// (`WEBOS_MEDIA`, and under `hostsim` `FEED_MEDIA` and `HOST_SINK`), as re-exports. Every other module of
 /// the application stays private to a television build (`docs/platform-ports.md`, Target shape 8; a `hostsim`
 /// build also exposes the simulator binary's own doors below).
 pub mod host;

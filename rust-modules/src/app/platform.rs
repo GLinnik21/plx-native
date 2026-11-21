@@ -39,8 +39,8 @@ use std::os::raw::c_void;
 
 /// What a platform's boot asks of SDL, as plain data: [`InitHooks`] (the two steps a platform runs
 /// around `SDL_Init`), and [`OpenAsk`] with its [`Placement`] (the window's title, place and size). The
-/// shell crate's own types, re-exported rather than copied: they hold no SDL type. `host` re-exports
-/// `OpenAsk` and `Placement` for a platform crate (`InitHooks` stays here: only the SDL helpers below take it).
+/// shell crate's own types, re-exported rather than copied: they hold no SDL type. `host` re-exports all three,
+/// beside the SDL helpers below that take them, for a platform crate.
 pub(crate) use plx_shell_sdl::{InitHooks, OpenAsk, Placement};
 
 /// The platform's window, bus and pointer, as the application drives them: the SDL window and its
@@ -180,10 +180,12 @@ pub trait EventSink {
 /// [`Shell::init`] for an SDL platform: SDL up with the platform's two steps around `SDL_Init`, then the
 /// GL context request. `SDL_Init` refused ends the boot (`Exit::refused(1)`, the status it always had).
 ///
+/// `pub` for `host`, which re-exports it for the two real platform crates.
+///
 /// # Safety
 /// `hooks` must be sound to call on the SDL main thread (`mt` is the proof of the thread) at the two
 /// points `plx_shell_sdl::init::init` calls them.
-pub(crate) unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), Exit> {
+pub unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), Exit> {
     plx_shell_sdl::init::init(mt, hooks).map_err(|_| Exit::refused(1))?;
     plx_shell_sdl::init::request_gl(mt);
     Ok(())
@@ -191,7 +193,10 @@ pub(crate) unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), E
 
 /// [`Shell::open`] for an SDL platform: the window and its GL context. Refused at the native size, the
 /// boot ends with `Exit::refused(1)`, the status it always had.
-pub(crate) fn sdl_open(mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+///
+/// `pub` for `host`. It stays in the application crate: the `Surface` it returns is implemented for
+/// `plx_shell_sdl::Window` here (the orphan rule), so a platform crate cannot rebuild it.
+pub fn sdl_open(mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
     plx_shell_sdl::Window::open(mt, ask)
         .map(|window| Box::new(window) as Box<dyn Surface>)
         .map_err(|_| Exit::refused(1))
