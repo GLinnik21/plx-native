@@ -171,8 +171,7 @@ pub enum UriDecline {
     /// The file carries Dolby Vision and Settings > Dolby Vision is Off.
     DolbyVisionOff,
     /// Standard would play the file as Dolby Vision and the TV's own pipeline would show only its base
-    /// layer ([`pipeline_carries_dolby_vision`]): a Profile 7 that Feed converts, or a Matroska file
-    /// on a set whose Matroska demuxer reads no Dolby Vision (before webOS 10.3).
+    /// layer ([`pipeline_carries_dolby_vision`]).
     DolbyVisionBaseLayer,
     /// A trailer preview, which the exported window cannot place.
     Preview,
@@ -245,15 +244,11 @@ impl UriDecline {
     }
 }
 
-/// PURE: whether the TV's own pipeline carries a file's Dolby Vision (`dovi`) to the picture when it
-/// demuxes the file itself, the URI engine's case. On a URI Load the service only checks that a
-/// `DolbyHdrInfo` node exists and pins `hdrType`; Dolby Vision reaches the picture only where the
-/// demuxer flags it. `qtdemux` reads `dvcC` on every image but gives a Profile 7 none on the 5.5.0
-/// to 7.6.0 images, and a 10.3 `matroskademux` plays one as HDR10, so a Profile 7 Feed converts (and
-/// plays as Dolby Vision) never qualifies. A
-/// Matroska file qualifies only where `matroska_dolby_vision` (`Caps::dv_matroska`) says the set's
-/// demuxer reads its `BlockAdditionMapping`.
-pub fn pipeline_carries_dolby_vision(dovi: plx_data::metadata::Dovi, matroska: bool,
+/// PURE: whether the TV's own pipeline carries a file's Dolby Vision to the picture when it demuxes
+/// the file itself, as on a URI Load: not a Profile 7 Feed converts, and a Matroska file only where
+/// the set's demuxer reads it (`Caps::dv_matroska`). `docs/uri-mode.md`, "Dolby Vision on the load",
+/// has the image reads.
+pub(crate) fn pipeline_carries_dolby_vision(dovi: plx_data::metadata::Dovi, matroska: bool,
     matroska_dolby_vision: bool) -> bool {
     !dovi.converts_to_p81() && (!matroska || matroska_dolby_vision)
 }
@@ -275,11 +270,9 @@ pub struct OriginalRequest {
     /// Exact selected-source layering; a positive DV verdict must certify this record.
     pub dolby_vision: plx_data::metadata::Dovi,
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
-    /// Standard would present this original as Dolby Vision: its frozen decision declares it.
-    pub standard_dolby_vision: bool,
-    /// The TV's own pipeline would carry this original's Dolby Vision to the picture
-    /// ([`pipeline_carries_dolby_vision`]).
-    pub pipeline_dolby_vision: bool,
+    /// Standard's frozen decision declares this original as Dolby Vision and the TV's own pipeline
+    /// would show only its base layer ([`pipeline_carries_dolby_vision`]).
+    pub dolby_vision_base_layer_only: bool,
     /// The viewer turned on Settings > Playback > Playback engine (`UriEngine::On`). That choice is
     /// the viewer's own qualification of a URI source for their own playback and nobody else's: a
     /// qualifier answers for it, never without it, and never past [`standard`](Self::standard).
@@ -703,7 +696,7 @@ impl ResolvePort {
         else if request.dolby_vision.present
             && request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off {
             Some(UriDecline::DolbyVisionOff)
-        } else if request.standard_dolby_vision && !request.pipeline_dolby_vision {
+        } else if request.dolby_vision_base_layer_only {
             Some(UriDecline::DolbyVisionBaseLayer)
         } else if request.preview && !evidence.display.preview_rectangle { Some(UriDecline::Preview) }
         else { None }
@@ -1159,7 +1152,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "h264".to_owned(), dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
-            standard_dolby_vision: false, pipeline_dolby_vision: true, uri_opt_in,
+            dolby_vision_base_layer_only: false, uri_opt_in,
             standard: PLAYS, audio_codec: "aac".to_owned(), audio_ordinal: Some(1), has_multiple_audio_tracks: false,
             subtitle_source: None, subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
@@ -1339,7 +1332,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
-            standard_dolby_vision: false, pipeline_dolby_vision: true, uri_opt_in: false,
+            dolby_vision_base_layer_only: false, uri_opt_in: false,
             standard: PLAYS, audio_codec: "ac3".to_owned(), audio_ordinal: Some(0), has_multiple_audio_tracks: false,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
@@ -1434,8 +1427,7 @@ mod tests {
             }),
             ("dolby vision the pipeline shows as its base layer", "refused",
                 Some(UriDecline::DolbyVisionBaseLayer), |r| {
-                r.standard_dolby_vision = true;
-                r.pipeline_dolby_vision = false;
+                r.dolby_vision_base_layer_only = true;
             }),
             ("preview", "refused", Some(UriDecline::Preview), |r| r.preview = true),
             ("no duration", "unknown", Some(UriDecline::NoDurationOrUrl), |r| r.duration_ms = None),
