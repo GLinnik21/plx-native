@@ -36,19 +36,22 @@ displayed its URI fixture on the 4.5 dev set, as recorded below.
 ## What the 5+ firmware actually does with the load
 
 Read from `libplayerAPIs`, `libav-proxy`, `libav-connector`, `libav`, `videosink` and
-`umediaserver` across 5.5, 5.6, 6.5, 7.6, 9.2, 10.3 and 11.2:
+`umediaserver` across 5.5, 5.6, 6.5, 7.6, 8.3, 9.2, 10.3 and 11.2:
 
 - **`umediaserver` does not parse `option` itself.** `loadCommand` reads `uri`, `type`,
   `payload`, `option` and `payload.appId`, requires `uri` then `type`, and hands the payload to the
   registered pipeline. Its only `windowId` reader is the separate `setWindowId` command — which is
   why sending it after the load is too late.
 - **`libplayerAPIs::parseLoadMessage` parses `option.windowId`** (the `get_optional("option.windowId")`
-  parse is identical on 5.5, 5.6, 6.5, 7.6, 9.2, 10.3, 11.2; the field lands at `MediaApiPrivate+0x7c`
-  on 5.x, `+0x90` on 6.5.3 and 7.6.0, `+0x94` on 9.2.4 and 10.3.1, and `+0x9c` on 11.2 per the firmware
+  parse is identical on 5.5, 5.6, 6.5, 7.6, 8.3, 9.2, 10.3, 11.2; the field lands at `MediaApiPrivate+0x7c`
+  on 5.x, `+0x90` on 6.5.3, 7.6.0 and 8.3.1, `+0x94` on 9.2.4 and 10.3.1, and `+0x9c` on 11.2 per the firmware
   report), stores it, and passes it to a virtual call. The firmware report identifies that call on 11.2
   (slot +0x78 of the object at `MediaApiPrivate+0x60`) as the AVProxy builder, which `createAVProxy`
-  uses. On 6.5.3 (slot +0x74 of `+0x5c`), 7.6.0 (+0x74 of `+0x5c`) and 9.2.4 (+0x78 of `+0x60`) only a
-  virtual call at the same point in the code was seen, and the slot was not separately identified there.
+  uses. On 8.3.1 the call is slot +0x78 of `+0x5c`, which that image's `MediaApiPrivate` constructor makes a
+  `subtitle::SubtitleTask` (the slot is its `setLayerInfo`, given the window id first), and `createAVProxy`
+  reads `+0x90` into its `AVProxy::Builder` itself (the 8.3.1 Results row). On 6.5.3 (slot +0x74 of `+0x5c`),
+  7.6.0 (+0x74 of `+0x5c`) and 9.2.4 (+0x78 of `+0x60`) only a virtual call at the same point in the code
+  was seen, and the slot was not separately identified there.
 - **`option.windowType`** is decoded alongside it: `"InitialWindow"` → 402, `"NoWindow"` → 401,
   `"NoDisplayControl"` → 403, absent or unrecognised → 400. `AVProxy::checkValidation` requires a
   non-empty window id **only when the type is the default 400**, which is what our payload sends.
@@ -80,6 +83,7 @@ reads `profileId` or `trackType`. Whether Dolby Vision reaches the picture is th
 | 5.6.2-21 | no: the same code (`60a0941b`) | yes (`48df5a28`); Profile 7 excluded |
 | 6.5.3-47 | no (`9a6bd2f7`, `parse_stream` 0x10fd8) | yes; Profile 7 excluded |
 | 7.6.0 | no (`12966041`, 0x1120c) | yes; Profile 7 excluded |
+| 8.3.1-42 | no (`d07223a1`, `parse_stream` 0x11148) | yes (`ddd4ee8a`); Profile 7 excluded |
 | 9.2.4 | no (`07cfe1ee`, 0x112f0) | yes |
 | 10.3.1 / 11.2 | yes: `parse_stream` (0x12930) matches `dvcC`/`dvvC` and sets `dolby-vision`; Profile 7 plays as HDR10 (`54a03ad3`; 11.2 by scan only) | yes |
 
