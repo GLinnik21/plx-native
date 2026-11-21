@@ -756,26 +756,25 @@ mod tests {
 
     /// The exported window follows the firmware major through the composition: production's table
     /// binds majors 5 (webOS 5.6.2) and 10 (the LG C2 on webOS 25), each admitted on a tester's run,
-    /// and majors 6, 7 and 9, each bracketed by those two with no tester run of its own, every one
-    /// with its `docs/uri-mode.md` Results row, and no other (major 8 has no image read, so it and
-    /// every webOS 5+ release without an entry plays Standard), and a table that lists a major binds
-    /// it, on a display in the exported-window mode only. The URI engine's own handle is not asked
-    /// for: a 5+ set has none.
+    /// and majors 6, 7, 8 and 9, each bracketed by those two with no tester run of its own, every
+    /// one with its `docs/uri-mode.md` Results row, and no other (every webOS 5+ release without an
+    /// entry, 11 included, plays Standard), and a table that lists a major binds it, on a display in
+    /// the exported-window mode only. The URI engine's own handle is not asked for: a 5+ set has none.
     #[cfg(feature = "play-uri")]
     #[test]
     fn the_exported_window_is_composed_only_for_a_major_the_table_lists() {
         use plx_play_uri::backend::{EXPORTED_CANVAS, EXPORTED_STRATA};
         let exported = UriBinding::Exported { canvas: EXPORTED_CANVAS };
         let sink = BootSink::answering(VP_EXPORTED, vec![7, 8]);
-        // Production's table admits majors 5, 6, 7, 9 and 10 and nothing else: every other release,
-        // known or not (8, which has no image read, and 11 included), composes Unbound on this
-        // display. An entry lands with its Results row and the change to this test.
+        // Production's table admits majors 5, 6, 7, 8, 9 and 10 and nothing else: every other release,
+        // known or not (11 included), composes Unbound on this display. An entry lands with its
+        // Results row and the change to this test.
         for major in 0..=30 {
-            let want = if matches!(major, 5 | 6 | 7 | 9 | 10) { exported } else { UriBinding::Unbound };
+            let want = if matches!(major, 5..=10) { exported } else { UriBinding::Unbound };
             assert_eq!(uri_product_binding(&sink, major, EXPORTED_STRATA), want, "major {major}");
         }
         // The same display on a set whose mode is not the exported window: an admitted major binds nothing there.
-        for major in [5, 6, 7, 9, 10] {
+        for major in 5..=10 {
             for mode in [VP_NONE, plx_os::tv::sink::VP_ACB] {
                 let sink = BootSink::answering(mode, vec![7, 8]);
                 assert_ne!(uri_product_binding(&sink, major, EXPORTED_STRATA), exported, "major {major} mode {mode}");
@@ -808,17 +807,17 @@ mod tests {
         assert!(unlisted.contains("uri: product binding=Unbound mode=2 "), "{unlisted}");
         assert!(unlisted.contains(" major=11 evidence=none\n"), "{unlisted}");
         // Production's own table: a webOS 5.6.2 television's boot line reads `major=5 evidence=table`,
-        // the LG C2 on webOS 25's `major=10 evidence=table`, and a bracketed major's (6, 7, 9) the
-        // same `evidence=table`: the line does not say whether a tester ran it. Major 8 has no
-        // image read and reads `major=8 evidence=none` on the same display.
-        for major in [5, 6, 7, 9, 10] {
+        // the LG C2 on webOS 25's `major=10 evidence=table`, and a bracketed major's (6, 7, 8, 9) the
+        // same `evidence=table`: the line does not say whether a tester ran it. Major 11 has no
+        // entry and reads `major=11 evidence=none` on the same display.
+        for major in 5..=10 {
             let shipped = line(VP_EXPORTED, major, plx_play_uri::backend::EXPORTED_STRATA);
             assert!(shipped.contains("uri: product binding=Exported { canvas: (1920, 1080) } mode=2 "), "{shipped}");
             assert!(shipped.contains(&format!(" major={major} evidence=table\n")), "{shipped}");
         }
-        let eight = line(VP_EXPORTED, 8, plx_play_uri::backend::EXPORTED_STRATA);
-        assert!(eight.contains("uri: product binding=Unbound mode=2 "), "{eight}");
-        assert!(eight.contains(" major=8 evidence=none\n"), "{eight}");
+        let eleven = line(VP_EXPORTED, 11, plx_play_uri::backend::EXPORTED_STRATA);
+        assert!(eleven.contains("uri: product binding=Unbound mode=2 "), "{eleven}");
+        assert!(eleven.contains(" major=11 evidence=none\n"), "{eleven}");
         let acb = line(plx_os::tv::sink::VP_ACB, 4, &[]);
         assert!(acb.contains("uri: product binding=Acb mode=1 handle=deferred ptype=0 "), "{acb}");
         assert!(acb.contains(" major=4 evidence=none\n"), "{acb}");
