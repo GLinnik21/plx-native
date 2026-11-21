@@ -551,21 +551,27 @@ fn withdraw_dolby_vision(
         pa.feed_command(plx_playback_contract::feed::FeedCommand::DvStandDown);
         return None;
     }
-    let target = if let Some(tap) = super::take_pending_seek(ps, pa) {
-        crate::route::commit_user_seek();
-        tap.target_ns
-    } else {
-        // The feed's in-place target rides the sample (`FeedRaw::seek_target_ns`).
-        let in_place = ps.readout().raw().seek_target_ns.unwrap_or(-1);
-        if w.in_place && in_place >= 0 { in_place } else { w.armed_target.unwrap_or(w.kf_pts) }
-    }
-    .max(0);
+    let target = take_tap_target(ps, pa)
+        .unwrap_or_else(|| {
+            // The feed's in-place target rides the sample (`FeedRaw::seek_target_ns`).
+            let in_place = ps.readout().raw().seek_target_ns.unwrap_or(-1);
+            if w.in_place && in_place >= 0 { in_place } else { w.armed_target.unwrap_or(w.kf_pts) }
+        })
+        .max(0);
     super::log(&format!(
         "dv: withdrawn for this play: {}; reload at {:.3}s without DolbyHdrInfo, the base layer plays",
         w.why,
         target as f64 / 1e9,
     ));
     Some(target)
+}
+
+/// The newest coalesced tap, taken and committed as the seek stuck-watchdog adopts it
+/// (`commit_user_seek` included): where a reload that replaces the Engine goes when one is pending.
+fn take_tap_target(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> Option<i64> {
+    let tap = super::take_pending_seek(ps, pa)?;
+    crate::route::commit_user_seek();
+    Some(tap.target_ns)
 }
 
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
@@ -1199,6 +1205,30 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             decode_in_app(ps, pa, offset_ns);
         }
         return;
+    }
+    // ---------- Dolby Vision the server did not report: the demuxer found RPUs in a stream whose
+    // container has no configuration record (a remux that dropped it), so the Load declared none
+    // and the panel shows the base layer. Once the Load has returned (a teardown never waits on one
+    // in flight), the route declares what the RPUs say and the play reloads once with the node, at
+    // the newest tap else where this Engine was aimed. The report repeats on every Load of the
+    // stream and the route declares at most once (`route::declare_rpu_dovi`), so this cannot loop.
+    let raw = ps.readout().raw();
+    let rpu = if raw.load.load_thread_finished { raw.rpu_dovi } else { None };
+    if let Some(rpu) = rpu {
+        if !crate::route::flight_outstanding()
+            && !crate::route::preview_request(ps)
+            && crate::route::declare_rpu_dovi(ps, rpu, crate::route::dolby_vision_mode())
+        {
+            let target = take_tap_target(ps, pa)
+                .unwrap_or_else(|| {
+                    let raw = ps.readout().raw();
+                    raw.seek_target_ns.unwrap_or(raw.playpos_ns)
+                })
+                .max(0);
+            super::log(&format!("dv: reload at {:.3}s with DolbyHdrInfo", target as f64 / 1e9));
+            settle_reload(super::engine::reload_at(ps, pa, target), "Dolby Vision found in the RPUs", ps);
+            return;
+        }
     }
     // ---------- the Dolby Vision landing guard (#1166): a declared landing the firmware's splitter
     // would skip (the keyframe was held back at the landing) or that no position update follows turns

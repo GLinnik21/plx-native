@@ -34,8 +34,14 @@
 
 pub use plx_playback_contract::video::{Rat, Mastering, ContainerHdr};
 
+/// `AVCOL_TRC_RESERVED0`: no transfer stated.
+pub const TRC_RESERVED0: i32 = 0;
+/// `AVCOL_TRC_UNSPECIFIED`.
+pub const TRC_UNSPECIFIED: i32 = 2;
 /// `AVCOL_TRC_SMPTE2084`: the PQ transfer function, i.e. HDR10 when carried with BT.2020.
 pub const TRC_PQ: i32 = 16;
+/// `AVCOL_TRC_ARIB_STD_B67`: HLG.
+pub const TRC_HLG: i32 = 18;
 
 fn le_i32(b: &[u8], at: usize) -> Option<i32> {
     Some(i32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))

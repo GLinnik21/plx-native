@@ -156,6 +156,37 @@ the L5 offsets into the DM registers `Active_area_*`.
 - It is not verified on a device: our dev set's W19H `libkadaptor` has no `active_area` string, so
   it cannot reproduce the strip, and the reporter's C8 is where the failure was seen.
 
+### 1b. RPUs with no configuration record
+
+**The bug class.** A remux can drop the container's Dolby Vision record (the MP4 `dvcC`/`dvvC`, the
+Matroska `BlockAdditionMapping`) and keep the RPUs (`UNSPEC62`) in every access unit. The server reads
+the record, so it reports no Dolby Vision (a Jellyfin server called one such file HDR10+), the route
+declares no node, and the panel shows the HDR10 base layer while every RPU is still fed. Seen on an LG
+C1 on 2026-11-18: the active-area check of 1a was rewriting the RPUs of a play that declared none.
+
+**The rule.** For an HEVC stream with no record, the demuxer reads its first eight packets
+(`ff::RpuOnlyScan`) and reports, once per open, what the first RPU says (`FeedRaw::rpu_dovi`): Profile 5
+(`bl_compat` 0) or Profile 8 over a PQ (1) or HLG (4) base layer, the compatibility read from the
+stream's transfer since there is no record to read it from. An RPU that maps an enhancement layer (a
+Profile 7, whose conversion keys on the record), an enhancement-layer NAL in the packet, an RPU that does
+not parse and a Profile 8 over any other transfer report nothing. Once the Load has returned and no
+flight is out, the pump asks the route to declare it (`route::declare_rpu_dovi`): the decision the
+record would have frozen, through `frozen_dv_decision` with the seated profile's Dolby Vision setting
+and the capability the route froze, so Off, a set without confirmed support and a server re-encode
+(whose frozen capability is `Unknown`) change nothing. A declaration rewrites the installed route, the
+file's own declaration and the stored Auto Original candidate, and the play reloads once at the newest
+tap, else where the Engine was aimed. The reloaded Load carries the node and the landing guard
+(#1166) arms as for any declared direct play; a withdrawal later in the play is not undone, because the
+route declares a stream's RPUs once.
+
+**Limits.** Every play of such a file pays one extra Load (nothing remembers the finding), and the URI
+engine is not covered. A remux the server makes of it is declared like a direct play: the copy keeps the
+RPUs and the file's frozen capability (`copied_video_dv`), so the demuxer finds them and the route
+declares them, a Profile 5 included, which is what keeps a remuxed Profile 5 from showing its base
+layer; only a re-encode, whose frozen capability is `Unknown`, stays undeclared. A remux has not been
+measured on a set. Not yet compared on a set
+against the same film with its record.
+
 ---
 
 ## 2. The Load payload: two nodes, both recovered from the set's own binaries
