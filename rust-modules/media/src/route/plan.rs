@@ -2091,6 +2091,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     video_codec: vcodec.to_owned(),
                     dolby_vision: dovi,
                     dolby_vision_mode: env.dolby_vision_mode,
+                    standard_dolby_vision: dv_decision.presentation.declared().is_some(),
+                    pipeline_dolby_vision: super::uri_preflight::pipeline_carries_dolby_vision(dovi,
+                        part_file_name(part).ends_with(".mkv"), env.caps.dv_matroska),
                     uri_opt_in: env.uri_engine == plx_plex::plex::session::UriEngine::On,
                     standard: super::uri_preflight::StandardDirectPlay {
                         video: source_decodable,
@@ -4601,9 +4604,14 @@ pub fn playback_preview_with_audio(
 /// extension in the part-key filename; the m4v spelling is the same mov demuxer and the same
 /// `container=mp4` in PMS metadata.
 pub(super) fn part_is_streamable(part_key: &str) -> bool {
-    let name = part_key.rsplit('/').next().unwrap_or(part_key);
-    let name = name.split('?').next().unwrap_or(name);
+    let name = part_file_name(part_key);
     name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".m4v")
+}
+
+/// The file name a Part key ends in, without its query.
+fn part_file_name(part_key: &str) -> &str {
+    let name = part_key.rsplit('/').next().unwrap_or(part_key);
+    name.split('?').next().unwrap_or(name)
 }
 
 

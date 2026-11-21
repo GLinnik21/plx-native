@@ -3734,6 +3734,50 @@ fn experimental_offers_a_profile_8_file_whose_base_layer_the_frozen_decision_adm
     assert!(plan.source_decodable && plan.src_dv_decision.presentation.refusal().is_none());
 }
 
+/// A Dolby Vision MKV Standard plays as Dolby Vision stays on Standard where the set's Matroska
+/// demuxer reads no Dolby Vision (before webOS 10): the TV's own pipeline would show only the base
+/// layer. Where it does read it, the same file is offered.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn experimental_leaves_a_dolby_vision_mkv_on_standard_where_the_tv_reads_no_dolby_vision_in_matroska() {
+    use plx_plex::plex::session::UriEngine;
+    let resolve = |dv_matroska: bool| uri_engine_resolve("uri-optin-p8-mkv", UriEngine::On, 1, MDE_DIRECTPLAY,
+        vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, item| {
+            env.dv_capability = plx_os::devcaps::dv::DvCapability::Supported;
+            env.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Auto;
+            std::sync::Arc::make_mut(&mut env.caps).dv_matroska = dv_matroska;
+            item.dovi = p8();
+        }).0;
+    let before_10 = resolve(false);
+    assert!(COLD_PART.ends_with(".mkv") && before_10.src_dv_decision.presentation.declared().is_some(),
+        "the premise: an MKV Standard plays as Dolby Vision");
+    assert!(before_10.uri_original.is_none(), "kept on Standard");
+    assert_eq!(before_10.uri_decline, Some(crate::route::uri_preflight::UriDecline::DolbyVisionBaseLayer));
+    assert!(resolve(true).uri_original.is_some(), "a set whose Matroska demuxer reads Dolby Vision is offered it");
+}
+
+/// A Profile 7 Feed converts plays as Dolby Vision only on Standard: the TV's own pipeline shows its
+/// base layer whatever the container or firmware, so it stays on Standard even where Matroska
+/// Dolby Vision is read.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn experimental_leaves_a_profile_7_feed_converts_on_standard() {
+    use plx_plex::plex::session::UriEngine;
+    let p7 = plx_data::metadata::Dovi { present: true, profile: 7, bl_compat: 6, el_present: true,
+        ..plx_data::metadata::Dovi::NONE };
+    let (plan, _) = uri_engine_resolve("uri-optin-p7", UriEngine::On, 1, MDE_DIRECTPLAY,
+        vec![cold_track(1, "ac3", "eng", true, "")], "ac3", |env, item| {
+            env.dv_capability = plx_os::devcaps::dv::DvCapability::Supported;
+            env.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Auto;
+            std::sync::Arc::make_mut(&mut env.caps).dv_matroska = true;
+            item.dovi = p7;
+        });
+    assert!(p7.converts_to_p81() && plan.src_dv_decision.presentation.declared().is_some(),
+        "the premise: Feed converts it and Standard declares it");
+    assert!(plan.uri_original.is_none());
+    assert_eq!(plan.uri_decline, Some(crate::route::uri_preflight::UriDecline::DolbyVisionBaseLayer));
+}
+
 /// An audio codec Standard does not direct-play (DTS on a table with no DTS row): the server converts
 /// the track, and a URI pipeline with no decoder for it would play the picture in silence.
 #[test]
