@@ -1,0 +1,71 @@
+[package]
+name = "plx_platform_webos"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative's webOS platform: the C entry the boot shim calls, the television's identity, capability and repair code, the LS2 key stores, the Starfish/ACB video sink, and the LG half of the window; the one crate the ARM staticlib is built from."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+build = "build.rs"
+
+# ci/module_graph.py reads this crate as part of the same module tree as the application, and
+# `src/lib.rs` is the root of module `platform_webos`, not of the application: the member of
+# `[platform webos]` in ci/module-layers.ini. Without the mount its `lib.rs` items would merge into
+# the application's own `crate` member (ci/check-module-layers.py fails a platform crate with none).
+[package.metadata.plx]
+mount = "platform_webos"
+
+[lib]
+name = "plx_platform_webos"
+# An rlib, never a declared archive: a plain `cargo build` writes no ~200 MB staticlib
+# (ci/test_no_host_staticlib.py holds that line for this crate too). The archive the Makefile links
+# into the television binary is asked for explicitly, `cargo rustc -p plx_platform_webos --lib
+# --crate-type staticlib` in the `$(RUST_LIB)` rule: this crate, not the application's, is the one
+# staticlib, because it depends on the application (`plxnative-modules`) and not the other way round.
+crate-type = ["rlib"]
+
+# Every feature the Makefile or a workflow passes to the television build is declared here and
+# forwarded, with the application's own defaults (rust-modules/Cargo.toml `[features]`), so that
+# `cargo ... -p plx_platform_webos --no-default-features --features play-uri,play-feed,...` selects
+# exactly what the same words select on the application crate. `ci/test_platform_features.py` holds
+# that: a feature added to the application and not forwarded here would build everywhere and fail
+# the ARM build alone.
+[features]
+default = ["play-uri", "play-feed", "devtools", "devtriggers", "threadcheck"]
+# The two backends. `uri-transport` and `feed-sink` are this crate's own: the real com.webos.media LS2
+# worker and the native packet-feed bindings live in `webos/`, so only a build that includes the
+# backend compiles them.
+play-uri = ["plxnative-modules/play-uri", "uri-transport"]
+play-feed = ["plxnative-modules/play-feed", "feed-sink"]
+# Native packet-feed bindings; display binding is independently available.
+feed-sink = []
+# The real com.webos.media LS2 worker. The URI interface and NoUriMedia remain available without it.
+uri-transport = []
+devtools = ["plxnative-modules/devtools"]
+devtriggers = ["plxnative-modules/devtriggers"]
+threadcheck = ["plxnative-modules/threadcheck"]
+lab-diagnostics = ["plxnative-modules/lab-diagnostics"]
+# The host test pass the Makefile runs under `--features hostsim` (its `HOSTSIM_SUITE`): this crate's
+# tests are in both passes, as they were in the application's. It selects the application's
+# simulator configuration and nothing of its own; a television build never sets it.
+hostsim = ["plxnative-modules/hostsim"]
+
+[dependencies]
+plxnative-modules = { path = "..", default-features = false }
+plx_base = { path = "../base" }
+plx_os = { path = "../os" }
+plx_gfx = { path = "../gfx" }
+plx_telemetry = { path = "../telemetry" }
+plx_shell_sdl = { path = "../shell-sdl" }
+libc = "0.2"
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+
+[dev-dependencies]
+# The `cfg(test)` seams of the layers below (`testlock`, `tv`'s sandbox and secure-store seams, the
+# telemetry consent fixtures): a dependency is never built `cfg(test)`, so the tests here ask by feature.
+plx_base = { path = "../base", features = ["test-support"] }
+plx_os = { path = "../os", features = ["test-support"] }
+plx_telemetry = { path = "../telemetry", features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -40,7 +40,7 @@
 //! for service replies: [`caps`] uses `serde_json` and strict types because uncertainty there is a
 //! playback-safety decision. The capability query deliberately does not fill a missing webOS
 //! version; no public version key or anonymous permission for one is evidenced.
-use crate::tv::device::{Hardware, Info, NyxFile, Platform, WebosDetail};
+use plx_os::tv::device::{Hardware, Info, NyxFile, Platform, WebosDetail};
 
 pub mod jail_repair;
 pub mod caps;
@@ -114,12 +114,12 @@ pub fn probe() {
             info.webos.name, info.release, info.webos.codename, info.webos.api, info.major
         ));
     }
-    crate::tv::device::publish_info(info);
+    plx_os::tv::device::publish_info(info);
     // From what `publish_info` kept (the first write wins), so the platform's version and `info()`
     // cannot name two releases.
-    crate::tv::device::publish_platform(plex_platform(&crate::tv::device::info().release));
+    plx_os::tv::device::publish_platform(plex_platform(&plx_os::tv::device::info().release));
     let device_info = probe_hw();
-    crate::tv::device::publish_probe(crate::tv::device::Probe { os_info, device_info });
+    plx_os::tv::device::publish_probe(plx_os::tv::device::Probe { os_info, device_info });
     probe_jail();
 }
 
@@ -144,7 +144,7 @@ fn plex_platform(release: &str) -> Platform {
 /// The files `devcaps::probe` parses, read from the file system: webOS's own paths, named by the
 /// model. A host that is not a television has none of them and so answers "unreadable"; the simulator does not
 /// read them at all, its platform states `Files::NONE`.
-pub const DEVICE_FILES: crate::tv::device::Files = crate::tv::device::Files {
+pub const DEVICE_FILES: plx_os::tv::device::Files = plx_os::tv::device::Files {
     read: |path| std::fs::read_to_string(path),
     exists: |path| std::path::Path::new(path).exists(),
 };
@@ -307,7 +307,7 @@ fn probe_hw() -> NyxFile {
             hw.model, hw.board, hw.hw_revision
         ));
     }
-    crate::tv::device::publish_hardware(hw);
+    plx_os::tv::device::publish_hardware(hw);
     status
 }
 
@@ -359,8 +359,8 @@ fn probe_jail() {
             .map(|path| unsafe { libc::access(path.as_ptr(), libc::R_OK) } == 0)
             .unwrap_or(false)
     });
-    crate::tv::native_video::publish(result);
-    plx_base::eventlog::log(&format!("devjail: soc={name} rtkmem={}", crate::tv::native_video::context()));
+    plx_os::tv::native_video::publish(result);
+    plx_base::eventlog::log(&format!("devjail: soc={name} rtkmem={}", plx_os::tv::native_video::context()));
 }
 
 /// The reason webOS names for a blocked native video path, and so the word the `devjail:` line, the
@@ -370,8 +370,8 @@ const RTKMEM_MISSING: &str = "missing";
 /// PURE: the native-video verdict for a machine name. A name outside the affected family is never
 /// probed (`rtkmem_readable` is not called); inside it, a readable `/dev/rtkmem` is `Available` and
 /// an unreadable one is `Blocked` with [`RTKMEM_MISSING`].
-fn jail_verdict(machine_name: &str, rtkmem_readable: impl FnOnce() -> bool) -> crate::tv::native_video::Verdict {
-    use crate::tv::native_video::Verdict;
+fn jail_verdict(machine_name: &str, rtkmem_readable: impl FnOnce() -> bool) -> plx_os::tv::native_video::Verdict {
+    use plx_os::tv::native_video::Verdict;
     if !is_realtek_k5lp_family(machine_name) {
         Verdict::NotApplicable
     } else if rtkmem_readable() {
@@ -440,7 +440,7 @@ fn jail_verdict(machine_name: &str, rtkmem_readable: impl FnOnce() -> bool) -> c
 /// `/tmp/plxnative-gohome=<sam|minimize>` forces one leg, so both can be exercised in one device
 /// session instead of only whichever happens to answer first. Compiled out under `RELEASE=1`.
 ///
-/// **Not rate-limited here** — [`crate::tv::home::take_root_press`] is, and `app.rs` claims the
+/// **Not rate-limited here** — [`plx_os::tv::home::take_root_press`] is, and `app.rs` claims the
 /// press through it before it does anything else, `auth::cancel` included. Call this only having
 /// claimed one.
 pub fn go_home() {
@@ -487,7 +487,7 @@ pub fn poll_home() {
 /// minimize leg instead of leaving the user on a screen whose BACK did nothing.
 const HOME_APP_ID: &str = "com.webos.app.home";
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn launch_home() -> bool {
     plx_base::eventlog::log(&format!(
         "gohome: no LS2 bus off-device — the root press would launch {HOME_APP_ID} on a television"
@@ -495,15 +495,15 @@ fn launch_home() -> bool {
     true
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn minimize() {}
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn ls2_probe() {
     plx_base::eventlog::log("gohome: no LS2 bus off-device — nothing to probe");
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 fn ls2_probe() {
     ls2::probe();
 }
@@ -511,8 +511,8 @@ fn ls2_probe() {
 /// Grade only the allowlisted fields in the LS2 wake reply. The raw platform JSON never enters a
 /// report or the local snapshot.
 #[cfg(any(test, all(target_os = "linux", target_arch = "arm")))]
-fn storage_activation_reply(reply: &str) -> crate::storage::wire::failure::Detail {
-    use crate::storage::wire::failure::{Detail, Stage};
+fn storage_activation_reply(reply: &str) -> plx_os::storage::wire::failure::Detail {
+    use plx_os::storage::wire::failure::{Detail, Stage};
     if reply.len() > 4096 { return Detail::new(Stage::ActivationInvalidReply, None); }
     let value = serde_json::from_str::<serde_json::Value>(reply).ok();
     let accepted = value.as_ref().and_then(|value| value.get("returnValue"))
@@ -532,35 +532,35 @@ fn storage_activation_reply(reply: &str) -> crate::storage::wire::failure::Detai
 /// The helper publishes readiness from its startup path, so neither a successful method reply nor
 /// delivery of `/wake` is required; the result is retained only as diagnostics and the authenticated
 /// Unix-socket `Hello` is the sole readiness proof.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(any(test, feature = "test-support"))))]
-pub fn activate_storage_helper(service: &str) -> crate::storage::wire::failure::Detail {
-    use crate::storage::wire::failure::{Detail, Stage};
+#[cfg(all(target_os = "linux", target_arch = "arm", not(test)))]
+pub fn activate_storage_helper(service: &str) -> plx_os::storage::wire::failure::Detail {
+    use plx_os::storage::wire::failure::{Detail, Stage};
     let uri = format!("luna://{service}/wake");
     let started = std::time::Instant::now();
     let detail = match ls2::call_once(&uri, "{}") {
         Ok(reply) => storage_activation_reply(&reply),
         Err(ls2::Fail::Timeout) => Detail::new(Stage::ActivationTimeout, None),
         Err(ls2::Fail::Setup { stage, code, .. }) =>
-            crate::storage::wire::failure::activation_failure(stage, code),
+            plx_os::storage::wire::failure::activation_failure(stage, code),
     };
-    crate::storage::diagnostics::activation(detail, started.elapsed().as_millis() as u64);
+    plx_os::storage::diagnostics::activation(detail, started.elapsed().as_millis() as u64);
     detail
 }
 
 /// Hosts and the simulator have no storage helper to wake: the same answer an absent port gives.
 #[cfg(all(
     target_os = "linux",
-    not(all(target_arch = "arm", not(any(test, feature = "test-support"))))
+    not(all(target_arch = "arm", not(test)))
 ))]
-pub fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure::Detail {
-    use crate::storage::wire::failure::{Detail, Stage};
+pub fn activate_storage_helper(_service: &str) -> plx_os::storage::wire::failure::Detail {
+    use plx_os::storage::wire::failure::{Detail, Stage};
     Detail::new(Stage::Unsupported, None)
 }
 
 /// One `getSystemSettings` round trip on a fresh anonymous registration (any thread: the
 /// registration owns its glib context). `None` when the bus refused or timed out. `budget` bounds
 /// the call only: registration and unregistration are not bounded by it (`ls2`'s own doc says so).
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> {
     ls2::register()
         .map_err(ls2::Fail::from)
@@ -571,17 +571,17 @@ fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> 
 /// What the platform's settings service says about the locale; `i18n` owns the parse and the log
 /// lines. The same 600 ms bus budget as a root press, and for the same reason: the caller is the
 /// main thread at boot.
-#[cfg(not(any(test, feature = "test-support")))]
-pub fn system_locale() -> crate::tv::LocaleReply {
+#[cfg(not(test))]
+pub fn system_locale() -> plx_os::tv::LocaleReply {
     match settings_reply(r#"{"keys":["localeInfo"]}"#, std::time::Duration::from_millis(600)) {
-        Some(raw) => crate::tv::LocaleReply::Reply(raw),
-        None => crate::tv::LocaleReply::Unavailable,
+        Some(raw) => plx_os::tv::LocaleReply::Reply(raw),
+        None => plx_os::tv::LocaleReply::Unavailable,
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn system_locale() -> crate::tv::LocaleReply {
-    crate::tv::LocaleReply::NoPlatform
+#[cfg(test)]
+pub fn system_locale() -> plx_os::tv::LocaleReply {
+    plx_os::tv::LocaleReply::NoPlatform
 }
 
 /// What the settings service says about the active sound output; `tv::sound` owns the parse and the
@@ -598,21 +598,21 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 /// before `Load` is ever called, for as long as the hub takes: this Load is delayed by that, and is
 /// failed by the pump's `NATIVE_LOAD_BUDGET` if the wait outlasts it. A hub that answers the
 /// registration and then stays silent costs the call's 300 ms and keeps the 400 ms default.
-#[cfg(not(any(test, feature = "test-support")))]
-pub fn sound_output() -> crate::tv::sound::Reply {
-    use crate::tv::sound::Reply;
+#[cfg(not(test))]
+pub fn sound_output() -> plx_os::tv::sound::Reply {
+    use plx_os::tv::sound::Reply;
     match settings_reply(r#"{"category":"sound","keys":["soundOutput"]}"#, std::time::Duration::from_millis(300)) {
         Some(raw) => Reply::Reply(raw),
         None => Reply::Unavailable,
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn sound_output() -> crate::tv::sound::Reply {
-    crate::tv::sound::Reply::NoPlatform
+#[cfg(test)]
+pub fn sound_output() -> plx_os::tv::sound::Reply {
+    plx_os::tv::sound::Reply::NoPlatform
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 fn launch_home() -> bool {
     let payload = format!("{{\"id\":\"{HOME_APP_ID}\"}}");
     let started = std::time::Instant::now();
@@ -654,7 +654,7 @@ fn launch_home() -> bool {
     }
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 fn minimize() {
     let win = WINDOW.load(std::sync::atomic::Ordering::Relaxed);
     if win.is_null() {
@@ -667,11 +667,11 @@ fn minimize() {
     plx_base::eventlog::log("gohome: fallback=SDL minimize — asked, and SDL cannot say whether it took");
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 static WINDOW: std::sync::atomic::AtomicPtr<std::os::raw::c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 extern "C" {
     fn SDL_MinimizeWindow(win: *mut std::os::raw::c_void);
 }
@@ -679,22 +679,22 @@ extern "C" {
 /// Hand this module the SDL window, once, at boot — `textinput::bind`'s shape and for its reason:
 /// the window is created deep inside `plex_run` and the platform call needs it a long way from
 /// there.
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 pub fn bind_window(win: *mut std::os::raw::c_void) {
     WINDOW.store(win, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
 /// The URI media pipe the port installs (`tv::LegacyWebosMedia::uri_media`): the explicitly enabled bus
 /// worker on the television, or `NoUriMedia` in a feature-off build or a test.
 /// This does not select the URI playback route.
-#[cfg(all(feature = "uri-transport", not(any(test, feature = "test-support"))))]
-pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &ls2::uri::Transport;
+#[cfg(all(feature = "uri-transport", not(test)))]
+pub const URI_MEDIA: &dyn plx_os::tv::uri::UriMedia = &ls2::uri::Transport;
 
-#[cfg(not(all(feature = "uri-transport", not(any(test, feature = "test-support")))))]
-pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
+#[cfg(not(all(feature = "uri-transport", not(test))))]
+pub const URI_MEDIA: &dyn plx_os::tv::uri::UriMedia = &plx_os::tv::uri::NoUriMedia;
 
 /// One LS2 request/reply, on the calling thread.
 ///
@@ -729,7 +729,7 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 /// caller's log line instead of being freed. Anonymous clients do not
 /// collide with each other, so nothing here is serialised; a registration lives for one caller's
 /// use and is unregistered on drop, as both copies always did.
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 pub mod ls2 {
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_int, c_void};
@@ -750,7 +750,7 @@ pub mod ls2 {
     /// It is still the right shape, for two reasons. The press being served is a request to LEAVE,
     /// so the frames being missed are the last ones anybody looks at; and the healthy path does not
     /// spend this — `go_home` logs the measured round trip on every call precisely so the budget
-    /// stops being a guess. [`crate::tv::home::take_root_press`]'s cooldown is what bounds the
+    /// stops being a guess. [`plx_os::tv::home::take_root_press`]'s cooldown is what bounds the
     /// failing path.
     const BUDGET: Duration = Duration::from_millis(600);
 
@@ -1214,7 +1214,7 @@ mod tests {
 
     #[test]
     fn storage_activation_reply_keeps_only_status_and_numeric_error_code() {
-        use crate::storage::wire::failure::{Detail, Stage};
+        use plx_os::storage::wire::failure::{Detail, Stage};
         assert_eq!(storage_activation_reply(r#"{"returnValue":true}"#),
             Detail::new(Stage::ActivationAccepted, None));
         assert_eq!(storage_activation_reply(
@@ -1530,7 +1530,7 @@ mod tests {
     /// has always carried (was `Missing`), and a set outside the family is not probed at all.
     #[test]
     fn the_jail_verdict_maps_each_old_answer_to_its_native_video_variant() {
-        use crate::tv::native_video::Verdict;
+        use plx_os::tv::native_video::Verdict;
         assert_eq!(jail_verdict("k5lp", || true), Verdict::Available);
         assert_eq!(jail_verdict("k3lp.something", || false), Verdict::Blocked("missing"));
         assert_eq!(

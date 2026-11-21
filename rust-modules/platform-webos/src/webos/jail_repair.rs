@@ -4,15 +4,15 @@
 //! explicit confirmation. That app-owned attempt survives every screen and session reset,
 //! including timeout: the remote shell may still run after LS2 gives up.
 
-use crate::tv::native_video::Failure;
+use plx_os::tv::native_video::Failure;
 use serde_json::Value;
 use std::path::Path;
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 use std::time::Duration;
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 const EXEC_URI: &str = "luna://org.webosbrew.hbchannel.service/exec";
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 const BUDGET: Duration = Duration::from_secs(10);
 const OK_MARKER: &str = "PLXNATIVE_JAIL_REPAIR_OK_74";
 const NOT_ROOT_MARKER: &str = "PLXNATIVE_JAIL_REPAIR_NOT_ROOT_74";
@@ -30,7 +30,7 @@ pub fn execute() -> Result<(), Failure> {
 
 const RTKMEM: &str = "/dev/rtkmem";
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 fn call_hbc(payload: &str) -> Result<String, Failure> {
     let registration = super::ls2::register().map_err(|_| Failure::HbcUnavailable)?;
     registration
@@ -41,7 +41,7 @@ fn call_hbc(payload: &str) -> Result<String, Failure> {
         })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn call_hbc(_payload: &str) -> Result<String, Failure> {
     Err(Failure::HbcUnavailable)
 }

@@ -124,7 +124,7 @@ unsafe fn request_gl_attributes() {
     // On a TILER this is not merely 4 MB of address space. Midgard allocates the depth buffer
     // per tile alongside colour and, unless the driver proves it dead, RESOLVES it to memory at
     // end-of-frame: 1920x1080x2 bytes written per presented frame for a buffer nothing ever
-    // reads. The application's `system.rs` logs what the config actually came back with — a
+    // reads. The webOS platform crate's `system.rs` logs what the config actually came back with — a
     // request is not a grant, and the only honest confirmation is `FB bits: … depth=0`.
     sys::SDL_GL_SetAttribute(A_DEPTH, 0);
     sys::SDL_GL_SetAttribute(A_STENCIL, 0);

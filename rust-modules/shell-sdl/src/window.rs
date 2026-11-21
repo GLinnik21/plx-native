@@ -5,7 +5,7 @@
 //! `SDL_Window*` and nothing else: it has no destructor, so it never frees or nulls itself when the
 //! compositor takes the screen away (the application is leaked at exit and a worker may still hold
 //! the handle), and `init::quit` is explicit. The handle is the single contract with the television's
-//! Wayland half, which lives in the application crate's `system.rs`: that code receives
+//! Wayland half, which lives in the webOS platform crate's `system.rs`: that code receives
 //! [`Window::raw`] and the order of calls on one thread, and nothing here ever names the Wayland or
 //! `SDL_SysWMinfo` calls (the television's SDL writes a larger info struct than the headers declare;
 //! `system.rs` has the buffer that survives that, and a pin in `lib.rs` keeps this crate off it).

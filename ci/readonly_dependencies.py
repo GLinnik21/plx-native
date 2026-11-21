@@ -18,7 +18,7 @@ import re
 import tarfile
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'serde-json-immutable.json'
-CERTIFICATE_SHA256 = '75f6923e03ff9d17819d6d921c8715c0e6c3dd6496f6b37274390e62752db121'
+CERTIFICATE_SHA256 = '3e003218874d538c5c9ebd44882dbf7f83f6fd6d66058441e8eabf9aaf89a3b5'
 SCHEMA = 'plx.readonly.locked-json.v1'
 REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index'
 SUPPORTED = ['alloc', 'arbitrary_precision', 'default', 'float_roundtrip', 'raw_value', 'std', 'unbounded_depth']
@@ -200,12 +200,48 @@ def _mask_local_version(text, section, version):
     return text[:start] + '<local-root-version>' + text[end:]
 
 
+_DEPENDENCY_TABLE = re.compile(r'(?:workspace\.)?(?:dev-|build-)?dependencies|target\..+\.(?:dev-|build-)?dependencies')
+_DEPENDENCY_SUBTABLE = re.compile(r'(?:(?:workspace|target\..+)\.)?(?:dev-|build-)?dependencies\.(.+)')
+
+
+def _root_dependency_versions(root, paths, name):
+    """Reject a pinned manifest that gives its dependency on the local root a `version`.
+
+    The dependency is found by the package it names (an alias with `package = "<root>"` counts) in every
+    `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.*.dependencies]` and
+    `[workspace.dependencies]` table, in inline form or as a `[dependencies.<alias>]` subtable. A bare version
+    string (`<root> = "0.10"`) is a version too. Unsupported TOML raises, as everywhere here.
+    """
+    for path in paths:
+        for section, body in _sections((root / path).read_text(encoding='utf-8')).items():
+            if _DEPENDENCY_TABLE.fullmatch(section):
+                entries = _table(body).items()
+            elif (subtable := _DEPENDENCY_SUBTABLE.fullmatch(section)):
+                entries = [(subtable[1].strip('"\''), _table(body))]
+            else:
+                continue
+            for alias, entry in entries:
+                if isinstance(entry, str):
+                    entry = {'version': entry}
+                elif not isinstance(entry, dict):
+                    raise ValueError('unsupported dependency entry: ' + path)
+                if entry.get('package', alias) == name and 'version' in entry:
+                    raise ValueError('root dependency declares a version: ' + path)
+
+
 def _workspace_hashes(root, paths):
     """Pin all bytes except the root app's coherent, non-resolving release number.
 
     The app build.rs reports this number; it does not select the locked JSON
     source or the os enum producer. Member/dependency versions, features,
     source identities, comments and all other metadata remain byte-pinned.
+
+    A workspace crate may depend on the root by path, as a platform crate does, and the release number
+    still resolves nothing: Cargo writes a path dependency into the lock by bare name, so the number appears
+    only in the root's own `[[package]]` block, which is masked. What would let it resolve is a token that
+    carries it, so a lock dependent may list the root by bare name only (`"<root>"`, never `"<root> 0.10.1"`),
+    and a pinned manifest's dependency on the root may carry no `version` key. Exactly one local root entry
+    still has to exist.
     """
     manifest = (root / 'Cargo.toml').read_bytes().replace(b'\r\n', b'\n').decode('utf-8')
     section = _sections(manifest)['package']
@@ -218,8 +254,12 @@ def _workspace_hashes(root, paths):
     local = [(body, entry) for body, entry in entries if entry.get('name') == name]
     if len(local) != 1 or local[0][1].get('version') != version or {'source', 'checksum'} & set(local[0][1]):
         raise ValueError('ambiguous/nonlocal root lock identity or version mismatch')
-    if any(dep.split(' ')[0] == name for _, entry in entries for dep in entry.get('dependencies', [])):
-        raise ValueError('root version participates in dependency resolution')
+    for _, entry in entries:
+        for dep in entry.get('dependencies', []):
+            tokens = dep.split(' ')
+            if tokens[0] == name and len(tokens) != 1:
+                raise ValueError('root version participates in dependency resolution')
+    _root_dependency_versions(root, paths, name)
     manifests = {p: _local_sha((root / p).read_bytes()) for p in paths}
     manifests['Cargo.toml'] = _sha(_mask_local_version(manifest, section, version).encode('utf-8'))
     return {'manifests': manifests,

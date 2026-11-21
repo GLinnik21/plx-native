@@ -4,7 +4,7 @@
 //!
 //! This is the half of the platform that is SDL2 and nothing else. The television's LG half (its
 //! Wayland handles, the opaque region, the pointer hide, the cursor-sleep hint) is webOS code and
-//! stays in the application crate's `system.rs`, reached only through the webOS platform; this
+//! stays in the webOS platform crate's `system.rs`, reached only through that platform; this
 //! crate names none of it, and none of `ui`, `machine`, `os` or any application type. The contract
 //! between the two halves is one raw `SDL_Window*` ([`window::Window::raw`]) and the order of calls
 //! on one thread. [`init::InitHooks`] is the one place the platform reaches INTO SDL's bring-up,
@@ -72,7 +72,7 @@ mod pins {
 
     /// **The television's SDL writes a LARGER `SDL_SysWMinfo` than the headers declare**, so a bare
     /// struct on the stack is the "modular-split crash" and the over-allocated buffer with its
-    /// version handshake lives in the application crate's `system.rs`, beside the rest of the LG
+    /// version handshake lives in the webOS platform crate's `system.rs`, beside the rest of the LG
     /// half. Nothing in this crate may call it: not for the window, not for a size, not "just to
     /// read the display". The SDL version query that handshake is built on belongs to the same
     /// half and is pinned with it.

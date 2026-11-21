@@ -163,6 +163,19 @@ static PLATFORM: Platform =
 
 fn assert_sync<T: Sync>(_: &T) {}
 
+/// What the two real platform crates name from `host` beyond the construction types, type-checked here as a sibling crate
+/// sees it (W7b): the SDL helpers, and the ready media values with the simulator's sink. Nothing runs; a name that stopped
+/// being `pub`, or changed its shape, or lost its `cfg`, is a compile error.
+const _: fn() = || {
+    let _: unsafe fn(&MainThread, plxnative_modules::host::InitHooks) -> Result<(), Exit> = plxnative_modules::host::sdl_init;
+    let _: fn(&MainThread, &OpenAsk) -> Result<Box<dyn Surface>, Exit> = plxnative_modules::host::sdl_open;
+    let _: MediaBoot = plxnative_modules::host::WEBOS_MEDIA;
+    #[cfg(feature = "hostsim")]
+    let _: MediaBoot = plxnative_modules::host::FEED_MEDIA;
+    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
+    let _ = &plxnative_modules::host::HOST_SINK;
+};
+
 /// The registration data is `Sync` (a `static` of it compiles), and the thread-affine surface is not
 /// required to be: a `Surface` holding a `Cell` is accepted as `Box<dyn Surface>`.
 #[test]

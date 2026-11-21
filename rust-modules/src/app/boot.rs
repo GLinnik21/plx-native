@@ -665,12 +665,12 @@ pub(super) fn install_pms_owned(
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
 /// refusal returns its `Exit` (the entry ends the process with its code: `port::plex_run` on the
-/// television, `src/bin/sim.rs` after `platform_desktop::run` on a desktop; a hosted entry reports it
+/// television, the simulator's `main` after `plx_platform_desktop::run` on a desktop; a hosted entry reports it
 /// and stays alive).
 ///
 /// `mt`, THE main-thread token, is minted once by `enter_application` (`app/mod.rs`:
 /// `plx_base::task::MainThread::assume()`, the thread that runs it IS the SDL main thread), which both
-/// entries reach through `run_application` (`port::plex_run` on the television, `platform_desktop::run`
+/// entries reach through `run_application` (`port::plex_run` on the television, `plx_platform_desktop::run`
 /// on a desktop), and MOVES into `App.adapters.player` here,
 /// from where a `&mut PlayerAdapter` is the proof it is still held: the ACB/Starfish seam takes
 /// `&MainThread` (which is `!Send`, so `task::spawn` rejects any closure that captured one), and

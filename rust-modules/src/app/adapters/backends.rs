@@ -15,8 +15,10 @@
 //!     too. They publish nothing: they return what they composed, and the application's one
 //!     publisher (`app::platform::publish_composition`) tells the route session the set the
 //!     installed drivers form, so policy offers what is physically there instead of what Cargo
-//!     features happened to be on. `port.rs` and `platform_desktop.rs` name these two through
-//!     `Platform::media`; the bodies stay here until the webOS platform owns this file.
+//!     features happened to be on. the platform crates name these two through
+//!     `Platform::media`, as the ready `MediaBoot`s `host` publishes
+//!     (`host::WEBOS_MEDIA`, `host::FEED_MEDIA`); the bodies stay here until W11a moves the composition into
+//!     the webOS platform.
 //!   - [`install_uri_product`] builds the product URI driver (`plx_play_uri::backend::UriBackend`)
 //!     from the installed display and URI bus and hands it to the player adapter, which holds it
 //!     only as a `UriDriver`. The player crate names neither the driver nor its settings.
@@ -158,6 +160,20 @@ pub(crate) fn compose_feed(adapter: &mut PlayerAdapter) {
     if !adapter.install_display_sink(sink::installed) {
         log("player: display sink installation refused");
     }
+}
+
+/// The desktop's `early_init`: nothing to initialize before the first adapter. The plane owner's default facts are
+/// the absent ones the host sink's `VP_EXPORTED`/`VP_NONE` boot would state. `host::FEED_MEDIA` states it.
+#[cfg(feature = "hostsim")]
+pub(crate) fn feed_early_init(_mt: &MainThread) {}
+
+/// The desktop's `compose`: [`compose_feed`] over the host sink alone. It composes no URI driver (that is the
+/// television's ACB driver), so it returns no resolver and the session is published the Feed alone.
+/// `host::FEED_MEDIA` states it.
+#[cfg(feature = "hostsim")]
+pub(crate) fn compose_feed_alone(adapter: &mut PlayerAdapter, _controlled: bool) -> Composition {
+    compose_feed(adapter);
+    Composition::default()
 }
 
 /// The webOS composition, [`Platform::media`](crate::app::platform::Platform)'s `compose` for the

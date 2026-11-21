@@ -1072,13 +1072,25 @@ mod tests {
     /// are exempt.
     #[test]
     fn no_log_call_site_interpolates_viewing_content() {
-        // Walk the source of EVERY crate that logs: this one and the application crate beside it
-        // (`rust-modules/src`, where nearly every log call lives). Resolved from the manifest dir
-        // so it is independent of the working directory the test runner happens to have. A layer
-        // crate split out of `rust-modules/src` later must be added here, or its log calls stop
-        // being read (`../machine/src`, `../net/src`, `../os/src`, `../gfx/src`, `../ui/src`, `../plex/src`, `../telemetry/src`, `../data/src` and `../session/src` are the machine, net, os, gfx, ui, plex, telemetry, data and session layers').
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let roots = [manifest.join("src"), manifest.join("../src"), manifest.join("../machine/src"), manifest.join("../net/src"), manifest.join("../os/src"), manifest.join("../gfx/src"), manifest.join("../ui/src"), manifest.join("../plex/src"), manifest.join("../telemetry/src"), manifest.join("../data/src"), manifest.join("../session/src"), manifest.join("../media/src"), manifest.join("../appkit/src"), manifest.join("../screens/src")];
+        // Walk the source of EVERY crate that logs: the application crate (`rust-modules/src`, where
+        // nearly every log call lives) and each `rust-modules/<crate>/src` beside it, found by listing
+        // the workspace directory. A crate split out of the application later is read without anyone
+        // remembering to add it here: the list this replaced named the layers one by one, and the
+        // platform crates (`platform-webos`, `platform-desktop`) took `port.rs`, `system.rs`, the
+        // `webos/` port and the key store out of two of them without being in it. Resolved from the
+        // manifest dir so it is independent of the working directory the test runner happens to have.
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut roots = vec![workspace.join("src")];
+        let mut crates: Vec<std::path::PathBuf> = std::fs::read_dir(&workspace)
+            .expect("the rust-modules directory")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|dir| {
+                let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                !name.starts_with("target") && dir.join("src").is_dir()
+            })
+            .collect();
+        crates.sort();
+        roots.extend(crates.into_iter().map(|dir| dir.join("src")));
         let mut offences: Vec<String> = Vec::new();
         let mut files = 0usize;
         for src in &roots {

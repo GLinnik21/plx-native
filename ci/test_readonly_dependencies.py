@@ -4,7 +4,9 @@ import copy
 import importlib.util
 import json
 import os
+import io
 import shutil
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -360,14 +362,118 @@ class LockedJsonProofTests(unittest.TestCase):
             proof._workspace_hashes(self.root, proof._manifest_paths(self.root))
         self.assertFalse(self.valid())
 
+    def root_identity(self):
+        package = proof._table(proof._sections((self.root / 'Cargo.toml').read_text(encoding='utf-8'))['package'])
+        return package['name'], package['version']
+
     def test_local_root_version_cannot_participate_in_resolution(self):
-        name = proof._table(proof._sections((self.root / 'Cargo.toml').read_text(encoding='utf-8'))['package'])['name']
+        # A lock dependent that lists the root WITH a version token (alone, or with a source) is rejected: that
+        # token is what would let the release number select something.
+        name, version = self.root_identity()
         path = self.root / 'Cargo.lock'
-        text = path.read_text(encoding='utf-8')
-        path.write_text(text.replace('dependencies = [', 'dependencies = [\n "' + name + '",', 1), encoding='utf-8')
-        with self.assertRaisesRegex(ValueError, 'participates in dependency resolution'):
+        original = path.read_text(encoding='utf-8')
+        for token in (name + ' ' + version, name + ' ' + version + ' (path+file:///elsewhere)', name + ' 9.9.9'):
+            with self.subTest(token=token):
+                path.write_text(original.replace('dependencies = [', 'dependencies = [\n "' + token + '",', 1), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'participates in dependency resolution'):
+                    proof._workspace_hashes(self.root, proof._manifest_paths(self.root))
+                self.assertFalse(self.valid())
+
+    DEPENDENT = '[package]\nname = "plx_platform_probe"\nversion = "0.0.0"\nedition = "2021"\n\n'
+
+    def add_root_dependent(self, tables='[dependencies]\nplxnative-modules = { path = "..", default-features = false }\n'):
+        """A workspace member that depends on the root by path, in the manifest and, by bare name, in the lock."""
+        name, _ = self.root_identity()
+        manifest = self.root / 'Cargo.toml'
+        text = manifest.read_text(encoding='utf-8')
+        manifest.write_text(text.replace('members = [', 'members = [\n    "plx_platform_probe",', 1), encoding='utf-8')
+        member = self.root / 'plx_platform_probe'
+        member.mkdir()
+        (member / 'Cargo.toml').write_text(self.DEPENDENT + tables, encoding='utf-8')
+        lock = self.root / 'Cargo.lock'
+        lock.write_text(lock.read_text(encoding='utf-8') + '\n[[package]]\nname = "plx_platform_probe"\nversion = "0.0.0"\n'
+                        'dependencies = [\n "' + name + '",\n]\n', encoding='utf-8')
+
+    def synthetic_crate(self):
+        """A crate archive whose sources pass the review, and the lock entry that names its checksum, so the producer runs offline."""
+        for binding in self.certificate['workspace']['owners'].values():
+            destination = self.root / binding['lib']
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / 'rust-modules' / binding['lib'], destination)
+        locked, _ = proof._locked(self.root)
+        sources = closure_sources(self.certificate)
+        sources['Cargo.toml'] = '[package]\nname = "serde_json"\nversion = "' + locked['version'] + '"\n\n' + sources['Cargo.toml']
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode='w:gz') as crate:
+            for relative in proof.SOURCE_PATHS:
+                body = sources[relative].encode('utf-8')
+                member = tarfile.TarInfo('serde_json-' + locked['version'] + '/' + relative)
+                member.size = len(body)
+                crate.addfile(member, io.BytesIO(body))
+        archive = Path(self.temp.name) / 'serde_json.crate'
+        archive.write_bytes(data.getvalue())
+        lock = self.root / 'Cargo.lock'
+        lock.write_text(lock.read_text(encoding='utf-8').replace(locked['checksum'], proof._sha(data.getvalue()), 1), encoding='utf-8')
+        return archive
+
+    def test_a_bare_name_path_dependent_of_the_root_does_not_make_its_release_resolve(self):
+        # With a platform-style crate depending on the root by path, the root's release number still moves nothing the
+        # certificate pins: the masked manifest hash and the masked lock hash are unchanged, and the producer still runs.
+        self.add_root_dependent()
+        archive = self.synthetic_crate()
+        paths = proof._manifest_paths(self.root)
+        self.assertIn('plx_platform_probe/Cargo.toml', paths)
+        before = proof._workspace_hashes(self.root, paths)
+        certificate = proof.produce_certificate(self.root, archive)
+        self.assertIn('plx_platform_probe/Cargo.toml', certificate['workspace']['manifests'])
+        for version in ('0.9.0', '4.5.6'):
+            with self.subTest(version=version):
+                self.change_root_release(version)
+                after = proof._workspace_hashes(self.root, paths)
+                self.assertEqual(after['manifests']['Cargo.toml'], before['manifests']['Cargo.toml'])
+                self.assertEqual(after['lock_sha256'], before['lock_sha256'])
+                self.assertEqual(after, before)
+                self.assertEqual(proof.produce_certificate(self.root, archive), certificate)
+
+    def test_a_root_dependency_with_a_version_is_rejected(self):
+        # Every spelling of a dependency on the root that carries a `version` key: inline, a bare string, a rename,
+        # a subtable, the other dependency tables, a target table and the workspace's own.
+        name, _ = self.root_identity()
+        for tables in (
+            '[dependencies]\n' + name + ' = { path = "..", version = "0.10.0" }\n',
+            '[dependencies]\n' + name + ' = "0.10.0"\n',
+            '[dependencies]\nplx_app = { package = "' + name + '", path = "..", version = "0.10" }\n',
+            '[dependencies.' + name + ']\npath = ".."\nversion = "0.10.0"\n',
+            '[dev-dependencies]\n' + name + ' = { path = "..", version = "0.10.0" }\n',
+            '[build-dependencies]\n' + name + ' = { path = "..", version = "0.10.0" }\n',
+            "[target.'cfg(unix)'.dependencies]\n" + name + ' = { path = "..", version = "0.10.0" }\n',
+            "[target.'cfg(unix)'.dev-dependencies]\n" + name + ' = { path = "..", version = "0.10.0" }\n',
+        ):
+            with self.subTest(tables=tables):
+                path = self.root / 'plx_platform_probe'
+                if path.exists():
+                    shutil.rmtree(path)
+                for relative in ('Cargo.toml', 'Cargo.lock'):
+                    shutil.copyfile(ROOT / 'rust-modules' / relative, self.root / relative)
+                self.add_root_dependent(tables)
+                with self.assertRaisesRegex(ValueError, 'root dependency declares a version'):
+                    proof._workspace_hashes(self.root, proof._manifest_paths(self.root))
+                self.assertFalse(self.valid())
+
+    def test_a_workspace_root_dependency_with_a_version_is_rejected(self):
+        name, _ = self.root_identity()
+        self.add_root_dependent('[dependencies]\n' + name + ' = { workspace = true }\n')
+        manifest = self.root / 'Cargo.toml'
+        manifest.write_text(manifest.read_text(encoding='utf-8') + '\n[workspace.dependencies]\n' + name + ' = { path = ".", version = "0.10.0" }\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'root dependency declares a version'):
             proof._workspace_hashes(self.root, proof._manifest_paths(self.root))
         self.assertFalse(self.valid())
+
+    def test_other_dependencies_and_a_versionless_rename_of_the_root_are_not_the_guard_s_business(self):
+        name, _ = self.root_identity()
+        self.add_root_dependent('[dependencies]\nplx_app = { package = "' + name + '", path = ".." }\n'
+                                'serde = { version = "1" }\n\n[dependencies.other]\npath = "../other"\nversion = "1"\n')
+        proof._workspace_hashes(self.root, proof._manifest_paths(self.root))
 
     def test_local_root_release_does_not_unpin_dependency_version(self):
         self.change_root_release('4.5.6')
@@ -379,17 +485,22 @@ class LockedJsonProofTests(unittest.TestCase):
         self.assertFalse(self.valid())
 
 
+def closure_sources(certificate):
+    """Synthetic crate sources that pass the structural review, one per source path."""
+    sources = {path: '' for path in proof.SOURCE_PATHS}
+    for declaration in certificate['declarations'].values():
+        sources[declaration['path']] += ' '.join(declaration['tokens']) + '\n'
+    sources['src/value/mod.rs'] += 'use alloc::string::String; use alloc::vec::Vec; pub use crate::map::Map; pub use crate::number::Number;'
+    sources['src/number.rs'] += '#[cfg(feature = "arbitrary_precision")] use alloc::string::{String, ToString};'
+    sources['src/map.rs'] += '#[cfg(not(feature = "preserve_order"))] use alloc::collections::{btree_map, BTreeMap};'
+    sources['src/lib.rs'] = 'extern crate alloc; pub use crate::value::{from_value, to_value, Map, Number, Value};'
+    sources['Cargo.toml'] = '[features]\n' + '\n'.join(key + ' = ' + json.dumps(value) for key, value in certificate['features']['definitions'].items())
+    return sources
+
+
 class SourceClosureTests(unittest.TestCase):
     def setUp(self):
-        certificate = proof._load_certificate()
-        self.sources = {path: '' for path in proof.SOURCE_PATHS}
-        for declaration in certificate['declarations'].values():
-            self.sources[declaration['path']] += ' '.join(declaration['tokens']) + '\n'
-        self.sources['src/value/mod.rs'] += 'use alloc::string::String; use alloc::vec::Vec; pub use crate::map::Map; pub use crate::number::Number;'
-        self.sources['src/number.rs'] += '#[cfg(feature = "arbitrary_precision")] use alloc::string::{String, ToString};'
-        self.sources['src/map.rs'] += '#[cfg(not(feature = "preserve_order"))] use alloc::collections::{btree_map, BTreeMap};'
-        self.sources['src/lib.rs'] = 'extern crate alloc; pub use crate::value::{from_value, to_value, Map, Number, Value};'
-        self.sources['Cargo.toml'] = '[features]\n' + '\n'.join(key + ' = ' + json.dumps(value) for key, value in certificate['features']['definitions'].items())
+        self.sources = closure_sources(proof._load_certificate())
 
     def test_complete_recursive_source_grammar(self):
         declarations, features = proof._review(self.sources)

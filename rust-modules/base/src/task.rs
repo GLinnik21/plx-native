@@ -130,7 +130,7 @@ pub struct MainThread(PhantomData<*const ()>);
 
 impl MainThread {
     /// Mint the token. In production `enter_application` (`app/mod.rs`) calls this once, for every entry
-    /// (`plex_run` on the television and `platform_desktop::run` on a desktop reach it through
+    /// (`plex_run` on the television and `plx_platform_desktop::run` on a desktop reach it through
     /// `run_application`), and nothing else should; a test rig assumes its own.
     ///
     /// # Safety

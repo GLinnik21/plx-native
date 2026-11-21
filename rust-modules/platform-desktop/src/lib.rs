@@ -23,14 +23,18 @@
 //! The storage group is `StorageHooks::NONE`: there is no storage helper, so the account's records
 //! live in files under the persistent state root.
 //!
-//! This module never names `port`, `system`, `webos` or `keymanager`, so a desktop executable
-//! references none of the television's code. It still COMPILES it (the television arms of those
-//! files have no `hostsim` gate any more), and the linker drops what nothing reaches: a build that
-//! made one of them reachable would fail to link for want of libwayland, glib or luna-service2, on
-//! a Mac and on Linux alike. `simulators.yml` links the shapes the simulator ships in to guard that
-//! until the platform crates split (`docs/platform-ports.md`, W7).
-use crate::app::platform::{sdl_init, sdl_open, Composition, FrameProbe, InitHooks, MediaBoot, OpenAsk, Platform, Shell, Surface};
-use crate::app::Exit;
+//! This crate names no other platform and reaches the application through `plxnative_modules::host`
+//! alone, so a desktop executable contains none of the television's code: the
+//! webOS port (the Wayland handles, glib, luna-service2) is `plx_platform_webos`, which no desktop crate
+//! depends on and the application never names. The simulator links without a television library to drop.
+//!
+//! The crate is compiled only under `hostsim` (its own feature, in no default set), so a default-feature
+//! pass that lists this package builds an empty library, and a television build never builds it. It is a
+//! mounted module of the `platform desktop` layer (`ci/module-layers.ini`): nothing names it, and it names
+//! no other platform (`docs/platform-ports.md`, W7). The `plxnative-sim` binary beside it
+//! (`src/bin/sim.rs`) is its executable.
+#![cfg(feature = "hostsim")]
+use plxnative_modules::host::{self, sdl_init, sdl_open, Exit, FrameProbe, InitHooks, MediaBoot, OpenAsk, Platform, Shell, Surface};
 use plx_os::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use plx_os::tv::toast::{Identity, Outcome, Sent};
 use plx_os::tv::{IdentityHooks, LegacyWebosMedia, SecureHooks, Services, StorageHooks, SystemHooks};
@@ -39,7 +43,7 @@ use std::os::raw::{c_int, c_void};
 
 /// The Feed backend's host sink, built with the simulator's decoded picture.
 #[cfg(feature = "play-feed")]
-const SINK: &dyn plx_os::tv::sink::VideoSink = &crate::app::adapters::hostsim::HOST_SINK;
+const SINK: &dyn plx_os::tv::sink::VideoSink = &host::HOST_SINK;
 /// A build without the Feed backend has no picture to show: every verb is refused.
 #[cfg(not(feature = "play-feed"))]
 const SINK: &dyn plx_os::tv::sink::VideoSink = &plx_os::tv::sink::NoSink;
@@ -108,11 +112,11 @@ fn deliver_toast(_message: &str, identity: Identity) -> Sent {
 struct DesktopShell;
 
 impl Shell for DesktopShell {
-    fn init(&self, mt: &plx_base::task::MainThread) -> Result<(), Exit> {
+    fn init(&self, mt: &host::MainThread) -> Result<(), Exit> {
         // SAFETY: `InitHooks::NONE` calls nothing.
         unsafe { sdl_init(mt, InitHooks::NONE) }
     }
-    fn open(&self, mt: &plx_base::task::MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+    fn open(&self, mt: &host::MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
         sdl_open(mt, ask)
     }
     fn bind_window(&self, _win: *mut c_void) {}
@@ -145,33 +149,29 @@ impl FrameProbe for DesktopProbe {
     }
 }
 
-/// The desktop's media boot: nothing to initialize before the first adapter (the plane owner's
-/// default facts are the absent ones the host sink's `VP_EXPORTED`/`VP_NONE` boot would state), and
-/// the Feed over the host sink as its only driver. It composes no URI driver (that is the
-/// television's ACB driver), so it returns no resolver and the session is published the Feed alone.
-fn media_early_init(_mt: &plx_base::task::MainThread) {}
+/// The desktop's media boot, the ready value the application publishes (`host::FEED_MEDIA`): nothing to
+/// initialize before the first adapter (the plane owner's default facts are the absent ones the host
+/// sink's `VP_EXPORTED`/`VP_NONE` boot would state), and the Feed over the host sink as its only driver.
+/// It composes no URI driver (that is the television's ACB driver), so it returns no resolver and the
+/// session is published the Feed alone.
+const MEDIA: MediaBoot = host::FEED_MEDIA;
 
-fn media_compose(adapter: &mut plx_media::player::adapter::PlayerAdapter, _controlled: bool) -> Composition {
-    crate::app::adapters::backends::compose_feed(adapter);
-    Composition::default()
-}
-
-/// The desktop platform: what [`run`] hands `app::run_application`.
+/// The desktop platform: what [`run`] hands `host::run`.
 static PLATFORM: Platform = Platform::new(
     &SERVICES,
     &DesktopShell,
     &DesktopProbe,
-    MediaBoot { early_init: media_early_init, compose: media_compose },
+    MEDIA,
 );
 
 /// The desktop entry: boot the application on [`PLATFORM`] and return the status it ended with.
 /// Ending the process is the executable's (`src/bin/sim.rs`), which owns it, like the television's
-/// entry does (`port::plex_main`): a process that hosts the application never does.
+/// entry does (`port::plex_main` in `plx_platform_webos`): a process that hosts the application never does.
 ///
-/// Nothing is logged before `run_application`: a boot it refuses early must leave the log as the
+/// Nothing is logged before the application's entry: a boot it refuses early must leave the log as the
 /// harnesses expect (`tests/replay_fixtures.py`).
 pub fn run(pms_host: &CStr, pms_port: u16) -> c_int {
-    crate::app::run_application(&PLATFORM, pms_host.as_ptr(), c_int::from(pms_port)).code
+    host::run(&PLATFORM, pms_host, pms_port).code
 }
 
 #[cfg(test)]
@@ -196,33 +196,61 @@ mod tests {
         assert_eq!(SERVICES.storage.authority, plx_os::tv::authority::Authority::Files);
     }
 
+    /// **The desktop declares no SDL function.** The window, the GL context, the queue and the text-input
+    /// panel are `plx_shell_sdl`'s (`init` and `open` above reach them through `host::sdl_init` and
+    /// `host::sdl_open`), and the television's LG half is the webOS crate's; a declaration here, in the
+    /// library or the `plxnative-sim` binary, would be a second SDL seam beside the shell crate's. Reads the
+    /// sources, because no host test can see a declaration. (The application crate holds itself to
+    /// `clock.rs`'s `SDL_GetTicks` the same way, and the webOS crate to the four it keeps.)
+    #[test]
+    fn the_desktop_declares_no_sdl_function() {
+        fn walk(dir: &std::path::Path, src: &std::path::Path, hits: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read a source directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    walk(&path, src, hits);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let rel = path.strip_prefix(src).expect("under src").to_string_lossy().replace('\\', "/");
+                    let text = std::fs::read_to_string(&path).expect("read a source file");
+                    // Split with `concat!`, so this file's own text is never what it matches.
+                    if text.contains(concat!("fn ", "SDL_")) {
+                        hits.push(rel);
+                    }
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        walk(&src, &src, &mut hits);
+        assert!(hits.is_empty(), "an SDL function is declared in the desktop platform: {hits:?}");
+    }
+
     /// The video sink the Feed runs over and the display binding the table states are the one host
     /// sink in the simulator, never `NoSink`: a Feed that ran over `NoSink` would show no picture
     /// and nothing in a simulator run would say so.
     #[cfg(feature = "play-feed")]
     #[test]
     fn the_simulator_port_display_is_the_host_sink() {
-        let host = std::ptr::from_ref(&crate::app::adapters::hostsim::HOST_SINK).cast::<()>();
+        let sink = std::ptr::from_ref(&host::HOST_SINK).cast::<()>();
         let media = &SERVICES.legacy_webos_media;
-        assert_eq!(std::ptr::from_ref(media.display_sink).cast::<()>(), host,
+        assert_eq!(std::ptr::from_ref(media.display_sink).cast::<()>(), sink,
             "display_installed() is the host sink");
-        assert_eq!(std::ptr::from_ref(media.sink).cast::<()>(), host, "so is the video sink");
+        assert_eq!(std::ptr::from_ref(media.sink).cast::<()>(), sink, "so is the video sink");
     }
 
-    /// The desktop's own `media.compose`, the one `run_application` calls, composes the Feed and no
-    /// URI driver: published, the session offers the adapter's set (no `Uri` in it) and holds no
-    /// resolver. A resolver here would describe a driver this platform never installed.
+    /// The desktop's own media boot, the one its `PLATFORM` states, composes the Feed and no URI
+    /// driver: the adapter's installed drivers form a set with no `Uri` in it, and the composition
+    /// carries no resolver. A resolver here would describe a driver this platform never installed. (What
+    /// the application then publishes to the session from a composition is `publish_composition`'s, and
+    /// is the application's own to test: a platform cannot reach it.)
     #[test]
     fn the_desktop_platform_composes_the_feed_and_no_resolver() {
         use plx_media::player::adapter::PlayerAdapter;
-        let mut adapter = PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
-        let mut session = plx_media::route::PlaybackSession::IDLE;
-        let composed = (PLATFORM.media.compose)(&mut adapter, false);
-        crate::app::platform::publish_composition(&mut session, &adapter, composed);
-        assert_eq!(session.backends(), adapter.composed_backends());
-        assert!(!session.backends().uri);
-        assert!(session.uri_preflight_port().is_none());
+        let mut adapter = PlayerAdapter::new(unsafe { host::MainThread::assume() });
+        let composed = (MEDIA.compose)(&mut adapter, false);
+        assert!(composed.resolver.is_none());
+        assert!(!adapter.composed_backends().uri);
         #[cfg(feature = "play-feed")]
-        assert!(session.backends().feed, "the Feed is the desktop's driver");
+        assert!(adapter.composed_backends().feed, "the Feed is the desktop's driver");
     }
 }

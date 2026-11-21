@@ -6,7 +6,7 @@
 //! publishes into): the worker is the only publisher, and a failed or late answer cannot be
 //! mistaken for an affirmative capability.
 
-use crate::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
+use plx_os::devcaps::dv::{self, DvCapability, DvProbe, ProbeSource};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -51,7 +51,7 @@ fn run_probe() {
 #[cfg(all(
     target_arch = "arm",
     target_os = "linux",
-    not(any(test, feature = "test-support"))
+    not(test)
 ))]
 fn run_transport(started: Instant) {
     use std::time::Duration;
@@ -90,7 +90,7 @@ fn run_transport(started: Instant) {
                         source: ProbeSource::Configd,
                         reason: "configd",
                     },
-                    crate::tv::device::info().major,
+                    plx_os::tv::device::info().major,
                 ),
                 started,
                 None,
@@ -137,7 +137,7 @@ fn run_transport(started: Instant) {
 #[cfg(not(all(
     target_arch = "arm",
     target_os = "linux",
-    not(any(test, feature = "test-support"))
+    not(test)
 )))]
 fn run_transport(started: Instant) {
     dv::publish_logged(
@@ -155,7 +155,7 @@ fn run_transport(started: Instant) {
 #[cfg(all(
     target_arch = "arm",
     target_os = "linux",
-    not(any(test, feature = "test-support"))
+    not(test)
 ))]
 fn reply_error_code(reply: &str) -> Option<i64> {
     serde_json::from_str::<serde_json::Value>(reply)
@@ -186,7 +186,7 @@ impl ProbeFailure {
     #[cfg(all(
         target_arch = "arm",
         target_os = "linux",
-        not(any(test, feature = "test-support"))
+        not(test)
     ))]
     const fn stage(self) -> &'static str {
         match self {
@@ -262,7 +262,7 @@ fn parse_dv_reply(reply: &str) -> Result<DvCapability, ProbeFailure> {
 #[cfg(test)]
 mod tests {
     use super::{parse_dv_reply, platform_gate, DvCapability, ProbeFailure};
-    use crate::devcaps::dv::{DvProbe, ProbeSource};
+    use plx_os::devcaps::dv::{DvProbe, ProbeSource};
 
     fn configd(capability: DvCapability) -> DvProbe {
         DvProbe {

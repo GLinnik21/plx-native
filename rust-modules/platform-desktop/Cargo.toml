@@ -1,0 +1,69 @@
+[package]
+name = "plx_platform_desktop"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "PlxNative's desktop platform: the simulator's and the macOS app's own tables and entry, and the plxnative-sim binary. Compiled only under hostsim."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+build = "build.rs"
+
+# ci/module_graph.py reads this crate as part of the same module tree as the application (see
+# `plx_platform_webos`): the root of module `platform_desktop`, the member of `[platform desktop]`
+# in ci/module-layers.ini.
+[package.metadata.plx]
+mount = "platform_desktop"
+
+[lib]
+name = "plx_platform_desktop"
+# An rlib the simulator binary of this package links, never an archive (ci/test_no_host_staticlib.py).
+crate-type = ["rlib"]
+
+# The macOS/desktop UI simulator. Not built by `make` outside the `sim*` targets, not shipped except as the
+# macOS app (`ci/mkmacapp.py`), and inert without `hostsim`: it was the application package's own binary until
+# the platform crates split (W7). `-p plx_platform_desktop --bin plxnative-sim` selects it.
+[[bin]]
+name = "plxnative-sim"
+path = "src/bin/sim.rs"
+required-features = ["hostsim"]
+
+# `hostsim` is this crate's OWN feature and is in NO default set. The whole library is
+# `#![cfg(feature = "hostsim")]` and the binary requires it, so a default-feature pass that lists this
+# package (`make check`'s unit pass) compiles an empty library, and it must enable nothing on the
+# application and compile nothing of its dependencies. Two things make that so. The dependencies below are
+# `optional = true`, and only `hostsim` pulls them in (`dep:`): the crates the simulator's code uses, which
+# the empty library would otherwise carry as unused dependencies (`make lint`'s `unused_crate_dependencies`).
+# And the application's own features are forwarded WEAKLY (`plxnative-modules?/<feature>`): a weak forward
+# turns a feature on only when something else has enabled the dependency, so it adds the optional edge in no
+# build. The dependency names no feature (a dependency feature is unified over the whole build and would turn
+# every package of a default pass into a simulator pass), so `hostsim` forwards the application's `hostsim`
+# itself. The features are the application's, under the same names with the same defaults
+# (rust-modules/Cargo.toml `[features]`); `ci/test_platform_features.py` holds all of this.
+[features]
+default = ["play-uri", "play-feed", "devtools", "devtriggers", "threadcheck"]
+play-uri = ["plxnative-modules?/play-uri"]
+play-feed = ["plxnative-modules?/play-feed"]
+devtools = ["plxnative-modules?/devtools"]
+devtriggers = ["plxnative-modules?/devtriggers"]
+threadcheck = ["plxnative-modules?/threadcheck"]
+lab-diagnostics = ["plxnative-modules?/lab-diagnostics"]
+placeholder-sentinel = ["plxnative-modules?/placeholder-sentinel"]
+hostsim = ["dep:plxnative-modules", "plxnative-modules/hostsim", "dep:plx_base", "dep:plx_os"]
+
+[dependencies]
+# The application, through its `host` module and the simulator's entry points; the lower layers this
+# platform's tables are written from (`plx_os::tv`, `plx_os::devcaps::dv`) and the process end the binary owns
+# (`plx_base::process::exit_now`). All three are used only by the hostsim library and binary, so all three are
+# optional and `hostsim` is the only feature that enables them. Their features are the application's, which this
+# crate's own forward (above): a path dependency here adds none.
+plxnative-modules = { path = "..", default-features = false, optional = true }
+plx_base = { path = "../base", optional = true }
+plx_os = { path = "../os", optional = true }
+
+[dev-dependencies]
+# `PlayerAdapter`, the type the desktop's media boot composes onto, which its test grades. A test-only edge:
+# the library names no `plx_media` (the application hands the boot over as a ready `host::FEED_MEDIA`).
+plx_media = { path = "../media" }
+
+[lints]
+workspace = true

@@ -11,9 +11,13 @@ module makes to another out of the Rust tokens. This script fails when
   * a reference — production or `cfg(test)` — names a layer its own layer does not `use`, and
     ci/allow/layers.txt has no entry for that (file, member) pair;
   * a reference from outside a PORT names one of its members, with no entry either. A
-    `[platform <name>]` section is not a layer: its members stay placed in their layers, and the
-    port fences one platform's code off from the rest (docs/module-layers.md, step L15). Its
-    entries do not hold up any layer's extraction;
+    `[platform <name>]` section is a fence, not a layer, while it carries no `uses`: its members
+    stay placed in their layers, and the port fences one platform's code off from the rest
+    (docs/module-layers.md, step L15). Its entries do not hold up any layer's extraction. A platform
+    section that carries `uses` is the platform's own CRATE (`plx_platform_<name>`, W7b): one member,
+    the crate's mount, placed in a layer of its own named `platform <name>` that sits above `app`,
+    and still a port, so nothing outside names it. No `uses` can spell a platform, so no layer
+    names one, and a platform never names another;
   * an allowlist entry no longer matches any such reference (the list only shrinks), or the
     list's `# count:` line disagrees with its entries.
 
@@ -66,6 +70,10 @@ class Layers:
         with open(path, encoding='utf-8') as f:
             parser.read_file(f)
         self.order = [s for s in parser.sections() if not s.startswith('platform ')]
+        # A platform section with `uses` is one more layer, appended after the real ones: the crate
+        # above `app`. It is still a port below. No `uses` list can name it (the name has a space).
+        self.platform_layers = [s for s in parser.sections() if s.startswith('platform ') and 'uses' in parser[s]]
+        self.order += self.platform_layers
         self.uses, self.members, self.errors = {}, {}, []
         # A PORT is a set of members, still placed in their layers, that nothing outside the port
         # may name: the boundary of one platform's code (docs/module-layers.md, step L15).
@@ -73,8 +81,11 @@ class Layers:
         for section in parser.sections():
             if not section.startswith('platform '): continue
             port = section[len('platform '):].strip()
-            unknown = set(parser[section]) - {'members'}
+            unknown = set(parser[section]) - {'members', 'uses'}
             if unknown: self.errors.append(f'[{section}] has unknown key(s) {sorted(unknown)}')
+            if section in self.platform_layers and len(parser[section].get('members', '').split()) != 1:
+                self.errors.append(f'[{section}] carries `uses`, so it is one crate: it must list exactly one '
+                                   f'member, the mount of its package')
             self.ports[port] = []
             for member in parser[section].get('members', '').split():
                 key = tuple(member.split('::'))
@@ -222,6 +233,19 @@ def cargo_edge_errors(src, layers):
         elif package and package.startswith('plx_'):
             mount = cargo_mount(doc)
             layer = layers.members.get(layers.member_of(mount)) if mount is not None else package.removeprefix('plx_')
+            # A platform crate and its layer name each other: `plx_platform_webos` is `[platform webos]`'s
+            # one member and nothing else's. Its mount is not optional, because without one its lib.rs
+            # would merge into the application's `crate` member of the module tree.
+            platform = package.removeprefix('plx_platform_') if package.startswith('plx_platform_') else None
+            if platform is not None and mount is None:
+                errors.append(f'{manifest}: platform package {package} declares no [package.metadata.plx] mount, so '
+                              f'its lib.rs would merge into the application\'s module tree')
+                continue
+            if (layer in layers.platform_layers) != (platform is not None) or \
+                    (platform is not None and layer != f'platform {platform}'):
+                errors.append(f'{manifest}: package {package} is mounted in [{layer}], but a platform crate '
+                              f'plx_platform_<name> is the one member of [platform <name>] and nothing else is')
+                continue
         else:
             continue
         if layer not in layers.uses:
@@ -438,7 +462,9 @@ def main(argv=None):
     where = args.allow.relative_to(REPO) if args.allow.is_relative_to(REPO) else args.allow
     ports = ''.join(f', {sum(1 for key in ported if key[1] in {member_name(m) for m in members})} of them '
                     f'into [platform {port}]' for port, members in layers.ports.items())
-    print(f'check-module-layers: green — {len(layers.order)} layers, {len(crate.modules)} modules, '
+    crates = f' and {len(layers.platform_layers)} platform crates' if layers.platform_layers else ''
+    print(f'check-module-layers: green — {len(layers.order) - len(layers.platform_layers)} layers{crates}, '
+          f'{len(crate.modules)} modules, '
           f'{cargo_edges} Cargo layer declarations, '
           f'{len(allow)} migration entries left in {where}{ports}; '
           f'{sum(len(labels) for labels in support.values())} cfg(test) items still named across layers (--report)')

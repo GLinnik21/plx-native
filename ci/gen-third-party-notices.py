@@ -360,7 +360,10 @@ def verify_graph(data, project):
         featflags = shipping_featflags(ROOT)
     except ValueError as exc:
         return [str(exc)]
-    cmd = ['cargo', '+' + pinned(ROOT), 'tree', '--locked', '--manifest-path', str(ROOT / 'rust-modules' / 'Cargo.toml'), *featflags,
+    # The graph of the crate the ARM staticlib is built from (`plx_platform_webos`, Makefile `$(RUST_LIB)`), which
+    # depends on the application: a tree rooted at the application would miss a dependency only the platform adds.
+    cmd = ['cargo', '+' + pinned(ROOT), 'tree', '--locked', '--manifest-path', str(ROOT / 'rust-modules' / 'Cargo.toml'),
+           '-p', 'plx_platform_webos', *featflags,
            '--target', 'armv7-unknown-linux-gnueabi', '--edges', 'normal,no-proc-macro', '--prefix', 'none', '--format', '{p}']
     out = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, 'CARGO_INCREMENTAL': '0'})
     if out.returncode != 0:

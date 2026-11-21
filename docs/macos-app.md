@@ -8,8 +8,8 @@ no Homebrew, no SDL, no toolchain. `ci/mkmacapp.py` is the whole recipe; this no
 the way it does and what the result is and is not.
 
 It is **not a new build of the app**. It is `--features hostsim,play-feed` — the desktop simulator,
-which boots the app on the desktop's own platform (`rust-modules/src/platform_desktop.rs`, entered by
-`rust-modules/src/bin/sim.rs`; the `ui-sim` skill) — with the dev features off and a bundle around it. (`play-feed` is named because `--no-default-features` drops it, and the simulator's
+which boots the app on the desktop's own platform (the desktop platform crate, `rust-modules/platform-desktop`:
+its tables in `src/lib.rs`, its `plxnative-sim` binary in `src/bin/sim.rs`, built with `-p plx_platform_desktop`; the `ui-sim` skill) — with the dev features off and a bundle around it. (`play-feed` is named because `--no-default-features` drops it, and the simulator's
 video sink belongs to that backend.) Every UI change, every Plex data-layer change, is the same code the ipk ships.
 
 ## What it can do, and the one thing it cannot

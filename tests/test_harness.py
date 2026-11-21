@@ -8850,6 +8850,10 @@ class DepGates(unittest.TestCase):
         "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
+        # `SRC_PLATFORM_WEBOS` / `SRC_PLATFORM_DESKTOP`: the platform crates' sources. `fnlen` reads the webOS
+        # crate's `port.rs`, so a copy without it fails that rule for a reason the real tree does not share.
+        "rust-modules/platform-webos/src",
+        "rust-modules/platform-desktop/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
@@ -8870,6 +8874,10 @@ class DepGates(unittest.TestCase):
         "rust-modules/ui/build.rs",
         "rust-modules/storage/Cargo.toml",
         "rust-modules/storage/build.rs",
+        "rust-modules/platform-webos/Cargo.toml",
+        "rust-modules/platform-webos/build.rs",
+        "rust-modules/platform-desktop/Cargo.toml",
+        "rust-modules/platform-desktop/build.rs",
         "rust-modules/.cargo",
         "Makefile",
     )
@@ -9075,7 +9083,9 @@ class DepGates(unittest.TestCase):
                   "rust-modules/os/build.rs", "rust-modules/gfx/Cargo.toml",
                   "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
                   "rust-modules/storage/Cargo.toml",
-                  "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile")
+                  "rust-modules/storage/build.rs", "rust-modules/platform-webos/Cargo.toml", "rust-modules/platform-webos/build.rs",
+                  "rust-modules/platform-desktop/Cargo.toml", "rust-modules/platform-desktop/build.rs",
+                  "rust-modules/.cargo/config.toml", "Makefile")
         for rel in inputs:
             target = os.path.join(self.tree, rel)
             self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
@@ -10360,7 +10370,7 @@ impl PersonOwnerGateFixture {
     @_grades("sink")
     def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
         """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
-        `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
+        `player/`, the platform crates and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
         r = self._plant(
             "_check_deps_selftest_sink_out.rs",
             "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
@@ -10380,6 +10390,144 @@ impl PersonOwnerGateFixture {
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — sink", out)
+
+    @_grades("sink")
+    def test_sink_gate_reads_the_platform_crates_beyond_the_three_files_that_name_it(self):
+        """W7b: the exemption is `platform-webos`'s `webos/` and `port.rs` and `platform-desktop`'s `lib.rs`
+        (what `os/webos/*`, `port.rs` and `platform_desktop.rs` were before the platform crates), not the two
+        crates. RED: the webOS crate's other files (`system.rs`, `keymanager.rs`, `webos.rs` and `lib.rs`
+        sit beside `port.rs`) and the desktop crate's other files (the simulator binary among them) must
+        still fail `sink`, and each is named."""
+        call = "pub fn f() {\n    let _ = plx_os::tv::sink::installed();\n}\n"
+        r = self._plant_all([
+            ("_check_deps_selftest_sink_webos_root.rs", call, "platform-webos"),
+            ("_check_deps_selftest_sink_desktop_root.rs", call, "platform-desktop"),
+            ("bin/_check_deps_selftest_sink_desktop_bin.rs", call, "platform-desktop"),
+        ])
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("sink:", out)
+        for name in ("platform-webos/src/_check_deps_selftest_sink_webos_root.rs",
+                     "platform-desktop/src/_check_deps_selftest_sink_desktop_root.rs",
+                     "platform-desktop/src/bin/_check_deps_selftest_sink_desktop_bin.rs"):
+            with self.subTest(file=name):
+                self.assertIn(name, out)
+
+    @_grades("sink")
+    def test_sink_gate_allows_the_native_webos_port_to_name_the_video_sink(self):
+        """GREEN: a file under `platform-webos`'s `webos/` (the native port) may name the sink."""
+        r = self._plant(
+            "webos/_check_deps_selftest_sink_in.rs",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
+            crate_dir="platform-webos",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — sink", out)
+
+    # The platform crates took `port.rs`, `system.rs`, `platform_desktop.rs` and `bin/sim.rs` out of the application crate
+    # and `keymanager.rs`, `webos.rs` and `webos/` out of `os`. A gate that read those crates' files at base and was not
+    # given the platform roots reads nothing of them now: the next tests plant the shape each such gate is for in the
+    # crates' files and require the gate to name each.
+    PLATFORM_PLANT_SITES = (
+        ("_check_deps_selftest_platform_webos.rs", "platform-webos"),
+        ("_check_deps_selftest_platform_desktop.rs", "platform-desktop"),
+        ("bin/_check_deps_selftest_platform_desktop_bin.rs", "platform-desktop"),
+    )
+
+    def _plant_in_platform_crates(self, body):
+        """`body` planted in a file of each platform crate (the webOS crate's root, the desktop crate's root and its
+        simulator binary's directory), graded by ONE run. Returns the run and the three planted file names."""
+        r = self._plant_all([(name, body, crate) for name, crate in self.PLATFORM_PLANT_SITES])
+        return r, [f"{crate}/src/{name}" for name, crate in self.PLATFORM_PLANT_SITES]
+
+    @_grades("browse-owner", "viewstate-owner", "person-owner", "search-owner", "hubs-owner", "metadata-owner")
+    def test_the_owner_gates_read_the_platform_crates(self):
+        """W7b: the six owner gates read `$SRC`, `data/`, `appkit/` and `screens/` through one shared prelude. RED (the
+        prelude without the platform roots): a retired free facade called from a platform crate's file passes all six."""
+        calls = {
+            "browse-owner": "plx_data::browse::legacy_adapter(",
+            "viewstate-owner": "plx_data::viewstate::apply(",
+            "person-owner": "plx_data::person::current(",
+            "search-owner": "plx_data::search::apply(",
+            "hubs-owner": "plx_data::pms::apply(",
+            "metadata-owner": "plx_data::metadata::apply(",
+        }
+        body = "pub fn retired() {\n" + "".join(f"    {call});\n" for call in calls.values()) + "}\n"
+        r, files = self._plant_in_platform_crates(body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule, call in calls.items():
+            self.assertIn(f"{rule}:", out)
+            for name in files:
+                with self.subTest(rule=rule, file=name):
+                    self.assertTrue(any(name in line and call in line for line in out.splitlines()),
+                                    f"{rule} did not name {name}\n{out}")
+
+    @_grades("nav", "owned-damage", "route", "textmeasure", "fxlanes")
+    def test_the_whole_tree_gates_read_the_platform_crates(self):
+        """W7b: `nav`, `owned-damage`, `route`, `textmeasure` and `fxlanes` read `$SRC` (and `owned-damage` `$SRC_OS`)
+        whole, and so read `port.rs`, `system.rs`, `keymanager.rs`, `webos/` and the simulator binary until those left
+        for the platform crates. RED (the roots without the platform crates): each shape planted in a platform
+        crate's file passes its gate; each is named now."""
+        shapes = {
+            "nav": "plx_ui::nav::page_alpha()",
+            "owned-damage": "plx_machine::motion::report::invalidate()",
+            "route": "pub enum Route { Home }",
+            "textmeasure": "plx_gfx::text::text_width(s.as_ptr(), 24, 0)",
+            "fxlanes": "fn app_effect(fx: AppFx) {\n    match fx {\n        AppFx::SelftestPlatform(r) => self.side.push(r),\n    }\n}",
+        }
+        body = (
+            "pub fn nav_reader() { let _ = plx_ui::nav::page_alpha(); }\n"
+            "pub fn repaint() { plx_machine::motion::report::invalidate(); }\n"
+            "pub enum Route { Home }\n"
+            "pub fn label_width(s: &std::ffi::CStr) -> f32 { plx_gfx::text::text_width(s.as_ptr(), 24, 0) }\n"
+            "fn app_effect(fx: AppFx) {\n    match fx {\n        AppFx::SelftestPlatform(r) => self.side.push(r),\n    }\n}\n"
+        )
+        r, files = self._plant_in_platform_crates(body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule in shapes:
+            self.assertIn(f"{rule}:", out)
+        for name in files:
+            for rule, needle in (("nav", "plx_ui::nav::page_alpha"), ("owned-damage", "motion::report::invalidate"),
+                                 ("route", "enum Route"), ("textmeasure", "text_width"),
+                                 ("fxlanes", f"rust-modules/{name.split('/')[0]}/src/{name.split('/', 2)[2]}::AppFx::SelftestPlatform")):
+                with self.subTest(rule=rule, file=name):
+                    self.assertTrue(any(name.split("/", 2)[2] in line and needle in line for line in out.splitlines()),
+                                    f"{rule} did not name {name}\n{out}")
+
+    def test_a_gate_that_reads_the_whole_app_or_os_crate_reads_the_platform_crates(self):
+        """W7b, the class: a rule that names `$SRC` (the application crate) or `$SRC_OS` WHOLE read the files the
+        platform crates took out of them, and stops reading them if it is not given the platform roots. Every command in
+        `ci/check-deps.sh` that names either root whole names both `$SRC_PLATFORM_WEBOS` and `$SRC_PLATFORM_DESKTOP`.
+        The one allowance is the wholly-test classification prelude, one `rust_test_modules.py <root>` command per root,
+        which must have a line for each platform root instead. A rule scoped to a directory (`"$SRC/app"`) or a file
+        (`"$SRC_OS/tv/plane.rs"`) cannot reach the moved files and is not matched. This reads `check-deps.sh` only: the
+        Python scanners that name their roots (`ci/ui_boundaries.py`'s `EXTENSION_ROOTS`) have their own test beside them
+        (`ci/test_ui_boundaries.py`), and the two Rust walks (`plx_base`'s log-call scan, `plx_media`'s `fetch_update`
+        scan) list the workspace directory instead of naming crates."""
+        with open(os.path.join(self.ROOT, "ci", "check-deps.sh"), encoding="utf-8") as f:
+            physical = f.read().split("\n")
+        logical, current = [], ""
+        for line in physical:
+            if not current and line.lstrip().startswith("#"):
+                continue
+            if line.endswith("\\"):
+                current += line[:-1] + " "
+                continue
+            logical.append(current + line)
+            current = ""
+        whole_root = re.compile(r'"?\$SRC(?:_OS)?"?(?=[\s)]|$)')
+        prelude = re.compile(r'\s*python3 ci/rust_test_modules\.py "\$SRC(?:_OS)?"\s*')
+        platform_roots = ('"$SRC_PLATFORM_WEBOS"', '"$SRC_PLATFORM_DESKTOP"')
+        offenders = [command.strip()[:140] for command in logical
+                     if whole_root.search(command) and not prelude.fullmatch(command)
+                     and not all(root in command for root in platform_roots)]
+        self.assertEqual(offenders, [], "these commands read the whole of `$SRC` or `$SRC_OS` and not the platform crates")
+        script = "\n".join(logical)
+        for root in platform_roots:
+            self.assertIn(f"python3 ci/rust_test_modules.py {root}", script, f"the wholly-test prelude has no line for {root}")
 
     @_grades("frame")
     def test_frame_gate_catches_a_shell_call_outside_the_loop(self):

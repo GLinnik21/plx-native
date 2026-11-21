@@ -16,15 +16,30 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 
-def tree(base: Path, listed: list[str], app_deps: dict[str, str], crates: dict[str, str]) -> Path:
-    """A checkout with a Makefile whose RUST_INPUTS searches `listed`, an app manifest whose
-    [dependencies] are `app_deps` (name -> path), and crates (dir -> manifest text)."""
+def tree(
+    base: Path,
+    listed: list[str],
+    app_deps: dict[str, str],
+    crates: dict[str, str],
+    webos_deps: dict[str, str] | None = None,
+    list_webos: bool = True,
+) -> Path:
+    """A checkout with a Makefile whose RUST_INPUTS searches `listed` (and the library crate,
+    `rust-modules/platform-webos`, unless `list_webos` is False), an app manifest whose [dependencies]
+    are `app_deps` (name -> path), the library crate's manifest, which depends on the app by `..` and on
+    `webos_deps` besides, and crates (dir -> manifest text)."""
     (base / "rust-modules" / "src").mkdir(parents=True)
+    listed = listed + (["rust-modules/platform-webos"] if list_webos else [])
     (base / "Makefile").write_text(
         "RUST_INPUTS := $(shell find " + " ".join(listed) + " -type f 2>/dev/null)\n"
     )
     deps = "".join(f'{n} = {{ path = "{p}" }}\n' for n, p in app_deps.items())
     (base / "rust-modules" / "Cargo.toml").write_text(f'[package]\nname = "app"\n[dependencies]\n{deps}')
+    webos = "".join(f'{n} = {{ path = "{p}" }}\n' for n, p in (webos_deps or {}).items())
+    (base / "rust-modules" / "platform-webos" / "src").mkdir(parents=True)
+    (base / "rust-modules" / "platform-webos" / "Cargo.toml").write_text(
+        f'[package]\nname = "plx_platform_webos"\n[dependencies]\napp = {{ path = ".." }}\n{webos}'
+    )
     for d, manifest in crates.items():
         (base / "rust-modules" / d / "src").mkdir(parents=True)
         (base / "rust-modules" / d / "Cargo.toml").write_text(manifest)
@@ -86,6 +101,42 @@ class Gate(unittest.TestCase):
     def test_a_listed_directory_that_does_not_exist_fails(self):
         root = tree(self.base, ["rust-modules/src", "rust-modules/gone"], {}, {})
         self.assertIn("rust-modules/gone/, which does not exist", " ".join(gate.failures(root)))
+
+    def test_a_dependency_only_the_library_crate_has_fails_and_is_named(self):
+        # The ARM staticlib is compiled from plx_platform_webos, which depends on the app and not the
+        # reverse: a walk that starts at the app never reaches what only this crate pulls in.
+        root = tree(
+            self.base,
+            ["rust-modules/src", "rust-modules/base"],
+            {"b": "base"},
+            {"base": leaf("b"), "shell": leaf("sh")},
+            webos_deps={"sh": "../shell"},
+        )
+        bad = gate.failures(root)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("rust-modules/shell/", bad[0])
+
+    def test_a_list_that_does_not_search_the_library_crate_fails_and_names_it(self):
+        root = tree(self.base, ["rust-modules/src", "rust-modules/base"], {"b": "base"}, {"base": leaf("b")}, list_webos=False)
+        bad = gate.failures(root)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("rust-modules/platform-webos/", bad[0])
+
+    def test_a_dependency_of_a_crate_only_the_library_crate_has_is_followed(self):
+        # Two hops from the library crate, none from the app.
+        root = tree(
+            self.base,
+            ["rust-modules/src", "rust-modules/shell"],
+            {},
+            {"shell": '[package]\nname = "sh"\n[dependencies]\ndeep = { path = "../deep" }\n', "deep": leaf("deep")},
+            webos_deps={"sh": "../shell"},
+        )
+        self.assertIn("rust-modules/deep/", " ".join(gate.failures(root)))
+
+    def test_a_tree_with_no_library_crate_is_reported_and_does_not_crash(self):
+        root = tree(self.base, ["rust-modules/src"], {}, {})
+        (root / "rust-modules" / "platform-webos" / "Cargo.toml").unlink()
+        self.assertIn("rust-modules/platform-webos/Cargo.toml does not exist", " ".join(gate.failures(root)))
 
     def test_the_repository_is_green(self):
         self.assertEqual(gate.failures(ROOT), [])

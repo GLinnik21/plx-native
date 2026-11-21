@@ -11,8 +11,9 @@ mod sim_video;
 use plx_play_feed::ffi_host::{HostSink, Hooks};
 
 /// The simulator's video sink, built with the simulator's decoded picture. The desktop platform
-/// (`platform_desktop.rs`) holds it as `Services.legacy_webos_media.sink`; a hostsim test binary of this crate reads it directly.
-pub(crate) static HOST_SINK: HostSink = HostSink::new(Hooks::over(&sim_video::SimVideo));
+/// (`plx_platform_desktop`, its `src/lib.rs`) holds it as `Services.legacy_webos_media.sink`; a hostsim test binary of this crate reads it directly.
+/// `pub` for `host`, which re-exports it (under this module's own cfg) until W11a moves the composition.
+pub static HOST_SINK: HostSink = HostSink::new(Hooks::over(&sim_video::SimVideo));
 
 /// The render thread's half of the simulator's picture, once per bound-plane frame, after the
 /// straighten pass and before the capture and the swap: the current decoded frame, composited UNDER

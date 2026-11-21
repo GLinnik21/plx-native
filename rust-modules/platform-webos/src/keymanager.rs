@@ -14,7 +14,7 @@
 //! and denial selects the mode-0600 fallback.
 
 use plx_base::b64;
-use crate::tv::secure::{Backend, Sealed};
+use plx_os::tv::secure::{Backend, Sealed};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -88,14 +88,14 @@ pub fn remove(backend: &Backend, key: &str) {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn reset_for_test() {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
     plx_base::eventlog::log("session protection: host tests use the 0600 plaintext fixture");
 }
 
 // Synthetic LS2 transport for host persistence tests; never compiled into a device build.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 std::thread_local! {
     pub static RPC_FOR_TEST: std::cell::Cell<Option<fn(&str, &str) -> Result<String, ()>>> =
         const { std::cell::Cell::new(None) };
@@ -203,7 +203,7 @@ fn call_with(client: &mut platform::Client, uri: &str, payload: &Value) -> Optio
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 mod platform {
     pub(super) struct Client;
 
@@ -220,7 +220,7 @@ mod platform {
     }
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 mod platform {
     use std::time::Duration;
 

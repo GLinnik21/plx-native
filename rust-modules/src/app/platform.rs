@@ -24,7 +24,7 @@
 //! (`crate::host`, `docs/platform-ports.md`, Target shape 8), which re-exports them for a platform crate
 //! to build its `static` `Platform` against: the application's general API stays private, and so does
 //! `HostEvent` (a platform reports input through [`EventSink`], which the application converts). The webOS
-//! value is built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
+//! value is built by the webOS platform crate's `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
 //! privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) to `app/run.rs`.
 use super::Exit;
 use plx_base::task::MainThread;
@@ -39,8 +39,8 @@ use std::os::raw::c_void;
 
 /// What a platform's boot asks of SDL, as plain data: [`InitHooks`] (the two steps a platform runs
 /// around `SDL_Init`), and [`OpenAsk`] with its [`Placement`] (the window's title, place and size). The
-/// shell crate's own types, re-exported rather than copied: they hold no SDL type. `host` re-exports
-/// `OpenAsk` and `Placement` for a platform crate (`InitHooks` stays here: only the SDL helpers below take it).
+/// shell crate's own types, re-exported rather than copied: they hold no SDL type. `host` re-exports all three,
+/// beside the SDL helpers below that take them, for a platform crate.
 pub(crate) use plx_shell_sdl::{InitHooks, OpenAsk, Placement};
 
 /// The platform's window, bus and pointer, as the application drives them: the SDL window and its
@@ -180,10 +180,12 @@ pub trait EventSink {
 /// [`Shell::init`] for an SDL platform: SDL up with the platform's two steps around `SDL_Init`, then the
 /// GL context request. `SDL_Init` refused ends the boot (`Exit::refused(1)`, the status it always had).
 ///
+/// `pub` for `host`, which re-exports it for the two real platform crates.
+///
 /// # Safety
 /// `hooks` must be sound to call on the SDL main thread (`mt` is the proof of the thread) at the two
 /// points `plx_shell_sdl::init::init` calls them.
-pub(crate) unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), Exit> {
+pub unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), Exit> {
     plx_shell_sdl::init::init(mt, hooks).map_err(|_| Exit::refused(1))?;
     plx_shell_sdl::init::request_gl(mt);
     Ok(())
@@ -191,7 +193,10 @@ pub(crate) unsafe fn sdl_init(mt: &MainThread, hooks: InitHooks) -> Result<(), E
 
 /// [`Shell::open`] for an SDL platform: the window and its GL context. Refused at the native size, the
 /// boot ends with `Exit::refused(1)`, the status it always had.
-pub(crate) fn sdl_open(mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
+///
+/// `pub` for `host`. It stays in the application crate: the `Surface` it returns is implemented for
+/// `plx_shell_sdl::Window` here (the orphan rule), so a platform crate cannot rebuild it.
+pub fn sdl_open(mt: &MainThread, ask: &OpenAsk) -> Result<Box<dyn Surface>, Exit> {
     plx_shell_sdl::Window::open(mt, ask)
         .map(|window| Box::new(window) as Box<dyn Surface>)
         .map_err(|_| Exit::refused(1))
@@ -269,8 +274,7 @@ pub(crate) fn publish_composition(
     session.install_backends(set);
 }
 
-/// Everything the application needs from its platform. Built by the platform's entry (`port.rs` for
-/// webOS) with [`Platform::new`] and passed to `run_application`, which keeps it as `App::platform`.
+/// Everything the application needs from its platform. Built by the platform's entry (the webOS crate's `port.rs`) with [`Platform::new`] and passed to `run_application`, which keeps it as `App::platform`.
 ///
 /// `services` is private to this module on purpose: its hooks are the raw verbs, and `tv`'s own
 /// functions put their guards around them (`sound::output`'s blocking check, `secure`'s test store,
@@ -557,15 +561,16 @@ mod tests {
         assert!(!surface.poll(&mut ev), "and the queue is empty after them");
     }
 
-    /// **The SDL calls the application still declares are the two that stay.** Everything SDL-shaped
-    /// that is the stock shell's (the window, the GL context, the queue, the text-input panel) is
-    /// `plx_shell_sdl`'s; what remains is `system.rs`'s `SDL_GetWindowWMInfo` handshake (the television's
-    /// SDL writes a larger `SDL_SysWMinfo` than the headers declare, so the buffer and the version query
-    /// are LG's and stay verbatim) and `clock.rs`'s `SDL_GetTicks`, the `ticks` gate's one door. A third
-    /// declaration here is a second SDL seam beside the shell crate's. Reads the sources, like
-    /// `port.rs`'s tests, because no host test can see a declaration.
+    /// **The one SDL call the application still declares is `clock.rs`'s `SDL_GetTicks`.** Everything
+    /// SDL-shaped that is the stock shell's (the window, the GL context, the queue, the text-input panel)
+    /// is `plx_shell_sdl`'s, and the television's `SDL_GetWindowWMInfo` handshake (it writes a larger
+    /// `SDL_SysWMinfo` than the headers declare, so the buffer and the version query are LG's and stay
+    /// verbatim) is `system.rs`'s, which left with the webOS platform crate (`plx_platform_webos`, whose
+    /// own pin lists the four SDL functions it keeps). What stays is `clock.rs`'s `SDL_GetTicks`, the `ticks` gate's one
+    /// door. A second declaration here is a second SDL seam beside the shell crate's. Reads the sources,
+    /// like the other pins, because no host test can see a declaration.
     #[test]
-    fn the_application_declares_no_sdl_function_but_the_two_that_stay() {
+    fn the_application_declares_no_sdl_function_but_the_one_that_stays() {
         fn walk(dir: &std::path::Path, src: &std::path::Path, hits: &mut Vec<String>) {
             for entry in std::fs::read_dir(dir).expect("read a source directory") {
                 let path = entry.expect("a directory entry").path();
@@ -573,7 +578,7 @@ mod tests {
                     walk(&path, src, hits);
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
                     let rel = path.strip_prefix(src).expect("under src").to_string_lossy().replace('\\', "/");
-                    if rel == "system.rs" || rel == "app/clock.rs" {
+                    if rel == "app/clock.rs" {
                         continue;
                     }
                     let text = std::fs::read_to_string(&path).expect("read a source file");
@@ -587,6 +592,69 @@ mod tests {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut hits = Vec::new();
         walk(&src, &src, &mut hits);
-        assert!(hits.is_empty(), "an SDL function is declared outside `system.rs` and `app/clock.rs`: {hits:?}");
+        assert!(hits.is_empty(), "an SDL function is declared outside `app/clock.rs`: {hits:?}");
+    }
+
+    /// Every `.rs` file under the application crate's `src` and the two platform crates' (`../platform-webos`,
+    /// `../platform-desktop`: the code that builds a `Platform` and could install a table by itself), as text.
+    fn crate_sources() -> Vec<String> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read a source directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(std::fs::read_to_string(&path).expect("read a source file"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for src in ["src", "platform-webos/src", "platform-desktop/src"] {
+            walk(&manifest.join(src), &mut out);
+        }
+        out
+    }
+
+    /// `run_application` installs the services as its first statement, before anything can read
+    /// them: a process that has installed none reads the host-test answers, which for the storage
+    /// group is `Files`, so a television that persisted ahead of its install would be told it has no
+    /// helper. One production install, and the only caller of `tv::install` is the `Platform` method
+    /// it goes through. Reads the source, like `app::boot`'s `seam_order_tests`, because no host test
+    /// can run the entry. It lived in `port.rs` until that file left for the webOS platform crate: it reads the
+    /// APPLICATION's sources (`app/mod.rs`) and every crate that builds a `Platform`, which a platform crate's
+    /// own tests cannot see (a platform that installed its table itself would skip `run_application`'s order).
+    #[test]
+    fn the_services_are_installed_first_and_only_there() {
+        let body = include_str!("mod.rs")
+            .split_once("fn run_application(")
+            .expect("run_application")
+            .1
+            .split_once('{')
+            .expect("run_application's body")
+            .1;
+        let first = body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("//"))
+            .expect("a first statement");
+        let first = first.split_once("//").map_or(first, |(code, _)| code).trim();
+        assert_eq!(
+            first,
+            concat!("platform.install_", "services();"),
+            "the install must be run_application's first statement"
+        );
+        let sources = crate_sources();
+        let count = |needle: &str| sources.iter().map(|text| text.matches(needle).count()).sum::<usize>();
+        assert_eq!(
+            count(concat!(".install_", "services()")),
+            1,
+            "one production install; a second would be refused by tv and could hide a missing first"
+        );
+        assert_eq!(
+            count(concat!("tv::", "install(")),
+            1,
+            "`tv::install` is called by `Platform::install_services` and nowhere else"
+        );
     }
 }

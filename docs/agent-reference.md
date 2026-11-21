@@ -221,7 +221,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   what the user can reach, which is the only class that is tracked rather than accepted; `--sites` lists every hit with its class.
   CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
-  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp`
+  `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp`
   **on the default feature set, and again with `--features hostsim` for the crates that declare it
   (`HOSTSIM_SUITE`: all of `UNIT_SUITE` except `plx_net`, `plx_ui`, `plx_appkit`, `plx_screens`,
   `plx_media_codecs`, `plx_play_uri`, `plx_playback_contract` and `plx_owp`, which have no `hostsim` cfg and run the
@@ -267,7 +267,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   SDL event loop where no host test can see it. Needs the **clippy component of the pinned toolchain** (`make setup-rust` installs it with
   `--profile minimal --component clippy`).
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
-  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
+  `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
   is the test-name filter, handed to every one of the per-crate test binaries; each prints its own libtest
   `test result:` line (the counts are per crate, never one total), followed by the wrapper's summary line. Use it for a long series of
@@ -346,7 +346,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   event and crash logs), and only one test in the file boots, because the platform's services install once per
   process. The file also holds a source scan that every path into the application crate starts
   `plxnative_modules::host` (its own spelling only; the crate's surface is pinned by `host.rs`'s tests, which
-  `make test-crate C=plxnative_modules` runs). Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
+  `make test-crate C=plxnative_modules` runs); it also type-checks from outside the crate the names W7b's first lane added to `host` (the SDL
+  helpers and the ready media values, `docs/platform-ports.md` Target shape 8). Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
   `$(UNIT_RUN)` (a `--test` line is passed through), refused under `RELEASE=1`, in `SIDE_EFFECT_FREE` and
   `DISK_ENTRIES`. `make check` runs the same test non-incrementally as the second cargo line of
   `check-cargo-unit-hostsim` (`--lib` never builds an integration test), pinned in `ci/test_ci_split.py`'s `GATES`.
@@ -402,12 +403,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
-    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp --no-run --timings`, then `make check-cargo-unit-default` runs against what that
+    `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp --no-run --timings`, then `make check-cargo-unit-default` runs against what that
     built (`--timings` is not part of cargo's fingerprint: checked 2026-10-02 by building with and
     without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
     rather than adding one). Download `cargo-timings-host-unit-default` from the run page
     ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
-    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp --no-run --timings` writes
+    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp --no-run --timings` writes
     `target/cargo-timings/cargo-timing.html`.
   - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
     `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
@@ -483,7 +484,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
   min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
   a machine-readable document (git sha, `rustc -V` of the pinned toolchain, host, per-run load and swap). Rows:
-  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp --no-run`; it reports from cargo's JSON `fresh`
+  a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
   leaf file of each crate (`plx_base`'s `cbuf.rs`, `plx_machine`'s `landgate.rs`, `plx_os`'s `devcaps.rs`, `plx_gfx`'s `overdraw.rs`, `plx_net`'s `stream_redirect.rs`, `plx_ui`'s `dwell.rs`, `plx_plex`'s `retry.rs`, `plx_telemetry`'s `window.rs`, `plx_data`'s `tape.rs`, `plx_session`'s `scripted.rs`, `plx_media`'s `units.rs`, `plx_appkit`'s `skip_pill.rs`, `plx_screens`'s `clock_readout.rs`, the application's `coldstart.rs`) and to a hub (`plx_ui`'s `lib.rs`), non-incremental (`CARGO_INCREMENTAL=0`, the
@@ -962,7 +963,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   rather than the only one — it catches the break before the push, and CI does not run in somebody
   else's checkout. It type-checks the bare `--no-default-features` set, which drops `play-uri` and `play-feed` too (a build with
   no playback backend), so it does not replace `make check-nodef`, which passes the Makefile's `RUST_BACKEND_FEATURES`. It type-checks after
-  every edit to a `rust-modules/src/**.rs` or one of the fourteen layer crates it lists (it does not watch `playback-contract`, `media-codecs`,
+  every edit to a `rust-modules/src/**.rs` or any crate `src/` directory in the hook's `layer_srcs` (the layer crates and `platform-webos`, which it checks with `-p plx_platform_webos` beside the application; `platform-desktop` is absent on purpose, its library is empty without `hostsim`; it does not watch `playback-contract`, `media-codecs`,
   `play-feed` or `play-uri`, for which `make check-nodef` is the only gate that compiles them in the shipping set, nor `owp`, which the application does not link yet); it costs well under a second warm, because cargo keys
   fingerprints by feature set and the two configurations coexist in one `target/`. The hazard it
   guards is hand-written `#[cfg(feature = "devtriggers")]` PAIRS, where a spliced-in function
@@ -996,8 +997,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
 `arm-webos-linux-gnueabi-gcc` (GCC 12, **glibc 2.12, armv7-a soft-float**; default `cortex-a9`
 codegen, so we do *not* pin `-mcpu`). It ships a **sysroot** with the TV's own SONAME'd libs,
-which the Makefile links against. Rust is a static lib built on the pinned STABLE toolchain with `cargo +$(RUST_TOOLCHAIN) rustc --lib
---crate-type staticlib --target armv7-unknown-linux-gnueabi` (the crate itself declares
+which the Makefile links against. Rust is a static lib built on the pinned STABLE toolchain with `cargo +$(RUST_TOOLCHAIN) rustc -p plx_platform_webos --lib
+--crate-type staticlib --target armv7-unknown-linux-gnueabi` (the webOS platform crate, `rust-modules/platform-webos`, is the
+one the archive is built from: it depends on the application crate and not the other way round; the crate itself declares
 `rlib` only; a staticlib needs no linker, so no external
 cross-linker). The target is load-bearing: `armv7-unknown-linux-gnueabi` ships a prebuilt ARMv7 std,
 where the old `arm-unknown-linux-gnueabi` std was ARMv6 and carried the CP15 barrier that SIGILLs on
@@ -1157,14 +1159,14 @@ Two planes are composited by the TV: the app's **GLES/graphics plane** (UI, draw
 over the hardware **VIDEO overlay plane** (decoded frames). The UI plane is made non-opaque so
 video shows through.
 
-**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `port.rs`, which passes the platform (`app::platform::Platform`) to `app::run_application`, after `app/boot.rs::boot()`):** SDL2 window + GLES2
+**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `rust-modules/platform-webos/src/port.rs`, which passes the platform (`app::platform::Platform`) to `app::run_application`, after `app/boot.rs::boot()`):** SDL2 window + GLES2
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples glyph
 textures (cached by string+size): SDL2_ttf renders every run except Arabic and Hebrew, which libass-plx
 shapes and rasterizes into the same texture (`gfx/src/rtl.rs`).
 Critically-damped springs animate focus scale and shelf scroll.
 Fonts are the `appfont*.ttf` faces deployed next to the binary, in the fallback chain `gfx/src/text.rs` opens (Inter, CJK, emoji, Arabic, Hebrew; Inter, Arabic and Hebrew with bold cuts; `ci/test_shipped_faces.py` holds every staging list to it), so a missing libass-plx costs Arabic and Hebrew UI text as well as text subtitles; the subtitle renderer additionally loads the per-script Noto faces from `fonts/subs/` (`docs/ass-subtitles.md`, cut by `tools/cut-noto-subs.py`, staged by `SUBS_FONT_FILES` in the Makefile). (The SDL window, the event decode and the text-input calls live in
-`rust-modules/shell-sdl/` (crate `plx_shell_sdl`), the Wayland surface setup in `system.rs`, and the key ladders in
+`rust-modules/shell-sdl/` (crate `plx_shell_sdl`), the Wayland surface setup in `rust-modules/platform-webos/src/system.rs`, and the key ladders in
 `app/events.rs` + `app/input.rs`, not the C shim — see the gotchas below.)
 
 **Video playback (summary — `rust-modules/media/src/player/CLAUDE.md` is the deep-dive: pipeline,
@@ -1237,7 +1239,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `Makefile` — build/deploy/run/ipk; toolchain, the bundled-FFmpeg build + staging + its ABI gate
   (one header tree, not the old dual one), TV ssh creds.
 - `src/main.c` — the **boot shim** (event-log/stderr setup, process bring-up); calls the Rust
-  `plex_run()` (`rust-modules/src/port.rs`, which runs `app::run_application`). `src/crashtrace.c`
+  `plex_run()` (`rust-modules/platform-webos/src/port.rs`, which runs `app::run_application`). `src/crashtrace.c`
   (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
   processes on purpose and checks the record AND the exit status, and probes another with the freeze
@@ -1282,7 +1284,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `abnormal`, like a freeze's; one made after backgrounding (the PLX-NATIVE-1P shape) finds no open
   session, because backgrounding already ended it `exited` (`telemetry::session`), so only the
   `error` event exists.
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland), `rust-modules/shell-sdl/` (crate `plx_shell_sdl`: `SDL_Init`, the window, the GL swap, the event decode and the text-input calls, which `app/platform.rs`'s `Shell` opens as the `Surface` the `App` owns (`Shell` and `Surface` are reachable from outside the crate only through `plxnative_modules::host`; `HostEvent` stays app-private)),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `host.rs` (the one module of the application a platform crate names: the types, the ready media boots and `run`), `rust-modules/shell-sdl/` (crate `plx_shell_sdl`: `SDL_Init`, the window, the GL swap, the event decode and the text-input calls, which `app/platform.rs`'s `Shell` opens as the `Surface` the `App` owns (`Shell` and `Surface` are reachable from outside the crate only through `plxnative_modules::host`; `HostEvent` stays app-private)),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `abr/` and `route/`, and `ff.rs`, which
@@ -1296,6 +1298,17 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
   `client()` now — the app can hold a friend's shared server beside your own, each with its own
   token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
+- `rust-modules/platform-webos/` (crate `plx_platform_webos`) and `rust-modules/platform-desktop/` (crate `plx_platform_desktop`) — **the two
+  platforms, one crate each, above the application** (`docs/platform-ports.md`, W7; `docs/module-layers.md`, the `[platform webos]` and
+  `[platform desktop]` paragraphs). They depend on the application crate through its `host` module and on `plx_os` for the `tv` interfaces
+  they fill; the application names neither. The webOS crate holds `port.rs` (`plex_run`, the two tables and the process entry),
+  `system.rs` (the LG half of the window), `webos.rs` with `webos/` (identity, capability probe, jail repair, toast, `ls2/uri.rs`, the Starfish/ACB
+  `video_sink.rs`) and `keymanager.rs`, owns the `feed-sink` and `uri-transport` features, and is the crate the ARM staticlib is built from
+  (`RUST_LIB` is `libplx_platform_webos.a`). The desktop crate holds the simulator's tables and entry (`src/lib.rs`, compiled only under its
+  own `hostsim` feature) and the `plxnative-sim` binary (`src/bin/sim.rs`); a simulator or macOS-app build says `-p plx_platform_desktop`.
+  Each has its own `build.rs` (the nanosvg link line reaches only the package that prints it), and each forwards the
+  application's features with its defaults (the webOS crate omits `placeholder-sentinel`, which only the simulator's dump build names; `ci/test_platform_features.py`); the desktop's dependencies are `optional` and only its
+  `hostsim` enables them, so a default-feature pass lists it and builds nothing of it.
 - `rust-modules/ui/src/` (workspace crate `plx_ui`) — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`lib.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
   and, since phase 9 (Player was the last), no legacy screens at all — every route mounts an owned
@@ -1655,7 +1668,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   the developer URI ACB fixture uses a separate experimental descriptor), never feed audio to ACB, the
   3-arg taskId ABI) — moved to **`rust-modules/media/src/player/CLAUDE.md`**; read it before touching
   playback or `src/starfish.c`.
-- **Wayland transparency** (`system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and
+- **Wayland transparency** (`rust-modules/platform-webos/src/system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and
   made non-opaque by driving the wayland proxy directly (`wl_proxy_marshal(surface, 4, NULL)` =
   set_opaque_region NULL), re-asserted each frame while playing, so the video plane shows through.
   The dev TV reports SDL 2.0.5 (no transparency hint). `sys_grab_wayland` over-allocates the
@@ -1970,7 +1983,7 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_os`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`, `plx_shell_sdl`) runs the whole
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_os`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`, `plx_shell_sdl`) runs the whole
 host suite on the dev Mac, no TV involved — and `make check` runs the crates that declare `hostsim`
 (`HOSTSIM_SUITE`, a subset of that list) a SECOND time under `--features hostsim`, because the host
 feed seam only exists there and the tests that need it are compiled out of the first pass (the build
@@ -1980,7 +1993,7 @@ documented 59 before that, which was five times stale before anyone noticed — 
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
 batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
 count worth having is the one you take yourself, with
-`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_owp -- --list | grep -c ': test'`. **The per-module counts
+`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens -p plx_shell_sdl -p plx_platform_webos -p plx_platform_desktop -p plx_owp -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
 — several were written when the module was a third its present size, and two bullets have now
 outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
@@ -2066,7 +2079,7 @@ you get without waking a television. What it covers today, by module:
 **Tier 1.5 — the desktop simulator (`make sim-macos` or `tools/sim.ps1`), which DOES draw pixels
 on the host.** This tier
 did not exist before 2026-08-14, and the line below used to read "there is no host *runtime*" flatly
-— that is now wrong for the UI half and right for everything else. `plxnative-sim` is the same app
+— that is now wrong for the UI half and right for everything else. `plxnative-sim` (the desktop platform crate's binary, `-p plx_platform_desktop`) is the same app
 core built with `--features hostsim` and linked against desktop SDL2 + desktop GL 4.1 core: it
 renders the real interface against a real PMS, boots to a screen with the same `plxnative-*`
 triggers, is driven by the same remote-FIFO tokens, and screenshots itself. **The
