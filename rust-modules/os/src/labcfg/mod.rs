@@ -6,7 +6,7 @@
 //! and the account menu and the player overflow have to know whether to show the *Send
 //! diagnostics* row. Both are functions of one thing, `lab.json`, whose reader names nothing above
 //! `plx_base::paths`. That reader and those two answers are therefore here, in `os`, beside
-//! the other things this television keeps (`webos`, `devcaps`, `keymanager`); the application's
+//! the other things this television keeps (`devcaps` and the `tv` interfaces; `webos` and `keymanager` are the webOS platform crate's); the application's
 //! `lab` module reads the same `config` from above.
 //!
 //! The gating is exactly what it was under `lab`: without the `lab-diagnostics` cargo feature the

@@ -25,11 +25,9 @@
 //! `sf_play` after `sf_destroy`). Calling any of them remains something to think about; the token
 //! only says *where* from.
 //!
-//! This module is not compiled for this crate's own tests. The application's test binary does carry
-//! it (its dependency is compiled without `cfg(test)`), and so does a desktop build, the simulator's
-//! own `VideoSink` being the Feed backend's `ffi_host`: `port.rs` installs `NoSink` in the one, and
-//! the desktop platform never names this module in the other, so no live code reaches an extern and
-//! the linker drops them.
+//! This module is not compiled for this crate's own tests (`webos.rs` declares it `#[cfg(not(test))]`), so only the
+//! television build of this crate, the ARM staticlib, carries these externs. No desktop crate links this one:
+//! the simulator's own `VideoSink` is the Feed backend's `ffi_host`.
 use plx_base::task::MainThread;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long};

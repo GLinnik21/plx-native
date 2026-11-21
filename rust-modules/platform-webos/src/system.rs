@@ -27,7 +27,7 @@ extern "C" {
 
 // The three symbols that exist only on a television: wayland's proxy marshaller and glib's main
 // context. A host build links neither: the desktop platform (`platform_desktop`) brings its own
-// shell, so nothing it runs reaches this file, and the linker drops the television code that does.
+// shell and does not link this crate.
 // They are declared apart rather than in the block above, which every host build links against.
 extern "C" {
     fn wl_proxy_marshal(proxy: *mut c_void, opcode: c_uint, ...);
@@ -924,8 +924,7 @@ fn cursor_door() -> CursorDoor {
 // calls in the order it pins: [`webos3_cursor_sleep_hint`] before it and [`tap_relaunch_payloads`] after
 // it. They name LG's SDL fork (its `SDL_webOSCursorVisibility`, its `HELPER_HLunaServiceMessage` slot),
 // so they are the webOS platform's and not the stock-SDL shell's; `WebosShell::init` (`port.rs`) is the
-// only caller. They compile in every build, a desktop one included, where nothing calls them and the
-// linker drops them, like the rest of this file.
+// only caller. They compile in every build of this crate, which no desktop build links.
 
 /// **webOS 3.x: shorten LG's own idle hide from about five minutes to five seconds.** Without
 /// LG's extension, LG's SDL hides its pointer by itself after `SDL_WEBOS_CURSOR_SLEEP_TIME` of

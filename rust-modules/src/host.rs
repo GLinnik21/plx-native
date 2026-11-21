@@ -21,7 +21,7 @@
 //! **The media values.** The application keeps the playback composition (`app::adapters::backends`) until W11a
 //! moves it into the webOS platform, so `host` hands a platform READY [`MediaBoot`] values, and a platform crate names
 //! no `PlayerAdapter` (the type `MediaBoot::compose` takes): [`WEBOS_MEDIA`] is the television's (the plane owner's
-//! boot, then the Feed and the product URI driver), compiled in every build because the webOS port is, and, under
+//! boot, then the Feed and the product URI driver), compiled in every build of the application because it carries no `cfg` (the application cannot know which platform names it), and, under
 //! `hostsim`, `FEED_MEDIA` is the desktop's (the Feed over the simulator's sink, no URI driver) and `HOST_SINK`
 //! is that sink itself (also `play-feed`, the module it lives in). A television build never has the desktop pair.
 //! Each retires at W11a, when the composition moves into the platform that owns it
@@ -57,7 +57,7 @@ pub use crate::app::adapters::hostsim::HOST_SINK;
 
 /// The television's [`MediaBoot`]: the plane owner's boot (`backends::acb_init`, once per process, on a boot that touches
 /// the television) and the composition of the Feed plus the product URI driver (`backends::compose_native`). Compiled in every
-/// build, because the webOS port is. Retires at W11a, when the composition moves into the webOS platform.
+/// build, because it carries no `cfg`: the application cannot know which platform names it. Retires at W11a, when the composition moves into the webOS platform.
 pub const WEBOS_MEDIA: MediaBoot = MediaBoot {
     early_init: crate::app::adapters::backends::acb_init,
     compose: crate::app::adapters::backends::compose_native,
