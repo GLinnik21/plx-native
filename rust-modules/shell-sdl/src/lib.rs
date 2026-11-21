@@ -11,8 +11,8 @@
 //! as two plain function pointers the television fills and a desktop leaves empty.
 //!
 //! The crate is a mounted module of the `shell_sdl` layer (`ci/module-layers.ini`), which may use
-//! `base`, `machine` and `os`; the crate names `base` alone. The application's `Shell` and `Surface` traits and its `HostEvent` stay app-private
-//! (`docs/platform-ports.md`, Target shapes 1 and 8); [`window::Window`] is the one SDL
+//! `base`, `machine` and `os`; the crate names `base` alone. The application's `HostEvent` stays app-private, and its `Shell` and `Surface` traits are reachable only through
+//! the application crate's `host` module (`docs/platform-ports.md`, Target shapes 1 and 8); [`window::Window`] is the one SDL
 //! implementation of that `Surface`, and [`event::Decoded`] is the neutral value the application maps
 //! onto its own event type.
 //!
@@ -57,9 +57,12 @@ mod pins {
 
     #[test]
     fn every_source_file_is_scanned() {
+        // `*.rs` files and directories only: an editor's swap file or a `.DS_Store` is not source.
         let mut on_disk: Vec<String> = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
             .expect("the crate's src directory")
-            .map(|e| e.expect("a directory entry").file_name().to_string_lossy().into_owned())
+            .map(|e| e.expect("a directory entry"))
+            .filter(|e| e.path().is_dir() || e.path().extension().is_some_and(|x| x == "rs"))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         on_disk.sort();
         let mut listed: Vec<&str> = SOURCES.iter().map(|s| s.0).collect();

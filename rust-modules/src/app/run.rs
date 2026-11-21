@@ -1071,6 +1071,21 @@ unsafe fn drain_sdl(app: &mut App, fr: &mut Frame) {
     while app.surface.poll(&mut app.ev) {
         ingest_sdl_event(app, fr);
     }
+    // The second path: what the platform's surface delivers through its sink. An SDL surface delivers
+    // nothing here (every SDL event came through `poll` above), so on the television and a desktop this
+    // is an empty queue; a surface that is not SDL's has no `poll` and only this. `poll` is retired once
+    // the SDL shells deliver through the sink (W9 at the latest, `docs/platform-ports.md`).
+    deliver_events(app, fr);
+}
+
+/// Take what the surface delivers through its sink into the loop, in the order the platform made it.
+unsafe fn deliver_events(app: &mut App, fr: &mut Frame) {
+    let mut queue = super::events::HostQueue::default();
+    app.surface.deliver(&mut queue);
+    let shell = app.platform.shell;
+    for event in queue.into_events() {
+        ingest_host_event(app, fr, event, |win| shell.grab_surface(win));
+    }
 }
 
 unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
@@ -4265,6 +4280,36 @@ pub(in crate::app) mod lifecycle_regression_tests {
         assert_eq!(second.runtime.bridge(&mut second.bridge).views().today, None);
         assert_eq!(second.runtime.bridge(&mut second.bridge).session_subhash(), second_session);
         assert_eq!(second.runtime.bridge(&mut second.bridge).consent_subhash(), second_consent);
+    }
+
+    /// A surface that is not SDL's: it has no queue to `poll` and delivers its one event, the host's
+    /// request to end, through the sink it is handed.
+    struct SinkSurface;
+
+    impl crate::app::platform::Surface for SinkSurface {
+        fn window(&self) -> *mut c_void {
+            std::ptr::null_mut()
+        }
+        fn swap(&self) {}
+        fn set_swap_interval(&self, _interval: i32) {}
+        fn deliver(&self, sink: &mut dyn crate::app::platform::EventSink) {
+            sink.quit();
+        }
+        unsafe fn quit(&self) {}
+    }
+
+    /// **The loop drains a surface's sink**: `drain_sdl` hands the surface a sink, and what it delivers
+    /// is ingested like any event (here the host's request to end, `HostEvent::Quit`, which stops the loop).
+    /// A surface with no `poll` of its own reaches the loop only through this call.
+    #[test]
+    fn a_surface_that_delivers_through_its_sink_reaches_the_loop_through_drain_sdl() {
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        app.surface = Box::new(SinkSurface);
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        app.running = true;
+        unsafe { drain_sdl(&mut app, &mut fr) };
+        assert!(!app.running, "the delivered quit ended the loop");
     }
 
     fn frame(app: &mut App, now: u32) {

@@ -138,7 +138,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   stack is mostly a chain, so cargo has little to run side by side and the front end (parse,
   type-check, borrow-check) is single-threaded per crate by default. `-Zthreads=N` (N = the core
   count, capped at 8) parallelises it for the host `cargo test` recipes (`check-cargo-unit-default`,
-  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `test-hostsim`, `build-bench`) through
+  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `test-hostsim`, `test-host-interface`, `build-bench`) through
   `CARGO_BUILD_RUSTFLAGS`. Measured 2026-10-05 on an M4 (10 cores) on nightly, `make build-bench`
   non-incremental edit-rebuilds, medians of 5: `plx_base` leaf 20.1 s to 17.8 s, `plx_ui` 10.7 to
   7.8, `plx_screens` 8.3 to 5.7, app 4.8 to 2.9; the incremental `test-fast` loop is unchanged
@@ -333,6 +333,25 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any checkout, so no tool
   counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
   under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
+- `make test-host-interface` — W7a's gate (`docs/platform-ports.md`, Target shape 8): the application crate's
+  `host` module (`rust-modules/src/host.rs`, the one path a platform crate names the application's types by) used from OUTSIDE the crate by
+  `rust-modules/tests/host_interface.rs`, an integration test and so a crate of its own. It builds a `static
+  Platform` from a fake `Shell`, `Surface` and `FrameProbe`, boots it through `host::run` (the real
+  `run_application`) and asserts that `init` ran before `open`, the `OpenAsk` the application made, and the fake's
+  refusal returned as the entry's `Exit`. The boot cannot go further: after `open` it makes real GL calls, and a fake
+  surface has no GL context (nothing stubs GL under `test-support`), so frames and the loop are graded by the
+  in-crate tests of `make test-hostsim`, not here. It needs `hostsim`, because only there does `PLXNATIVE_RUNTIME_DIR`
+  steer the runtime root, so the boot's event log and crash log land in the recipe's throwaway directory; the boot
+  replaces the process's panic hook (`install_panic_logger`, which wraps the previous hook and also writes the
+  event and crash logs), and only one test in the file boots, because the platform's services install once per
+  process. The file also holds a source scan that every path into the application crate starts
+  `plxnative_modules::host` (its own spelling only; the crate's surface is pinned by `host.rs`'s tests, which
+  `make test-crate C=plxnative_modules` runs). Same shape as `test-hostsim`: incremental in `rust-modules/target-hostsim`, through
+  `$(UNIT_RUN)` (a `--test` line is passed through), refused under `RELEASE=1`, in `SIDE_EFFECT_FREE` and
+  `DISK_ENTRIES`. `make check` runs the same test non-incrementally as the second cargo line of
+  `check-cargo-unit-hostsim` (`--lib` never builds an integration test), pinned in `ci/test_ci_split.py`'s `GATES`.
+  The file needs no `[[test]]` entry (cargo finds `rust-modules/tests/*.rs`), so the root manifest and the
+  `ci/proofs` certificates that hash it are unchanged.
 - `make fuzz-hud [T=<target> ...] [SECS=60]` — the `cargo fuzz` package over every parser a HUD package or the
   registry reaches (`docs/hud-plugins.md`, threat model): `admit` (the whole admission path),
   `bundle_read`, `archive_read` (the 1.0 ZIP container), `svg_check` (the SVG gate in front of nanosvg),
@@ -1263,7 +1282,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `abnormal`, like a freeze's; one made after backgrounding (the PLX-NATIVE-1P shape) finds no open
   session, because backgrounding already ended it `exited` (`telemetry::session`), so only the
   `error` event exists.
-- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland), `rust-modules/shell-sdl/` (crate `plx_shell_sdl`: `SDL_Init`, the window, the GL swap, the event decode and the text-input calls, which `app/platform.rs`'s `Shell` opens as the app-private `Surface`),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland), `rust-modules/shell-sdl/` (crate `plx_shell_sdl`: `SDL_Init`, the window, the GL swap, the event decode and the text-input calls, which `app/platform.rs`'s `Shell` opens as the `Surface` the `App` owns (`Shell` and `Surface` are reachable from outside the crate only through `plxnative_modules::host`; `HostEvent` stays app-private)),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `abr/` and `route/`, and `ff.rs`, which

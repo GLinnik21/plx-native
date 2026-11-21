@@ -581,8 +581,8 @@ ARM_PROFILE_FLAG = $(if $(filter release,$(ARM_PROFILE)),--release,--profile $(A
 #     make RUST_TOOLCHAIN=nightly HOST_THREADS=8 test-fast
 #
 # A HOST_THREADS above 1 on a non-nightly toolchain is a hard error here rather than a cargo failure
-# in the middle of a recipe. Which recipes: ONLY the host `cargo test` / `check-cargo-unit-*` builds,
-# `test-fast`, `test-crate`, `test-hostsim` and `build-bench` carry `$(HOST_ENV)`. It is NOT exported, so the ARM
+# in the middle of a recipe. Which recipes: the host `cargo test` builds and nothing else
+# (`grep -n HOST_ENV Makefile` is the exact set; `ci/test_host_threads.py`'s `HOST_RECIPES` pins it). It is NOT exported, so the ARM
 # staticlib recipes (which set RUSTFLAGS themselves), the simulators' builds, clippy and the package
 # steps never see it (ci/test_host_threads.py pins both). 0 and 1 mean the serial front end. A
 # RUSTFLAGS the caller exported wins over it (cargo reads CARGO_BUILD_RUSTFLAGS last).
@@ -854,8 +854,8 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # it from the recipe AND its prerequisites, never the name (`check-ass` is a test goal and stages the
 # host libass into `pkg/`). Two kinds qualify:
 #
-#   * HOST-ONLY goals: the unit-test loops, the fuzz runs and the lint pass (`test-hostsim`, `check-nodef`,
-#     `test-fast`, `test-crate`, `fuzz-hud`, `lint`, `build-bench`), the pieces of `check` that are plain host work
+#   * HOST-ONLY goals: the unit-test loops, the fuzz runs and the lint pass (`test-hostsim`, `test-host-interface`,
+#     `check-nodef`, `test-fast`, `test-crate`, `fuzz-hud`, `lint`, `build-bench`), the pieces of `check` that are plain host work
 #     (`check-cargo-lint`, `check-cargo-unit-hostsim`, `check-localization`, `check-c-unit`,
 #     `check-python-harness`), the notices tables, and the set-up and local tooling that writes outside
 #     `pkg/` (a toolchain install, the disk-watch agent, the test media, the demo library, the
@@ -880,7 +880,7 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # goal in the two kinds above resets nothing under a dry run, and every goal named as NOT here stays out
 # of the list. The list is ONE line on purpose (`grep '^SIDE_EFFECT_FREE' Makefile` is the exact set,
 # and several tests read it that way).
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef test-fast test-crate fuzz-hud lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim test-host-interface check-nodef test-fast test-crate fuzz-hud lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 # `PLAYBACK_BACKENDS=none` builds no television package. It is refused HERE, at parse time and before
 # the stamp reset below: a recipe-level refusal ran after that reset, so a mistyped
@@ -1583,7 +1583,7 @@ test: deploy run
 # it is not the table's value for that dir's name (tools/disk-budget.py NEED_GIB). `ci/test_disk_preflight.py`
 # finds every target whose recipe runs cargo and fails when one is missing from this list.
 DISK_ENTRIES = check check-replay check-cargo-lint check-cargo-unit-default check-cargo-unit-hostsim lint \
-               test-fast test-crate test-hostsim check-nodef check-ass check-ffmpeg sim-macos sim-linux screenshots-sim site-video-sim \
+               test-fast test-crate test-hostsim test-host-interface check-nodef check-ass check-ffmpeg sim-macos sim-linux screenshots-sim site-video-sim \
                $(RUST_LIB) pkg/plxnative-storage macapp macapp-zip build-bench build-bench-quick fuzz-hud
 $(DISK_ENTRIES): | disk-preflight
 
@@ -1591,7 +1591,7 @@ $(DISK_ENTRIES): | disk-preflight
 DISK_TREE = $(if $(CARGO_TARGET_DIR),$(if $(filter /%,$(CARGO_TARGET_DIR)),$(CARGO_TARGET_DIR),$(CURDIR)/rust-modules/$(CARGO_TARGET_DIR)),$(CURDIR)/rust-modules/target)
 DISK_NEED =
 test-fast test-crate: DISK_TREE = $(CURDIR)/rust-modules/$(TEST_FAST_TDIR)
-test-hostsim: DISK_TREE = $(CURDIR)/rust-modules/$(TEST_HOSTSIM_TDIR)
+test-hostsim test-host-interface: DISK_TREE = $(CURDIR)/rust-modules/$(TEST_HOSTSIM_TDIR)
 # The fuzz tree (ASan + coverage, release with debuginfo, ten binaries): 3.1 GiB measured after a cold build
 # of the first eight; the ninth, `ws_frame`, adds 83 MiB, and the tenth, `owp_json`, 49 MiB with `plx_owp`
 # (measured on Linux x86_64).
@@ -1646,9 +1646,10 @@ check:
 # best. A bare `cargo test` builds for the host triple, which is exactly what we want — and it is
 # also why this suite cannot cover anything that links the TV's own libraries: media-codecs/src/ffi.rs gates its four
 # `#[link]` directives out of cfg(test) so the crate's pure logic stays host-testable, and a test
-# that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crate's own
-# `#[cfg(test)] mod tests` blocks (there are no integration tests in tests/ — that directory is the
-# on-device Python harness, a different thing entirely).
+# that actually calls into FFmpeg or GL fails to link by design. --lib keeps it to the crates' own
+# `#[cfg(test)]` blocks. The one integration test, `rust-modules/tests/host_interface.rs`, needs `hostsim`
+# and runs in `check-cargo-unit-hostsim` (and `make test-host-interface`), not here; the repo-root `tests/`
+# is the on-device Python harness, a different thing entirely.
 # NB the suite APPENDS to `/tmp/plxnative-events.log` on the dev Mac, and deliberately cannot be
 # pointed elsewhere. Since 2026-08-15 enough of the tree logs its failures (stream, posters, img,
 # account, remote) that host tests exercising those paths write real lines. `PLXNATIVE_RUNTIME_DIR`
@@ -1807,11 +1808,19 @@ check-cargo-unit-hostsim:
 	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
 	@# Cargo keys fingerprints by feature set, so the two configurations coexist in one target/ and
 	@# this costs a few seconds warm rather than a rebuild.
+	@# The second cargo line is W7a's gate and a test executable of its own (`--lib` never builds an integration test):
+	@# `rust-modules/tests/host_interface.rs` uses the application crate's `host` module from outside the crate and boots
+	@# a fake platform to its shell's refusal. It needs `hostsim` and a throwaway runtime root, which this pass has;
+	@# `make test-host-interface` is the same line as an incremental loop.
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_play_feed -p plx_shell_sdl --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_os -p plx_gfx -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_play_feed -p plx_shell_sdl --features hostsim; \
+	PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
+	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test -p plxnative-modules --test host_interface --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1905,6 +1914,25 @@ test-hostsim:
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
 	  $(UNIT_RUN) --require-match $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib $(addprefix -p ,$(HOSTSIM_PKGS)) --features hostsim
+
+# `make test-host-interface` -- W7a's gate (docs/platform-ports.md, Target shape 8): the application crate's `host`
+# module used from OUTSIDE the crate. `rust-modules/tests/host_interface.rs` is an integration test, a crate of its own
+# that can name only the `pub` items of `plxnative_modules`. It builds a `static Platform` from a fake `Shell`, `Surface`
+# and `FrameProbe` and boots it through `host::run` to the fake shell's refusal of the window (the boot cannot go
+# further without a GL context). It needs `hostsim`: only there is the runtime root steerable, so the boot's logs land
+# in the throwaway directory below. The incremental loop, in `rust-modules/$(TEST_HOSTSIM_TDIR)` beside `make test-hostsim`
+# (same feature set, same tree); `make check` runs the same test non-incrementally in `check-cargo-unit-hostsim`.
+# Refused under RELEASE=1 like `test-hostsim`.
+.PHONY: test-host-interface
+test-host-interface:
+	@$(if $(RELEASE),echo "make test-host-interface: refused under RELEASE=1 -- it runs the default-plus-hostsim feature set incrementally; RELEASE=1 is the shipping feature set (use make check-nodef for that)." >&2; exit 1,:)
+	@echo "test-host-interface: the host interface test of plxnative-modules in rust-modules/$(TEST_HOSTSIM_TDIR) -- see 'make disk'"
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_HOSTSIM_TDIR) \
+	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
+	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test -p plxnative-modules --test host_interface --features hostsim
 
 # `make fuzz-hud [T=<target>] [SECS=60]` -- the `cargo fuzz` package over every parser a HUD package or the
 # registry reaches (`fuzz/`: its own workspace, outside rust-modules, so nothing shipped names it). T is one

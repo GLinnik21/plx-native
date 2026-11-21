@@ -128,7 +128,7 @@ into `dynlib!` **trades link-time symbol checking away** for version tolerance a
 it where the version actually varies. If a diff moves a stable library there, push back and ask
 for the `--inventory` output that justifies it. The precedent for the other direction is
 `rust-modules/shell-sdl/src/sys.rs`: plain `extern "C"` (the `SDL_*TextInput*` calls among them),
-justified in its module doc by all 14 inventories exporting the whole SDL2 family it names.
+justified in its module doc by all 14 inventories exporting every name outside its `hostsim` block.
 
 ## WHAT `fwcompat.py` NEEDS BEFORE IT WILL ANSWER — settle this first, not at your third command
 

@@ -20,12 +20,17 @@
 //!   platform composed through [`publish_composition`], the one function that does, so the set of
 //!   installed drivers and the resolver the planner reads cannot disagree.
 //!
-//! `Shell`, `Surface`, `FrameProbe` and `Platform` are app-private on purpose: no type a platform's shell has
-//! to match leaves the application crate until the platform contract is settled. The webOS value is
-//! built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
+//! These types are reachable from outside the application crate ONLY through the narrow `host` module
+//! (`crate::host`, `docs/platform-ports.md`, Target shape 8), which re-exports them for a platform crate
+//! to build its `static` `Platform` against: the application's general API stays private, and so does
+//! `HostEvent` (a platform reports input through [`EventSink`], which the application converts). The webOS
+//! value is built by `port.rs`; `ci/check-deps.sh`'s `frame` gate pins the call text of the three
 //! privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) to `app/run.rs`.
 use super::Exit;
 use plx_base::task::MainThread;
+use plx_machine::machine::Edge;
+use plx_shell_sdl::event::{Lifecycle, PointerEdge};
+use plx_ui::consts::{Action, RawKey};
 use plx_media::player::adapter::PlayerAdapter;
 use plx_media::route::uri_preflight::ResolvePort;
 use plx_media::route::PlaybackSession;
@@ -34,8 +39,8 @@ use std::os::raw::c_void;
 
 /// What a platform's boot asks of SDL, as plain data: [`InitHooks`] (the two steps a platform runs
 /// around `SDL_Init`), and [`OpenAsk`] with its [`Placement`] (the window's title, place and size). The
-/// shell crate's own types, re-exported rather than copied: they hold no SDL type, and W7a, which
-/// publishes `Shell` and `Surface`, is where a platform-neutral spelling of them is decided.
+/// shell crate's own types, re-exported rather than copied: they hold no SDL type. `host` re-exports
+/// `OpenAsk` and `Placement` for a platform crate (`InitHooks` stays here: only the SDL helpers below take it).
 pub(crate) use plx_shell_sdl::{InitHooks, OpenAsk, Placement};
 
 /// The platform's window, bus and pointer, as the application drives them: the SDL window and its
@@ -48,7 +53,7 @@ pub(crate) use plx_shell_sdl::{InitHooks, OpenAsk, Placement};
 /// request first, the session read, then the window. That is the order boot has always had, and
 /// `app::boot` pins it. A platform whose surface is not SDL's states its own pair; every SDL one is the
 /// shell crate's (`plx_shell_sdl`), reached through [`sdl_init`] and [`sdl_open`].
-pub(crate) trait Shell: Sync {
+pub trait Shell: Sync {
     /// Bring the platform's windowing up and ask for the GL context, once, FIRST: before the stored
     /// session is read and before [`open`](Shell::open). A refusal ends the boot with that `Exit`.
     fn init(&self, mt: &MainThread) -> Result<(), Exit>;
@@ -88,24 +93,36 @@ pub(crate) trait Shell: Sync {
 }
 
 /// The window the application presents to and reads events from, owned by `App` for the rest of the
-/// process. App-private and thread-affine (not `Sync`) like [`Shell`], and for the same reason: no
-/// type a platform has to match leaves the application crate until the platform contract is settled
-/// (`docs/platform-ports.md`, Target shapes 1 and 8, which W7a publishes as `host`).
+/// process. Thread-affine (not `Sync`, unlike [`Shell`], which returns it from [`Shell::open`] on the loop
+/// thread). Published only through `host` (`docs/platform-ports.md`, Target shapes 1 and 8).
 ///
 /// `window` is the raw handle the [`Shell`]'s per-window calls still take (`bind_window`,
 /// `grab_surface`, and `textinput`'s focus read), so every call site the `frame` gate pins stays where
-/// it is; W7a folds those into this trait. `poll` is SDL-shaped bytes until the platform's own event
-/// sink replaces it. There is no destructor: the `App` is leaked at exit and a worker may still hold
-/// the handle, so the end is the explicit, decided [`quit`](Surface::quit).
-pub(crate) trait Surface {
+/// it is; W9 folds those into this trait (plan, §1). **Two event paths, one of them temporary:** a
+/// platform delivers its events through [`deliver`](Surface::deliver) and [`EventSink`]; the SDL shells
+/// still deliver through [`poll`](Surface::poll), SDL-shaped bytes, and their `deliver` delivers nothing.
+/// `poll` is retired once the SDL shells deliver through the sink (W9 at the latest). There is no
+/// destructor: the `App` is leaked at exit and a worker may still hold the handle, so the end is the
+/// explicit, decided [`quit`](Surface::quit).
+pub trait Surface {
     /// The raw window handle, null for a surface that has none (the rig's).
     fn window(&self) -> *mut c_void;
     /// Present the frame. The compositor commit of the opaque-region request just made is this call's.
     fn swap(&self);
     /// 1 locks the frame rate to the panel's refresh, 0 uncaps it; the application computes which.
     fn set_swap_interval(&self, interval: i32);
-    /// Take the next event off the platform's queue into `ev`; `false` when there is none.
-    fn poll(&self, ev: &mut [u8; 128]) -> bool;
+    /// Take the next event off the platform's queue into `ev`; `false` when there is none. SDL's bytes:
+    /// only the SDL shells have a queue of that shape, so it is hidden and defaults to none. Retired with
+    /// the second path ([`deliver`](Surface::deliver) is the one that stays).
+    #[doc(hidden)]
+    fn poll(&self, _ev: &mut [u8; 128]) -> bool {
+        false
+    }
+    /// Hand the platform's pending input and window events to `sink`, in order, on the loop thread: called
+    /// once per drain, after [`poll`](Surface::poll) has been emptied. A platform whose callbacks arrive on
+    /// another thread queues them and delivers them here. Required: a surface with nothing to deliver
+    /// states it, as the SDL one does (its events still come through `poll`).
+    fn deliver(&self, sink: &mut dyn EventSink);
     /// End the platform's windowing for the process.
     ///
     /// # Safety
@@ -130,9 +147,34 @@ impl Surface for plx_shell_sdl::Window {
     fn poll(&self, ev: &mut [u8; 128]) -> bool {
         plx_shell_sdl::event::poll(ev)
     }
+    /// Nothing: every SDL event, a synthetic one the dev tooling pushed included, still comes through
+    /// [`poll`](Surface::poll) exactly as before, so the SDL event path is unchanged.
+    fn deliver(&self, _sink: &mut dyn EventSink) {}
     unsafe fn quit(&self) {
         plx_shell_sdl::init::quit()
     }
+}
+
+/// What a platform reports to the loop through [`Surface::deliver`]: the public face of the application's
+/// input vocabulary, whose own event type (`HostEvent`) stays private. Every call runs on the loop thread,
+/// in the order the platform saw the events. The application converts each into its event, so a platform
+/// names no application type beyond these.
+pub trait EventSink {
+    /// One edge of a key: its canonical [`Action`] where it has one, the raw pair where the platform has
+    /// one, and the [`Edge`]. A platform that is not SDL sends the action alone. `false` when the press is
+    /// refused and dropped: it carries neither field, or an action that is not what the pair names, or an
+    /// action no pair spells (`Action::Digit` above 9).
+    fn key(&mut self, action: Option<Action>, raw: Option<RawKey>, edge: Edge) -> bool;
+    /// One commit from the platform's text input, possibly empty.
+    fn text(&mut self, text: &str);
+    /// One pointer event at authored 1920x1080 coordinates.
+    fn pointer(&mut self, x: f32, y: f32, edge: PointerEdge);
+    /// One tick of the wheel, in signed whole ticks.
+    fn wheel(&mut self, dy: i32);
+    /// The window left or came back to the screen.
+    fn lifecycle(&mut self, edge: Lifecycle);
+    /// The host asks the application to end.
+    fn quit(&mut self);
 }
 
 /// [`Shell::init`] for an SDL platform: SDL up with the platform's two steps around `SDL_Init`, then the
@@ -165,7 +207,7 @@ pub(crate) fn detached_surface() -> Box<dyn Surface> {
 
 /// The dev frame probe (`/tmp/plxnative-framecb`): the platform's presentation-callback clock, read
 /// by the loop and by the renderer's clear hook. Unarmed, every call is a latched flag read.
-pub(crate) trait FrameProbe: Sync {
+pub trait FrameProbe: Sync {
     /// Ask for this frame's presentation callback. Call on a PRESENTING frame, before the swap.
     fn request(&self);
     /// `prepare_window` is next: starts the frame's `p` stretch.
@@ -186,20 +228,20 @@ pub(crate) trait FrameProbe: Sync {
 ///
 /// `Composition::default()` is a platform that composed no URI driver (the Feed or nothing): no resolver.
 #[derive(Default)]
-pub(crate) struct Composition {
-    pub(crate) resolver: Option<ResolvePort>,
+pub struct Composition {
+    pub resolver: Option<ResolvePort>,
 }
 
 /// A platform's two playback steps at boot. Both are plain functions: the platform's entry states
 /// them once, in its `static`, and the boot calls them through [`Platform::media`].
-pub(crate) struct MediaBoot {
+pub struct MediaBoot {
     /// Before the first adapter exists, once per process. The caller runs it only on a boot that
     /// touches the television (not a controlled one), so a platform's body never asks.
-    pub(crate) early_init: fn(&MainThread),
+    pub early_init: fn(&MainThread),
     /// Install this platform's drivers on the adapter, and return what the session must also be told.
     /// `controlled` is a replay or scripted Home, which touches no native port and so installs no
     /// native driver. It takes no session and publishes nothing: [`publish_composition`] does that.
-    pub(crate) compose: fn(&mut PlayerAdapter, controlled: bool) -> Composition,
+    pub compose: fn(&mut PlayerAdapter, controlled: bool) -> Composition,
 }
 
 /// Tell the route session what the platform composed: the resolver first, then the backend set the
@@ -234,7 +276,7 @@ pub(crate) fn publish_composition(
 /// functions put their guards around them (`sound::output`'s blocking check, `secure`'s test store,
 /// `home`'s request counter). The one thing the application does with it is
 /// [`install_services`](Platform::install_services); nothing in `app` can call a hook directly.
-pub(crate) struct Platform {
+pub struct Platform {
     services: &'static Services,
     pub(crate) shell: &'static dyn Shell,
     pub(crate) diag: &'static dyn FrameProbe,
@@ -243,7 +285,7 @@ pub(crate) struct Platform {
 
 impl Platform {
     /// A platform's entry states its four parts once, in a `static`.
-    pub(crate) const fn new(
+    pub const fn new(
         services: &'static Services,
         shell: &'static dyn Shell,
         diag: &'static dyn FrameProbe,
@@ -467,6 +509,52 @@ mod tests {
         assert_eq!((other_counted.hides.load(Relaxed), other_counted.shows.load(Relaxed)), (0, 0),
             "another platform's counts are its own");
         assert!(!other.shell.release_surface(), "the rest of the shell answers as the host-test one does");
+    }
+
+    /// **The SDL surface delivers nothing through its sink, so on the television and a desktop every event
+    /// still comes through `poll`, exactly as before.** An SDL key is pushed onto SDL's queue; the surface's
+    /// `deliver` reports none of it (the sink is called zero times), and `poll` still returns it. The
+    /// two-path drain therefore changes nothing for an SDL platform.
+    #[test]
+    fn the_sdl_surface_delivers_nothing_and_its_events_still_come_through_poll() {
+        #[derive(Default)]
+        struct Count(usize);
+        impl EventSink for Count {
+            fn key(&mut self, _: Option<Action>, _: Option<RawKey>, _: Edge) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn text(&mut self, _: &str) {
+                self.0 += 1;
+            }
+            fn pointer(&mut self, _: f32, _: f32, _: PointerEdge) {
+                self.0 += 1;
+            }
+            fn wheel(&mut self, _: i32) {
+                self.0 += 1;
+            }
+            fn lifecycle(&mut self, _: Lifecycle) {
+                self.0 += 1;
+            }
+            fn quit(&mut self) {
+                self.0 += 1;
+            }
+        }
+        let _serial = plx_base::testlock::serial();
+        let _events = plx_shell_sdl::testing::EventsOnly::init();
+        let surface = detached_surface();
+        let mut ev = [0u8; 128];
+        while surface.poll(&mut ev) {}
+        plx_shell_sdl::inject::synth_key(plx_ui::consts::SDLK_UP, 0);
+        let mut count = Count::default();
+        surface.deliver(&mut count);
+        assert_eq!(count.0, 0, "an SDL surface delivers nothing through the sink");
+        // `synth_key` pushes the two edges of a tap, down then up: both are still the queue's.
+        for edge in ["down", "up"] {
+            assert!(surface.poll(&mut ev), "the pushed key's {edge} edge is still the queue's, through `poll`");
+            assert!(plx_shell_sdl::event::decode(&ev).is_some(), "and it decodes as before ({edge})");
+        }
+        assert!(!surface.poll(&mut ev), "and the queue is empty after them");
     }
 
     /// **The SDL calls the application still declares are the two that stay.** Everything SDL-shaped

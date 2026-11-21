@@ -10,6 +10,8 @@
 
 use super::*;
 use plx_machine::machine::Edge;
+// `RawKey` is `plx_ui::consts`' (a platform crate names it through `host`); this is the application's spelling.
+pub(crate) use plx_ui::consts::RawKey;
 use plx_ui::consts::{action_of, raw_pair, Action};
 
 /// Preserve one IME commit and its place among key events. Desktop text does not imply an
@@ -75,9 +77,10 @@ pub(crate) fn host_wcode(sym: u32) -> u32 {
 }
 
 /// What the platform tells the loop: a key press, a text commit, the pointer, the wheel, the window
-/// leaving or returning to the screen, and the host asking the application to end. App-private, like
-/// [`Shell`](super::platform::Shell): no platform reaches it by a type of its own until the
-/// platform contract is settled (`docs/platform-ports.md`, Target shape 2).
+/// leaving or returning to the screen, and the host asking the application to end. App-private, unlike
+/// [`Shell`](super::platform::Shell) and [`Surface`](super::platform::Surface), which `host` publishes: a
+/// platform reports input through [`EventSink`](super::platform::EventSink) and the application converts it
+/// to this type in [`HostQueue`] (`docs/platform-ports.md`, Target shapes 2 and 8).
 ///
 /// The SDL drain decodes SDL's events into it ([`decode_host_event`]) and the loop consumes it in
 /// ONE function (`run::ingest_host_event`), so a host that stops the application without SDL
@@ -126,17 +129,6 @@ impl HostEvent {
     pub(crate) fn is_input(&self) -> bool {
         matches!(self, HostEvent::Key(_) | HostEvent::Text(_) | HostEvent::Pointer { .. } | HostEvent::Wheel { .. })
     }
-}
-
-/// The raw `(sym, wcode)` pair a key arrived as. Kept beside the [`Action`] because three things
-/// still read it: a press with no action (an unsupported key flows on as exactly the pair it was),
-/// the lab trigger key (named by `lab.json`, not by an action), and the recorder's tape, whose
-/// format IS the pair. A platform with no SDL pair sends none, and the loop builds
-/// [`raw_pair`] for its action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RawKey {
-    pub sym: c_uint,
-    pub wcode: c_uint,
 }
 
 /// One edge of one key, as a platform hands it to the loop: the canonical [`Action`] where the key
@@ -251,6 +243,44 @@ fn host_event(decoded: Decoded) -> Option<HostEvent> {
         Decoded::Wheel { dy } => HostEvent::Wheel { dy },
         Decoded::Lifecycle(edge) => HostEvent::Lifecycle(edge),
     })
+}
+
+/// What a platform's [`EventSink`](super::platform::EventSink) calls become: the [`HostEvent`]s the loop
+/// ingests, in the order the platform made them. The one place a non-SDL platform's events become the
+/// application's own type, beside [`host_event`] for SDL's (the two are the only constructors of a
+/// [`HostEvent`], so the private event type has exactly two doors). A key goes through [`KeyPress::new`],
+/// which refuses what is neither an action nor a pair, or an action and a pair that name two keys.
+#[derive(Default)]
+pub(crate) struct HostQueue(Vec<HostEvent>);
+
+impl HostQueue {
+    /// The queued events, oldest first.
+    pub(crate) fn into_events(self) -> Vec<HostEvent> {
+        self.0
+    }
+}
+
+impl super::platform::EventSink for HostQueue {
+    fn key(&mut self, action: Option<Action>, raw: Option<RawKey>, edge: Edge) -> bool {
+        let Some(press) = KeyPress::new(action, edge, raw) else { return false };
+        self.0.push(HostEvent::Key(press));
+        true
+    }
+    fn text(&mut self, text: &str) {
+        self.0.push(HostEvent::Text(text.to_owned()));
+    }
+    fn pointer(&mut self, x: f32, y: f32, edge: PointerEdge) {
+        self.0.push(HostEvent::Pointer { x, y, edge });
+    }
+    fn wheel(&mut self, dy: i32) {
+        self.0.push(HostEvent::Wheel { dy });
+    }
+    fn lifecycle(&mut self, edge: Lifecycle) {
+        self.0.push(HostEvent::Lifecycle(edge));
+    }
+    fn quit(&mut self) {
+        self.0.push(HostEvent::Quit);
+    }
 }
 
 /// **One native key edge as the loop hands it to the tree**, for the effect-level guards (W5b): the
@@ -1212,5 +1242,86 @@ mod key_event_tests {
         assert_eq!(text("星球".as_bytes()), Some(HostEvent::Text("星球".into())));
         assert_eq!(text(&[b'a'; 32]), Some(HostEvent::Text("a".repeat(32))));
         assert_eq!(text(b""), Some(HostEvent::Text(String::new())));
+    }
+}
+
+/// A platform's `EventSink` calls become the same `HostEvent`s the SDL decode makes of the same events
+/// (the one conversion a non-SDL platform's input goes through), in the order they were made, and a key
+/// the application cannot name is refused, not queued.
+#[cfg(test)]
+mod host_queue_tests {
+    use super::super::platform::EventSink;
+    use super::{decode_host_event, encode_key, Action, Edge, HostEvent, HostQueue, KeyPress, Lifecycle, PointerEdge, RawKey};
+    use plx_ui::consts::raw_pair;
+
+    fn event_of(code: u32) -> [u8; 128] {
+        let mut ev = [0u8; 128];
+        ev[..4].copy_from_slice(&code.to_ne_bytes());
+        ev
+    }
+
+    #[test]
+    fn quit_and_the_lifecycle_edges_queue_what_the_sdl_decode_makes_of_their_events() {
+        let mut queue = HostQueue::default();
+        queue.quit();
+        queue.lifecycle(Lifecycle::WillBackground);
+        queue.lifecycle(Lifecycle::DidBackground);
+        queue.lifecycle(Lifecycle::WillForeground);
+        queue.lifecycle(Lifecycle::DidForeground);
+        let decoded: Vec<HostEvent> =
+            [0x100, 0x103, 0x104, 0x105, 0x106].iter().map(|&code| decode_host_event(&event_of(code)).expect("decoded")).collect();
+        assert_eq!(queue.into_events(), decoded);
+    }
+
+    #[test]
+    fn a_raw_pair_with_or_without_its_action_queues_the_press_the_sdl_decode_makes_of_those_bytes() {
+        let (sym, wcode) = raw_pair(Action::Ok);
+        let pair = RawKey { sym, wcode };
+        let Some(decoded) = decode_host_event(&encode_key(sym, wcode, true)) else { panic!("a key event") };
+        let mut queue = HostQueue::default();
+        assert!(queue.key(None, Some(pair), Edge::Down), "a pair alone is a press");
+        assert!(queue.key(Some(Action::Ok), Some(pair), Edge::Down), "and so is the pair with the action it names");
+        assert_eq!(queue.into_events(), vec![decoded.clone(), decoded]);
+    }
+
+    #[test]
+    fn an_action_alone_queues_a_press_whose_pair_is_the_one_a_remote_sends() {
+        let mut queue = HostQueue::default();
+        assert!(queue.key(Some(Action::Back), None, Edge::Up));
+        let want = KeyPress::new(Some(Action::Back), Edge::Up, None).expect("Back names a key");
+        let events = queue.into_events();
+        assert_eq!(events, vec![HostEvent::Key(want)]);
+        let HostEvent::Key(press) = &events[0] else { panic!("a key") };
+        assert_eq!(press.pair(), RawKey { sym: raw_pair(Action::Back).0, wcode: raw_pair(Action::Back).1 });
+    }
+
+    #[test]
+    fn a_key_the_application_cannot_name_is_refused_and_queues_nothing() {
+        let (sym, wcode) = raw_pair(Action::Ok);
+        let mut queue = HostQueue::default();
+        assert!(!queue.key(None, None, Edge::Down), "neither an action nor a pair");
+        assert!(!queue.key(Some(Action::Digit(10)), None, Edge::Down), "no pair spells Digit(10)");
+        assert!(!queue.key(Some(Action::Back), Some(RawKey { sym, wcode }), Edge::Down), "an action and a pair of two keys");
+        assert!(queue.into_events().is_empty());
+    }
+
+    #[test]
+    fn text_pointer_and_wheel_queue_as_given_and_keep_their_order() {
+        let mut queue = HostQueue::default();
+        queue.text("wal");
+        queue.pointer(960.0, 540.0, PointerEdge::Down);
+        queue.wheel(-2);
+        queue.text("");
+        queue.pointer(1.0, 2.0, PointerEdge::Up);
+        assert_eq!(
+            queue.into_events(),
+            vec![
+                HostEvent::Text("wal".into()),
+                HostEvent::Pointer { x: 960.0, y: 540.0, edge: PointerEdge::Down },
+                HostEvent::Wheel { dy: -2 },
+                HostEvent::Text(String::new()),
+                HostEvent::Pointer { x: 1.0, y: 2.0, edge: PointerEdge::Up },
+            ]
+        );
     }
 }
