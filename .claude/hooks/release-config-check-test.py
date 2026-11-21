@@ -78,6 +78,7 @@ CASES = [
     (FIRE, "the appkit layer crate\\'s source", edit("/repo/rust-modules/appkit/src/player_hud/mod.rs"), ROOT),
     (FIRE, "the screens layer crate\\'s source", edit("/repo/rust-modules/screens/src/home/mod.rs"), ROOT),
     (FIRE, "the shell_sdl layer crate's source", edit("/repo/rust-modules/shell-sdl/src/window.rs"), ROOT),
+    (FIRE, "the webOS platform crate's source (the ARM staticlib's own crate)", edit("/repo/rust-modules/platform-webos/src/port.rs"), ROOT),
     (FIRE, "MultiEdit", edit("/repo/rust-modules/src/app/run.rs", tool="MultiEdit"), ROOT),
     (FIRE, "relative to root", edit("rust-modules/src/route.rs"), ROOT),
     (FIRE, "relative to a subdir", edit("src/plex/client.rs"), "/repo/rust-modules"),
@@ -91,6 +92,10 @@ CASES = [
     # --- does not fire: right extension, wrong target -------------------------
     (SKIP, "src/bin/sim.rs (not a --lib target, needs hostsim)",
      edit("/repo/rust-modules/src/bin/sim.rs"), ROOT),
+    (SKIP, "the desktop platform crate's source (hostsim only: it compiles to nothing in the release set)",
+     edit("/repo/rust-modules/platform-desktop/src/lib.rs"), ROOT),
+    (SKIP, "the desktop platform crate's simulator binary",
+     edit("/repo/rust-modules/platform-desktop/src/bin/sim.rs"), ROOT),
     (SKIP, "build.rs (cargo compiles the script in every configuration)",
      edit("/repo/rust-modules/build.rs"), ROOT),
     (SKIP, "tools/ script", edit("/repo/tools/some_helper.rs"), ROOT),

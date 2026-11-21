@@ -886,6 +886,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "plx_platform_desktop"
+version = "0.0.0"
+dependencies = [
+ "plxnative-modules",
+]
+
+[[package]]
+name = "plx_platform_webos"
+version = "0.0.0"
+dependencies = [
+ "plxnative-modules",
+]
+
+[[package]]
 name = "plx_play_feed"
 version = "0.0.0"
 dependencies = [

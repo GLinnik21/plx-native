@@ -183,12 +183,16 @@ class TestCheckNodef(unittest.TestCase):
             env = {"CARGO_INCREMENTAL": "1", "PLX_CARGO_SEED": "off"}
             out = fake.run("check-nodef", env=env)
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-            (call,) = fake.calls()
+            # Two checks of the shipping set: the application, then the crate the ARM staticlib is built
+            # from (`plx_platform_webos`), which the first line does not compile.
+            call, platform = fake.calls()
             self.assertEqual(call["incremental"], "0")
             self.assertTrue(call["cwd"].endswith("rust-modules"), call["cwd"])
             # The release set is `--no-default-features` PLUS the backends: both are in the app
             # crate's `default`, so the bare flag would check a build with no playback backend.
             self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features --features play-uri,play-feed$")
+            self.assertRegex(platform["args"], r"^\+\S+ check --lib -p plx_platform_webos --no-default-features --features play-uri,play-feed$")
+            self.assertEqual(platform["incremental"], "0")
             # No target dir of its own: cargo's default, <workspace>/target, is inside the checkout.
             self.assertIn(call["target_dir"], ("None", "", None))
             self.assertEqual(inside_checkout(call), Path("target"))
@@ -196,9 +200,11 @@ class TestCheckNodef(unittest.TestCase):
     def test_it_follows_the_target_dir_a_lane_exports_for_make_check(self):
         with FakeCargoHome() as fake:
             self.assertEqual(fake.run("check-nodef", env=LANE_ENV).returncode, 0)
-            (call,) = fake.calls()
-            self.assertEqual(call["target_dir"], "/somewhere/else")
-            self.assertEqual(call["incremental"], "0")
+            calls = fake.calls()
+            self.assertEqual(len(calls), 2)
+            for call in calls:
+                self.assertEqual(call["target_dir"], "/somewhere/else")
+                self.assertEqual(call["incremental"], "0")
 
     def test_the_backend_features_follow_playback_backends(self):
         # `RELEASE=1` passes the selected backends explicitly; check-nodef checks what it ships.
@@ -206,13 +212,15 @@ class TestCheckNodef(unittest.TestCase):
             with self.subTest(backends), FakeCargoHome() as fake:
                 out = fake.run("check-nodef", f"PLAYBACK_BACKENDS={backends}", env={"PLX_CARGO_SEED": "off"})
                 self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-                (call,) = fake.calls()
+                call, platform = fake.calls()
                 self.assertRegex(call["args"], rf"^\+\S+ check --lib --no-default-features --features {features}$")
+                self.assertRegex(platform["args"], rf"^\+\S+ check --lib -p plx_platform_webos --no-default-features --features {features}$")
         with FakeCargoHome() as fake:
             out = fake.run("check-nodef", "PLAYBACK_BACKENDS=none", env={"PLX_CARGO_SEED": "off"})
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-            (call,) = fake.calls()
+            call, platform = fake.calls()
             self.assertRegex(call["args"], r"^\+\S+ check --lib --no-default-features$")
+            self.assertRegex(platform["args"], r"^\+\S+ check --lib -p plx_platform_webos --no-default-features$")
 
     def test_it_shares_make_lints_third_party_units_so_it_must_not_change_their_inputs(self):
         text = recipe_body("check-nodef")

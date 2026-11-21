@@ -3,8 +3,9 @@
 
 `rust-modules/Cargo.toml` declares `crate-type = ["rlib"]`: the simulator bin and the host tests
 only need the rlib, and the ARM archive `make` links is produced separately by
-`cargo rustc --crate-type staticlib` (whose archive `ci/check-staticlib-artifact.py` checks in the
-ARM build). A `staticlib` crate type on the crate makes EVERY cargo build of it (`cargo build`, the
+`cargo rustc -p plx_platform_webos --crate-type staticlib` (the webOS platform crate is the staticlib
+crate, since it depends on the application; `ci/check-staticlib-artifact.py` checks the archive in the
+ARM build). The two platform crates are held to the same rule as every other crate: an rlib. A `staticlib` crate type on the crate makes EVERY cargo build of it (`cargo build`, the
 simulator, anything that depends on the library) also write a ~200 MB archive that bundles every
 upstream crate, and makes the ARM build write an rlib nobody links.
 
@@ -19,6 +20,10 @@ rustc starts, and this reads it there at no compile cost:
   * `cargo metadata --no-deps` reports the declared `[lib]` target; its `crate_types` and `kind`
     must be exactly `["rlib"]` too, so a manifest edit is named at the manifest and not only in the
     resolved graph.
+
+The platform crates are not dependencies of the application, so the application's graph does not
+contain them: their own `cargo build --lib -p plx_platform_webos -p plx_platform_desktop --unit-graph`
+is read the same way.
 
 The detector is proven RED against a manifest that adds `staticlib` (or `cdylib`) by
 `ManifestMutationTests`, which builds a throwaway workspace of symlinks to the real sources with
@@ -36,31 +41,36 @@ from rust_toolchain import pinned
 ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
 # The layer crates split out of the app crate (docs/module-layers.md), each a dependency of it and
-# each held to the same rule: an rlib, never an archive. One archive is linked, and it is the app's.
+# each held to the same rule: an rlib, never an archive. One archive is linked, and it is the webOS
+# platform crate's (the Makefile asks for it with `cargo rustc -p plx_platform_webos --crate-type
+# staticlib`).
 LAYER_CRATES = ("plx_base", "plx_machine", "plx_net", "plx_os", "plx_gfx", "plx_ui", "plx_plex", "plx_telemetry", "plx_data", "plx_session", "plx_media", "plx_playback_contract", "plx_play_uri", "plx_play_feed", "plx_media_codecs", "plx_appkit", "plx_screens", "plx_shell_sdl")
+# The two platform crates (W7b): dependents of the app crate, never dependencies of it, so they are
+# in a unit graph of their own, and held to the same rule.
+PLATFORM_CRATES = ("plx_platform_webos", "plx_platform_desktop")
 TOOLCHAIN = pinned()  # the repo's one toolchain
 # What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
 # lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources
 # the manifest names. A mutated copy replaces `Cargo.toml` only.
-WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine", "net", "os", "gfx", "ui", "plex", "telemetry", "data", "session", "media", "playback-contract", "play-uri", "play-feed", "media-codecs", "appkit", "screens", "shell-sdl", "owp")
+WORKSPACE_FILES = (".cargo", "Cargo.lock", "build.rs", "build_support", "src", "storage", "base", "machine", "net", "os", "gfx", "ui", "plex", "telemetry", "data", "session", "media", "playback-contract", "play-uri", "play-feed", "media-codecs", "appkit", "screens", "shell-sdl", "platform-webos", "platform-desktop", "owp")
 
 
-def offences(unit_graph=None, metadata=None):
-    """Describe every way the app library would be built as something other than an rlib."""
+def offences(unit_graph=None, metadata=None, crate=CRATE):
+    """Describe every way `crate`'s library (the app's, by default) would be built as something other than an rlib."""
     found = []
     if unit_graph is not None:
-        units = [u for u in unit_graph.get("units", []) if (u.get("target") or {}).get("name") == CRATE]
+        units = [u for u in unit_graph.get("units", []) if (u.get("target") or {}).get("name") == crate]
         if not units:
-            found.append(("unit graph", f"no {CRATE} library unit at all"))
+            found.append(("unit graph", f"no {crate} library unit at all"))
         for unit in units:
             types = unit["target"].get("crate_types") or []
             if types != ["rlib"]:
                 found.append(("unit crate_types", ",".join(types)))
     if metadata is not None:
         targets = [t for p in metadata.get("packages", []) for t in p.get("targets", [])
-                   if t.get("name") == CRATE]
+                   if t.get("name") == crate]
         if not targets:
-            found.append(("metadata", f"no {CRATE} target at all"))
+            found.append(("metadata", f"no {crate} target at all"))
         for target in targets:
             for field in ("crate_types", "kind"):
                 if target.get(field) != ["rlib"]:
@@ -68,10 +78,10 @@ def offences(unit_graph=None, metadata=None):
     return found
 
 
-def layer_offences(unit_graph):
+def layer_offences(unit_graph, crates=LAYER_CRATES):
     """The layer crates that the host library build compiles as anything but an rlib, or not at all."""
     found = []
-    for layer in LAYER_CRATES:
+    for layer in crates:
         units = [u for u in unit_graph.get("units", []) if (u.get("target") or {}).get("name") == layer]
         if not units:
             found.append((layer, "no library unit at all"))
@@ -101,6 +111,12 @@ def resolve(cwd):
     graph = cargo(["build", "--lib", "--unit-graph", "-Zunstable-options"], cwd)
     meta = cargo(["metadata", "--format-version", "1", "--no-deps"], cwd)
     return graph, meta
+
+
+def resolve_platforms(cwd):
+    """The unit graph of `cargo build --lib` of the two platform crates (the application's own graph has neither)."""
+    args = [arg for crate in PLATFORM_CRATES for arg in ("-p", crate)]
+    return cargo(["build", "--lib", *args, "--unit-graph", "-Zunstable-options"], cwd)
 
 
 class ParserTests(unittest.TestCase):
@@ -138,6 +154,20 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(layer_offences(layers(skip=("plx_machine",))), [("plx_machine", "no library unit at all")])
         self.assertEqual(layer_offences(self.graph()), [(layer, "no library unit at all") for layer in LAYER_CRATES])
 
+    def test_a_platform_crate_must_be_present_and_an_rlib(self):
+        def platforms(types=("rlib",), skip=()):
+            return {"units": [u for crate in PLATFORM_CRATES if crate not in skip
+                              for u in self.graph(types, name=crate)["units"]]}
+        self.assertEqual(layer_offences(platforms(), PLATFORM_CRATES), [])
+        self.assertEqual(layer_offences(platforms(("staticlib",)), PLATFORM_CRATES),
+                         [(crate, "staticlib") for crate in PLATFORM_CRATES])
+        self.assertEqual(layer_offences(platforms(skip=("plx_platform_webos",)), PLATFORM_CRATES),
+                         [("plx_platform_webos", "no library unit at all")])
+        self.assertEqual(offences(self.graph(name="plx_platform_webos"), self.meta(name="plx_platform_webos"),
+                                  crate="plx_platform_webos"), [])
+        self.assertEqual(offences(self.graph(("rlib", "staticlib"), name="plx_platform_webos"), crate="plx_platform_webos"),
+                         [("unit crate_types", "rlib,staticlib")])
+
     def test_other_crates_may_be_archives(self):
         graph = {"units": [{"target": {"name": "zstd_sys", "kind": ["staticlib"],
                                        "crate_types": ["staticlib"]}, "mode": "build"},
@@ -150,6 +180,12 @@ class HostBuildTests(unittest.TestCase):
         graph, meta = resolve(ROOT / "rust-modules")
         self.assertEqual(offences(graph, meta), [], f"{CRATE} would build more than an rlib")
         self.assertEqual(layer_offences(graph), [], "a layer crate would build more than an rlib")
+        # The one archive is asked for by name (`cargo rustc --crate-type staticlib`); a plain build of a platform
+        # crate, the staticlib crate included, writes none.
+        platforms = resolve_platforms(ROOT / "rust-modules")
+        self.assertEqual(layer_offences(platforms, PLATFORM_CRATES), [], "a platform crate would build more than an rlib")
+        for crate in PLATFORM_CRATES:
+            self.assertEqual(offences(platforms, meta, crate=crate), [], f"{crate} would build more than an rlib")
 
 
 class ManifestMutationTests(unittest.TestCase):
@@ -181,6 +217,24 @@ class ManifestMutationTests(unittest.TestCase):
         found = offences(graph, meta)
         self.assertIn(("unit crate_types", "rlib,staticlib"), found)
         self.assertIn(("target crate_types", "rlib,staticlib"), found)
+
+    def test_staticlib_added_to_a_platform_crate_is_caught(self):
+        # The staticlib crate is the webOS platform crate; its manifest keeps `rlib` too, and the archive is
+        # asked for by name. A copy of that one crate directory (symlinks to everything but its manifest).
+        workspace = self.workspace_with('crate-type = ["rlib"]')
+        source = ROOT / "rust-modules" / "platform-webos"
+        (workspace / "platform-webos").unlink()
+        crate = workspace / "platform-webos"
+        crate.mkdir()
+        for entry in source.iterdir():
+            if entry.name != "Cargo.toml":
+                (crate / entry.name).symlink_to(entry)
+        manifest = (source / "Cargo.toml").read_text()
+        declared = 'crate-type = ["rlib"]'
+        self.assertIn(declared, manifest)
+        (crate / "Cargo.toml").write_text(manifest.replace(declared, 'crate-type = ["rlib", "staticlib"]'))
+        found = offences(resolve_platforms(workspace), crate="plx_platform_webos")
+        self.assertIn(("unit crate_types", "rlib,staticlib"), found)
 
     def test_cdylib_added_to_the_manifest_is_caught(self):
         graph, meta = resolve(self.workspace_with('crate-type = ["cdylib", "rlib"]'))

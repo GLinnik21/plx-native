@@ -169,9 +169,10 @@ class ShippingGraph(unittest.TestCase):
     """The "no_default_features" graph is the shipping build's, so its flags come from the Makefile."""
 
     def trees_for(self, shipping, featflags):
-        seen = []
+        seen, self.packages = [], []
+        packages = self.packages
         originals = b.cargo_trees, b.shipping_featflags
-        b.cargo_trees = lambda manifest_dir, toolchain, flags=(): seen.append(list(flags)) or {}
+        b.cargo_trees = lambda manifest_dir, toolchain, flags=(), package=None: seen.append(list(flags)) or packages.append(package) or {}
         b.shipping_featflags = lambda root: featflags
         try:
             b.run_cargo_tree(shipping)
@@ -182,6 +183,13 @@ class ShippingGraph(unittest.TestCase):
     def test_the_shipping_graph_is_resolved_with_the_makefiles_feature_flags(self):
         flags = ["--no-default-features", "--features", "backend-a,backend-b"]
         self.assertEqual(self.trees_for(True, flags), [flags])
+
+    def test_both_graphs_are_the_shipping_crates_not_the_applications(self):
+        # The ARM staticlib is built from the platform crate; a tree rooted at the application would not
+        # see a third-party dependency that crate adds.
+        for shipping in (True, False):
+            self.trees_for(shipping, ["--no-default-features"])
+            self.assertEqual(self.packages, ["plx_platform_webos"])
 
     def test_the_default_graph_passes_no_feature_flags(self):
         self.assertEqual(self.trees_for(False, ["--no-default-features"]), [[]])

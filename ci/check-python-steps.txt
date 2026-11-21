@@ -444,3 +444,7 @@ python3 .claude/hooks/disk-low-notify-test.py
 # that the selector is not named `platform.py`: scripts in ci/ import the stdlib `platform`, so a probe from ci/, every existing consumer and
 # a shadow control are run. No cargo; the scratch trees are private temp dirs.
 python3 ci/test_platform_axis.py
+# The platform crates' manifests (W7b): `plx_platform_webos` and `plx_platform_desktop` each forward EVERY feature of the application
+# crate with its defaults and name none on the dependency edge (a dependency feature would unify over a whole default pass: the
+# desktop's `hostsim` would turn it into a simulator pass), with no `version` on it (the certificates refuse one). Manifests only, no cargo.
+python3 ci/test_platform_features.py
