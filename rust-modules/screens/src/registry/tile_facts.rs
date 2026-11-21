@@ -44,6 +44,7 @@ pub fn caption_facts(item: &PmsMovie) -> CaptionFacts {
         genre: item.genre.clone(),
         video_resolution: item.video_resolution.clone(),
         hdr: item.hdr,
+        dolby_vision: item.dolby_vision,
         content_rating: Some(item.rating.clone()),
         audience_rating: item.audience_rating,
         leaf_count: item.leaf_count,

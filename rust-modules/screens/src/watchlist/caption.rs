@@ -67,6 +67,7 @@ pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy, copy: &Li
         genre: copy.genre.clone(),
         video_resolution: copy.video_resolution.clone(),
         hdr: copy.hdr,
+        dolby_vision: copy.dolby_vision,
         content_rating: copy.content_rating.clone(),
         audience_rating: copy.audience_rating,
         leaf_count: copy.leaf_count,
