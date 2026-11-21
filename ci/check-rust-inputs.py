@@ -14,8 +14,9 @@ manifests, follows each crate's own `path` dependencies (normal and build, not d
 are not linked into the library), and demands that every crate directory reached is one RUST_INPUTS
 searches. The two are the app package (`rust-modules/Cargo.toml`) and the crate `$(RUST_LIB)` is
 actually compiled from, `plx_platform_webos` (`rust-modules/platform-webos`): that crate depends on the
-app, never the reverse, so a walk from the app alone would not reach it or the crates only it
-depends on (`shell-sdl`), and an edit to them would leave `make` linking the previous library. It also
+app, never the reverse, so a walk from the app alone would not reach it, nor any crate only it
+depends on, and an edit there would leave `make` linking the previous library. Today the library crate
+itself is the one crate such a walk misses: the app depends on `shell-sdl` and the rest directly. It also
 fails on a directory the list names that does not exist, which is a list gone stale the other way.
 
 The storage helper is a separate binary with its own deliberately narrower STORAGE_INPUTS, and is

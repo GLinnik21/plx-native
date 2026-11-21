@@ -371,8 +371,9 @@ tests, where nothing calls `plex_run`) `tv::Services::HOST_TEST` answers what th
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences naming `VideoSink` or `installed` to `media`'s
-`player/`, `play-uri/`, `os`'s `tv/` and `tv.rs`, and the platform crates' `webos/`, `port.rs` and `platform-desktop/` (each platform's table names its own
-sink) and `app/adapters/backends.rs`; `play-feed/` may name the trait but never resolves `installed`), and the URI media pipe through
+`player/`, `os`'s `tv/` and `tv.rs`, `platform-webos`'s `webos/` and `port.rs`, `platform-desktop`'s `lib.rs` (each platform's table names its own
+sink) and `app/adapters/backends.rs`; those are three paths, not the platform crates, so `system.rs`, `keymanager.rs`, `webos.rs` and the `lib.rs` of
+`platform-webos` and the `bin/sim.rs` of `platform-desktop` fail `sink` on naming either; `play-feed/` and `play-uri/` may name the sink traits but never resolve `installed`), and the URI media pipe through
 `tv::uri::installed()`, resolved once by the webOS platform's composition (`app/adapters/backends.rs::compose_native`, which calls
 `install_uri_product`, in a build with the `play-uri` feature; the desktop platform composes the Feed only and never resolves it) and, in a `devtriggers` build, again by the media wrapper `player::uriprobe_drive` for the developer probe. The independent
 `play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
@@ -603,7 +604,9 @@ What the extraction taught, beyond what the recipe above predicted:
 - **Tests that read the source tree or the repository** moved with their crate and needed a root:
   `eventlog::scrub`'s "no log call interpolates viewing content" scan walks `base/src` *and*
   `../src` (it would otherwise have stopped reading the application, silently, and still passed:
-  every later layer must be added to its root list); `paths` and `fontcov` climb one more `..`.
+  every later layer must be added to its root list; since W7b the scan lists `rust-modules/` with
+  `read_dir` and walks every `<crate>/src`, as `player/report.rs`'s `fetch_update` walk does, so there
+  is no list to add to); `paths` and `fontcov` climb one more `..`.
 - **No orphan-rule hazard appeared**: no `impl` in the application has both its trait and its type
   in `plx_base` (`ShippedMeasure`'s and `WholePixelMeasure`'s impls are `machine`'s trait on a `plx_base` type, which only the trait's crate, `plx_machine`, may write, and does; Split 2 below).
 - **The tooling that knew the tree's shape**: `ci/module_graph.py` reads every sibling

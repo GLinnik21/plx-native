@@ -80,10 +80,12 @@
 #   nav      — a screen under rust-modules/screens/src/ never calls `plx_ui::nav::` (`crate::ui::nav::` before the ui split; any
 #              function) live; it reads `DrawFrame::{page_alpha,chrome_alpha,view_tab,
 #              blur_amount,nav_page_alpha}`, populated once per frame by `app/bridge.rs`'s
-#              `Rig::navigation_presentation`. `ui/`'s CONTAINERS (popover.rs, glassload.rs,
-#              widgets.rs's chrome helpers, the loop's own app/nav.rs and app/run.rs) still call
-#              `ui::nav` directly — that is phase 7/12's boundary, not this one's; this gate
-#              scans only `screens/`, where the count is zero.
+#              `Rig::navigation_presentation`. The gate scans `$SRC`, `$SRC_UI`, `$SRC_APPKIT`,
+#              `$SRC_SCREENS` and both platform crates (`$SRC_PLATFORM_WEBOS`, `$SRC_PLATFORM_DESKTOP`),
+#              not only `screens/`, and the count is zero in all of them: `ui/`'s CONTAINERS
+#              (popover.rs, glassload.rs, widgets.rs's chrome helpers, the loop's own app/nav.rs and
+#              app/run.rs) once called `ui::nav` directly, until `ui/nav.rs` was retired (rule
+#              `ui-owner-files`).
 # Phase 10 rules:
 #   layer    — a screen (`screens/`) never names `crate::app::`/`super::app::` (§2.1's table). The
 #              other half of that table has been gated since phase 2 (`ui/` names no application
@@ -1153,14 +1155,15 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 fi # frame
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
-# `player/`, `play-uri/`, the native `webos/` port and `port.rs` of `platform-webos/`, `lib.rs` of `platform-desktop/`
+# `player/`, the native `webos/` port and `port.rs` of `platform-webos/`, `lib.rs` of `platform-desktop/`
 # (`port.rs` and `lib.rs` name one each) and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
 # `app/adapters/backends.rs`, the boot composition that resolves the installed display once for the
 # ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
 # driver set is built). Every other module reaches the television through the narrower `tv` interfaces,
 # the rest of the platform crates among them (`platform-webos/`'s `system.rs`, `keymanager.rs`, `webos.rs` and `lib.rs`,
-# `platform-desktop/`'s `bin/sim.rs`): the exemption is those three paths, not the crates. Wholly-test files are skipped like inline
-# `#[cfg(test)]` blocks. Zero, no allowlist.
+# `platform-desktop/`'s `bin/sim.rs`): the exemption is those three paths, not the crates. A backend crate (`play-feed/`,
+# `play-uri/`) receives an injected sink: it may name the sink traits but never resolves `installed` or `display_installed`.
+# Wholly-test files are skipped like inline `#[cfg(test)]` blocks. Zero, no allowlist.
 if want sink; then
 sink_bad=0
 while IFS= read -r line; do

@@ -352,9 +352,11 @@ python3 ci/gen-third-party-notices.py --check
 # --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
 python3 ci/test_check_vfp.py
 python3 ci/check-vfp.py --skip-if-missing
-# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
-# the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
-# the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
+# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search the library
+# crate `rust-modules/platform-webos` (the crate `$(RUST_LIB)` is compiled from, which the app does not reach) and every
+# crate that one or the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so
+# `make ipk` packages the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing
+# crate in a temp tree.
 python3 ci/test_check_rust_inputs.py
 python3 ci/check-rust-inputs.py
 python3 ci/test_check_machine_writer.py
