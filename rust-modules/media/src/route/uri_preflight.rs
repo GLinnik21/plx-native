@@ -172,7 +172,7 @@ pub enum UriDecline {
     DolbyVisionOff,
     /// Standard would play the file as Dolby Vision and the TV's own pipeline would show only its base
     /// layer ([`pipeline_carries_dolby_vision`]): a Profile 7 that Feed converts, or a Matroska file
-    /// on a set whose Matroska demuxer reads no Dolby Vision.
+    /// on a set whose Matroska demuxer reads no Dolby Vision (before webOS 10.3).
     DolbyVisionBaseLayer,
     /// A trailer preview, which the exported window cannot place.
     Preview,
@@ -248,8 +248,9 @@ impl UriDecline {
 /// PURE: whether the TV's own pipeline carries a file's Dolby Vision (`dovi`) to the picture when it
 /// demuxes the file itself, the URI engine's case. On a URI Load the service only checks that a
 /// `DolbyHdrInfo` node exists and pins `hdrType`; Dolby Vision reaches the picture only where the
-/// demuxer flags it. `qtdemux` reads `dvcC` on every image but gives a Profile 7 none from 5.5.0, and
-/// a 10.x `matroskademux` plays one as HDR10, so a Profile 7 Feed converts never qualifies. A
+/// demuxer flags it. `qtdemux` reads `dvcC` on every image but gives a Profile 7 none on the 5.5.0
+/// to 7.6.0 images, and a 10.3 `matroskademux` plays one as HDR10, so a Profile 7 Feed converts (and
+/// plays as Dolby Vision) never qualifies. A
 /// Matroska file qualifies only where `matroska_dolby_vision` (`Caps::dv_matroska`) says the set's
 /// demuxer reads its `BlockAdditionMapping`.
 pub fn pipeline_carries_dolby_vision(dovi: plx_data::metadata::Dovi, matroska: bool,
@@ -1576,8 +1577,8 @@ mod tests {
         let p7 = Dovi { present: true, profile: 7, bl_compat: 6, el_present: true, ..Dovi::NONE };
         assert!(p7.converts_to_p81(), "the premise: Feed converts this Profile 7");
         assert!(pipeline_carries_dolby_vision(p8, false, false), "MP4");
-        assert!(!pipeline_carries_dolby_vision(p8, true, false), "MKV before webOS 10");
-        assert!(pipeline_carries_dolby_vision(p8, true, true), "MKV from webOS 10");
+        assert!(!pipeline_carries_dolby_vision(p8, true, false), "MKV before webOS 10.3");
+        assert!(pipeline_carries_dolby_vision(p8, true, true), "MKV from webOS 10.3");
         for (matroska, reads) in [(false, false), (true, false), (true, true)] {
             assert!(!pipeline_carries_dolby_vision(p7, matroska, reads), "Profile 7, mkv={matroska} reads={reads}");
         }

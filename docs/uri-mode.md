@@ -87,7 +87,8 @@ it the set shows the base layer under a Dolby Vision label (the LG C1 run in the
 original Standard plays as Dolby Vision is therefore offered to the URI engine only where the TV's
 own demuxer carries it (`pipeline_carries_dolby_vision` in `rust-modules/media/src/route/uri_preflight.rs`,
 the Matroska half `Caps::dv_matroska` / `matroska_dolby_vision_for` in `rust-modules/os/src/devcaps.rs`):
-an MP4, or an MKV from webOS 10, and never a Profile 7 that Feed converts. Anything else stays on
+an MP4, or an MKV from webOS 10.3 (no 10.0-10.2 image has been read, so those count as before it),
+and never a Profile 7 that Feed converts. Anything else stays on
 Standard (`uri: original declined (the TV's own player would show only this file's Dolby Vision base
 layer; ...)`). One loose end: the 5.6.2 CX run's Profile 8.6 MKV showed the Dolby Vision badge with no
 node, which nothing above explains; the decline does not depend on it, since that file plays Dolby
@@ -442,7 +443,7 @@ that fails over from the URI engine to Standard writes the `already tried` line 
 | `the selected subtitle is an external file` | the selected subtitle is a sidecar file the app draws; any file with a subtitle stream stays in Standard today | a file without subtitle streams |
 | `the file has subtitle streams and none is selected; subtitle streams keep a play in Standard today` | the TV's pipeline cannot switch the file's default subtitle off, and selecting one does not help (it ends as `subtitle streams keep a play in Standard today; try a file without subtitle streams`) | a file without subtitle streams |
 | `the file has Dolby Vision and the Dolby Vision setting is Off` | Dolby Vision is Off in the profile | set Dolby Vision to Auto |
-| `the TV's own player would show only this file's Dolby Vision base layer; Standard plays it as Dolby Vision` | a Profile 7 that Feed converts, or a Dolby Vision MKV on a set whose Matroska demuxer reads no Dolby Vision (before webOS 10; "Dolby Vision on the load" above) | none: the file plays as Dolby Vision in Standard |
+| `the TV's own player would show only this file's Dolby Vision base layer; Standard plays it as Dolby Vision` | a Profile 7 that Feed converts, or a Dolby Vision MKV on a set whose Matroska demuxer reads no Dolby Vision (before webOS 10.3; "Dolby Vision on the load" above) | none: the file plays as Dolby Vision in Standard |
 | `a trailer preview` | previews are not carried | none |
 | `no duration or URL for the file` | the Part reports no duration | none |
 | `Playback engine is not Experimental` | the profile is on Standard | none (a Standard viewer gets no line) |
